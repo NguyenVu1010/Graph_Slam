@@ -59,16 +59,17 @@ class TempDir {
 
 // 1 s of data: 200 IMU (200 Hz), 5 GNSS (5 Hz), 50 wheel (50 Hz), 10 scans (10 Hz) of
 // 1000 points spread over 99 ms, 10 ground-truth poses (ignored by the bench).
-// `lead_s` seconds of IMU, GNSS and wheel data come before the first scan.
-void write_dataset(const fs::path& dir, int lead_s = 0) {
+// `lead_ms` milliseconds of IMU (and, with `with_aux`, GNSS and wheel) data come before
+// the first scan. Without `with_aux` the dataset has no GNSS or wheel records.
+void write_dataset(const fs::path& dir, int lead_ms = 0, bool with_aux = true) {
   mss::io::DatasetIndex meta;
   auto created = mss::io::DatasetWriter::create(dir, meta);
   ASSERT_TRUE(created.is_ok()) << created.reason();
   mss::io::DatasetWriter w = std::move(created).value();
-  const int n_imu = 200 * (1 + lead_s);
-  const int n_gnss = 5 * (1 + lead_s);
-  const int n_odom = 50 * (1 + lead_s);
-  const std::int64_t t_scan0 = kT0 + lead_s * 1000 * kMs;
+  const int n_imu = 200 * (1000 + lead_ms) / 1000;
+  const int n_gnss = with_aux ? 5 * (1000 + lead_ms) / 1000 : 0;
+  const int n_odom = with_aux ? 50 * (1000 + lead_ms) / 1000 : 0;
+  const std::int64_t t_scan0 = kT0 + lead_ms * kMs;
   for (int k = 0; k < n_imu; ++k) {
     ImuSample s;
     s.t = Timestamp{kT0 + k * 5 * kMs};
@@ -167,7 +168,7 @@ TEST(BenchReplay, SensorsLeadingLidarAreNotDropped) {
   TempDir tmp;
   const fs::path data = tmp.path() / "mssdata";
   const fs::path out = tmp.path() / "out";
-  ASSERT_NO_FATAL_FAILURE(write_dataset(data, 3));
+  ASSERT_NO_FATAL_FAILURE(write_dataset(data, 3000));
   const std::string cmd = bench_cmd(data, out);
   ASSERT_EQ(run(cmd), 0) << cmd;
   const std::string json = read_file(out / "bench.json");
@@ -177,6 +178,26 @@ TEST(BenchReplay, SensorsLeadingLidarAreNotDropped) {
   EXPECT_NE(json.find("\"n_scans\": 10,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"n_dropped_imu\": 0,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"n_dropped_aux\": 0,"), std::string::npos) << json;
+}
+
+// IMU only (no GNSS / wheel to force aux drains) leading the LiDAR by 3.95 s: 790 samples,
+// plus the one at scan 0's t_start. Pressure drains after 399 pushes leave 392 queued when
+// scan 0 arrives; without a drain before the scan, its 19 span samples would overflow the
+// 400-deep IMU queue while it is pending.
+TEST(BenchReplay, ImuOnlyLeadIsNotDropped) {
+  TempDir tmp;
+  const fs::path data = tmp.path() / "mssdata";
+  const fs::path out = tmp.path() / "out";
+  ASSERT_NO_FATAL_FAILURE(write_dataset(data, 3950, false));
+  const std::string cmd = bench_cmd(data, out);
+  ASSERT_EQ(run(cmd), 0) << cmd;
+  const std::string json = read_file(out / "bench.json");
+  EXPECT_NE(json.find("\"n_imu\": 990,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"imu\": 990,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_scans\": 10,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_dropped_imu\": 0,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_gnss\": 0,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_odom\": 0,"), std::string::npos) << json;
 }
 
 // An IMU queue shorter than the IMU samples inside one scan span must overflow while the

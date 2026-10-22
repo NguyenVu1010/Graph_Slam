@@ -158,4 +158,14 @@ TEST(Span, ConstFromVectorAndArray) {
   EXPECT_TRUE(Span<const int>().empty());
 }
 
+TEST(ScanFrame, EndTimeIsStartPlusMaxOffset) {
+  ScanFrame f(4);
+  f.t_start = Timestamp{1000};
+  EXPECT_EQ(scan_end_time(f), Timestamp{1000});  // no points: t_start
+  ASSERT_TRUE(f.push(0.0F, 0.0F, 0.0F, 0.0F, 50U, 0));
+  ASSERT_TRUE(f.push(0.0F, 0.0F, 0.0F, 0.0F, 700U, 0));
+  ASSERT_TRUE(f.push(0.0F, 0.0F, 0.0F, 0.0F, 20U, 0));  // offsets need not be sorted
+  EXPECT_EQ(scan_end_time(f), Timestamp{1700});
+}
+
 }  // namespace mss::common

@@ -211,15 +211,6 @@ void print_table(const fs::path& dataset,
   std::printf("replay wall time %.3f s\n", replay_wall_s);
 }
 
-// Scan end time t_start + max(t_offset_ns): the Estimator's ordering key for the scan.
-mss::common::Timestamp scan_end_key(const mss::common::ScanFrame& scan) {
-  std::uint32_t max_offset = 0;
-  for (const std::uint32_t off : scan.t_offset_ns()) {
-    max_offset = std::max(max_offset, off);
-  }
-  return mss::common::Timestamp{scan.t_start.ns + static_cast<std::int64_t>(max_offset)};
-}
-
 // Feeds the merged record stream into the Estimator and decides when to call run_once().
 // Deterministic: the decisions depend only on the data and the realtime.* depths.
 //
@@ -240,7 +231,10 @@ mss::common::Timestamp scan_end_key(const mss::common::ScanFrame& scan) {
 //     IMU samples of its span must reach the queue first; imu_queue_depth (400 = 2 s) is
 //     far above the samples per scan (20 at 200 Hz / 10 Hz). An overflow is counted in
 //     n_dropped_imu and turns into exit code 3;
-//   - scans: drained before a push that would fill the scan queue.
+//   - scans: drained before every scan push when no scan is pending (so a pending scan
+//     always starts with an empty IMU queue and its span samples fit), and before a push
+//     that would fill the scan queue.
+// The watermark is the largest end key of the pending scans.
 class Replayer {
  public:
   Replayer(mss::pipeline::Estimator& est, const mss::pipeline::RealtimeConfig& rt, std::FILE* tum)
@@ -288,13 +282,18 @@ class Replayer {
         break;
       case RecordKind::kLidar:
         ++counts_.lidar;
-        if (n_scans_ >= scan_limit_) {
+        // With no scan pending, drain first so the scan starts with empty queues and its
+        // span samples always fit (safe: the reader is time-ordered, so everything queued
+        // has t <= t_start <= the scan key).
+        if (!scan_pending_ || n_scans_ >= scan_limit_) {
           drain();
         }
         (void)est_.push_scan(scan);
         ++n_scans_;
+        // max(): an overlapping, shorter scan must not move the watermark backwards.
+        watermark_ = scan_pending_ ? std::max(watermark_, mss::common::scan_end_time(scan))
+                                   : mss::common::scan_end_time(scan);
         scan_pending_ = true;
-        watermark_ = scan_end_key(scan);
         break;
       case RecordKind::kGt:
         break;

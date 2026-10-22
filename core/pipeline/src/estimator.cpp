@@ -36,15 +36,6 @@ std::size_t checked_depth(int depth, std::size_t max, const char* key) {
   return static_cast<std::size_t>(depth);
 }
 
-// Scan end time t_start + max(t_offset_ns); t_start when the scan has no points.
-common::Timestamp scan_end_time(const common::ScanFrame& scan) {
-  std::uint32_t max_offset = 0;
-  for (const std::uint32_t off : scan.t_offset_ns()) {
-    max_offset = std::max(max_offset, off);
-  }
-  return common::Timestamp{scan.t_start.ns + static_cast<std::int64_t>(max_offset)};
-}
-
 // Nearest-rank percentile on sorted[0, n): sorted[ceil(q * n) - 1] with q = num / den,
 // computed in integers. Precondition: n > 0.
 double nearest_rank(const std::array<double, kLatencySamples>& sorted,
@@ -148,7 +139,7 @@ common::Status Estimator::push_scan(const common::ScanFrame& scan) {
     }
     const std::size_t slot = s.acquire_slot();
     if (slot < s.pool.size() && s.pool[slot].copy_from(scan)) {
-      s.scans.push(ScanEntry{slot, scan_end_time(scan)});
+      s.scans.push(ScanEntry{slot, common::scan_end_time(scan)});
     } else {
       // Not reachable: the pool always has a free slot and capacity was checked above.
       if (slot < s.pool.size()) {
