@@ -106,9 +106,11 @@ class Graph {
 
   /// Adds a GNSS position factor on keyframe `k`:
   /// residual `T_e_w * (T_w_b * p_b_g) - m.p_e_g` (3-vector, metres; p_b_g from the
-  /// constructor), covariance `m.cov` used as delivered. GnssConfig::sigma_h_m /
-  /// sigma_v_m are used by the pipeline only to fill `m.cov` when the fix carries no
-  /// covariance (NavSatFix `position_covariance_type == 0`).
+  /// constructor), covariance `m.cov`.
+  /// Core treats `m.cov` as valid as delivered. Filling it from
+  /// GnssConfig::sigma_h_m / sigma_v_m when a NavSatFix carries no covariance
+  /// (`position_covariance_type == 0`) is the adapter's job: `ros2_node` for live/bag
+  /// playback and `tools/bag_to_mssdata.py` for datasets.
   /// `T_e_w` (from gnss::GnssAligner) is a fixed parameter, not a variable.
   /// Graph does not compare m.t with the keyframe time: the pipeline attaches each fix
   /// to the keyframe at (or interpolated to) the fix time.

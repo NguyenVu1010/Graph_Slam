@@ -20,6 +20,15 @@ namespace mss::pipeline {
 /// Current phase (Task 8): single-threaded only; the module algorithms are not plugged
 /// in yet, so latest_state() reports an identity pose (see latest_state()).
 ///
+/// Keyframe-boundary duties of the estimator (contract for imu, odom and backend):
+///   - keyframe time = scan `t_start`;
+///   - after `imu::Preintegrator::reset()` the estimator re-feeds the last IMU sample of
+///     the previous interval as the first sample of the new one;
+///   - before `backend::Graph::add_odom_factor` the estimator checks
+///     `|OdomDelta.t0 - t_i|` and `|OdomDelta.t1 - t_j|` `<= 1.5 x` the observed wheel
+///     sample period (interval between consecutive accepted WheelSamples) and drops the
+///     factor with one log line otherwise.
+///
 /// Ownership/threading: one instance per process, owned by the app. Shared state with a
 /// documented owner (ADR-005): the latest Estimate (written by the backend stage, read by
 /// latest_state()) and the map (front-end). In the current single-threaded phase every
@@ -58,7 +67,8 @@ class Estimator {
   /// Errors: also Status::error("scan larger than max_points_per_scan") when
   ///   scan.size() > realtime.max_points_per_scan; that scan is not queued and counts in
   ///   n_dropped_scans.
-  /// Ordering is not checked here; run_once() processes in timestamp order.
+  /// Ordering is not checked here; run_once() processes in key order (scan end time),
+  /// see run_once().
   /// Hot path: yes (per scan, caller's thread): no allocation, no exception; logs at
   ///   most one warning per call.
   /// Tests: Task 8 test_estimator (PushScanCopiesWithoutAlloc, ScanQueueFullDropsOldest),
