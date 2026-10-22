@@ -56,6 +56,11 @@ def test_outage_window() -> None:
         else:
             assert s is not None, t
             assert s.status == 0
+    edge = _deg(segments=[GnssSegment("outage", 10.0, 20.0)])
+    at = lambda sec: edge.step(T0 + round(sec * 1e9), P0)  # noqa: E731
+    assert at(10.0) is None
+    assert at(20.0) is None
+    assert at(20.2) is not None
 
 
 def test_nominal_sigma_and_cov() -> None:
@@ -114,3 +119,26 @@ def test_same_seed_identical() -> None:
         else:
             assert x.lla == y.lla
             np.testing.assert_array_equal(x.cov_enu_diag, y.cov_enu_diag)
+
+
+def test_drift_gauss_markov_statistics() -> None:
+    tau, dt = 2.0, 0.2
+    noise = _noise(sigma_h_m=0.0, sigma_v_m=0.0, drift_sigma_m=0.5, drift_tau_s=tau)
+    out = _run(_deg(noise, seed=11), 20000)
+    err = np.array([lla_to_enu(s.lla, ORIGIN) - P0 for s in out])
+    assert abs(err.std(axis=0).mean() / 0.5 - 1) < 0.1
+    for k in range(3):
+        x = err[:, k] - err[:, k].mean()
+        rho = float(np.dot(x[1:], x[:-1]) / np.dot(x, x))
+        assert abs(rho - np.exp(-dt / tau)) < 0.05
+
+
+def test_drift_first_sample_initialised_from_stationary() -> None:
+    noise = _noise(sigma_h_m=0.0, sigma_v_m=0.0, drift_sigma_m=0.5, drift_tau_s=2.0)
+    first = np.array(
+        [
+            lla_to_enu(_deg(noise, seed=s).step(T0, P0).lla, ORIGIN) - P0  # type: ignore[union-attr]
+            for s in range(1000)
+        ]
+    )
+    assert abs(first.std() / 0.5 - 1) < 0.1

@@ -50,7 +50,7 @@ class GnssDegrader:
         self._rng = rng
         self._t0_ns = t0_ns
         self._drift: np.ndarray | None = None
-        self._last_t_s = 0.0
+        self._last_t_ns = t0_ns
         self._event_bias = np.zeros(3)
         self._event_end_s = -math.inf
 
@@ -66,7 +66,7 @@ class GnssDegrader:
 
     def step(self, t_ns: int, p_e_g_true: np.ndarray) -> GnssSample | None:
         n = self._n
-        t_s = (t_ns - self._t0_ns) * 1e-9
+        t_s = (t_ns - self._t0_ns) / 1e9
         p_true = np.asarray(p_e_g_true, dtype=float)
 
         drift_n = self._rng.standard_normal(3)
@@ -75,10 +75,10 @@ class GnssDegrader:
             self._drift = n.drift_sigma_m * drift_n
             dt = 0.0
         else:
-            dt = t_s - self._last_t_s
+            dt = (t_ns - self._last_t_ns) / 1e9
             a = math.exp(-dt / n.drift_tau_s)
             self._drift = a * self._drift + n.drift_sigma_m * math.sqrt(1.0 - a * a) * drift_n
-        self._last_t_s = t_s
+        self._last_t_ns = t_ns
 
         mode = self.mode_at(t_s, p_true)
         if mode == "outage":
