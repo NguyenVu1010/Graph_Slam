@@ -131,6 +131,10 @@ class BagWriter:
         raw = TYPESTORE.serialize_cdr(msg, self._types[topic])
         self._writer.write(self._conns[topic], int(log_time_ns), bytes(raw))
 
+    def write_raw(self, topic: str, log_time_ns: int, rawdata: bytes) -> None:
+        """Write already-serialised CDR bytes (byte-exact passthrough)."""
+        self._writer.write(self._conns[topic], int(log_time_ns), rawdata)
+
 
 @dataclass
 class CloudArrays:
