@@ -46,6 +46,14 @@ ruff check . && ruff format .
 pytest
 ```
 
+Simulation noise layer (offline, no ROS; details in `sim/README.md` and `docs/adr/011-simulation.md`):
+
+```sh
+PYTHONPATH=sim python -m mss_sim bridge <raw_bag> sim/scenarios/E-01.yaml results/<run-id>   # raw bag -> noisy bag + gt.tum
+python tools/mutate_bag.py <in_bag> <out_bag> --drop 0.05 --reorder 0.02                     # E-03 bag: packet loss, reordering
+PYTHONPATH=eval python -m mss_eval.noise_report <bag_dir> sim/noise/<profile>.yaml --out results/<run-id>/noise  # declared vs measured noise
+```
+
 ## Before committing
 
 `pre-commit install` once; it runs clang-format and ruff. CI additionally builds with
