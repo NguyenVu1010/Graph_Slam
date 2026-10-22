@@ -8,6 +8,8 @@ include(mss_warnings)
 include(GNUInstallDirs)
 
 find_package(Eigen3 3.4 REQUIRED NO_MODULE)
+find_package(Sophus REQUIRED)
+find_package(yaml-cpp REQUIRED)
 if(MSS_WITH_GTSAM)
   find_package(GTSAM REQUIRED)
 endif()
