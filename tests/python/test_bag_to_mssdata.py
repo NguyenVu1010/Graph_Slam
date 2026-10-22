@@ -318,12 +318,38 @@ def test_lidar_reorder_and_duplicate_stamps(tmp_path: Path) -> None:
     assert markers == [1.0, 2.0]  # the first-logged scan of the duplicated stamp survives
 
 
-def test_cpp_reader_agrees() -> None:
-    """Cross-check hook: the C++ DatasetReader (via mss_bench) must replay what Python wrote.
+def test_cpp_reader_agrees(converted: tuple[Path, ConvertReport], tmp_path: Path) -> None:
+    """Cross-check: the C++ DatasetReader (via mss_bench) replays what Python wrote.
 
-    Task 8 fills this in once mss_bench reads datasets; until then it only checks the env var.
+    Runs only when MSS_BENCH_BIN points at a built mss_bench binary.
     """
     bench = os.environ.get("MSS_BENCH_BIN")
     if not bench:
         pytest.skip("MSS_BENCH_BIN is not set (path to mss_bench)")
     assert Path(bench).is_file(), f"MSS_BENCH_BIN={bench} is not a file"
+    data, report = converted
+    out = tmp_path / "bench"
+    proc = subprocess.run(
+        [
+            bench,
+            str(_REPO / "config/default.yaml"),
+            str(data),
+            "--overlay",
+            str(_WAREHOUSE),
+            "--out",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads((out / "bench.json").read_text(encoding="utf-8"))
+    assert result["records"] == report.n
+    assert result["n_imu"] == report.n["imu"]
+    assert result["n_gnss"] == report.n["gnss"]
+    assert result["n_odom"] == report.n["odom"]
+    assert result["n_scans"] + result["n_dropped_scans"] == report.n["lidar"]
+    assert result["n_rejected_imu"] == 0
+    est = (out / "est.tum").read_text(encoding="utf-8").splitlines()
+    assert len(est) == result["n_scans"]
