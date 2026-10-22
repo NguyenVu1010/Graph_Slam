@@ -4,6 +4,7 @@
 
 #include "mss/common/result.hpp"
 #include "mss/common/scan_frame.hpp"
+#include "mss/common/types.hpp"
 #include "mss/imu/trajectory.hpp"
 #include "mss/preprocess/config.hpp"
 
@@ -17,7 +18,9 @@ namespace mss::preprocess {
 class Preprocessor {
  public:
   /// Validates `cfg` and reserves every scratch buffer for `max_points` input points.
-  /// Frames: none. Units: `max_points` in points (normally realtime.max_points_per_scan).
+  /// Frames: `T_b_l` = pose of the LiDAR frame l in the body frame b (frames.T_b_l),
+  ///   stored and used by the deskew step of process().
+  /// Units: `max_points` in points (normally realtime.max_points_per_scan); T_b_l.p in m.
   /// Preconditions: `max_points > 0`.
   /// Errors: throws std::invalid_argument (initialisation may throw) when
   ///   `cfg.min_range_m < 0`, `cfg.max_range_m <= cfg.min_range_m`,
@@ -25,7 +28,7 @@ class Preprocessor {
   ///   `cfg.downsample_voxel_m == 0` is valid and disables downsampling.
   /// Hot path: no (allocates).
   /// Tests: P-01..P-04 construct it.
-  explicit Preprocessor(const PreprocessConfig& cfg, std::size_t max_points);
+  Preprocessor(const PreprocessConfig& cfg, const common::Pose& T_b_l, std::size_t max_points);
 
   /// Filters, deskews and downsamples `in` into `out`. Steps, in this order:
   ///   1. drop points with any non-finite x/y/z, or with range |p_l| (Euclidean norm in
@@ -41,9 +44,8 @@ class Preprocessor {
   /// Kept points stay in input order. `out.t_start = in.t_start`; every kept point keeps
   /// its intensity, ring and original `t_offset_ns` (after deskew it no longer describes
   /// the point's frame time, it is kept for diagnostics only).
-  /// CONTRACT GAP: step 2 needs the extrinsic `T_b_l`, which this signature does not
-  ///   provide (PreprocessConfig has no extrinsic). Until the contract adds it (see the
-  ///   task-5 report), deskew is only correct for T_b_l = identity.
+  /// Deskew composes the constructor's extrinsic `T_b_l` with ImuTrajectory::T_b0_b:
+  ///   `T_l0_l(t) = T_b_l^-1 * T_b0_b(t) * T_b_l` (l0 = LiDAR frame at in.t_start).
   /// Frames: `in` in l with per-point times; `traj` in b0 (body at in.t_start);
   ///   `out` in l at `in.t_start`.
   /// Units: metres, nanoseconds.

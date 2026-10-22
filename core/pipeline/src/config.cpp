@@ -430,6 +430,14 @@ Config read_config(Reader& r) {
   r.angle_deg("backend.keyframe_rot_deg", c.backend.keyframe_rot_rad);
   r.field("backend.relinearize_threshold", c.backend.relinearize_threshold);
   r.field("backend.relinearize_skip", c.backend.relinearize_skip, Range::kPositive);
+  r.field("backend.prior_pos_sigma_m", c.backend.prior_pos_sigma_m, Range::kPositive);
+  r.angle_deg("backend.prior_rot_sigma_deg", c.backend.prior_rot_sigma_rad, Range::kPositive);
+  r.field("backend.prior_vel_sigma_mps", c.backend.prior_vel_sigma_mps, Range::kPositive);
+  r.field(
+      "backend.prior_bias_acc_sigma_mps2", c.backend.prior_bias_acc_sigma_mps2, Range::kPositive);
+  r.field("backend.prior_bias_gyro_sigma_radps",
+          c.backend.prior_bias_gyro_sigma_radps,
+          Range::kPositive);
 
   r.field("realtime.scan_queue_depth", c.realtime.scan_queue_depth, Range::kPositive);
   r.field("realtime.imu_queue_depth", c.realtime.imu_queue_depth, Range::kPositive);

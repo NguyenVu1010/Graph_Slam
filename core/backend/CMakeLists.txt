@@ -4,7 +4,7 @@ add_library(mss::backend ALIAS mss_backend)
 target_include_directories(mss_backend INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(mss_backend INTERFACE mss::common)
+target_link_libraries(mss_backend INTERFACE mss::common mss::imu)  # ImuConfig in Graph ctor
 if(MSS_WITH_GTSAM)
   target_link_libraries(mss_backend INTERFACE gtsam)
   target_compile_definitions(mss_backend INTERFACE MSS_WITH_GTSAM=1)
