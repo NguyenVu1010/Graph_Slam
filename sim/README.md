@@ -34,4 +34,16 @@ Determinism (ADR-011 section 1): Gazebo is not deterministic, the noise layer is
 scenario, profile and seed produce byte-identical messages and log times (SIM-05). `--seed`
 overrides the scenario seed. Record the raw bag once and re-run the bridge to vary noise.
 
+## Mutating a bag (E-03)
+
+`tools/mutate_bag.py` derives the robustness bag from a bridged one (packet loss and reordering
+inside a time window, seeded):
+
+```
+python tools/mutate_bag.py <in_bag> <out_bag> [--drop P] [--reorder P] [--window-ns N] [--seed N]
+```
+
+E-03 bags skip the noise report: reordering violates its ordering check by design. Run the
+report on the E-01 bag the E-03 bag was derived from.
+
 Tests: `python -m pytest tests/python`; lint: `ruff check . && ruff format --check .`.

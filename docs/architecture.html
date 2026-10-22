@@ -106,7 +106,7 @@
 <main>
   <h2>Sơ đồ tổng thể</h2>
   <div class="hint">Nhấn vào một khối để xem đầu vào, đầu ra, test và sơ đồ hàm. Nhấn lại khối đang chọn để bỏ chọn.</div>
-  <div class="card"><svg id="overview" viewBox="0 0 1200 660" role="img" aria-label="Sơ đồ khối tổng thể"></svg></div>
+  <div class="card"><svg id="overview" viewBox="0 0 1200 720" role="img" aria-label="Sơ đồ khối tổng thể"></svg></div>
 
   <div id="detail" class="card"><div class="empty">Chưa chọn khối nào.</div></div>
 </main>
@@ -121,7 +121,7 @@
 // status: done | stub | planned | io | ext     fn.real: true = có trong code
 // ============================================================================
 const DATA = {
-  repo: { commit: "d3cd71f", date: "2026-10-22", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
+  repo: { commit: "18c235e", date: "2026-10-22", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
   ci: { run: 39808309796, jobs: [
     { name: "lint", ok: true, note: "clang-format 18 + ruff" },
     { name: "core-no-gtsam", ok: true, note: "CMake + GTest, -Werror" },
@@ -305,18 +305,60 @@ const DATA = {
         { id: "run", name: "run_dataset", sig: "BenchReport run_dataset(const Config&, const Dataset&)", stage: 1, note: "Phát lại theo timestamp, deterministic." },
         { id: "pct", name: "report_percentiles", sig: "void report_percentiles(const BenchReport&)", stage: 2, note: "" } ],
       calls: [["main","run"],["run","pct"]] },
-    { id: "eval", status: "done", name: "eval (py)", short: "TUM, evo, ablation", x: 1040, y: 500, w: 150, h: 46,
-      desc: "Không link core; chỉ đọc file TUM. ATE/RPE bằng evo, ablation, plots, so với eval/baselines.json (PR fail nếu ATE xấu hơn 20%). Hiện có TUM reader/writer kèm test.",
-      inputs: ["File TUM từ bench / ros2 bag export", "Ground truth (sim)"], outputs: ["results/<run-id>/: ATE, RPE, plots", "so sánh với baselines.json"],
+    { id: "eval", status: "done", name: "eval (py)", short: "TUM, noise report, evo", x: 1040, y: 500, w: 150, h: 46,
+      desc: "Không link core; chỉ đọc file TUM. ATE/RPE bằng evo, ablation, plots, so với eval/baselines.json (PR fail nếu ATE xấu hơn 20%). Đã có TUM reader/writer và noise report (ADR-011 §7): so profile nhiễu khai báo với nhiễu đo trong bag (IMU Allan, GNSS, LiDAR, odom, bag).",
+      inputs: ["File TUM từ bench / ros2 bag export", "Bag nhiễu + gt.tum từ sim bridge"], outputs: ["results/<run-id>/: ATE, RPE, plots", "noise_report.html / .json", "so sánh với baselines.json"],
       tests: [
         { name: "test_round_trip", file: "tests/python/test_tum.py", ok: true },
-        { name: "test_rejects_wrong_field_count", file: "tests/python/test_tum.py", ok: true } ],
+        { name: "test_rejects_wrong_field_count", file: "tests/python/test_tum.py", ok: true },
+        { name: "test_fit_recovers_white_and_walk_densities", file: "tests/python/test_allan.py", ok: true },
+        { name: "test_theory_curve_matches_formula", file: "tests/python/test_allan.py", ok: true },
+        { name: "test_oadev_of_white_noise_has_minus_half_slope", file: "tests/python/test_allan.py", ok: true },
+        { name: "test_report_writes_html_and_json", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_bag_section_passes", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_gnss_sigma_h_within_15_percent", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_imu_without_static_segment_is_informational", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_lidar_section_on_noise_free_synthetic_bag", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_range_sigma_estimator_recovers_declared_sigma", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_report_without_planes_passes", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_missing_ground_truth_fails", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_cli_exit_codes", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_imu_static_segment_gates_white_sigma", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_lidar_sigma_is_along_ray_at_mixed_incidence", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_expected_dropout_accounts_for_grazing_and_nan", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_gnss_sigma_rejects_multipath_steps", file: "tests/python/test_noise_report.py", ok: true } ],
       fns: [
         { id: "read", name: "read_tum", real: true, sig: "def read_tum(path: Path) -> Trajectory", stage: 0, note: "Kiểm tra 8 cột, bỏ dòng #." },
         { id: "write", name: "write_tum", real: true, sig: "def write_tum(path: Path, traj: Trajectory) -> None", stage: 0, note: "" },
-        { id: "ate", name: "compute_ate", sig: "def compute_ate(est: Trajectory, gt: Trajectory) -> AteResult", stage: 1, note: "Qua evo, căn chỉnh SE(3)." },
-        { id: "cmp", name: "compare_baseline", sig: "def compare_baseline(result, baselines_json) -> bool", stage: 2, note: "Ngưỡng 20%." } ],
-      calls: [["read","ate"],["ate","cmp"]] },
+        { id: "nrun", name: "noise_report.run", real: true, sig: "def run(bag_dir, profile, out, ...) -> Report", stage: 1, note: "Gate (exit 1) và dòng thông tin; ghi html + json." },
+        { id: "fit", name: "fit_white_and_walk", real: true, sig: "def fit_white_and_walk(taus, adev) -> (white, walk)", stage: 1, note: "Khớp mật độ white/random-walk từ Allan deviation." },
+        { id: "rsig", name: "estimate_range_sigma", real: true, sig: "def estimate_range_sigma(...) -> float", stage: 1, note: "σ dọc tia từ phần dư mặt phẳng." },
+        { id: "gsig", name: "estimate_gnss_sigma", real: true, sig: "def estimate_gnss_sigma(...) -> float", stage: 1, note: "Loại bước multipath trước khi ước lượng." },
+        { id: "ate", name: "compute_ate", sig: "def compute_ate(est: Trajectory, gt: Trajectory) -> AteResult", stage: 2, note: "Qua evo, căn chỉnh SE(3)." },
+        { id: "cmp", name: "compare_baseline", sig: "def compare_baseline(result, baselines_json) -> bool", stage: 3, note: "Ngưỡng 20%." } ],
+      calls: [["read","ate"],["ate","cmp"],["read","nrun"],["nrun","fit"],["nrun","rsig"],["nrun","gsig"]] },
+
+    { id: "sim", status: "done", name: "sim (py)", short: "noise layer, bridge", x: 1040, y: 560, w: 150, h: 46,
+      desc: "Lớp nhiễu offline (ADR-011): đọc bag thô sạch từ Gazebo, thêm nhiễu IMU/GNSS/LiDAR/odom theo profile + scenario, tất định theo seed, ghi bag MCAP và gt.tum. mutate_bag tạo bag E-03 (mất gói, đảo thứ tự). Gazebo world/driver thuộc phần B.",
+      inputs: ["Bag thô Gazebo (/ground_truth, /imu/data, /lidar/points, /gnss/fix, /joint_states)", "sim/noise/<profile>.yaml, sim/scenarios/<id>.yaml"],
+      outputs: ["Bag nhiễu (MCAP)", "gt.tum", "bridge_report.json"],
+      tests: [
+        { name: "test_pipeline_noise_within_inflation (SIM-03)", file: "tests/python/test_sim03_consistency.py", ok: true },
+        { name: "test_constant_yaw_rate_matches_analytic (SIM-04)", file: "tests/python/test_lidar.py", ok: true },
+        { name: "test_dropout_rate_and_grazing (SIM-04)", file: "tests/python/test_lidar.py", ok: true },
+        { name: "test_bridge_is_deterministic (SIM-05)", file: "tests/python/test_bridge.py", ok: true },
+        { name: "test_outage_window (SIM-06)", file: "tests/python/test_gnss.py", ok: true },
+        { name: "test_degraded_cov_scaled (SIM-06)", file: "tests/python/test_gnss.py", ok: true } ],
+      fns: [
+        { id: "lp", name: "load_profile", real: true, sig: "def load_profile(path: Path) -> NoiseProfile", stage: 0, note: "Kiểm tra đơn vị và giá trị khi nạp." },
+        { id: "ls", name: "load_scenario", real: true, sig: "def load_scenario(path: Path) -> Scenario", stage: 0, note: "Gồm seed, segment GNSS, zones." },
+        { id: "syn", name: "write_synthetic_raw_bag", real: true, sig: "def write_synthetic_raw_bag(path, ...) -> Fixture", stage: 0, note: "Bag thô giả cho test, không cần Gazebo." },
+        { id: "rb", name: "run_bridge", real: true, sig: "def run_bridge(raw_bag, scenario, out_dir, seed=None, skew=True) -> BridgeReport", stage: 1, note: "SeedSequence(seed).spawn(5): lidar, gnss, odom, imu, mutate." },
+        { id: "pscan", name: "process_scan", real: true, sig: "def process_scan(cloud, ...) -> CloudArrays", stage: 2, note: "Thêm t, ring, skew, dropout, điểm xấu." },
+        { id: "gstep", name: "GnssDegrader.step", real: true, sig: "def step(self, t_ns, p_e_true) -> GnssFix | None", stage: 2, note: "Nominal/degraded/multipath/outage; None khi mất tín hiệu." },
+        { id: "wstep", name: "WheelQuantizer.step", real: true, sig: "def step(self, ...) -> OdomSample", stage: 2, note: "Encoder lượng tử, động học tin cậy." },
+        { id: "mut", name: "mutate (tools)", real: true, sig: "def mutate(in_bag, out_bag, drop, reorder, window_ns, seed)", stage: 3, note: "tools/mutate_bag.py: bag E-03." } ],
+      calls: [["lp","rb"],["ls","rb"],["rb","pscan"],["rb","gstep"],["rb","wstep"],["syn","rb"],["rb","mut"]] },
   ],
 
   // edges: { f, t, l }  + tuỳ chọn: both (hai chiều), via (đi theo hành lang ngang ở y này), lx (x đặt nhãn)
@@ -333,6 +375,7 @@ const DATA = {
     { f: "backend", t: "out_pose", l: "Estimate" }, { f: "map", t: "out_map", l: "voxels", via: 278, lx: 860 },
     { f: "ros2_node", t: "pipeline", l: "push_* / Estimate", both: true }, { f: "bench", t: "pipeline", l: "push_*" },
     { f: "bench", t: "eval", l: "TUM" },
+    { f: "sim", t: "eval", l: "bag + gt.tum" },
   ],
 };
 
