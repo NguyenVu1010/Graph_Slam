@@ -56,7 +56,13 @@ export LD_LIBRARY_PATH="$HOME/opt/gtsam/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 cmake "${args[@]}"
 if [ -n "$target" ]; then
   cmake --build "$build_dir" --parallel "$jobs" --target "$target"
-  ctest --test-dir "$build_dir" --output-on-failure -R "$target"
+  # gtest names are Suite.Case, so ctest -R <target> matches nothing: run the binary.
+  bin="$(find "$build_dir/tests" -type f -name "$target" -perm -u+x | head -1)"
+  if [ -n "$bin" ]; then
+    "$bin" --gtest_color=yes
+  else
+    echo "NOTE: target $target has no test binary"
+  fi
 else
   cmake --build "$build_dir" --parallel "$jobs"
   ctest --test-dir "$build_dir" --output-on-failure
