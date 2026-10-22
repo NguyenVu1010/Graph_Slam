@@ -10,8 +10,10 @@
 namespace mss::map {
 
 /// Fixed-size result buffer for VoxelMap::knn. Plain value type, no heap memory.
-/// Entries `[0, size)` are valid and sorted by ascending `dist2`; ties keep a
-/// deterministic order (same map contents and insertion order -> same output).
+/// Entries `[0, size)` are valid and sorted by ascending `dist2`. Ties are broken by
+/// voxel visit order (dz, then dy, then dx, each from -1 to 1, relative to the query's
+/// voxel), then by slot order within the voxel. M-01 compares the `dist2` sequence and
+/// the point multiset.
 struct NeighborBuffer {
   static constexpr int kMaxNeighbors = 32;
   std::array<common::Vec3, kMaxNeighbors> p_w{};  ///< m, neighbour positions in w
@@ -70,8 +72,9 @@ class VoxelMap {
   /// Tests: M-01 (equals brute force restricted to the 27-voxel neighbourhood), M-03.
   int knn(const common::Vec3& p_w, int k, NeighborBuffer& out) const;
 
-  /// Removes every voxel whose centre is farther than `prune_radius_m` (3-D Euclidean
-  /// distance) from `p_w_b`. Freed slots are reused by later inserts.
+  /// Removes every voxel whose centre `(key + 0.5) * voxel_m` (per axis, key = integer
+  /// voxel coordinate) is farther than `prune_radius_m` (3-D Euclidean distance) from
+  /// `p_w_b`. Freed slots are reused by later inserts.
   /// The caller (pipeline) decides when to call it, every `prune_period_s` of sensor
   /// time; prune() itself keeps no clock.
   /// Frames: `p_w_b` = body position in w. Units: metres.

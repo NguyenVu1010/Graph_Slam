@@ -41,6 +41,7 @@ class Preprocessor {
   ///   3. if `downsample_voxel_m > 0`: voxel grid in l anchored at the origin
   ///      (index = floor(p_l / downsample_voxel_m) per axis); keep the FIRST surviving
   ///      point (input order) of each voxel, unchanged, with all its attributes.
+  /// `out` is cleared first; on success it holds exactly the kept points.
   /// Kept points stay in input order. `out.t_start = in.t_start`; every kept point keeps
   /// its intensity, ring and original `t_offset_ns` (after deskew it no longer describes
   /// the point's frame time, it is kept for diagnostics only).
