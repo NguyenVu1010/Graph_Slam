@@ -1,6 +1,6 @@
 # pipeline: owns threads and bounded queues; the only module apps link against.
 # The only place that parses YAML (ADR-008): yaml-cpp stays PRIVATE.
-add_library(mss_pipeline STATIC src/config.cpp)
+add_library(mss_pipeline STATIC src/config.cpp src/estimator.cpp)
 add_library(mss::pipeline ALIAS mss_pipeline)
 mss_set_target_defaults(mss_pipeline)
 target_include_directories(mss_pipeline PUBLIC

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 
 #include "mss/common/result.hpp"
 #include "mss/common/scan_frame.hpp"
@@ -53,10 +54,18 @@ class Estimator {
   /// No allocation happens after the constructor on any push_*/run_once path.
   /// Preconditions: `cfg` comes from load_config (validated).
   /// Errors: throws (initialisation may throw) std::invalid_argument from module
-  ///   constructors, std::bad_alloc.
+  ///   constructors or when a realtime.*_queue_depth is <= 0 or above its compile-time
+  ///   maximum in bounded_queue.hpp (the message names the key), std::bad_alloc.
   /// Hot path: no.
   /// Tests: Task 8 test_estimator (PushScanCopiesWithoutAlloc), E-01..E-03.
   explicit Estimator(const Config& cfg);
+  ~Estimator();
+  Estimator(const Estimator&) = delete;
+  Estimator& operator=(const Estimator&) = delete;
+  /// Movable (the state lives behind one pointer allocated by the constructor); a
+  /// moved-from Estimator may only be destroyed or assigned to.
+  Estimator(Estimator&&) noexcept;
+  Estimator& operator=(Estimator&&) noexcept;
 
   /// Copies `scan` (memcpy of the SoA arrays, no allocation) into a free pool frame and
   /// queues it. The caller keeps ownership of `scan` and may reuse it immediately.
@@ -141,6 +150,13 @@ class Estimator {
   /// `p_q = sorted[ceil(q * n) - 1]` (q = 0.50, 0.95).
   /// 0.0 before the first push_scan(). Tests: Task 8 test_estimator.
   Stats stats() const;
+
+ private:
+  // Queues (~0.3 MB at the compile-time maxima of bounded_queue.hpp), the ScanFrame pool
+  // and the counters live in one block allocated by the constructor, so an Estimator is
+  // cheap to hold on the stack of any thread.
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace mss::pipeline
