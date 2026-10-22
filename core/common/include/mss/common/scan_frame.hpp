@@ -74,4 +74,15 @@ class ScanFrame {
   std::size_t size_ = 0;
 };
 
+// Scan end time t_start + max(t_offset_ns): the estimator's ordering key for a scan
+// (pipeline::Estimator::run_once). Returns t_start when the scan has no points.
+// O(size()), no allocation.
+inline Timestamp scan_end_time(const ScanFrame& scan) {
+  std::uint32_t max_offset = 0;
+  for (const std::uint32_t off : scan.t_offset_ns()) {
+    max_offset = off > max_offset ? off : max_offset;
+  }
+  return Timestamp{scan.t_start.ns + static_cast<std::int64_t>(max_offset)};
+}
+
 }  // namespace mss::common
