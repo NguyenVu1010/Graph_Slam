@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "mss/common/span.hpp"
@@ -22,8 +23,9 @@ class ScanFrame {
   explicit ScanFrame(std::size_t capacity) { reserve(capacity); }
   ScanFrame(const ScanFrame&) = delete;
   ScanFrame& operator=(const ScanFrame&) = delete;
-  ScanFrame(ScanFrame&&) noexcept = default;
-  ScanFrame& operator=(ScanFrame&&) noexcept = default;
+  // Moves leave the source empty with capacity 0, so it can be reserve()d and reused.
+  ScanFrame(ScanFrame&& other) noexcept { *this = std::move(other); }
+  ScanFrame& operator=(ScanFrame&& other) noexcept;
 
   // Allocates storage for `capacity` points. Intended to be called once. Calling it
   // again with a different capacity is allowed only when size() == 0 and reallocates;
@@ -35,8 +37,12 @@ class ScanFrame {
   void clear() { size_ = 0; }
 
   // Appends one point. Returns false (and changes nothing) when the frame is full.
-  bool push(
-      float x, float y, float z, float intensity, std::uint32_t t_offset_ns, std::uint16_t ring);
+  bool push(float x,
+            float y,
+            float z,
+            float intensity,
+            std::uint32_t t_offset_ns,
+            std::uint16_t ring) noexcept;
 
   // Copies t_start and all points with memcpy. Returns false (and changes nothing)
   // when capacity() < other.size().

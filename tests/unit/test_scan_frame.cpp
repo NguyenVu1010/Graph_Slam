@@ -80,6 +80,33 @@ TEST(ScanFrame, MoveKeepsData) {
   EXPECT_FLOAT_EQ(c.xyz()[3 * 49], 49.0F);
 }
 
+TEST(ScanFrame, MovedFromIsEmptyAndReusable) {
+  ScanFrame a(100);
+  fill(a, 50);
+  ScanFrame b(std::move(a));
+  EXPECT_EQ(a.size(), 0U);
+  EXPECT_EQ(a.capacity(), 0U);
+  EXPECT_TRUE(a.xyz().empty());
+  EXPECT_FALSE(a.push(1, 2, 3, 4, 5, 6));
+  a.reserve(10);
+  EXPECT_EQ(a.capacity(), 10U);
+  EXPECT_TRUE(a.push(1, 2, 3, 4, 5, 6));
+  ScanFrame c(20);
+  fill(c, 5);
+  c = std::move(b);
+  EXPECT_EQ(c.size(), 50U);
+  EXPECT_EQ(b.capacity(), 0U);
+  EXPECT_TRUE(c.copy_from(c));
+  EXPECT_EQ(c.size(), 50U);
+}
+
+TEST(AllocCounter, CountsOneHeapAllocation) {
+  AllocCounter::reset();
+  int* volatile p = new int(7);
+  EXPECT_EQ(AllocCounter::count(), 1U);
+  delete p;
+}
+
 TEST(ScanFrame, ClearKeepsCapacity) {
   ScanFrame f(100);
   fill(f, 40);
