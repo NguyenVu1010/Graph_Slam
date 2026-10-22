@@ -1,4 +1,4 @@
-add_library(mss_common STATIC src/logger.cpp)
+add_library(mss_common STATIC src/logger.cpp src/lie.cpp)
 add_library(mss::common ALIAS mss_common)
 mss_set_target_defaults(mss_common)
 target_include_directories(mss_common PUBLIC
