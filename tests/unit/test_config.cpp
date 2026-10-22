@@ -60,6 +60,10 @@ TEST(Config, LoadsDefaultFile) {
   EXPECT_TRUE(c.frames.T_b_l.p.isZero(0.0));
   EXPECT_TRUE(c.frames.T_b_o.R.isApprox(Mat3::Identity(), 1e-12));
   EXPECT_DOUBLE_EQ(c.imu.rate_hz, 200.0);
+  EXPECT_DOUBLE_EQ(c.imu.gyro_noise_density, 3.5e-4);
+  EXPECT_DOUBLE_EQ(c.imu.acc_noise_density, 5.8e-3);
+  EXPECT_DOUBLE_EQ(c.imu.gyro_random_walk, 2.0e-5);
+  EXPECT_DOUBLE_EQ(c.imu.acc_random_walk, 2.0e-4);
   EXPECT_EQ(c.realtime.max_points_per_scan, 65536U);
   EXPECT_EQ(c.random_seed, 42U);
   EXPECT_EQ(c.frames.body, "imu_link");
@@ -118,9 +122,35 @@ TEST(Config, UnknownKeyNamed) {
 }
 
 TEST(Config, OverlayTypeMismatch) {
+  // Scalar over a mapping.
   const auto cfg = parse_config(read_file(kDefault), overlay("    imu: 5\n"));
   ASSERT_FALSE(cfg.is_ok());
   EXPECT_TRUE(mentions(cfg.reason(), "imu")) << cfg.reason();
+  EXPECT_TRUE(mentions(cfg.reason(), "overlay type mismatch")) << cfg.reason();
+  // Mapping over a scalar.
+  const auto map_over_scalar =
+      parse_config(read_file(kDefault), overlay("    imu:\n      rate_hz:\n        x: 1\n"));
+  ASSERT_FALSE(map_over_scalar.is_ok());
+  EXPECT_TRUE(mentions(map_over_scalar.reason(), "imu.rate_hz")) << map_over_scalar.reason();
+  EXPECT_TRUE(mentions(map_over_scalar.reason(), "overlay type mismatch"))
+      << map_over_scalar.reason();
+}
+
+TEST(Config, BadDegKeyNamed) {
+  const auto cfg =
+      parse_config(read_file(kDefault), overlay("    backend:\n      keyframe_rot_deg: \"x\"\n"));
+  ASSERT_FALSE(cfg.is_ok());
+  EXPECT_TRUE(mentions(cfg.reason(), "backend.keyframe_rot_deg")) << cfg.reason();
+}
+
+TEST(Config, ZeroImuNoiseRejected) {
+  const std::string base = read_file(kDefault);
+  for (const char* key :
+       {"acc_noise_density", "gyro_noise_density", "acc_random_walk", "gyro_random_walk"}) {
+    const auto cfg = parse_config(base, overlay(std::string("    imu:\n      ") + key + ": 0.0\n"));
+    ASSERT_FALSE(cfg.is_ok()) << key;
+    EXPECT_TRUE(mentions(cfg.reason(), std::string("imu.") + key)) << cfg.reason();
+  }
 }
 
 TEST(Config, UnnormalisedQuaternionRejected) {

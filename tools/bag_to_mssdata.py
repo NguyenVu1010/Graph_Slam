@@ -234,7 +234,11 @@ def convert(
         "lidar_frame": _LIDAR_FRAME,
         "gnss_cov_filled_from_sigma": filled,
     }
-    (out_dir / "index.json").write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+    # allow_nan=False: index.json must be strict JSON (yaml-cpp reads it); a NaN origin
+    # or pose fails here with ValueError instead of writing an unreadable file.
+    (out_dir / "index.json").write_text(
+        json.dumps(index, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+    )
     return ConvertReport(counts, used_origin, filled)
 
 
@@ -243,7 +247,13 @@ def _gnss_records(
     origin_lla: tuple[float, float, float] | None,
     params: _PipelineParams | None,
 ) -> tuple[np.ndarray, tuple[float, float, float], bool]:
-    """GNSS records in ENU about the origin (explicit or the earliest fix)."""
+    """GNSS records in ENU about the origin.
+
+    The origin is ``origin_lla`` when given, else the earliest valid fix: NavSatStatus
+    ``status >= 0`` (not NO_FIX) and finite latitude, longitude and altitude. With fixes but
+    no valid one and no ``origin_lla`` it raises ValueError. Without any fix the origin is
+    unused and recorded as ``origin_lla`` or (0, 0, 0).
+    """
     rec = np.zeros(len(gnss), dtype=GNSS_DTYPE)
     if not gnss:
         return rec, origin_lla if origin_lla is not None else (0.0, 0.0, 0.0), False
@@ -251,7 +261,10 @@ def _gnss_records(
     if origin_lla is not None:
         origin = origin_lla
     else:
-        first = min(range(len(gnss)), key=lambda i: gnss[i][0])
+        valid = [i for i, g in enumerate(gnss) if g[6] >= 0 and bool(np.all(np.isfinite(lla[i])))]
+        if not valid:
+            raise ValueError("no valid GNSS fix for the ENU origin; pass --origin-lla")
+        first = min(valid, key=lambda i: gnss[i][0])
         origin = (float(lla[first, 0]), float(lla[first, 1]), float(lla[first, 2]))
     enu = lla_to_enu(lla, origin)
     filled = False
@@ -285,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    print(json.dumps(asdict(report)))
+    print(json.dumps(asdict(report), allow_nan=False))
     return 0
 
 

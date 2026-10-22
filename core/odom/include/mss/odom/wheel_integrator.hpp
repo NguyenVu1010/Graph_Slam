@@ -44,7 +44,8 @@ class WheelIntegrator {
   /// Errors: returns Status::error and changes nothing when
   ///   - v_mps or omega_radps is non-finite ("non-finite wheel sample");
   ///   - `s.t <=` previous accepted sample time ("wheel timestamp not increasing").
-  /// Hot path: yes, per wheel sample; no allocation, logging or exceptions.
+  /// Hot path: yes, per wheel sample; no logging or exceptions; no allocation on the
+  /// success path and on error paths that use string literals.
   /// Tests: O-01 (motion consistent with odometry gives zero residual downstream).
   common::Status integrate(const common::WheelSample& s);
 

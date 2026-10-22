@@ -89,4 +89,6 @@ models are therefore `[phi, rho]`, and `core/backend` must permute at its bounda
     xi_gtsam = [xi_mss.tail<3>(), xi_mss.head<3>()]
     Sigma_gtsam = P * Sigma_mss * P^T,   P = [0 I; I 0]
 
-`tests/unit/backend/test_lie_gtsam.cpp` checks this permutation explicitly.
+`tests/unit/backend/test_lie_gtsam.cpp` checks the vector permutation only (`xi_gtsam`
+against GTSAM `Pose3::Expmap`); the covariance/Jacobian matrix check `P * Sigma * P^T` is
+planned together with `core/backend` (`graph.cpp`).

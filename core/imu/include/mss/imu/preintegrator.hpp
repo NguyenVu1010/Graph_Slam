@@ -55,7 +55,8 @@ class Preintegrator {
   ///   - any component of acc_b / gyro_b is non-finite ("non-finite imu sample"), or
   ///   - `s.t <= t` of the previous accepted sample ("imu timestamp not increasing").
   ///   No upper bound on dt is enforced; gap detection is the pipeline's job.
-  /// Hot path: yes, per IMU sample. No allocation, logging or exceptions.
+  /// Hot path: yes, per IMU sample. No logging or exceptions; no allocation on the success
+  /// path and on error paths that use string literals.
   /// Tests: I-01 (static), I-02 (constant rotation), I-03 (vs GTSAM < 1e-9),
   ///   I-04 (bias Jacobians vs numerical, < 1e-6), I-05 (covariance vs Monte Carlo).
   common::Status integrate(const common::ImuSample& s);

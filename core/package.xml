@@ -8,6 +8,8 @@
   <license>TODO</license>
   <buildtool_depend>cmake</buildtool_depend>
   <depend>eigen</depend>
+  <depend>sophus</depend>
+  <depend>yaml-cpp</depend>
   <depend>gtsam</depend>
   <test_depend>gtest</test_depend>
   <export>

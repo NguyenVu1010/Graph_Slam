@@ -377,10 +377,11 @@ Config read_config(Reader& r) {
   r.vec3("frames.p_b_g_m", c.frames.p_b_g);
 
   r.field("imu.rate_hz", c.imu.rate_hz, Range::kPositive);
-  r.field("imu.acc_noise_density", c.imu.acc_noise_density, Range::kNonNegative);
-  r.field("imu.gyro_noise_density", c.imu.gyro_noise_density, Range::kNonNegative);
-  r.field("imu.acc_random_walk", c.imu.acc_random_walk, Range::kNonNegative);
-  r.field("imu.gyro_random_walk", c.imu.gyro_random_walk, Range::kNonNegative);
+  // Zero IMU noise would make the preintegration covariance singular: strictly positive.
+  r.field("imu.acc_noise_density", c.imu.acc_noise_density, Range::kPositive);
+  r.field("imu.gyro_noise_density", c.imu.gyro_noise_density, Range::kPositive);
+  r.field("imu.acc_random_walk", c.imu.acc_random_walk, Range::kPositive);
+  r.field("imu.gyro_random_walk", c.imu.gyro_random_walk, Range::kPositive);
   r.field("imu.gravity_mps2", c.imu.gravity_mps2);
   r.field("imu.init_window_s", c.imu.init_window_s);
   r.field("imu.init_max_acc_std_mps2", c.imu.init_max_acc_std_mps2);

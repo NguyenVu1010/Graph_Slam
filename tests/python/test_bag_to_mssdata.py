@@ -234,6 +234,67 @@ def _bag_with_unknown_cov(path: Path) -> Path:
     return path
 
 
+_STATUS_NO_FIX = -1  # sensor_msgs/NavSatStatus.STATUS_NO_FIX
+_STATUS_FIX = 0
+_COV_DIAGONAL_KNOWN = 2
+
+
+def _bag_with_fixes(path: Path, fixes: list[tuple[int, int, tuple[float, float, float]]]) -> Path:
+    """Minimal bag: NavSatFix messages ``(stamp_ns, status, (lat, lon, alt))`` with a known
+    diagonal covariance, plus a /tf_static."""
+    ty = TYPESTORE.types
+    with BagWriter(path) as w:
+        w.add_topic("/gnss/fix", "sensor_msgs/msg/NavSatFix")
+        w.add_topic("/tf_static", "tf2_msgs/msg/TFMessage")
+        for stamp, status, (lat, lon, alt) in fixes:
+            fix = ty["sensor_msgs/msg/NavSatFix"](
+                header=make_header(stamp, "gnss_link"),
+                status=ty["sensor_msgs/msg/NavSatStatus"](status=status, service=1),
+                latitude=lat,
+                longitude=lon,
+                altitude=alt,
+                position_covariance=np.diag([1.0, 1.0, 4.0]).reshape(9),
+                position_covariance_type=_COV_DIAGONAL_KNOWN,
+            )
+            w.write("/gnss/fix", stamp, fix)
+        tf = ty["geometry_msgs/msg/TransformStamped"](
+            header=make_header(0, "base_link"),
+            child_frame_id="lidar_link",
+            transform=ty["geometry_msgs/msg/Transform"](
+                translation=ty["geometry_msgs/msg/Vector3"](x=0.1, y=0.0, z=0.5),
+                rotation=ty["geometry_msgs/msg/Quaternion"](x=0.0, y=0.0, z=0.0, w=1.0),
+            ),
+        )
+        w.write("/tf_static", 0, ty["tf2_msgs/msg/TFMessage"](transforms=[tf]))
+    return path
+
+
+def test_origin_skips_no_fix_and_nan(tmp_path: Path) -> None:
+    nan = float("nan")
+    second = (_ORIGIN_LLA[0] + 1e-4, _ORIGIN_LLA[1], _ORIGIN_LLA[2] + 2.0)
+    bag = _bag_with_fixes(
+        tmp_path / "bag",
+        [(1_000, _STATUS_NO_FIX, (nan, nan, nan)), (2_000, _STATUS_FIX, second)],
+    )
+    out = tmp_path / "ds"
+    report = convert(bag, out)
+    assert report.origin_lla == second
+    index = json.loads((out / "index.json").read_text(encoding="utf-8"))
+    assert index["origin_lla"] == list(second)
+    p = np.fromfile(out / "gnss.bin", dtype=GNSS_DTYPE)["p_e_g"]
+    assert np.allclose(p[1], 0.0)  # the second fix sits at the origin
+
+
+def test_only_no_fix_without_origin_is_an_error(tmp_path: Path) -> None:
+    nan = float("nan")
+    bag = _bag_with_fixes(
+        tmp_path / "bag",
+        [(1_000, _STATUS_NO_FIX, (nan, nan, nan)), (2_000, _STATUS_NO_FIX, _ORIGIN_LLA)],
+    )
+    with pytest.raises(ValueError, match="no valid GNSS fix for the ENU origin; pass --origin-lla"):
+        convert(bag, tmp_path / "ds")
+
+
 def test_cov_filled_from_sigma_when_type_unknown(tmp_path: Path) -> None:
     bag = _bag_with_unknown_cov(tmp_path / "bag")
     out = tmp_path / "ds"

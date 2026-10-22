@@ -4,16 +4,15 @@
 //
 // Replays an mssdata dataset (ADR-014) in time order into pipeline::Estimator: IMU, GNSS
 // and wheel records go to push_imu/push_gnss/push_odom, scans to push_scan; ground-truth
-// records are counted and ignored. run_once() is called by the Replayer below (watermark
-// and queue-pressure rules), not blindly after each scan. Writes only under DIR:
-//   DIR/est.tum     one line per drain that processed a scan, from latest_state()
+// records are counted and ignored. run_once() is called by the Replayer below (after each
+// scan and on queue pressure); flush() at the end of the dataset. Writes only under DIR:
+//   DIR/est.tum     one line per run_once()/flush() that processed a scan, from latest_state()
 //   DIR/bench.json  Estimator::Stats, replay wall time and record counts per stream
 // and prints a summary table on stdout.
 // Exit codes: 0 success; 2 usage, config, dataset, estimator-init or output error (reason
 // on stderr); 3 the replay finished but some records were not processed (dropped or
 // rejected: records.* != n_*): one warning line on stderr, outputs still written.
 // --out is required so the tool never writes into the source tree by default.
-#include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <cstddef>
@@ -214,27 +213,18 @@ void print_table(const fs::path& dataset,
 // Feeds the merged record stream into the Estimator and decides when to call run_once().
 // Deterministic: the decisions depend only on the data and the realtime.* depths.
 //
-// Watermark rule. DatasetReader emits a scan at its t_start, but the Estimator orders it
-// by its end key t_start + max(t_offset_ns) (computed here from the ScanFrame). After a
-// scan is pushed, that key is the watermark, and the replayer drains (run_once) only
-// before pushing the first record that sorts after the scan: IMU, wheel or GNSS with
-// t > watermark (on t == key they sort before the scan, tie order IMU, wheel, GNSS, scan),
-// or another scan with t_start >= watermark. So the IMU/wheel/GNSS records inside
-// (t_start, t_end] are queued before the scan is processed.
-//
-// Pressure rule. The replayer counts pushes per queue since the last drain (run_once
-// empties every queue) and drains before a push that would fill a queue to its configured
-// depth (count >= depth - 1), so sensors that lead the LiDAR are not dropped:
-//   - GNSS / wheel (aux, depth 32 = 0.64 s of 50 Hz wheel): drained on pressure even while
-//     a scan is pending (that scan is then processed before its later IMU; rare);
-//   - IMU: drained on pressure only when no scan is pending. While a scan is pending the
-//     IMU samples of its span must reach the queue first; imu_queue_depth (400 = 2 s) is
-//     far above the samples per scan (20 at 200 Hz / 10 Hz). An overflow is counted in
-//     n_dropped_imu and turns into exit code 3;
-//   - scans: drained before every scan push when no scan is pending (so a pending scan
-//     always starts with an empty IMU queue and its span samples fit), and before a push
-//     that would fill the scan queue.
-// The watermark is the largest end key of the pending scans.
+// Draining early is always safe: the Estimator gates every scan on IMU coverage (it
+// processes a scan only once an IMU sample with t >= the scan end time has been queued,
+// and leaves the scan and everything after it queued until then; see
+// Estimator::run_once()). So the replayer needs no watermark and no knowledge of scan
+// end times; it only has to call run_once() often enough that no queue overflows:
+//   - after every scan push (processes the previous, now covered, scan);
+//   - before a push that would fill a queue to its configured depth: the replayer counts
+//     pushes per queue since the last run_once() and drains when the count reaches
+//     `depth - 1`, so sensors that lead the LiDAR (or a long scan gap) are not dropped.
+//     An uncovered scan only holds back messages with a key after its end time, i.e.
+//     at most about one IMU period of GNSS / wheel data while the IMU stream is live.
+// flush() at the end processes whatever is left, covered or not.
 class Replayer {
  public:
   Replayer(mss::pipeline::Estimator& est, const mss::pipeline::RealtimeConfig& rt, std::FILE* tum)
@@ -246,73 +236,62 @@ class Replayer {
 
   void feed(const mss::io::Record& rec, const mss::common::ScanFrame& scan) {
     using mss::io::RecordKind;
-    if (rec.kind == RecordKind::kGt) {
-      ++counts_.gt;
-      return;
-    }
-    if (scan_pending_ &&
-        (rec.t > watermark_ || (rec.kind == RecordKind::kLidar && rec.t >= watermark_))) {
-      drain();
-    }
     // Push failures (drops, rejections) are counted by the estimator.
     switch (rec.kind) {
       case RecordKind::kImu:
         ++counts_.imu;
-        if (n_imu_ >= imu_limit_ && !scan_pending_) {
-          drain();
-        }
+        drain_if(n_imu_ >= imu_limit_);
         (void)est_.push_imu(rec.imu);
         ++n_imu_;
         break;
       case RecordKind::kGnss:
         ++counts_.gnss;
-        if (n_gnss_ >= aux_limit_) {
-          drain();
-        }
+        drain_if(n_gnss_ >= aux_limit_);
         (void)est_.push_gnss(rec.gnss);
         ++n_gnss_;
         break;
       case RecordKind::kOdom:
         ++counts_.odom;
-        if (n_odom_ >= aux_limit_) {
-          drain();
-        }
+        drain_if(n_odom_ >= aux_limit_);
         (void)est_.push_odom(rec.odom);
         ++n_odom_;
         break;
       case RecordKind::kLidar:
         ++counts_.lidar;
-        // With no scan pending, drain first so the scan starts with empty queues and its
-        // span samples always fit (safe: the reader is time-ordered, so everything queued
-        // has t <= t_start <= the scan key).
-        if (!scan_pending_ || n_scans_ >= scan_limit_) {
-          drain();
-        }
+        drain_if(n_scans_ >= scan_limit_);
         (void)est_.push_scan(scan);
         ++n_scans_;
-        // max(): an overlapping, shorter scan must not move the watermark backwards.
-        watermark_ = scan_pending_ ? std::max(watermark_, mss::common::scan_end_time(scan))
-                                   : mss::common::scan_end_time(scan);
-        scan_pending_ = true;
+        drain_if(true);
         break;
       case RecordKind::kGt:
+        ++counts_.gt;
         break;
     }
   }
 
-  // Drains what is left. Call once at the end of the dataset.
-  void finish() { drain(); }
+  // Processes what is left. Call once at the end of the dataset.
+  void finish() {
+    est_.flush();
+    write_latest();
+  }
 
   const Counts& counts() const { return counts_; }
 
  private:
-  void drain() {
+  void drain_if(bool pressure) {
+    if (!pressure) {
+      return;
+    }
     est_.run_once();
     n_imu_ = 0;
     n_gnss_ = 0;
     n_odom_ = 0;
     n_scans_ = 0;
-    scan_pending_ = false;
+    write_latest();
+  }
+
+  // One TUM line per newly processed scan (latest_state() changes only when one is).
+  void write_latest() {
     const mss::common::Estimate e = est_.latest_state();
     if (e.state.t != mss::common::Timestamp{} && e.state.t != last_written_) {
       write_tum_line(tum_, e.state);
@@ -325,12 +304,10 @@ class Replayer {
   std::size_t imu_limit_;
   std::size_t aux_limit_;
   std::size_t scan_limit_;
-  std::size_t n_imu_ = 0;  // pushes since the last drain, per queue
+  std::size_t n_imu_ = 0;  // pushes since the last run_once(), per queue
   std::size_t n_gnss_ = 0;
   std::size_t n_odom_ = 0;
   std::size_t n_scans_ = 0;
-  bool scan_pending_ = false;  // a scan was pushed and not drained yet
-  mss::common::Timestamp watermark_{};
   mss::common::Timestamp last_written_{};
   Counts counts_;
 };

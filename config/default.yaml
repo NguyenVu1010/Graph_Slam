@@ -25,10 +25,12 @@ mss_node:
 
     imu:
       rate_hz: 200.0
-      acc_noise_density: 0.0  # m/s^2/sqrt(Hz)  TODO from datasheet
-      gyro_noise_density: 0.0  # rad/s/sqrt(Hz)  TODO from datasheet
-      acc_random_walk: 0.0     # m/s^3/sqrt(Hz)
-      gyro_random_walk: 0.0    # rad/s^2/sqrt(Hz)
+      # IMU noise: placeholder, replace from the datasheet of the real MPU; must stay >=
+      # sim/noise values, see SIM-03 (tests/python/test_sim03_consistency.py). All > 0.
+      acc_noise_density: 5.8e-3   # m/s^2/sqrt(Hz)
+      gyro_noise_density: 3.5e-4  # rad/s/sqrt(Hz)
+      acc_random_walk: 2.0e-4     # m/s^3/sqrt(Hz)
+      gyro_random_walk: 2.0e-5    # rad/s^2/sqrt(Hz)
       gravity_mps2: 9.80665
       init_window_s: 2.0               # static window used for gravity/bias initialisation, s
       init_max_acc_std_mps2: 0.05      # max accel std in the window to accept "static", m/s^2
