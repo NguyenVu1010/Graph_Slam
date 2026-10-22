@@ -6,6 +6,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "mss/common/logger.hpp"
+
 #include "mss_ros2/rclcpp_logger.hpp"
 
 int main(int argc, char** argv) {

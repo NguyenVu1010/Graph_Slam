@@ -32,12 +32,24 @@ Logger* g_logger = &g_default_logger;
 
 }  // namespace
 
-void set_logger(Logger* logger) { g_logger = logger != nullptr ? logger : &g_default_logger; }
-Logger& logger() { return *g_logger; }
+void set_logger(Logger* logger) {
+  g_logger = logger != nullptr ? logger : &g_default_logger;
+}
+Logger& logger() {
+  return *g_logger;
+}
 
-void log_debug(std::string_view msg) { g_logger->log(LogLevel::kDebug, msg); }
-void log_info(std::string_view msg) { g_logger->log(LogLevel::kInfo, msg); }
-void log_warn(std::string_view msg) { g_logger->log(LogLevel::kWarn, msg); }
-void log_error(std::string_view msg) { g_logger->log(LogLevel::kError, msg); }
+void log_debug(std::string_view msg) {
+  g_logger->log(LogLevel::kDebug, msg);
+}
+void log_info(std::string_view msg) {
+  g_logger->log(LogLevel::kInfo, msg);
+}
+void log_warn(std::string_view msg) {
+  g_logger->log(LogLevel::kWarn, msg);
+}
+void log_error(std::string_view msg) {
+  g_logger->log(LogLevel::kError, msg);
+}
 
 }  // namespace mss::common

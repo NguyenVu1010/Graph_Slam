@@ -1,6 +1,5 @@
-#include <gtest/gtest.h>
-
 #include <Eigen/Geometry>
+#include <gtest/gtest.h>
 
 #include "mss/common/types.hpp"
 
