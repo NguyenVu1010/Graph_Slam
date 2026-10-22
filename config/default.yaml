@@ -29,7 +29,14 @@ mss_node:
 
     gnss:
       enabled: false
+      sigma_h_m: 1.5  # horizontal fix sigma, m
+      sigma_v_m: 3.0  # vertical fix sigma, m
     wheel_odom:
       enabled: false
+      wheel_radius_m: 0.10     # m
+      track_m: 0.40            # wheel separation, m
+      speed_sigma_mps: 0.02    # wheel speed sigma, m/s
+    lidar:
+      range_sigma_m: 0.03  # range noise sigma, m
     loop_closure:
       enabled: false
