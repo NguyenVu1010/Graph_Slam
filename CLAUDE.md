@@ -34,7 +34,7 @@ Dependency direction is fixed: apps -> pipeline -> modules -> common.
   `g` GNSS antenna. Composition must cancel: `T_w_l = T_w_b * T_b_l`.
 - Rotations `R_a_b`, positions `p_a_b` (origin of `b` expressed in `a`), velocities `v_w_b`.
 - One perturbation convention: right perturbation on SE(3), `T <- T * Exp(delta)`,
-  tangent order `[rho, phi]` (translation, rotation), the same as GTSAM `Pose3`.
+  tangent order `[rho, phi]` (translation, rotation), the same as Sophus; GTSAM `Pose3` is `[phi, rho]` and only `backend` permutes.
 - Jacobian names: `J_<residual>_<variable>`, for example `J_r_xi`, `J_dp_bg`.
 - Units are SI. Angles in code are radians. Degrees appear only in YAML and logs, and
   the key is suffixed `_deg`.
@@ -124,5 +124,9 @@ Dependency direction is fixed: apps -> pipeline -> modules -> common.
 - Do not add dependencies, change the build system or change frame conventions without
   an ADR.
 - When a task is ambiguous about frames or units, ask instead of guessing.
+- Build and test C++ only through `tools/wsl/build.sh [--no-gtsam] [--target T]` from WSL
+  (Windows has no toolchain).
+- Interface headers under `core/<module>/include/mss/<module>/*.hpp` are the contract.
+  Changing a signature needs the controller's or owner's agreement and a note in the PR.
 - Run `colcon build --parallel-workers 2` (the dev machine has 16 GB RAM) and the
   affected tests before saying a change is finished.

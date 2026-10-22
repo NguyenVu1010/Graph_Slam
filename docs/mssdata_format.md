@@ -94,3 +94,9 @@ Một file một quét, đánh số từ 0 theo thời gian.
 - `T_b_l`: từ `/tf_static` (khung con `lidar_link`), `p_b = R * p_l + t`.
 - `p_b_g_m`: cánh tay đòn anten trong `b`, m; không có trong bag, lấy từ `frames.p_b_g_m` của file cấu hình (mặc định `[0,0,0]` kèm cảnh báo).
 - `body_frame`: khung cha của `lidar_link` trong `/tf_static`.
+
+## Quy tắc của bộ đọc C++ (`mss::io::DatasetReader`)
+
+- Gộp các luồng theo timestamp; khi trùng timestamp thứ tự ổn định là imu, odom, gnss, gt, lidar.
+- File lidar phải dài đúng `12 + n·22` byte (`n` đọc từ header); sai kích thước là lỗi, không đọc phần dư.
+- Chỉ chạy trên máy little-endian; máy big-endian bị từ chối khi `open`/`create` với lý do rõ ràng.
