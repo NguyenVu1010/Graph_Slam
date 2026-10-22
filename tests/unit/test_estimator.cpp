@@ -229,6 +229,56 @@ TEST(Estimator, RunOnceOrdersByKeyWithTieOrder) {
   EXPECT_EQ(est.latest_state().state.t, Timestamp{1000});
 }
 
+// 100 pushes into a depth-2 queue cycle every pool slot many times without leaking one.
+TEST(Estimator, PoolCyclesUnderSustainedOverflow) {
+  Estimator est(make_config(2));
+  ScanFrame scan;
+  fill_scan(scan, 0);
+  std::int64_t t = 1000;
+  for (int round = 1; round <= 2; ++round) {
+    for (int k = 0; k < 100; ++k) {
+      scan.t_start = Timestamp{t};
+      t += 100000000LL;
+      (void)est.push_scan(scan);
+    }
+    EXPECT_EQ(est.stats().n_dropped_scans, 98U * static_cast<std::uint64_t>(round));
+    est.run_once();
+    EXPECT_EQ(est.stats().n_scans, 2U * static_cast<std::uint64_t>(round));
+    EXPECT_EQ(est.latest_state().state.t, (Timestamp{t - 100000000LL}));
+  }
+}
+
+TEST(Estimator, QueueOverflowCountsDrops) {
+  Config cfg = make_config();
+  cfg.realtime.imu_queue_depth = 4;
+  cfg.realtime.aux_queue_depth = 2;
+  Estimator est(cfg);
+  for (int k = 0; k < 6; ++k) {
+    const auto st = est.push_imu(imu_at(100 + k));
+    EXPECT_EQ(st.is_ok(), k < 4) << k;
+    if (k >= 4) {
+      EXPECT_EQ(st.reason(), "imu queue full, dropped oldest");
+    }
+  }
+  for (int k = 0; k < 3; ++k) {
+    GnssMeasurement m;
+    m.t = Timestamp{200 + k};
+    EXPECT_EQ(est.push_gnss(m).is_ok(), k < 2) << k;
+    WheelSample w;
+    w.t = Timestamp{200 + k};
+    EXPECT_EQ(est.push_odom(w).is_ok(), k < 2) << k;
+  }
+  Estimator::Stats s = est.stats();
+  EXPECT_EQ(s.n_dropped_imu, 2U);
+  EXPECT_EQ(s.n_dropped_aux, 2U);
+  EXPECT_EQ(s.n_rejected_imu, 0U);
+  est.run_once();
+  s = est.stats();
+  EXPECT_EQ(s.n_imu, 4U);
+  EXPECT_EQ(s.n_gnss, 2U);
+  EXPECT_EQ(s.n_odom, 2U);
+}
+
 TEST(Estimator, ConfigDepthAboveCompileTimeMaxThrows) {
   Config cfg = make_config();
   cfg.realtime.imu_queue_depth = static_cast<int>(kMaxImuQueue) + 1;

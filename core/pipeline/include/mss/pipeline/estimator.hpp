@@ -44,6 +44,8 @@ class Estimator {
     std::uint64_t n_odom = 0;           ///< wheel samples processed by run_once()
     std::uint64_t n_dropped_scans = 0;  ///< scans discarded by push_scan (queue full or too big)
     std::uint64_t n_rejected_imu = 0;   ///< samples refused by push_imu (non-increasing t)
+    std::uint64_t n_dropped_imu = 0;    ///< queued IMU samples overwritten (IMU queue full)
+    std::uint64_t n_dropped_aux = 0;    ///< queued GNSS + wheel messages overwritten (full)
     double push_scan_us_p50 = 0.0;      ///< us, median wall time of push_scan()
     double push_scan_us_p95 = 0.0;      ///< us, 95th percentile wall time of push_scan()
   };
@@ -88,8 +90,8 @@ class Estimator {
   /// Errors: Status::error("imu timestamp not increasing") when `s.t <=` the previous
   ///   ACCEPTED sample's t; the sample is dropped and n_rejected_imu incremented.
   ///   When the IMU queue is full (a configuration error, ADR-005) the oldest sample is
-  ///   dropped, an error is logged, and the call returns
-  ///   Status::error("imu queue full, dropped oldest").
+  ///   dropped, n_dropped_imu is incremented (no log: hot path; callers watch the
+  ///   counter), and the call returns Status::error("imu queue full, dropped oldest").
   /// Frames: b. Units: m/s^2, rad/s, ns.
   /// Hot path: yes (per IMU sample): no allocation, no exception.
   /// Tests: Task 8 test_estimator (ImuNonIncreasingRejected), E-03.
@@ -98,8 +100,8 @@ class Estimator {
   /// Queues one GNSS fix (aux queue, depth aux_queue_depth). Queued regardless of
   /// gnss.enabled; the flag only decides whether run_once() uses the fix (it is counted
   /// in n_gnss either way).
-  /// Queue full: oldest dropped, warning logged, Status::error("gnss queue full, dropped
-  /// oldest").
+  /// Queue full: oldest dropped, n_dropped_aux incremented (no log),
+  /// Status::error("gnss queue full, dropped oldest").
   /// Frames: m.p_e_g in e. Units: m, m^2.
   /// Hot path: no (5 Hz) but allocation-free. Tests: E-01, E-03.
   common::Status push_gnss(const common::GnssMeasurement& m);
@@ -107,8 +109,8 @@ class Estimator {
   /// Queues one wheel-odometry sample (aux queue, depth aux_queue_depth). Queued
   /// regardless of wheel_odom.enabled; the flag only decides whether run_once() uses it
   /// (counted in n_odom either way).
-  /// Queue full: oldest dropped, warning logged, Status::error("odom queue full, dropped
-  /// oldest").
+  /// Queue full: oldest dropped, n_dropped_aux incremented (no log),
+  /// Status::error("odom queue full, dropped oldest").
   /// Units: m/s, rad/s. Hot path: yes (50 Hz), allocation-free. Tests: E-01, E-03.
   common::Status push_odom(const common::WheelSample& s);
 

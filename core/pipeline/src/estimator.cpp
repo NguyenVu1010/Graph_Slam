@@ -177,7 +177,7 @@ common::Status Estimator::push_imu(const common::ImuSample& sample) {
     common::ImuSample dropped;
     s.imu.pop(dropped);
     s.imu.push(sample);
-    common::log_error("push_imu: imu queue full, dropped oldest (realtime.imu_queue_depth)");
+    ++s.stats.n_dropped_imu;  // counter only: no log on the per-sample hot path
     return common::Status::error("imu queue full, dropped oldest");
   }
   s.imu.push(sample);
@@ -190,7 +190,7 @@ common::Status Estimator::push_gnss(const common::GnssMeasurement& m) {
     common::GnssMeasurement dropped;
     s.gnss.pop(dropped);
     s.gnss.push(m);
-    common::log_warn("push_gnss: gnss queue full, dropped oldest");
+    ++s.stats.n_dropped_aux;  // counter only: no log on the hot path
     return common::Status::error("gnss queue full, dropped oldest");
   }
   s.gnss.push(m);
@@ -203,7 +203,7 @@ common::Status Estimator::push_odom(const common::WheelSample& sample) {
     common::WheelSample dropped;
     s.odom.pop(dropped);
     s.odom.push(sample);
-    common::log_warn("push_odom: odom queue full, dropped oldest");
+    ++s.stats.n_dropped_aux;  // counter only: no log on the hot path
     return common::Status::error("odom queue full, dropped oldest");
   }
   s.odom.push(sample);

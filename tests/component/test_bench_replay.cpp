@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <gtest/gtest.h>
@@ -16,8 +17,6 @@
 #include "mss/common/types.hpp"
 #include "mss/io/dataset_format.hpp"
 #include "mss/io/dataset_writer.hpp"
-
-#include <sys/wait.h>
 
 namespace {
 
@@ -60,23 +59,28 @@ class TempDir {
 
 // 1 s of data: 200 IMU (200 Hz), 5 GNSS (5 Hz), 50 wheel (50 Hz), 10 scans (10 Hz) of
 // 1000 points spread over 99 ms, 10 ground-truth poses (ignored by the bench).
-void write_dataset(const fs::path& dir) {
+// `lead_s` seconds of IMU, GNSS and wheel data come before the first scan.
+void write_dataset(const fs::path& dir, int lead_s = 0) {
   mss::io::DatasetIndex meta;
   auto created = mss::io::DatasetWriter::create(dir, meta);
   ASSERT_TRUE(created.is_ok()) << created.reason();
   mss::io::DatasetWriter w = std::move(created).value();
-  for (int k = 0; k < 200; ++k) {
+  const int n_imu = 200 * (1 + lead_s);
+  const int n_gnss = 5 * (1 + lead_s);
+  const int n_odom = 50 * (1 + lead_s);
+  const std::int64_t t_scan0 = kT0 + lead_s * 1000 * kMs;
+  for (int k = 0; k < n_imu; ++k) {
     ImuSample s;
     s.t = Timestamp{kT0 + k * 5 * kMs};
     s.acc_b = Vec3(0.0, 0.0, 9.80665);
     ASSERT_TRUE(w.write_imu(s).is_ok());
   }
-  for (int k = 0; k < 5; ++k) {
+  for (int k = 0; k < n_gnss; ++k) {
     GnssMeasurement m;
     m.t = Timestamp{kT0 + k * 200 * kMs};
     ASSERT_TRUE(w.write_gnss(m).is_ok());
   }
-  for (int k = 0; k < 50; ++k) {
+  for (int k = 0; k < n_odom; ++k) {
     WheelSample s;
     s.t = Timestamp{kT0 + k * 20 * kMs};
     ASSERT_TRUE(w.write_odom(s).is_ok());
@@ -84,7 +88,7 @@ void write_dataset(const fs::path& dir) {
   ScanFrame scan(kPointsPerScan);
   for (int k = 0; k < 10; ++k) {
     scan.clear();
-    scan.t_start = Timestamp{kT0 + k * 100 * kMs};
+    scan.t_start = Timestamp{t_scan0 + k * 100 * kMs};
     for (std::size_t i = 0; i < kPointsPerScan; ++i) {
       const float f = static_cast<float>(i);
       ASSERT_TRUE(
@@ -110,14 +114,23 @@ int run(const std::string& cmd) {
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+// Shell command running mss_bench on config/default.yaml (+ optional overlay).
+std::string bench_cmd(const fs::path& data, const fs::path& out, const fs::path& overlay = {}) {
+  std::string cmd = std::string("'") + MSS_BENCH_PATH + "' '" +
+                    (kRepo / "config/default.yaml").string() + "' '" + data.string() + "' --out '" +
+                    out.string() + "'";
+  if (!overlay.empty()) {
+    cmd += " --overlay '" + overlay.string() + "'";
+  }
+  return cmd;
+}
+
 TEST(BenchReplay, ReplaysSyntheticDataset) {
   TempDir tmp;
   const fs::path data = tmp.path() / "mssdata";
   const fs::path out = tmp.path() / "out";
-  write_dataset(data);
-  const std::string cmd = std::string("'") + MSS_BENCH_PATH + "' '" +
-                          (kRepo / "config/default.yaml").string() + "' '" + data.string() +
-                          "' --out '" + out.string() + "'";
+  ASSERT_NO_FATAL_FAILURE(write_dataset(data));
+  const std::string cmd = bench_cmd(data, out);
   ASSERT_EQ(run(cmd), 0) << cmd;
 
   std::ifstream tum(out / "est.tum");
@@ -139,6 +152,50 @@ TEST(BenchReplay, ReplaysSyntheticDataset) {
   EXPECT_NE(json.find("\"n_scans\": 10"), std::string::npos) << json;
   EXPECT_NE(json.find("\"gt\": 10"), std::string::npos) << json;
   EXPECT_NE(json.find("\"replay_wall_s\""), std::string::npos) << json;
+  // records == processed for every stream
+  EXPECT_NE(json.find("\"imu\": 200,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"gnss\": 5,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"odom\": 50,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"lidar\": 10,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_dropped_imu\": 0,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_dropped_aux\": 0,"), std::string::npos) << json;
+}
+
+// 3 s of IMU / GNSS / wheel before the first scan: more than the IMU (400) and aux (32)
+// queue depths, so the bench must drain on queue pressure instead of dropping.
+TEST(BenchReplay, SensorsLeadingLidarAreNotDropped) {
+  TempDir tmp;
+  const fs::path data = tmp.path() / "mssdata";
+  const fs::path out = tmp.path() / "out";
+  ASSERT_NO_FATAL_FAILURE(write_dataset(data, 3));
+  const std::string cmd = bench_cmd(data, out);
+  ASSERT_EQ(run(cmd), 0) << cmd;
+  const std::string json = read_file(out / "bench.json");
+  EXPECT_NE(json.find("\"n_imu\": 800,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_gnss\": 20,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_odom\": 200,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_scans\": 10,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_dropped_imu\": 0,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_dropped_aux\": 0,"), std::string::npos) << json;
+}
+
+// An IMU queue shorter than the IMU samples inside one scan span must overflow while the
+// scan is pending: the bench still writes its outputs but exits 3.
+TEST(BenchReplay, UnprocessedRecordsExit3) {
+  TempDir tmp;
+  const fs::path data = tmp.path() / "mssdata";
+  const fs::path out = tmp.path() / "out";
+  const fs::path overlay = tmp.path() / "small_imu_queue.yaml";
+  ASSERT_NO_FATAL_FAILURE(write_dataset(data));
+  {
+    std::ofstream f(overlay);
+    f << "mss_node:\n  ros__parameters:\n    realtime:\n      imu_queue_depth: 4\n";
+  }
+  const std::string cmd = bench_cmd(data, out, overlay) + " 2>/dev/null";
+  EXPECT_EQ(run(cmd), 3) << cmd;
+  const std::string json = read_file(out / "bench.json");
+  EXPECT_NE(json.find("\"imu\": 200,"), std::string::npos) << json;
+  EXPECT_EQ(json.find("\"n_dropped_imu\": 0,"), std::string::npos) << json;
 }
 
 TEST(BenchReplay, MissingDatasetExits2AndWritesNothing) {
