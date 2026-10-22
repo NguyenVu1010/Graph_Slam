@@ -29,6 +29,17 @@ cmake --build build --parallel 2
 ctest --test-dir build --output-on-failure
 ```
 
+WSL (dev machine, Ubuntu 24.04). `setup.sh` is idempotent and needs no sudo: if apt packages
+are missing it prints the `sudo apt-get install` line to run, then builds Sophus and GTSAM into
+`~/opt`. `build.sh` configures, builds and runs ctest; the last line is `BUILD OK: <dir>`.
+Options: `--no-gtsam`, `--asan`, `--build-dir DIR`, `--target T` (builds and tests only `T`).
+The default build dir is `~/mss-build/<branch>`.
+
+```sh
+tools/wsl/setup.sh
+tools/wsl/build.sh --no-gtsam   # then without --no-gtsam for the full build
+```
+
 Desktop with ROS 2 Jazzy (workspace contains this repo under `src/`):
 
 ```sh
