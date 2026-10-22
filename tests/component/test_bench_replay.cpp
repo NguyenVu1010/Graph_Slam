@@ -60,8 +60,13 @@ class TempDir {
 // 1 s of data: 200 IMU (200 Hz), 5 GNSS (5 Hz), 50 wheel (50 Hz), 10 scans (10 Hz) of
 // 1000 points spread over 99 ms, 10 ground-truth poses (ignored by the bench).
 // `lead_ms` milliseconds of IMU (and, with `with_aux`, GNSS and wheel) data come before
-// the first scan. Without `with_aux` the dataset has no GNSS or wheel records.
-void write_dataset(const fs::path& dir, int lead_ms = 0, bool with_aux = true) {
+// the first scan. Without `with_aux` the dataset has no GNSS or wheel records. With
+// `dup_imu` the IMU sample at t = kT0 + 500 ms is written twice (same timestamp), which the
+// writer accepts and Estimator::push_imu rejects.
+void write_dataset(const fs::path& dir,
+                   int lead_ms = 0,
+                   bool with_aux = true,
+                   bool dup_imu = false) {
   mss::io::DatasetIndex meta;
   auto created = mss::io::DatasetWriter::create(dir, meta);
   ASSERT_TRUE(created.is_ok()) << created.reason();
@@ -75,6 +80,9 @@ void write_dataset(const fs::path& dir, int lead_ms = 0, bool with_aux = true) {
     s.t = Timestamp{kT0 + k * 5 * kMs};
     s.acc_b = Vec3(0.0, 0.0, 9.80665);
     ASSERT_TRUE(w.write_imu(s).is_ok());
+    if (dup_imu && k == 100) {
+      ASSERT_TRUE(w.write_imu(s).is_ok());
+    }
   }
   for (int k = 0; k < n_gnss; ++k) {
     GnssMeasurement m;
@@ -182,8 +190,8 @@ TEST(BenchReplay, SensorsLeadingLidarAreNotDropped) {
 
 // IMU only (no GNSS / wheel to force aux drains) leading the LiDAR by 3.95 s: 790 samples,
 // plus the one at scan 0's t_start. Pressure drains after 399 pushes leave 392 queued when
-// scan 0 arrives; without a drain before the scan, its 19 span samples would overflow the
-// 400-deep IMU queue while it is pending.
+// scan 0 arrives; the run_once() after the scan push processes them (they precede the
+// scan), so its span samples fit in the 400-deep IMU queue.
 TEST(BenchReplay, ImuOnlyLeadIsNotDropped) {
   TempDir tmp;
   const fs::path data = tmp.path() / "mssdata";
@@ -200,9 +208,27 @@ TEST(BenchReplay, ImuOnlyLeadIsNotDropped) {
   EXPECT_NE(json.find("\"n_odom\": 0,"), std::string::npos) << json;
 }
 
-// An IMU queue shorter than the IMU samples inside one scan span must overflow while the
-// scan is pending: the bench still writes its outputs but exits 3.
+// A duplicated IMU timestamp is rejected by push_imu, so one record is not processed: the
+// bench still writes its outputs but exits 3. (Queue overflow can no longer be forced
+// through the bench: it drains on pressure, and the Estimator's IMU coverage gate makes
+// every early drain safe.)
 TEST(BenchReplay, UnprocessedRecordsExit3) {
+  TempDir tmp;
+  const fs::path data = tmp.path() / "mssdata";
+  const fs::path out = tmp.path() / "out";
+  ASSERT_NO_FATAL_FAILURE(write_dataset(data, 0, true, true));
+  const std::string cmd = bench_cmd(data, out) + " 2>/dev/null";
+  EXPECT_EQ(run(cmd), 3) << cmd;
+  const std::string json = read_file(out / "bench.json");
+  EXPECT_NE(json.find("\"imu\": 201,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_imu\": 200,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_rejected_imu\": 1,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_scans\": 10,"), std::string::npos) << json;
+}
+
+// A tiny IMU queue (depth 4) no longer drops samples: the bench drains on pressure and the
+// Estimator holds each scan until an IMU sample covers its end time.
+TEST(BenchReplay, SmallImuQueueStillComplete) {
   TempDir tmp;
   const fs::path data = tmp.path() / "mssdata";
   const fs::path out = tmp.path() / "out";
@@ -212,11 +238,12 @@ TEST(BenchReplay, UnprocessedRecordsExit3) {
     std::ofstream f(overlay);
     f << "mss_node:\n  ros__parameters:\n    realtime:\n      imu_queue_depth: 4\n";
   }
-  const std::string cmd = bench_cmd(data, out, overlay) + " 2>/dev/null";
-  EXPECT_EQ(run(cmd), 3) << cmd;
+  const std::string cmd = bench_cmd(data, out, overlay);
+  ASSERT_EQ(run(cmd), 0) << cmd;
   const std::string json = read_file(out / "bench.json");
-  EXPECT_NE(json.find("\"imu\": 200,"), std::string::npos) << json;
-  EXPECT_EQ(json.find("\"n_dropped_imu\": 0,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_imu\": 200,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_scans\": 10,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_dropped_imu\": 0,"), std::string::npos) << json;
 }
 
 TEST(BenchReplay, MissingDatasetExits2AndWritesNothing) {

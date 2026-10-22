@@ -1,6 +1,6 @@
-mss_add_test(test_common test_timestamp.cpp test_result.cpp test_pose.cpp)
+mss_add_test(test_common test_timestamp.cpp test_result.cpp test_pose.cpp alloc_counter_impl.cpp)
 mss_add_test(test_lie test_lie.cpp)
-mss_add_test(test_scan_frame test_scan_frame.cpp)
+mss_add_test(test_scan_frame test_scan_frame.cpp alloc_counter_impl.cpp)
 mss_add_test(test_types test_types.cpp)
 mss_add_test(test_config test_config.cpp)
 mss_add_test(test_interfaces_compile test_interfaces_compile.cpp)

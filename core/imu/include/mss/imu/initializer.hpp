@@ -47,7 +47,8 @@ class ImuInitializer {
   ///   3. "imu timestamp not increasing" when t is not strictly increasing;
   ///   4. "window too short" when seconds_between(first.t, last.t) < init_window_s;
   ///   5. "not static" when a std threshold is exceeded.
-  /// Hot path: no (runs until it first succeeds, a few times per second); no allocation.
+  /// Hot path: no (runs until it first succeeds, a few times per second); no allocation
+  /// on the success path and on error paths that use string literals.
   /// Tests: I-01 (static gravity-only input yields R_w_b * mean(acc_b) along +z), imu
   ///   module unit tests.
   common::Result<InitState> try_init(common::Span<const common::ImuSample> samples);

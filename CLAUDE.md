@@ -124,9 +124,10 @@ Dependency direction is fixed: apps -> pipeline -> modules -> common.
 - Do not add dependencies, change the build system or change frame conventions without
   an ADR.
 - When a task is ambiguous about frames or units, ask instead of guessing.
-- Build and test C++ only through `tools/wsl/build.sh [--no-gtsam] [--target T]` from WSL
-  (Windows has no toolchain).
+- C++ builds/tests on the dev machine go through `tools/wsl/build.sh [--no-gtsam] [--target T]`
+  from WSL (Windows has no toolchain); `colcon build` is for the ROS 2 workspace on Ubuntu/CI.
 - Interface headers under `core/<module>/include/mss/<module>/*.hpp` are the contract.
   Changing a signature needs the controller's or owner's agreement and a note in the PR.
-- Run `colcon build --parallel-workers 2` (the dev machine has 16 GB RAM) and the
-  affected tests before saying a change is finished.
+- Build with `tools/wsl/build.sh` (or `colcon build --parallel-workers 2` in the ROS 2
+  workspace on Ubuntu/CI; the dev machine has 16 GB RAM) and run the affected tests
+  before saying a change is finished.

@@ -86,17 +86,24 @@ TEST(Estimator, PushScanCopiesWithoutAlloc) {
   fill_scan(scan, 1000);
   const Timestamp t0 = scan.t_start;
   AllocCounter::reset();
-  for (int k = 0; k < 5; ++k) {
-    const Timestamp t{t0.ns + k * 100000000LL};
-    scan.t_start = t;
-    const auto st = est.push_scan(scan);
-    EXPECT_TRUE(st.is_ok()) << st.reason();
-    scan.t_start = Timestamp{-1};  // the estimator holds its own copy
-    EXPECT_TRUE(est.push_imu(imu_at(t.ns + 1)).is_ok());
-    est.run_once();
-    EXPECT_EQ(est.latest_state().state.t, t);
+  std::size_t allocs = 0;
+  bool all_ok = true;
+  {
+    const EigenMallocGuard no_eigen_malloc;
+    for (int k = 0; k < 5; ++k) {
+      const Timestamp t{t0.ns + k * 100000000LL};
+      scan.t_start = t;
+      all_ok = all_ok && est.push_scan(scan).is_ok();
+      scan.t_start = Timestamp{-1};  // the estimator holds its own copy
+      // Covers the scan (key = t + kScanSpanNs), so run_once() processes it.
+      all_ok = all_ok && est.push_imu(imu_at(t.ns + kScanSpanNs)).is_ok();
+      est.run_once();
+      all_ok = all_ok && est.latest_state().state.t == t;
+    }
+    allocs = AllocCounter::count();  // read before gtest macros allocate
   }
-  EXPECT_EQ(AllocCounter::count(), 0U);
+  EXPECT_TRUE(all_ok);
+  EXPECT_EQ(allocs, 0U);
   EXPECT_EQ(est.stats().n_scans, 5U);
 }
 
@@ -115,7 +122,7 @@ TEST(Estimator, ScanQueueFullDropsOldest) {
     }
   }
   EXPECT_EQ(est.stats().n_dropped_scans, 1U);
-  est.run_once();
+  est.flush();  // no IMU: only flush() processes the scans
   EXPECT_EQ(est.stats().n_scans, 2U);
   // The oldest (k = 0) was dropped, so the last processed scan is k = 2.
   EXPECT_EQ(est.latest_state().state.t, (Timestamp{1000 + 2 * 100000000LL}));
@@ -166,9 +173,10 @@ TEST(Estimator, RunOnceDrainsQueues) {
     EXPECT_TRUE(est.push_odom(w).is_ok());
   }
   EXPECT_TRUE(est.push_scan(scan).is_ok());
+  EXPECT_TRUE(est.push_imu(imu_at(5000 + kScanSpanNs)).is_ok());  // covers the scan
   est.run_once();
   Estimator::Stats s = est.stats();
-  EXPECT_EQ(s.n_imu, 20U);
+  EXPECT_EQ(s.n_imu, 21U);
   EXPECT_EQ(s.n_gnss, 3U);
   EXPECT_EQ(s.n_odom, 4U);
   EXPECT_EQ(s.n_scans, 1U);
@@ -176,7 +184,7 @@ TEST(Estimator, RunOnceDrainsQueues) {
   EXPECT_GE(s.push_scan_us_p95, s.push_scan_us_p50);
   est.run_once();  // nothing left: counters unchanged
   s = est.stats();
-  EXPECT_EQ(s.n_imu, 20U);
+  EXPECT_EQ(s.n_imu, 21U);
   EXPECT_EQ(s.n_scans, 1U);
 }
 
@@ -188,6 +196,7 @@ TEST(Estimator, LatestStateTimestampFollowsScans) {
   for (std::int64_t t : {1000000LL, 2000000LL, 3000000LL}) {
     scan.t_start = Timestamp{t};
     ASSERT_TRUE(est.push_scan(scan).is_ok());
+    ASSERT_TRUE(est.push_imu(imu_at(t + kScanSpanNs)).is_ok());
     est.run_once();
     const common::Estimate e = est.latest_state();
     EXPECT_EQ(e.state.t, Timestamp{t});
@@ -215,7 +224,8 @@ TEST(Estimator, RunOnceOrdersByKeyWithTieOrder) {
   EXPECT_EQ(select_next(std::array<QueueHead, kNumSources>{}), Source::kNone);
 
   // Through the estimator: the scan is keyed by its END time, so a scan pushed before IMU
-  // samples inside its span is still processed, and so are all IMU samples.
+  // samples inside its span is still processed, and so are all IMU samples. The IMU at
+  // exactly `key` sorts before the scan and is the sample that covers it.
   Estimator est(make_config());
   ScanFrame scan;
   fill_scan(scan, 1000);
@@ -242,7 +252,7 @@ TEST(Estimator, PoolCyclesUnderSustainedOverflow) {
       (void)est.push_scan(scan);
     }
     EXPECT_EQ(est.stats().n_dropped_scans, 98U * static_cast<std::uint64_t>(round));
-    est.run_once();
+    est.flush();
     EXPECT_EQ(est.stats().n_scans, 2U * static_cast<std::uint64_t>(round));
     EXPECT_EQ(est.latest_state().state.t, (Timestamp{t - 100000000LL}));
   }
@@ -303,8 +313,52 @@ TEST(Estimator, StartStopAreNoOps) {
   ScanFrame scan;
   fill_scan(scan, 1000);
   ASSERT_TRUE(est.push_scan(scan).is_ok());
-  est.run_once();
+  est.flush();
   EXPECT_EQ(est.stats().n_scans, 1U);
+}
+
+// One-point scan with key (end time) 100 ns.
+void fill_scan_key_100(ScanFrame& scan) {
+  scan.reserve(1);
+  scan.clear();
+  scan.t_start = Timestamp{40};
+  ASSERT_TRUE(scan.push(1.0F, 0.0F, 0.0F, 1.0F, 60U, 0));
+}
+
+TEST(Estimator, ScanWaitsForImuCoverage) {
+  ScanFrame scan;
+  ASSERT_NO_FATAL_FAILURE(fill_scan_key_100(scan));
+  ASSERT_EQ(common::scan_end_time(scan), Timestamp{100});
+
+  {  // IMU at 50 and at the key 100: covered, processed by run_once().
+    Estimator est(make_config());
+    ASSERT_TRUE(est.push_scan(scan).is_ok());
+    ASSERT_TRUE(est.push_imu(imu_at(50)).is_ok());
+    ASSERT_TRUE(est.push_imu(imu_at(100)).is_ok());
+    est.run_once();
+    EXPECT_EQ(est.stats().n_imu, 2U);
+    EXPECT_EQ(est.stats().n_scans, 1U);
+    EXPECT_EQ(est.latest_state().state.t, Timestamp{40});
+  }
+  {  // IMU only at 50: run_once() stops at the scan; later messages stay queued too.
+    Estimator est(make_config());
+    ASSERT_TRUE(est.push_scan(scan).is_ok());
+    ASSERT_TRUE(est.push_imu(imu_at(50)).is_ok());
+    GnssMeasurement m;
+    m.t = Timestamp{150};  // after the scan key
+    ASSERT_TRUE(est.push_gnss(m).is_ok());
+    est.run_once();
+    EXPECT_EQ(est.stats().n_imu, 1U);
+    EXPECT_EQ(est.stats().n_scans, 0U);
+    EXPECT_EQ(est.stats().n_gnss, 0U);
+    EXPECT_EQ(est.latest_state().state.t, Timestamp{});
+    est.run_once();  // still uncovered
+    EXPECT_EQ(est.stats().n_scans, 0U);
+    est.flush();  // end of data: processed regardless of coverage
+    EXPECT_EQ(est.stats().n_scans, 1U);
+    EXPECT_EQ(est.stats().n_gnss, 1U);
+    EXPECT_EQ(est.latest_state().state.t, Timestamp{40});
+  }
 }
 
 }  // namespace

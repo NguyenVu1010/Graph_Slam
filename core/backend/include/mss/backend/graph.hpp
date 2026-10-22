@@ -31,6 +31,10 @@ namespace mss::backend {
 ///
 /// Ownership/threading: single-threaded; owned by pipeline::Estimator and used only on
 /// the backend thread (ADR-005). Move-only (owns the iSAM2 instance through `impl_`).
+///
+/// Build without GTSAM (MSS_WITH_GTSAM=OFF): `graph.cpp` built without GTSAM compiles the
+/// same API; `optimize()` returns `Result::error("built without GTSAM")`, other calls are
+/// no-ops (marginal_cov returns the NaN matrix). Contract only: graph.cpp is not written yet.
 class Graph {
  public:
   /// Inputs:

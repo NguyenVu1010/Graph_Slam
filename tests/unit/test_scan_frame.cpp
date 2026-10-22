@@ -1,10 +1,12 @@
 #include <array>
 #include <cstdint>
+#include <new>
+#include <type_traits>
 #include <vector>
 
+#include <Eigen/Core>
 #include <gtest/gtest.h>
 
-#define MSS_ALLOC_COUNTER_IMPL
 #include "mss/common/scan_frame.hpp"
 #include "mss/common/span.hpp"
 
@@ -30,8 +32,13 @@ TEST(ScanFrame, ReserveOnceThenPushNoAlloc) {
   ScanFrame f;
   f.reserve(1000);
   AllocCounter::reset();
-  fill(f, 1000);
-  EXPECT_EQ(AllocCounter::count(), 0U);
+  std::size_t allocs = 0;
+  {
+    const EigenMallocGuard no_eigen_malloc;
+    fill(f, 1000);
+    allocs = AllocCounter::count();
+  }
+  EXPECT_EQ(allocs, 0U);
   EXPECT_EQ(f.size(), 1000U);
   EXPECT_EQ(f.xyz().size(), 3000U);
   EXPECT_FLOAT_EQ(f.xyz()[3 * 7 + 1], 7.5F);
@@ -41,7 +48,11 @@ TEST(ScanFrame, ReserveOnceThenPushNoAlloc) {
 TEST(ScanFrame, PushWhenFullReturnsFalse) {
   ScanFrame f(1000);
   fill(f, 1000);
-  EXPECT_FALSE(f.push(0, 0, 0, 0, 0, 0));
+  AllocCounter::reset();
+  const bool pushed = f.push(0, 0, 0, 0, 0, 0);
+  const std::size_t allocs = AllocCounter::count();
+  EXPECT_FALSE(pushed);
+  EXPECT_EQ(allocs, 0U);
   EXPECT_EQ(f.size(), 1000U);
 }
 
@@ -107,6 +118,42 @@ TEST(AllocCounter, CountsOneHeapAllocation) {
   delete p;
 }
 
+// Over-aligned types go through operator new(std::size_t, std::align_val_t).
+struct alignas(64) OverAligned {
+  double v[8];
+};
+
+TEST(AllocCounter, CountsAlignedAndNothrowAllocations) {
+  AllocCounter::reset();
+  OverAligned* volatile a = new OverAligned();
+  const std::size_t after_aligned = AllocCounter::count();
+  int* volatile b = new (std::nothrow) int(3);
+  const std::size_t after_nothrow = AllocCounter::count();
+  EXPECT_EQ(after_aligned, 1U);
+  EXPECT_EQ(after_nothrow, 2U);
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(a) % 64U, 0U);
+  delete a;
+  delete b;
+}
+
+// Positive control for EigenMallocGuard: a dynamic Eigen allocation under the guard must
+// abort (EIGEN_RUNTIME_NO_MALLOC + live eigen_assert, see tests/CMakeLists.txt).
+TEST(EigenMallocGuardDeathTest, DynamicEigenAllocationAborts) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(
+      {
+        const EigenMallocGuard no_eigen_malloc;
+        Eigen::VectorXd v(64);
+        v.setOnes();
+        const volatile double sum = v.sum();  // keep the allocation observable
+        (void)sum;
+      },
+      "heap allocation is forbidden");
+  Eigen::VectorXd ok(64);  // outside the guard Eigen may allocate again
+  ok.setOnes();
+  EXPECT_DOUBLE_EQ(ok.sum(), 64.0);
+}
+
 TEST(ScanFrame, ClearKeepsCapacity) {
   ScanFrame f(100);
   fill(f, 40);
@@ -156,6 +203,20 @@ TEST(Span, ConstFromVectorAndArray) {
   }
   EXPECT_EQ(sum, 9);
   EXPECT_TRUE(Span<const int>().empty());
+}
+
+TEST(Span, MutableToConstAndNoTemporaries) {
+  std::vector<int> v{1, 2, 3};
+  const Span<int> mut(v.data(), v.size());
+  const Span<const int> view = mut;
+  EXPECT_EQ(view.size(), 3U);
+  EXPECT_EQ(view.data(), v.data());
+  static_assert(std::is_convertible_v<Span<int>, Span<const int>>);
+  static_assert(!std::is_convertible_v<Span<const int>, Span<int>>);
+  static_assert(!std::is_constructible_v<Span<const int>, std::vector<int>&&>);
+  static_assert(!std::is_constructible_v<Span<const int>, std::array<int, 2>&&>);
+  static_assert(std::is_constructible_v<Span<const int>, const std::vector<int>&>);
+  static_assert(std::is_constructible_v<Span<const int>, std::vector<int>&>);
 }
 
 TEST(ScanFrame, EndTimeIsStartPlusMaxOffset) {

@@ -19,6 +19,8 @@ RUN git clone --depth 1 --branch ${SOPHUS_VERSION} https://github.com/strasdat/S
     && cmake --install /tmp/sophus/build \
     && rm -rf /tmp/sophus
 
+# ldconfig: GTSAM installs libgtsam.so and libmetis-gtsam.so to /usr/local/lib without RPATH;
+# refresh the loader cache so test binaries (and gtest_discover_tests) can load them.
 RUN git clone --depth 1 --branch ${GTSAM_VERSION} https://github.com/borglab/gtsam.git /tmp/gtsam \
     && cmake -S /tmp/gtsam -B /tmp/gtsam/build -G Ninja \
          -DCMAKE_BUILD_TYPE=Release \
@@ -27,6 +29,7 @@ RUN git clone --depth 1 --branch ${GTSAM_VERSION} https://github.com/borglab/gts
          -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF \
     && cmake --build /tmp/gtsam/build --parallel 2 \
     && cmake --install /tmp/gtsam/build \
+    && ldconfig \
     && rm -rf /tmp/gtsam
 
 RUN pip3 install --break-system-packages ruff pytest numpy

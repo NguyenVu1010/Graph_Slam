@@ -86,7 +86,8 @@ the name or a comment. A scenario overlay (for example `config/sim/warehouse.yam
 override keys that exist in the default. `mss::pipeline::load_config(default, overlay)` merges
 and validates both files at start-up and reports every bad key in one message
 (`<dotted.key>: <reason>`): missing or unknown keys, wrong types, out-of-range values and
-non-unit quaternions. Angles are given in degrees with a `_deg` suffix and loaded as radians;
+non-unit quaternions. Angles are given in degrees with a `_deg` suffix in YAML and loaded
+into `_rad` fields in radians (angular rates use `_radps` keys and are already in rad/s);
 quaternions are Hamilton `[w, x, y, z]` with a `_wxyz` suffix.
 
 ## Before committing

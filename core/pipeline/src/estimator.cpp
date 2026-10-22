@@ -83,6 +83,15 @@ struct Estimator::Impl {
   }
   void release_slot(std::size_t slot) { slot_busy[slot] = false; }
 
+  // A scan with ordering key `key` is covered once an accepted IMU sample has t >= key
+  // (push_imu keeps last_imu_t strictly increasing, so the latest accepted t decides).
+  bool imu_covers(common::Timestamp key) const { return have_imu && key <= last_imu_t; }
+
+  // k-way merge of the queue heads by key (see Estimator::run_once()). With
+  // `require_imu_coverage`, stops at the first scan in key order that no IMU sample covers
+  // yet, leaving it and everything after it queued.
+  void drain(bool require_imu_coverage);
+
   void record_push_latency(double us) {
     latency_us[latency_next] = us;
     latency_next = (latency_next + 1) % kLatencySamples;
@@ -113,6 +122,56 @@ struct Estimator::Impl {
   std::size_t latency_next = 0;
   std::size_t latency_count = 0;
 };
+
+void Estimator::Impl::drain(bool require_imu_coverage) {
+  for (;;) {
+    std::array<QueueHead, kNumSources> heads{};
+    heads[static_cast<std::size_t>(Source::kImu)] = {
+        !imu.empty(), imu.empty() ? common::Timestamp{} : imu.front().t};
+    heads[static_cast<std::size_t>(Source::kWheel)] = {
+        !odom.empty(), odom.empty() ? common::Timestamp{} : odom.front().t};
+    heads[static_cast<std::size_t>(Source::kGnss)] = {
+        !gnss.empty(), gnss.empty() ? common::Timestamp{} : gnss.front().t};
+    heads[static_cast<std::size_t>(Source::kScan)] = {
+        !scans.empty(), scans.empty() ? common::Timestamp{} : scans.front().key};
+    switch (select_next(heads)) {
+      case Source::kImu: {
+        common::ImuSample sample;
+        imu.pop(sample);
+        ++stats.n_imu;  // no IMU module yet: processing = counting
+        break;
+      }
+      case Source::kWheel: {
+        common::WheelSample sample;
+        odom.pop(sample);
+        ++stats.n_odom;
+        break;
+      }
+      case Source::kGnss: {
+        common::GnssMeasurement m;
+        gnss.pop(m);
+        ++stats.n_gnss;
+        break;
+      }
+      case Source::kScan: {
+        if (require_imu_coverage && !imu_covers(scans.front().key)) {
+          return;  // wait for IMU up to the scan end; later messages stay queued too
+        }
+        ScanEntry entry;
+        scans.pop(entry);
+        ++stats.n_scans;
+        // No algorithm yet (Task 8): identity pose, zero velocity and bias, zero cov,
+        // stamped with the scan start time (the keyframe time).
+        latest = common::Estimate{};
+        latest.state.t = pool[entry.slot].t_start;
+        release_slot(entry.slot);
+        break;
+      }
+      case Source::kNone:
+        return;
+    }
+  }
+}
 
 Estimator::Estimator(const Config& cfg) : impl_(std::make_unique<Impl>(cfg)) {}
 Estimator::~Estimator() = default;
@@ -158,8 +217,7 @@ common::Status Estimator::push_scan(const common::ScanFrame& scan) {
 common::Status Estimator::push_imu(const common::ImuSample& sample) {
   Impl& s = *impl_;
   if (s.have_imu && sample.t <= s.last_imu_t) {
-    ++s.stats.n_rejected_imu;
-    common::log_warn("push_imu: imu timestamp not increasing, sample dropped");
+    ++s.stats.n_rejected_imu;  // counter only: no log on the per-sample hot path
     return common::Status::error("imu timestamp not increasing");
   }
   s.have_imu = true;
@@ -206,51 +264,11 @@ common::Estimate Estimator::latest_state() const {
 }
 
 void Estimator::run_once() {
-  Impl& s = *impl_;
-  for (;;) {
-    std::array<QueueHead, kNumSources> heads{};
-    heads[static_cast<std::size_t>(Source::kImu)] = {
-        !s.imu.empty(), s.imu.empty() ? common::Timestamp{} : s.imu.front().t};
-    heads[static_cast<std::size_t>(Source::kWheel)] = {
-        !s.odom.empty(), s.odom.empty() ? common::Timestamp{} : s.odom.front().t};
-    heads[static_cast<std::size_t>(Source::kGnss)] = {
-        !s.gnss.empty(), s.gnss.empty() ? common::Timestamp{} : s.gnss.front().t};
-    heads[static_cast<std::size_t>(Source::kScan)] = {
-        !s.scans.empty(), s.scans.empty() ? common::Timestamp{} : s.scans.front().key};
-    switch (select_next(heads)) {
-      case Source::kImu: {
-        common::ImuSample sample;
-        s.imu.pop(sample);
-        ++s.stats.n_imu;  // no IMU module yet: processing = counting
-        break;
-      }
-      case Source::kWheel: {
-        common::WheelSample sample;
-        s.odom.pop(sample);
-        ++s.stats.n_odom;
-        break;
-      }
-      case Source::kGnss: {
-        common::GnssMeasurement m;
-        s.gnss.pop(m);
-        ++s.stats.n_gnss;
-        break;
-      }
-      case Source::kScan: {
-        ScanEntry entry;
-        s.scans.pop(entry);
-        ++s.stats.n_scans;
-        // No algorithm yet (Task 8): identity pose, zero velocity and bias, zero cov,
-        // stamped with the scan start time (the keyframe time).
-        s.latest = common::Estimate{};
-        s.latest.state.t = s.pool[entry.slot].t_start;
-        s.release_slot(entry.slot);
-        break;
-      }
-      case Source::kNone:
-        return;
-    }
-  }
+  impl_->drain(/*require_imu_coverage=*/true);
+}
+
+void Estimator::flush() {
+  impl_->drain(/*require_imu_coverage=*/false);
 }
 
 void Estimator::start() {

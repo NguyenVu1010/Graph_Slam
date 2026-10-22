@@ -44,7 +44,8 @@ Lla enu_to_lla(const common::Vec3& p_e, const Lla& origin);
 ///   2. any element of `m.p_e_g` or `m.cov` is non-finite ("non-finite fix");
 ///   3. any diagonal element of `m.cov` is > `max_cov_m2` ("fix covariance too large").
 ///   Otherwise Status::ok().
-/// Hot path: no (per fix); no allocation, no logging (the caller logs the reason).
+/// Hot path: no (per fix); no allocation on the success path and on error paths that use
+/// string literals (Status::error(const char*)), no logging (the caller logs the reason).
 /// Tests: G-02 (rejects bad fixes before the chi-square stage), gnss unit tests.
 common::Status gate_fix(const common::GnssMeasurement& m, double max_cov_m2);
 
@@ -89,7 +90,8 @@ class GnssAligner {
   ///      counting this one (the pair IS added);
   ///   3. "insufficient horizontal spread" while the spread is < kMinHorizontalSpreadM
   ///      (the pair IS added).
-  /// Hot path: no (per fix); no allocation, no logging.
+  /// Hot path: no (per fix); no allocation on the success path and on error paths that
+  /// use string literals, no logging.
   /// Tests: G-03 (yaw error < 0.5 deg after 30 m), G-04 (lever arm).
   common::Result<common::Pose> update(const common::Vec3& p_e_g,
                                       const common::Pose& T_w_b,

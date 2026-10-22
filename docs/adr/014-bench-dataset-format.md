@@ -10,7 +10,7 @@
 
 ## Quyết định
 
-Chuyển một lần bằng Python (`tools/bag_to_mssdata.py`) từ bag đã qua cầu nối sang thư mục nhị phân phẳng, little-endian, packed, có `index.json` (đặc tả trong `docs/mssdata_format.md`, phiên bản 1). C++ đọc bằng `fread` và `static_assert` kích thước bản ghi: IMU 56 B, GNSS 105 B, odom 24 B, gt 64 B, lidar header 12 B + 22 B/điểm. Bộ chuyển đổi làm các việc của adapter: sắp theo `header.stamp`, khử trùng, đổi ENU từ LLA, điền hiệp phương sai GNSS từ sigma khi bag không có. Bag vẫn là nguồn gốc; thư mục `mssdata` là sản phẩm phái sinh có thể tạo lại.
+Chuyển một lần bằng Python (`tools/bag_to_mssdata.py`) từ bag đã qua cầu nối sang thư mục nhị phân phẳng, little-endian, packed, có `index.json` (đặc tả trong `docs/mssdata_format.md`, phiên bản 1). C++ đọc bằng `read(2)` (POSIX) và `static_assert` kích thước bản ghi: IMU 56 B, GNSS 105 B, odom 24 B, gt 64 B, lidar header 12 B + 22 B/điểm. Bộ chuyển đổi làm các việc của adapter: sắp theo `header.stamp`, khử trùng, đổi ENU từ LLA, điền hiệp phương sai GNSS từ sigma khi bag không có. Bag vẫn là nguồn gốc; thư mục `mssdata` là sản phẩm phái sinh có thể tạo lại.
 
 ## Phương án đã cân nhắc
 
@@ -21,7 +21,7 @@ Chuyển một lần bằng Python (`tools/bag_to_mssdata.py`) từ bag đã qua
 | HDF5 | Có schema, đọc theo lát | Phụ thuộc thư viện lớn trên Pi5 |
 | Parquet | Cột, nén | Cần Arrow C++, quá nặng cho bản ghi định kích thước |
 | `npz` | Dễ trong Python | C++ không đọc được nếu không tự viết bộ giải zip |
-| Nhị phân phẳng (chọn) | Không phụ thuộc, đọc `fread`, kích thước cố định kiểm bằng `static_assert` | Hai định dạng phải giữ đồng bộ; phải có version |
+| Nhị phân phẳng (chọn) | Không phụ thuộc, đọc bằng `read(2)`, kích thước cố định kiểm bằng `static_assert` | Hai định dạng phải giữ đồng bộ; phải có version |
 
 ## Hệ quả
 

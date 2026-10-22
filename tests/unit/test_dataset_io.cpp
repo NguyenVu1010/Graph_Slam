@@ -338,19 +338,23 @@ TEST(DatasetIo, NextDoesNotAllocate) {
 
   std::size_t n = 0;
   bool failed = false;
+  std::size_t allocs = 0;
   AllocCounter::reset();
-  while (true) {
-    const common::Result<bool> r = reader.next(rec, scan);
-    if (!r.is_ok()) {
-      failed = true;
-      break;
+  {
+    const EigenMallocGuard no_eigen_malloc;
+    while (true) {
+      const common::Result<bool> r = reader.next(rec, scan);
+      if (!r.is_ok()) {
+        failed = true;
+        break;
+      }
+      if (!r.value()) {
+        break;
+      }
+      ++n;
     }
-    if (!r.value()) {
-      break;
-    }
-    ++n;
+    allocs = AllocCounter::count();
   }
-  const std::size_t allocs = AllocCounter::count();
   EXPECT_FALSE(failed);
   EXPECT_EQ(n, 21U);
   EXPECT_EQ(allocs, 0U);
