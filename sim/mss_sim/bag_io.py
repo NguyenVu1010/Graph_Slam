@@ -29,6 +29,10 @@ _CLOUD_DTYPE = np.dtype(
 )  # packed, 22 bytes per point
 
 
+class CloudFormatError(ValueError):
+    """A PointCloud2 message is malformed (missing fields or truncated data)."""
+
+
 def stamp_ns(header: Any) -> int:
     """Header stamp as int nanoseconds."""
     return int(header.stamp.sec) * _NS_PER_S + int(header.stamp.nanosec)
@@ -64,9 +68,21 @@ class BagReader:
         return {c.topic: c.msgtype for c in self._reader.connections}
 
     def messages(self, topics: list[str]) -> Iterator[tuple[str, int, Any]]:
-        """Yield (topic, log_time_ns, deserialised msg) for the topics, ordered by log time."""
-        wanted = set(topics)
-        conns = [c for c in self._reader.connections if c.topic in wanted]
+        """Yield (topic, log_time_ns, deserialised msg) for the topics, ordered by log time.
+
+        Raises ``KeyError`` (eagerly, at call time) naming any requested topic not in the bag.
+        An empty topic list yields nothing.
+        """
+        available = {c.topic for c in self._reader.connections}
+        missing = sorted(set(topics) - available)
+        if missing:
+            raise KeyError(f"topics not in bag: {missing}; available: {sorted(available)}")
+        conns = [c for c in self._reader.connections if c.topic in set(topics)]
+        return self._iter_messages(conns)
+
+    def _iter_messages(self, conns: list[Any]) -> Iterator[tuple[str, int, Any]]:
+        if not conns:  # rosbags treats an empty filter as "all connections"
+            return
         for conn, t_ns, raw in self._reader.messages(connections=conns):
             yield conn.topic, int(t_ns), TYPESTORE.deserialize_cdr(raw, conn.msgtype)
 
@@ -123,11 +139,20 @@ def cloud_to_arrays(msg: Any) -> CloudArrays:
         names.append(f.name)
         formats.append(endian + _NP_DTYPES[f.datatype])
         offsets.append(int(f.offset))
+    missing = [k for k in ("x", "y", "z") if k not in names]
+    if missing:
+        raise CloudFormatError(f"PointCloud2 lacks scalar field(s) {missing}; has {names}")
     dtype = np.dtype(
         {"names": names, "formats": formats, "offsets": offsets, "itemsize": int(msg.point_step)}
     )
     n = int(msg.height) * int(msg.width)
-    raw = np.frombuffer(np.asarray(msg.data, dtype=np.uint8).tobytes(), dtype=dtype, count=n)
+    buf = np.asarray(msg.data, dtype=np.uint8).tobytes()
+    if len(buf) < n * int(msg.point_step):
+        raise CloudFormatError(
+            f"PointCloud2 data too short: expected {n * int(msg.point_step)} bytes "
+            f"({msg.height}x{msg.width} points x point_step {msg.point_step}), got {len(buf)}"
+        )
+    raw = np.frombuffer(buf, dtype=dtype, count=n)
     xyz = np.stack([raw[k].astype(np.float32) for k in ("x", "y", "z")], axis=1)
     intensity = (
         raw["intensity"].astype(np.float32) if "intensity" in names else np.zeros(n, np.float32)

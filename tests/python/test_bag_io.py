@@ -3,12 +3,14 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from mss_sim.bag_io import (
     TYPESTORE,
     BagReader,
     BagWriter,
     CloudArrays,
+    CloudFormatError,
     arrays_to_cloud,
     cloud_to_arrays,
     make_header,
@@ -123,3 +125,25 @@ def test_stamp() -> None:
     h = make_header(1_234_567_890_123, "f")
     assert (h.stamp.sec, h.stamp.nanosec) == (1234, 567_890_123)
     assert stamp_ns(h) == 1_234_567_890_123 and h.frame_id == "f"
+
+
+def test_unknown_and_empty_topics(tmp_path: Path) -> None:
+    path = tmp_path / "bag"
+    with BagWriter(path) as w:
+        w.add_topic("/imu", _IMU)
+        w.write("/imu", 1, _imu(1))
+    with BagReader(path) as r:
+        with pytest.raises(KeyError, match="/typo"):
+            r.messages(["/imu", "/typo"])
+        assert list(r.messages([])) == []
+
+
+def test_malformed_clouds_raise_cloud_format_error() -> None:
+    short = arrays_to_cloud(_arrays(2, 5), 1, "f")
+    short.data = short.data[:-1]
+    with pytest.raises(CloudFormatError, match="too short"):
+        cloud_to_arrays(short)
+    no_z = arrays_to_cloud(_arrays(2, 5), 1, "f")
+    no_z.fields = [f for f in no_z.fields if f.name != "z"]
+    with pytest.raises(CloudFormatError, match="z"):
+        cloud_to_arrays(no_z)
