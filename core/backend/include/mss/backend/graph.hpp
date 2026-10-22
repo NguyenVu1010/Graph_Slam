@@ -6,6 +6,7 @@
 #include "mss/common/result.hpp"
 #include "mss/common/timestamp.hpp"
 #include "mss/common/types.hpp"
+#include "mss/imu/config.hpp"
 
 namespace mss::backend {
 
@@ -24,21 +25,24 @@ namespace mss::backend {
 /// Nothing is optimised until optimize(); factors and keyframes added since the last
 /// optimize() are "pending".
 ///
-/// CONTRACT GAPS (see task-5 report): the constructor receives only BackendConfig, but
-/// add_gnss_factor needs the lever arm p_b_g, the bias random-walk factor needs
-/// ImuConfig::acc_random_walk / gyro_random_walk, and the first keyframe needs prior
-/// sigmas. None of these is in BackendConfig yet.
-///
 /// Ownership/threading: single-threaded; owned by pipeline::Estimator and used only on
 /// the backend thread (ADR-005). Move-only (owns the iSAM2 instance through `impl_`).
 class Graph {
  public:
+  /// Inputs:
+  ///   - `cfg`: iSAM2 settings and the first-keyframe prior sigmas (prior_*);
+  ///   - `imu_cfg`: only `acc_random_walk` (m/s^3/sqrt(Hz)) and `gyro_random_walk`
+  ///     (rad/s^2/sqrt(Hz)) are used, for the bias random-walk part of add_imu_factor
+  ///     (bias_j - bias_i ~ N(0, rw^2 * dt_s) per axis);
+  ///   - `p_b_g`: GNSS antenna lever arm in b, metres (frames.p_b_g), used by
+  ///     add_gnss_factor.
   /// Errors: throws std::invalid_argument when `keyframe_dist_m <= 0`,
-  ///   `keyframe_rot_rad <= 0`, `relinearize_threshold <= 0` or `relinearize_skip <= 0`.
+  ///   `keyframe_rot_rad <= 0`, `relinearize_threshold <= 0`, `relinearize_skip <= 0`,
+  ///   any prior sigma `<= 0`, a random walk `< 0`, or `p_b_g` non-finite.
   ///   (The keyframe thresholds are applied by the pipeline; Graph validates the whole
   ///   struct it receives.)
   /// Hot path: no. Tests: B-01..B-04 construct it.
-  explicit Graph(const BackendConfig& cfg);
+  Graph(const BackendConfig& cfg, const imu::ImuConfig& imu_cfg, const common::Vec3& p_b_g);
   ~Graph();
   Graph(const Graph&) = delete;
   Graph& operator=(const Graph&) = delete;
@@ -48,7 +52,9 @@ class Graph {
   /// Adds the variables (pose, velocity, bias) of a new keyframe at time `t` with `x0`
   /// as the initial guess. Returns its KeyId: 0 for the first keyframe, then +1 per
   /// call. The first keyframe is anchored with priors on pose, velocity and bias
-  /// (sigmas: contract gap above).
+  /// (independent Gaussian priors centred on x0: position prior_pos_sigma_m and rotation
+  /// prior_rot_sigma_rad per axis of the [rho, phi] tangent of T_w_b; velocity
+  /// prior_vel_sigma_mps; bias prior_bias_acc_sigma_mps2 / prior_bias_gyro_sigma_radps).
   /// Frames: x0.T_w_b, x0.v_w_b in w; x0.bias in b. Units: SI.
   /// Preconditions: `x0.t == t`; `t` strictly greater than the previous keyframe's t.
   ///   A violation is logged; the keyframe is still added (KeyIds stay dense).
@@ -85,7 +91,8 @@ class Graph {
                         const common::DegeneracyReport* degeneracy);
 
   /// Adds a GNSS position factor on keyframe `k`:
-  /// residual `T_e_w * (T_w_b * p_b_g) - m.p_e_g` (3-vector, metres), covariance `m.cov`.
+  /// residual `T_e_w * (T_w_b * p_b_g) - m.p_e_g` (3-vector, metres; p_b_g from the
+  /// constructor), covariance `m.cov`.
   /// `T_e_w` (from gnss::GnssAligner) is a fixed parameter, not a variable.
   /// Graph does not compare m.t with the keyframe time: the pipeline attaches each fix
   /// to the keyframe at (or interpolated to) the fix time.

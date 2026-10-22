@@ -43,8 +43,9 @@ class VoxelMap {
   /// Inserts every point of `scan` (frame l) into the map after transforming it with
   /// `p_w = T_w_l * p_l` (float coordinates promoted to double).
   /// Points with non-finite coordinates are skipped. A point whose voxel does not exist
-  /// yet while the table already holds `max_voxels` voxels is dropped (silently per
-  /// point; callers detect saturation with `num_voxels() == cfg.max_voxels`).
+  /// yet while the table already holds `max_voxels` voxels is dropped silently (no
+  /// per-point log) and counted in num_dropped(), which the pipeline logs off the hot
+  /// path.
   /// Frames: `scan` in l (already preprocessed: deskewed to its t_start), `T_w_l` = pose
   ///   of l in w at `scan.t_start`.
   /// Units: metres.
@@ -82,6 +83,11 @@ class VoxelMap {
   /// Number of occupied voxels, in [0, max_voxels]. O(1). Hot path safe.
   /// Tests: M-02.
   std::size_t num_voxels() const;
+
+  /// Number of points dropped by insert() since construction because their voxel did not
+  /// exist and the table was full (`max_voxels`). insert() never logs; the pipeline reads
+  /// this counter and logs increases off the hot path. O(1). Hot path safe. Tests: M-02.
+  std::size_t num_dropped() const;
 
   /// Number of stored points over all voxels, <= num_voxels() * max_points_per_voxel.
   /// O(1). Hot path safe. Tests: M-02.

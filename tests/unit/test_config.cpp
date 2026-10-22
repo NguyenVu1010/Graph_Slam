@@ -51,6 +51,8 @@ TEST(Config, LoadsDefaultFile) {
   ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
   const auto& c = cfg.value();
   EXPECT_NEAR(c.backend.keyframe_rot_rad, 10.0 * kRadPerDeg, 1e-12);
+  EXPECT_NEAR(c.backend.prior_rot_sigma_rad, 1.0 * kRadPerDeg, 1e-12);
+  EXPECT_DOUBLE_EQ(c.backend.prior_bias_gyro_sigma_radps, 0.01);
   EXPECT_EQ(c.map.max_voxels, 500000U);
   EXPECT_TRUE(c.frames.T_b_l.R.isApprox(Mat3::Identity(), 1e-12));
   EXPECT_TRUE(c.frames.T_b_l.p.isZero(0.0));
