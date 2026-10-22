@@ -49,6 +49,10 @@ fi
 if command -v ninja >/dev/null 2>&1; then args+=(-G Ninja); fi
 if command -v ccache >/dev/null 2>&1; then args+=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache); fi
 
+# GTSAM in $HOME/opt is installed without RPATH, so libgtsam.so cannot find its own
+# libmetis-gtsam.so. Test binaries (and gtest_discover_tests at build time) need this.
+export LD_LIBRARY_PATH="$HOME/opt/gtsam/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 cmake "${args[@]}"
 if [ -n "$target" ]; then
   cmake --build "$build_dir" --parallel "$jobs" --target "$target"

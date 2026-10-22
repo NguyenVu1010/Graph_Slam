@@ -9,4 +9,7 @@ function(mss_add_test name)
 endfunction()
 
 add_subdirectory(unit)
+if(MSS_WITH_GTSAM)
+  add_subdirectory(unit/backend)
+endif()
 # component/ and integration/ get their own CMakeLists when the first test lands.
