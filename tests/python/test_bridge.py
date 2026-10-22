@@ -3,13 +3,14 @@
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from conftest import _REPO, e01_scenario
 
-from mss_sim.bag_io import BagReader, cloud_to_arrays
+from mss_sim.bag_io import BagReader, cloud_to_arrays, stamp_ns
 from mss_sim.bridge import BridgeReport, run_bridge
 from mss_sim.profile import load_profile
 from mss_sim.synth import SynthInfo
@@ -148,3 +149,37 @@ def test_cli_smoke(raw_bag: Fixture, tmp_path: Path) -> None:
     )  # fmt: skip
     assert proc.returncode == 0, proc.stderr
     assert tum.exists()
+
+
+def test_clock_offsets_shift_stamp_and_log_time(raw_bag: Fixture, tmp_path: Path) -> None:
+    offsets = {"imu": 1_000, "lidar": 2_000, "gnss": 3_000, "odom": 4_000}
+    raw, info = raw_bag
+    sc = e01_scenario(info)  # nominal GNSS only: no fix is dropped
+    profile = replace(load_profile(sc.profile), clock_offset_ns=offsets)
+    report = run_bridge(raw, sc, profile, tmp_path / "off", seed=42)
+    assert report.n_dropped_gnss == 0
+
+    def read(bag: Path, topics: list[str]) -> dict[str, list[tuple[int, int]]]:
+        out: dict[str, list[tuple[int, int]]] = {t: [] for t in topics}
+        with BagReader(bag) as r:
+            for topic, t, msg in r.messages(topics):
+                out[topic].append((t, stamp_ns(msg.header)))
+        return out
+
+    topics = ["/imu/data", "/lidar/points", "/gnss/fix", "/joint_states", "/wheel/odom"]
+    raw_t = read(raw, topics[:4])
+    out_t = read(tmp_path / "off" / "bag", [topics[i] for i in (0, 1, 2, 4)])
+    # (output topic, raw topic, sensor key, raw index of the first message with output)
+    cases = [
+        ("/imu/data", "/imu/data", "imu", 0),
+        ("/lidar/points", "/lidar/points", "lidar", 0),
+        ("/gnss/fix", "/gnss/fix", "gnss", 0),
+        ("/wheel/odom", "/joint_states", "odom", 1),  # first joint state only sets the time base
+    ]
+    for out_topic, raw_topic, key, first in cases:
+        src = raw_t[raw_topic][first:]
+        dst = out_t[out_topic]
+        assert len(dst) == len(src) > 0, out_topic
+        for (t_out, s_out), (t_raw, s_raw) in zip(dst, src, strict=True):
+            assert t_out - t_raw == offsets[key], out_topic
+            assert s_out - s_raw == offsets[key], out_topic
