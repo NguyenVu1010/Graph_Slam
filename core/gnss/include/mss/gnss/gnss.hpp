@@ -33,6 +33,10 @@ Lla enu_to_lla(const common::Vec3& p_e, const Lla& origin);
 /// the chi-square innovation test of G-02 (that needs the predicted state and lives in
 /// the pipeline/backend).
 /// The pipeline passes `GnssConfig::max_cov_m2`.
+/// Core treats `m.cov` as valid as delivered. Filling it from
+/// GnssConfig::sigma_h_m / sigma_v_m when a NavSatFix carries no covariance
+/// (`position_covariance_type == 0`) is the adapter's job: `ros2_node` for live/bag
+/// playback and `tools/bag_to_mssdata.py` for datasets.
 /// Frames: `m.p_e_g` in e. Units: `max_cov_m2` in m^2 (a variance, per axis).
 /// Errors: returns Status::error; checks run in the listed order and the first failure
 ///   is returned:
