@@ -80,6 +80,21 @@ class BagReader:
         conns = [c for c in self._reader.connections if c.topic in set(topics)]
         return self._iter_messages(conns)
 
+    def raw_messages(self, topics: list[str]) -> Iterator[tuple[str, int, bytes]]:
+        """Like ``messages`` but yields the undeserialised CDR bytes (for bit-exact comparison)."""
+        available = {c.topic for c in self._reader.connections}
+        missing = sorted(set(topics) - available)
+        if missing:
+            raise KeyError(f"topics not in bag: {missing}; available: {sorted(available)}")
+        conns = [c for c in self._reader.connections if c.topic in set(topics)]
+        return self._iter_raw(conns)
+
+    def _iter_raw(self, conns: list[Any]) -> Iterator[tuple[str, int, bytes]]:
+        if not conns:
+            return
+        for conn, t_ns, raw in self._reader.messages(connections=conns):
+            yield conn.topic, int(t_ns), bytes(raw)
+
     def _iter_messages(self, conns: list[Any]) -> Iterator[tuple[str, int, Any]]:
         if not conns:  # rosbags treats an empty filter as "all connections"
             return
