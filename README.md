@@ -65,6 +65,18 @@ python tools/mutate_bag.py <in_bag> <out_bag> --drop 0.05 --reorder 0.02        
 PYTHONPATH=eval python -m mss_eval.noise_report <bag_dir> sim/noise/<profile>.yaml --out results/<run-id>/noise  # declared vs measured noise
 ```
 
+## Configuration
+
+All tunables live in `config/default.yaml` under `mss_node.ros__parameters` (ADR-008), one
+section per module (`frames`, `imu`, `gnss`, `wheel_odom`, `lidar`, `preprocess`, `map`,
+`scan_match`, `degeneracy`, `loop_closure`, `backend`, `realtime`); each key carries its unit in
+the name or a comment. A scenario overlay (for example `config/sim/warehouse.yaml`) may only
+override keys that exist in the default. `mss::pipeline::load_config(default, overlay)` merges
+and validates both files at start-up and reports every bad key in one message
+(`<dotted.key>: <reason>`): missing or unknown keys, wrong types, out-of-range values and
+non-unit quaternions. Angles are given in degrees with a `_deg` suffix and loaded as radians;
+quaternions are Hamilton `[w, x, y, z]` with a `_wxyz` suffix.
+
 ## Before committing
 
 `pre-commit install` once; it runs clang-format and ruff. CI additionally builds with
