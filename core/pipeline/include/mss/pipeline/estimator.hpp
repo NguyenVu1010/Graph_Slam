@@ -103,7 +103,10 @@ class Estimator {
   common::Estimate latest_state() const;
 
   /// Deterministic driver: on the caller's thread, drains ALL queues and processes the
-  /// messages in timestamp order (ties: IMU, wheel, GNSS, scan), then returns. With
+  /// messages in key order, then returns. A scan's ordering key is its end time
+  /// `t_start + max(t_offset_ns)`; other messages use `t`. run_once() merges the queue
+  /// heads by that key (k-way merge; ties: IMU, wheel, GNSS, scan); each queue is FIFO
+  /// and assumed sorted by its producer (IMU is checked by push_imu, others are not). With
   /// `deterministic: true` this is the only way processing happens, and two runs over
   /// the same input produce bit-identical results (E-02).
   /// Errors: none returned; per-message failures are logged and counted.
@@ -124,6 +127,8 @@ class Estimator {
   /// Snapshot of the counters. push_scan percentiles come from a fixed ring holding the
   /// most recent 4096 push_scan() durations measured with std::chrono::steady_clock (wall time,
   /// diagnostics only; never used by the estimation, so E-02 determinism is unaffected).
+  /// Percentiles are nearest-rank on the `n = min(count, 4096)` stored samples:
+  /// `p_q = sorted[ceil(q * n) - 1]` (q = 0.50, 0.95).
   /// 0.0 before the first push_scan(). Tests: Task 8 test_estimator.
   Stats stats() const;
 };

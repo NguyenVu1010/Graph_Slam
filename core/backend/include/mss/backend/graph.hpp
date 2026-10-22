@@ -20,8 +20,12 @@ namespace mss::backend {
 /// `P = [0 I; I 0]` (docs/derivations/lie_conventions.md, "Library orders").
 /// Variables per keyframe: pose T_w_b, velocity v_w_b, IMU bias (as in NavState).
 ///
-/// Invalid add_*() calls (unknown KeyId, wrong key order, non-finite input) are dropped
-/// and logged once each through the core logger; they never throw and never reach GTSAM.
+/// Invalid add_*() calls (unknown KeyId, wrong key order, non-finite input, time
+/// mismatch beyond the tolerances below) are dropped with one log line per rejected call
+/// through the core logger; they never throw and never reach GTSAM.
+/// Keyframe boundaries: keyframe time = scan `t_start`. IMU and wheel deltas span the
+/// nearest sensor sample times (see imu::Preintegrator, odom::WheelIntegrator), so their
+/// end times may differ slightly from the keyframe times.
 /// Nothing is optimised until optimize(); factors and keyframes added since the last
 /// optimize() are "pending".
 ///
@@ -31,12 +35,15 @@ class Graph {
  public:
   /// Inputs:
   ///   - `cfg`: iSAM2 settings and the first-keyframe prior sigmas (prior_*);
-  ///   - `imu_cfg`: only `acc_random_walk` (m/s^3/sqrt(Hz)) and `gyro_random_walk`
-  ///     (rad/s^2/sqrt(Hz)) are used, for the bias random-walk part of add_imu_factor
-  ///     (bias_j - bias_i ~ N(0, rw^2 * dt_s) per axis);
+  ///   - `imu_cfg`: `acc_random_walk` (m/s^3/sqrt(Hz)) and `gyro_random_walk`
+  ///     (rad/s^2/sqrt(Hz)) for the bias random-walk part of add_imu_factor
+  ///     (sigma = random_walk * sqrt(dt_s) per axis); `rate_hz` for the IMU time
+  ///     tolerance; `gravity_mps2`: the IMU factor uses `g_w = [0, 0, -gravity_mps2]`.
+  ///     Other ImuConfig fields are not used;
   ///   - `p_b_g`: GNSS antenna lever arm in b, metres (frames.p_b_g), used by
   ///     add_gnss_factor.
-  /// Errors: throws std::invalid_argument when `keyframe_dist_m <= 0`,
+  /// Errors: throws std::invalid_argument when `imu_cfg.rate_hz <= 0`,
+  ///   `imu_cfg.gravity_mps2 <= 0`, `keyframe_dist_m <= 0`,
   ///   `keyframe_rot_rad <= 0`, `relinearize_threshold <= 0`, `relinearize_skip <= 0`,
   ///   any prior sigma `<= 0`, a random walk `< 0`, or `p_b_g` non-finite.
   ///   (The keyframe thresholds are applied by the pipeline; Graph validates the whole
@@ -61,10 +68,17 @@ class Graph {
   /// Errors: none returned. Hot path: no (per keyframe, about 1 Hz). Tests: B-02, B-04.
   common::KeyId add_keyframe(common::Timestamp t, const common::NavState& x0);
 
-  /// Adds an IMU constraint between keyframes i and j, equivalent to GTSAM
-  /// CombinedImuFactor: the preintegration factor from `delta` (integrated from t_i to
-  /// t_j, linearised at delta.bias_lin; delta.cov block order [phi, p, v] is GTSAM order,
-  /// used without permutation) plus a bias random-walk between bias_i and bias_j.
+  /// Adds an IMU constraint between keyframes i and j. Implemented as a custom 9x9
+  /// preintegration factor built from `delta` (residual on dR, dv, dp with first-order
+  /// bias correction through the J_* Jacobians, linearised at delta.bias_lin; gravity
+  /// `g_w = [0, 0, -imu_cfg.gravity_mps2]`; delta.cov, block order [phi, p, v], is its
+  /// noise, used without permutation) plus a `BetweenFactor<imuBias::ConstantBias>`
+  /// between bias_i and bias_j with sigma `random_walk * sqrt(dt_s)`.
+  /// NOT gtsam::CombinedImuFactor.
+  /// Time check: PreintegratedDelta carries no absolute times, so Graph checks the
+  ///   duration: `|round(dt_s * 1e9) - (t_j - t_i)| <= 1.5e9 / imu_cfg.rate_hz` ns (with
+  ///   the re-fed boundary sample each end is off by at most half a sample period).
+  ///   Beyond that the factor is rejected with one log line.
   /// Frames: delta in b_i (types.hpp). Units: SI.
   /// Preconditions: j == i + 1; both added; delta.dt_s > 0.
   /// Errors: invalid calls dropped and logged (class comment). Hot path: no.
@@ -92,7 +106,9 @@ class Graph {
 
   /// Adds a GNSS position factor on keyframe `k`:
   /// residual `T_e_w * (T_w_b * p_b_g) - m.p_e_g` (3-vector, metres; p_b_g from the
-  /// constructor), covariance `m.cov`.
+  /// constructor), covariance `m.cov` used as delivered. GnssConfig::sigma_h_m /
+  /// sigma_v_m are used by the pipeline only to fill `m.cov` when the fix carries no
+  /// covariance (NavSatFix `position_covariance_type == 0`).
   /// `T_e_w` (from gnss::GnssAligner) is a fixed parameter, not a variable.
   /// Graph does not compare m.t with the keyframe time: the pipeline attaches each fix
   /// to the keyframe at (or interpolated to) the fix time.
@@ -110,7 +126,11 @@ class Graph {
   /// the factor constrains only the components with non-zero variance; the
   /// non-holonomic constraint (O-02) is a separate factor designed by the odom/backend
   /// modules.
-  /// Preconditions: odom.t0 / odom.t1 equal the times of keyframes i / j; i < j.
+  /// Time check: `|odom.t0 - t_i| <= 1.5 * P` and `|odom.t1 - t_j| <= 1.5 * P`, with
+  ///   P = wheel sample period. Graph never sees WheelSamples, so P is not available to
+  ///   it: the pipeline, which observes P (interval between consecutive accepted
+  ///   WheelSamples), applies this check before calling and drops the delta with one
+  ///   log line beyond it. Graph itself checks only i < j and that both keys exist.
   /// Errors: invalid calls dropped and logged. Hot path: no.
   /// Tests: O-01, O-02, B-01.
   void add_odom_factor(common::KeyId i, common::KeyId j, const common::OdomDelta& odom);
@@ -128,8 +148,9 @@ class Graph {
   /// Errors (Result::error):
   ///   - "empty graph" when no keyframe was ever added;
   ///   - "optimization failed: <GTSAM message>" when GTSAM throws (e.g. indeterminant
-  ///     system). The exception is caught inside; the pending factors are discarded and
-  ///     the graph keeps its last successful state.
+  ///     system). The exception is caught inside. Pending keyframes are kept (with their
+  ///     priors and initial values); only the pending factors added since the last
+  ///     successful optimize() are dropped. KeyIds remain valid and dense.
   /// Hot path: no (per keyframe; may take tens of ms on the backend thread).
   /// Tests: B-02, B-03, B-04 (iSAM2 vs batch Levenberg-Marquardt < 1e-6).
   common::Result<common::Estimate> optimize();

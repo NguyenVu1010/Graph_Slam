@@ -7,8 +7,10 @@
 //
 // Tangent convention for every function here: the [rho, phi] right perturbation of the
 // pose the Hessian was built for. For the scan matcher that is T_w_l, i.e. LiDAR frame l
-// (MatchResult::H). The pipeline calls analyze/project_update/relax_covariance on the
-// l-frame quantities, THEN converts to body frame b: covariance with
+// (MatchResult::H). Callers: scan_match::ScanMatcher::align calls analyze +
+// project_update on every Gauss-Newton iteration (when enabled); the pipeline calls
+// analyze + relax_covariance on the final MatchResult::H / cov in l, THEN converts to
+// body frame b: covariance with
 // transform_covariance(cov, T_b_l), eigenvectors with se3_adj(T_b_l) * eigvecs.col(k)
 // (lie.hpp). Mixing frames between H, delta, cov and report is a caller bug.
 //

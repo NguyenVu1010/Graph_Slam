@@ -17,15 +17,17 @@ namespace mss::imu {
 /// Units: `t` sensor-clock nanoseconds; `T_b0_b.p` in metres.
 /// Invariants the producer guarantees (the consumer checks only `size > 0`):
 ///   - `size <= kMaxImuPerScan`; only `samples[0, size)` are valid;
+///   - `samples[0].t == t_start` and `samples[0].T_b0_b` is exactly the identity: the
+///     producer inserts this first sample with the IMU state interpolated (linear in
+///     time between the bracketing IMU samples) to `t_start`;
 ///   - `samples[k].t` strictly increasing;
-///   - `samples[0].t <= t_start` and `samples[size-1].t >=` the scan's last point time
-///     (`t_start + max t_offset_ns`), so every point time lies inside the samples;
-///   - `T_b0_b` at `t == t_start` is the identity (exactly when a sample has that time).
+///   - `samples[size-1].t >= t_start + max(t_offset_ns)` (the scan's last point time),
+///     so every point time lies inside [samples[0].t, samples[size-1].t].
 /// Between two samples the pose is interpolated on SE(3) with
 /// `T_a * Exp(s * Log(T_a^-1 * T_b))`, `s = (t - t_a) / (t_b - t_a)` (lie.hpp).
 /// The producer is the pipeline (front-end thread), which integrates IMU samples from the
 /// scan's start with imu::Preintegrator; when more than kMaxImuPerScan samples fall in a
-/// scan it keeps an evenly spaced subset including both ends.
+/// scan it keeps a subset evenly spaced by index, including both ends.
 /// Ownership/threading: plain value type, no heap memory (fixed array, ~13 KB); the
 /// pipeline owns one instance per scan slot and reuses it. Not shared between threads.
 /// Tests: P-01, P-02 (through preprocess).

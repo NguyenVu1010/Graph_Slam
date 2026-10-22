@@ -16,6 +16,13 @@ namespace mss::imu {
 /// only sets the start time `t_i` and integrates nothing; each following sample k uses
 /// ITS OWN measurement (minus `bias_lin`) held over `dt = seconds_between(t_{k-1}, t_k)`.
 /// So the delta covers [t of first sample, t of last sample].
+/// Keyframe boundaries (pipeline contract): keyframe time = scan `t_start`. After
+/// reset() the pipeline re-feeds the last IMU sample of the previous interval as the
+/// first sample of the new one, so consecutive deltas chain without gaps. Deltas
+/// therefore span the nearest IMU sample times, not the exact keyframe times;
+/// backend::Graph::add_imu_factor accepts `|t_delta - t_keyframe| <= 1.5e9 / rate_hz` ns
+/// at each end (Graph checks it through the delta duration, see add_imu_factor) and
+/// rejects (logs) the factor beyond that.
 /// Noise: continuous-time densities from ImuConfig (acc_noise_density,
 /// gyro_noise_density), discretised as density^2 / dt; integration covariance zero.
 /// Bias random walk is not part of this 9x9 covariance (it belongs to the backend's bias

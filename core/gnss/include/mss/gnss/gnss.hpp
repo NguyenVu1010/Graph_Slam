@@ -32,11 +32,13 @@ Lla enu_to_lla(const common::Vec3& p_e, const Lla& origin);
 /// Cheap pre-gate of a GNSS fix before it reaches the aligner or the graph. This is NOT
 /// the chi-square innovation test of G-02 (that needs the predicted state and lives in
 /// the pipeline/backend).
+/// The pipeline passes `GnssConfig::max_cov_m2`.
 /// Frames: `m.p_e_g` in e. Units: `max_cov_m2` in m^2 (a variance, per axis).
-/// Errors: returns Status::error when
-///   - `m.status < 0` ("no fix");
-///   - any element of `m.p_e_g` or `m.cov` is non-finite ("non-finite fix");
-///   - any diagonal element of `m.cov` is > `max_cov_m2` ("fix covariance too large").
+/// Errors: returns Status::error; checks run in the listed order and the first failure
+///   is returned:
+///   1. `m.status < 0` ("no fix");
+///   2. any element of `m.p_e_g` or `m.cov` is non-finite ("non-finite fix");
+///   3. any diagonal element of `m.cov` is > `max_cov_m2` ("fix covariance too large").
 ///   Otherwise Status::ok().
 /// Hot path: no (per fix); no allocation, no logging (the caller logs the reason).
 /// Tests: G-02 (rejects bad fixes before the chi-square stage), gnss unit tests.
@@ -76,12 +78,13 @@ class GnssAligner {
   ///   w to e (`p_e = T_e_w * p_w`).
   /// Units: metres.
   /// Preconditions: the caller has passed the fix through gate_fix().
-  /// Errors (Result::error):
-  ///   - "non-finite input" (pair NOT added);
-  ///   - "not enough pairs" while fewer than kMinPairsForAlignment pairs were added
-  ///     (the pair IS added);
-  ///   - "insufficient horizontal spread" while the spread is < kMinHorizontalSpreadM
-  ///     (the pair IS added).
+  /// Errors (Result::error). Checks run in the listed order; the first failure is
+  ///   returned:
+  ///   1. "non-finite input" (pair NOT added);
+  ///   2. "not enough pairs" while fewer than kMinPairsForAlignment pairs were added,
+  ///      counting this one (the pair IS added);
+  ///   3. "insufficient horizontal spread" while the spread is < kMinHorizontalSpreadM
+  ///      (the pair IS added).
   /// Hot path: no (per fix); no allocation, no logging.
   /// Tests: G-03 (yaw error < 0.5 deg after 30 m), G-04 (lever arm).
   common::Result<common::Pose> update(const common::Vec3& p_e_g,

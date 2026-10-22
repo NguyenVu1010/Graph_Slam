@@ -32,18 +32,21 @@ class ImuInitializer {
   /// Accepts the window as static when, for every axis, the sample standard deviation
   /// of acc_b is <= init_max_acc_std_mps2 and of gyro_b is <= init_max_gyro_std_radps.
   /// Then: bias.bg = mean(gyro_b); bias.ba = 0 (not observable from a static window
-  /// except along gravity; left to the backend); R_w_b = the rotation with yaw = 0 that
-  /// maps mean(acc_b) onto +z of w (specific force at rest points up);
+  /// except along gravity; left to the backend); with `a = mean(acc_b)`:
+  /// `R_w_b = Ry(pitch) * Rx(roll)` (ZYX with yaw = 0), `roll = atan2(a_y, a_z)`,
+  /// `pitch = atan2(-a_x, hypot(a_y, a_z))`, so R_w_b * a points along +z of w
+  /// (specific force at rest points up);
   /// g_w = [0, 0, -cfg.gravity_mps2].
   /// Frames: samples in b; result as documented in InitState (w gravity-aligned, z up).
   /// Units: s, m/s^2, rad/s.
   /// Preconditions: none checked beyond the errors below.
-  /// Errors (Result::error):
-  ///   - "empty window" when samples.size() < 2;
-  ///   - "imu timestamp not increasing" when t is not strictly increasing;
-  ///   - "window too short" when seconds_between(first.t, last.t) < init_window_s;
-  ///   - "not static" when a std threshold is exceeded;
-  ///   - "non-finite imu sample".
+  /// Errors (Result::error). Checks run in the listed order; the first failure is
+  ///   returned:
+  ///   1. "empty window" when samples.size() < 2;
+  ///   2. "non-finite imu sample";
+  ///   3. "imu timestamp not increasing" when t is not strictly increasing;
+  ///   4. "window too short" when seconds_between(first.t, last.t) < init_window_s;
+  ///   5. "not static" when a std threshold is exceeded.
   /// Hot path: no (runs until it first succeeds, a few times per second); no allocation.
   /// Tests: I-01 (static gravity-only input yields R_w_b * mean(acc_b) along +z), imu
   ///   module unit tests.

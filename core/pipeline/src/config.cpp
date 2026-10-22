@@ -389,11 +389,14 @@ Config read_config(Reader& r) {
   r.field("gnss.enabled", c.gnss.enabled);
   r.field("gnss.sigma_h_m", c.gnss.sigma_h_m, Range::kNonNegative);
   r.field("gnss.sigma_v_m", c.gnss.sigma_v_m, Range::kNonNegative);
+  r.field("gnss.max_cov_m2", c.gnss.max_cov_m2, Range::kPositive);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);
   r.field("wheel_odom.track_m", c.wheel_odom.track_m);
   r.field("wheel_odom.speed_sigma_mps", c.wheel_odom.speed_sigma_mps, Range::kNonNegative);
+  r.field(
+      "wheel_odom.yaw_rate_sigma_radps", c.wheel_odom.yaw_rate_sigma_radps, Range::kNonNegative);
 
   r.field("lidar.range_sigma_m", c.lidar.range_sigma_m, Range::kNonNegative);
 
