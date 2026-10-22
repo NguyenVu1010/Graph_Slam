@@ -89,3 +89,17 @@ def test_rejects_bad_input() -> None:
         GroundTruth.from_odometry_msgs([_odom(0)])
     with pytest.raises(ValueError, match="strictly increasing"):
         GroundTruth.from_odometry_msgs([_odom(0), _odom(5), _odom(5)])
+
+
+def test_epoch_scale_timestamps() -> None:
+    t0 = 1_700_000_000_000_000_000
+    t_ns = t0 + np.array([0, 1_000_000_000, 2_000_000_000], dtype=np.int64)
+    rel_s = (t_ns - t0) * 1e-9
+    q_xyzw = Rotation.from_rotvec(np.outer(_OMEGA * rel_s, [0, 0, 1])).as_quat()
+    gt = GroundTruth(t_ns, np.outer(rel_s, _VEL), q_xyzw[:, [3, 0, 1, 2]])
+    query = t0 + np.array([1_000_000, 1_000_000_123], dtype=np.int64)
+    rot, p = gt.pose_at(query)
+    q_rel = (query - t0) * 1e-9
+    yaw = Rotation.from_matrix(rot).as_rotvec()[:, 2]
+    np.testing.assert_allclose(yaw, _OMEGA * q_rel, atol=1e-9)
+    np.testing.assert_allclose(p, np.outer(q_rel, _VEL), atol=1e-9)

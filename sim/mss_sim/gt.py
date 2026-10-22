@@ -42,7 +42,8 @@ class GroundTruth:
             msg = "GroundTruth t_ns must be strictly increasing"
             raise ValueError(msg)
         self._rot = Rotation.from_quat(self.q_wxyz[:, [1, 2, 3, 0]])  # scipy: x y z w
-        self._slerp = Slerp(self.t_ns.astype(np.float64), self._rot)
+        # Relative keys: absolute epoch-scale ns are not exact in float64.
+        self._slerp = Slerp((self.t_ns - self.t_ns[0]).astype(np.float64), self._rot)
 
     @classmethod
     def from_odometry_msgs(cls, msgs: Iterable[Any]) -> GroundTruth:
@@ -87,7 +88,7 @@ class GroundTruth:
         # Weights from integer differences, converted to float only at the division.
         w = ((qc - t0) / (self.t_ns[idx + 1] - t0))[:, None]
         p = (1.0 - w) * self.p_w_b[idx] + w * self.p_w_b[idx + 1]
-        rot = self._slerp(qc.astype(np.float64)).as_matrix()
+        rot = self._slerp((qc - self.t_ns[0]).astype(np.float64)).as_matrix()
         return rot.reshape(-1, 3, 3), p
 
     def to_tum(self, path: Path) -> None:
