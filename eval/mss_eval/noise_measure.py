@@ -30,6 +30,11 @@ _CHI2_P = 0.99
 _COV_MATCH_REL = 0.01  # a fix "reports nominal" when its variance is within 1 % of declared
 _MIN_VARIANCE_M2 = 1e-12
 _OUTLIER_SIGMAS = 5.0
+_MAD_TO_SIGMA = 1.4826  # Gaussian sigma = 1.4826 * median absolute deviation
+_CLIP_SIGMAS = 3.0  # GNSS robust sigma: clip at 3 MAD-sigmas
+_CLIP_STD_FACTOR = 0.98658  # std of N(0, 1) truncated at +-3
+_MIN_RAY_COS = 0.7  # range sigma uses points with |n . u| above this (incidence < ~46 deg)
+_MIN_COS = 1e-6
 _ODOM_DRIFT_PCT = (1.0, 3.0)
 _ODOM_YAW_DEG_PER_REV = (0.3, 1.0)
 _MIN_TURN_RAD = 0.5  # below this total rotation a yaw drift per revolution is meaningless
@@ -271,6 +276,29 @@ def detrend(t_ns: np.ndarray, e: np.ndarray, window_s: float = _GNSS_DETREND_S) 
     return e - (csum[hi] - csum[lo]) / (hi - lo)[:, None]
 
 
+def estimate_gnss_sigma(residuals: np.ndarray, sigma_declared: float) -> tuple[float, float]:
+    """Robust white sigma of drift-removed GNSS residuals: ``(sigma, excluded_fraction)``.
+
+    ``residuals`` is (N,) or (N, k). Per column, the scale ``s0 = 1.4826 * MAD`` sets a clip at
+    ``min(3 s0, 5 sigma_declared)`` around the median; a row is excluded when any component lies
+    beyond its clip (multipath steps, outliers). Each column's sigma is the std of the kept rows
+    divided by the 3-sigma truncation factor; columns are combined as an RMS. A pure MAD sigma
+    would be as robust but has ~2.7x the variance, too noisy for a +-15 % gate on short bags.
+    """
+    r = np.asarray(residuals, dtype=float).reshape(len(residuals), -1)
+    r = r[np.isfinite(r).all(axis=1)]
+    if len(r) < 2:
+        return float("nan"), float("nan")
+    med = np.median(r, axis=0)
+    s0 = _MAD_TO_SIGMA * np.median(np.abs(r - med), axis=0)
+    clip = np.minimum(_CLIP_SIGMAS * s0, _OUTLIER_SIGMAS * sigma_declared)
+    keep = (np.abs(r - med) <= clip).all(axis=1)
+    if keep.sum() < 2:
+        return float("nan"), float(1.0 - keep.mean())
+    var = np.var(r[keep], axis=0, ddof=1) / _CLIP_STD_FACTOR**2
+    return float(np.sqrt(np.mean(var))), float(1.0 - keep.mean())
+
+
 def gnss_section(
     t_ns: np.ndarray,
     lla: np.ndarray,
@@ -287,14 +315,16 @@ def gnss_section(
     nominal = np.isclose(cov_diag[:, 0], sh**2, rtol=_COV_MATCH_REL)
     n_nom = int(nominal.sum())
     res = detrend(t_ns[nominal], err[nominal]) if n_nom > 2 else np.full((2, 3), np.nan)
-    m_h = float(np.sqrt((np.var(res[:, 0], ddof=1) + np.var(res[:, 1], ddof=1)) / 2))
-    m_v = float(np.std(res[:, 2], ddof=1))
+    m_h, excl_h = estimate_gnss_sigma(res[:, :2], sh)
+    m_v, _ = estimate_gnss_sigma(res[:, 2], sv)
     believed = pipeline_gnss or {}
-    note = "drift removed: 60 s moving average (the mean if shorter)"
+    note = "drift removed (60 s mov. avg. or mean); std clipped at min(3 σ_MAD, 5 σ_declared)"
     rows = [Row("fixes_nominal_cov", None, f"{n_nom} / {len(t_ns)}", "informational", None)]
     for name, decl, meas in (("sigma_h_m", sh, m_h), ("sigma_v_m", sv, m_v)):
         ok = _rel_ok(meas, decl, _SIGMA_TOL)
         rows.append(Row(name, decl, meas, "±15 %", ok, note, believed.get(name)))
+    excl_note = "nominal-covariance fixes beyond the horizontal clip, excluded from σ"
+    rows.append(Row("multipath/outlier share", None, excl_h, "informational", None, excl_note))
     res_all = detrend(t_ns, err)
     nis = np.sum(res_all**2 / np.maximum(cov_diag, _MIN_VARIANCE_M2), axis=1)
     frac = float(np.mean(nis > chi2.ppf(_CHI2_P, 3)))
@@ -303,8 +333,8 @@ def gnss_section(
         Row("chi2_99_reject_fraction", 1.0 - _CHI2_P, frac, "informational", None, nis_note)
     )
     note = (
-        "Multipath keeps the nominal covariance and cannot be separated without the scenario; "
-        "degraded fixes are excluded from σ by their reported covariance. Shaded: message gaps."
+        "Degraded fixes are excluded from σ by their reported covariance; multipath steps keep "
+        "the nominal covariance and are rejected by the robust σ. Shaded: message gaps."
     )
     return Section("GNSS", rows, [_gnss_figure(t_ns, res_all, res, sh)], note)
 
@@ -329,16 +359,28 @@ def _gnss_figure(t_ns: np.ndarray, res_all: np.ndarray, res: np.ndarray, sh: flo
 
 
 def estimate_range_sigma(distances: np.ndarray, sigma_declared: float) -> float:
-    """Std of point-to-plane distances, excluding |d| > 5 sigma_declared (other surfaces)."""
+    """Std of along-ray residuals, excluding |d| > 5 sigma_declared (other surfaces, body)."""
     d = np.asarray(distances, dtype=float)
     d = d[np.abs(d) <= _OUTLIER_SIGMAS * sigma_declared]
     return float(np.std(d, ddof=1)) if len(d) > 1 else float("nan")
 
 
-def plane_distances(p_w: np.ndarray, normals: np.ndarray, offsets: np.ndarray) -> np.ndarray:
-    """Signed distance of each point to its nearest plane ``n . p = d``."""
-    d = p_w @ normals.T - offsets[None, :]
-    return d[np.arange(len(d)), np.argmin(np.abs(d), axis=1)]
+def ray_residuals(
+    p_w: np.ndarray, o_w: np.ndarray, normals: np.ndarray, offsets: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Along-ray residual to the nearest plane ``n . p = d`` and the incidence cosine.
+
+    Range noise acts along ``u = (p_w - o_w) / |p_w - o_w|`` (``o_w`` the LiDAR origin at the
+    point's time). The plane distance is that error times ``|n . u|``, so the along-ray residual
+    is ``(n . p - d) / |n . u|``. Returns ``(residual, |n . u|)``.
+    """
+    d_all = p_w @ normals.T - offsets[None, :]
+    k = np.argmin(np.abs(d_all), axis=1)
+    d = d_all[np.arange(len(d_all)), k]
+    ray = p_w - o_w
+    u = ray / np.maximum(np.linalg.norm(ray, axis=1, keepdims=True), _MIN_COS)
+    cos = np.abs(np.einsum("ij,ij->i", u, normals[k]))
+    return d / np.maximum(cos, _MIN_COS), cos
 
 
 def scan_to_world(
@@ -346,18 +388,45 @@ def scan_to_world(
     t_ns: np.ndarray,
     traj: Trajectory,
     T_b_l: np.ndarray,  # noqa: N803
-) -> np.ndarray:
-    """``p_w = R_w_b(t_i) (R_b_l p_l + p_b_l) + p_w_b(t_i)`` per point."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """Points and LiDAR origins in world at each point's time: ``(p_w, o_w)``.
+
+    ``p_w = R_w_b(t_i) (R_b_l p_l + p_b_l) + p_w_b(t_i)``, ``o_w = R_w_b(t_i) p_b_l + p_w_b(t_i)``.
+    """
+    r_w_b, p_w_b = traj.rotation(t_ns), traj.position(t_ns)
     p_b = xyz.astype(float) @ T_b_l[:3, :3].T + T_b_l[:3, 3]
-    return np.einsum("nij,nj->ni", traj.rotation(t_ns), p_b) + traj.position(t_ns)
+    p_w = np.einsum("nij,nj->ni", r_w_b, p_b) + p_w_b
+    return p_w, r_w_b @ T_b_l[:3, 3] + p_w_b
+
+
+def expected_dropout(cos: np.ndarray, lidar_cfg: dict) -> tuple[float, float]:
+    """Declared-model NaN fraction ``(p_exp, g)`` from incidence cosines of surviving points.
+
+    ``g`` is the grazing share (incidence > ``grazing_deg``) among all returns, recovered from
+    the surviving share via the survival ratio ``(1 - p_g) / (1 - p)``;
+    ``p_exp = p + (p_g - p) g + nan_fraction``.
+    """
+    p, p_g = float(lidar_cfg["dropout_p"]), float(lidar_cfg["dropout_p_grazing"])
+    cos_graze = np.cos(np.deg2rad(float(lidar_cfg["grazing_deg"])))
+    g_s = float(np.mean(cos < cos_graze)) if len(cos) else 0.0
+    a, b = g_s / (1.0 - p_g), (1.0 - g_s) / (1.0 - p)
+    g = a / (a + b)
+    return p + (p_g - p) * g + float(lidar_cfg.get("nan_fraction", 0.0)), g
 
 
 def lidar_section(
-    distances: np.ndarray, n_nan: int, n_not_inf: int, lidar_cfg: dict, pipeline_lidar: dict | None
+    residuals: np.ndarray,
+    cos: np.ndarray,
+    n_nan: int,
+    n_not_inf: int,
+    lidar_cfg: dict,
+    pipeline_lidar: dict | None,
 ) -> Section:
-    s_decl, p_decl = float(lidar_cfg["range_sigma_m"]), float(lidar_cfg["dropout_p"])
-    sigma = estimate_range_sigma(distances, s_decl)
+    s_decl = float(lidar_cfg["range_sigma_m"])
+    use = residuals[cos > _MIN_RAY_COS]
+    sigma = estimate_range_sigma(use, s_decl)
     frac = n_nan / n_not_inf if n_not_inf else float("nan")
+    p_exp, g = expected_dropout(cos, lidar_cfg)
     rows = [
         Row(
             "range_sigma_m",
@@ -365,22 +434,24 @@ def lidar_section(
             sigma,
             "±15 %",
             _rel_ok(sigma, s_decl, _SIGMA_TOL),
-            f"|d| ≤ {_OUTLIER_SIGMAS:g} σ_declared; {len(distances)} points",
+            f"along-ray residual, |n·u| > {_MIN_RAY_COS:g}, |d| ≤ {_OUTLIER_SIGMAS:g} σ_declared;"
+            f" {len(use)} points",
             (pipeline_lidar or {}).get("range_sigma_m"),
         ),
         Row(
             "dropout_fraction",
-            p_decl,
+            p_exp,
             frac,
             "±20 % rel.",
-            _rel_ok(frac, p_decl, _DROPOUT_TOL),
-            "NaN share among points that are not inf (non-returns)",
+            _rel_ok(frac, p_exp, _DROPOUT_TOL),
+            f"NaN share of non-inf points vs p_exp = {p_exp:.4g} = dropout_p + "
+            f"(dropout_p_grazing - dropout_p)·g + nan_fraction, grazing share g = {g:.3g}",
         ),
     ]
     fig, (a,) = _axes(1, width_in=6.5)
     lim = _OUTLIER_SIGMAS * s_decl
-    _hist_vs_gauss(a, distances, s_decl, lim, f"declared σ = {s_decl:g} m")
-    _label(a, "LiDAR point-to-plane distance", "distance [m]")
+    _hist_vs_gauss(a, use, s_decl, lim, f"declared σ = {s_decl:g} m")
+    _label(a, "LiDAR along-ray residual to reference planes", "residual [m]")
     return Section("LiDAR", rows, [_png(fig)])
 
 

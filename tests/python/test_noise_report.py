@@ -13,8 +13,8 @@ from conftest import _REPO
 from rosbags.rosbag2 import Reader, Writer
 from rosbags.typesys import Stores, get_typestore
 
-from mss_eval.noise_measure import imu_section
-from mss_eval.noise_report import Report, Row, estimate_range_sigma, run
+from mss_eval.noise_measure import expected_dropout, imu_section, lidar_section, ray_residuals
+from mss_eval.noise_report import Report, Row, estimate_gnss_sigma, estimate_range_sigma, run
 from mss_sim.bridge import BridgeReport
 from mss_sim.synth import SynthInfo
 
@@ -181,3 +181,59 @@ def test_imu_static_segment_gates_white_sigma() -> None:
         t_ns, gyro, acc, imu_cfg, static=True, static_s=5.0, allan_gate=False, pipeline_imu=None
     )
     assert next(r for r in sec.rows if r.name == "acc_sigma_x").ok is False
+
+
+def _room_scan(sigma_m: float, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, tuple]:
+    """Organized 16 x 720 scan from 0.5 m above the floor of a 8 x 6 x 3 m room.
+
+    Gaussian range noise is applied along each ray. Returns (p_w, o_w, planes).
+    """
+    normals = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], float)
+    offsets = np.array([4.0, 4.0, 3.0, 3.0, 3.0, 0.0])  # n . p = d; floor z = 0, ceiling z = 3
+    origin = np.array([0.7, -0.4, 0.5])
+    el = np.deg2rad(np.linspace(-15.0, 15.0, 16))[:, None]
+    az = np.deg2rad(np.arange(720) * 0.5)[None, :]
+    u = np.stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el) + 0 * az], -1)
+    u = u.reshape(-1, 3)
+    # Opposite normals bound the room: hit the first plane with n . u > 0 (ray leaving the room).
+    nu = u @ normals.T
+    t = np.where(nu > 1e-9, (offsets - origin @ normals.T) / np.where(nu > 1e-9, nu, 1.0), np.inf)
+    rng_m = t.min(axis=1) + rng.normal(0.0, sigma_m, len(u))
+    p_w = origin + rng_m[:, None] * u
+    return p_w, np.broadcast_to(origin, p_w.shape), (normals, offsets)
+
+
+def test_lidar_sigma_is_along_ray_at_mixed_incidence() -> None:
+    lidar_cfg = yaml.safe_load(_PROFILE.read_text())["lidar"]
+    p_w, o_w, (normals, offsets) = _room_scan(0.02, np.random.default_rng(7))
+    res, cos = ray_residuals(p_w, o_w, normals, offsets)
+    assert cos.min() < 0.3 and np.mean(cos < 0.9) > 0.3  # genuinely mixed incidence
+    plane_dist = res * cos
+    assert np.std(plane_dist) < 0.85 * 0.02  # the old point-to-plane measure under-reads
+    sec = lidar_section(res, cos, 0, len(res), lidar_cfg, None)
+    row = next(r for r in sec.rows if r.name == "range_sigma_m")
+    assert abs(row.measured / 0.02 - 1.0) <= 0.15 and row.ok is True, row
+
+
+def test_expected_dropout_accounts_for_grazing_and_nan() -> None:
+    lidar_cfg = yaml.safe_load(_PROFILE.read_text())["lidar"]
+    rng = np.random.default_rng(11)
+    n, g_true = 400_000, 0.2
+    cos_graze = np.cos(np.deg2rad(lidar_cfg["grazing_deg"]))
+    grazing = rng.random(n) < g_true
+    cos = np.where(grazing, rng.uniform(0.0, cos_graze, n), rng.uniform(cos_graze, 1.0, n))
+    nan_inj = rng.random(n) < lidar_cfg["nan_fraction"]
+    p_drop = np.where(grazing, lidar_cfg["dropout_p_grazing"], lidar_cfg["dropout_p"])
+    dropped = nan_inj | (rng.random(n) < p_drop)
+    p_exp, g = expected_dropout(cos[~dropped], lidar_cfg)
+    assert g == pytest.approx(g_true, abs=0.01)
+    assert p_exp == pytest.approx(dropped.mean(), rel=0.05)
+
+
+def test_gnss_sigma_rejects_multipath_steps() -> None:
+    rng = np.random.default_rng(13)
+    r = rng.normal(0.0, 1.0, 5_000)
+    r[: len(r) // 10] += 6.0  # 10 % of fixes carry a +6 m multipath step
+    sigma, excluded = estimate_gnss_sigma(r, 1.0)
+    assert abs(sigma - 1.0) <= 0.15
+    assert excluded == pytest.approx(0.10, abs=0.02)

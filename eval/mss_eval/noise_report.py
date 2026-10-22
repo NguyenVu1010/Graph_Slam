@@ -30,18 +30,19 @@ from mss_eval.noise_measure import (
     Row,
     Section,
     Trajectory,
+    estimate_gnss_sigma,
     estimate_range_sigma,
     gnss_section,
     imu_section,
     lidar_section,
     odom_section,
-    plane_distances,
+    ray_residuals,
     scan_to_world,
 )
 from mss_eval.pointcloud import cloud_to_arrays
 from mss_eval.report_html import render
 
-__all__ = ["Report", "Row", "Section", "estimate_range_sigma", "run"]
+__all__ = ["Report", "Row", "Section", "estimate_gnss_sigma", "estimate_range_sigma", "run"]
 
 _GT, _TF, _IMU = "/ground_truth", "/tf_static", "/imu/data"
 _LIDAR, _GNSS, _ODOM = "/lidar/points", "/gnss/fix", "/wheel/odom"
@@ -114,9 +115,10 @@ def _lidar_pass(
     traj: Trajectory | None,
     planes: tuple[np.ndarray, np.ndarray] | None,
     min_range_m: float,
-) -> tuple[np.ndarray, int, int]:
-    """Record LiDAR stamps; with planes and GT, return (distances, n_nan, n_not_inf)."""
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """Record LiDAR stamps; with planes and GT, return (residuals, cos, n_nan, n_not_inf)."""
     dists: list[np.ndarray] = []
+    coss: list[np.ndarray] = []
     n_nan = n_not_inf = 0
     t_b_l = bag.T_b_l if bag.T_b_l is not None else np.eye(4)
     with Reader(path) as reader:
@@ -132,10 +134,13 @@ def _lidar_pass(
             n_not_inf += int((~np.isinf(xyz).any(axis=1)).sum())
             ok = np.isfinite(xyz).all(axis=1) & (np.linalg.norm(xyz, axis=1) >= min_range_m)
             t_i = stamp + (t_off[ok].astype(np.int64) if t_off is not None else 0)
-            p_w = scan_to_world(xyz[ok], np.broadcast_to(t_i, ok.sum()), traj, t_b_l)
-            dists.append(plane_distances(p_w, *planes).astype(np.float32))
-    d = np.concatenate(dists) if dists else np.empty(0, np.float32)
-    return d, n_nan, n_not_inf
+            p_w, o_w = scan_to_world(xyz[ok], np.broadcast_to(t_i, ok.sum()), traj, t_b_l)
+            res, cos = ray_residuals(p_w, o_w, *planes)
+            dists.append(res.astype(np.float32))
+            coss.append(cos.astype(np.float32))
+    if not dists:
+        return np.empty(0, np.float32), np.empty(0, np.float32), n_nan, n_not_inf
+    return np.concatenate(dists), np.concatenate(coss), n_nan, n_not_inf
 
 
 def _bag_section(bag: _Bag, bridge_report: dict | None) -> Section:
@@ -246,7 +251,7 @@ def run(
         traj = Trajectory(np.array(t, dtype=np.int64), np.array(p), np.array(q))
     plane_arrays = _load_planes(planes) if planes is not None else None
     min_range = float(prof["lidar"].get("min_range_m", 0.0))
-    dists, n_nan, n_not_inf = _lidar_pass(bag_path, bag, traj, plane_arrays, min_range)
+    dists, coss, n_nan, n_not_inf = _lidar_pass(bag_path, bag, traj, plane_arrays, min_range)
 
     sections: list[Section] = []
     if bag.imu:
@@ -286,7 +291,7 @@ def run(
             )
         if plane_arrays is not None:
             sections.append(
-                lidar_section(dists, n_nan, n_not_inf, prof["lidar"], pipe.get("lidar"))
+                lidar_section(dists, coss, n_nan, n_not_inf, prof["lidar"], pipe.get("lidar"))
             )
         if len(bag.odom) > 1:
             t, v, w = zip(*bag.odom, strict=True)
