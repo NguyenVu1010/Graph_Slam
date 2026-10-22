@@ -42,15 +42,24 @@ from mss_eval.noise_measure import (
 from mss_eval.pointcloud import cloud_to_arrays
 from mss_eval.report_html import render
 
-__all__ = ["Report", "Row", "Section", "estimate_gnss_sigma", "estimate_range_sigma", "run"]
+__all__ = [
+    "Report",
+    "Row",
+    "Section",
+    "estimate_gnss_sigma",
+    "estimate_range_sigma",
+    "load_planes",
+    "run",
+]
 
 _GT, _TF, _IMU = "/ground_truth", "/tf_static", "/imu/data"
 _LIDAR, _GNSS, _ODOM = "/lidar/points", "/gnss/fix", "/wheel/odom"
-_BODY_FRAME, _LIDAR_FRAME = "base_link", "lidar_link"
+_LIDAR_FRAME = "lidar_link"
 _NS_PER_S = 1_000_000_000
 _STATIC_SPEED_MPS = 0.05
 _MAX_GAP_S = 0.5
 _GT_MISSING = "ground_truth missing"
+_NO_T_B_L = "no lidar transform in /tf_static; LiDAR rows skipped"
 _TYPESTORE = get_typestore(Stores.ROS2_JAZZY)
 
 
@@ -71,8 +80,9 @@ def _stamp(msg: Any, log_ns: int) -> int:
 
 
 def _t_b_l(tf_msg: Any) -> np.ndarray | None:
+    """``T_b_l`` from the transform whose child is ``lidar_link`` (body = its parent frame)."""
     for ts in tf_msg.transforms:
-        if ts.header.frame_id == _BODY_FRAME and ts.child_frame_id == _LIDAR_FRAME:
+        if ts.child_frame_id == _LIDAR_FRAME:
             tr, q = ts.transform.translation, ts.transform.rotation
             t = np.eye(4)
             t[:3, :3] = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()  # scipy: x y z w
@@ -120,14 +130,14 @@ def _lidar_pass(
     dists: list[np.ndarray] = []
     coss: list[np.ndarray] = []
     n_nan = n_not_inf = 0
-    t_b_l = bag.T_b_l if bag.T_b_l is not None else np.eye(4)
+    t_b_l = bag.T_b_l
     with Reader(path) as reader:
         conns = [c for c in reader.connections if c.topic == _LIDAR]
         for conn, log_ns, raw in reader.messages(connections=conns) if conns else ():
             msg = _TYPESTORE.deserialize_cdr(raw, conn.msgtype)
             stamp = _stamp(msg, int(log_ns))
             bag.stamps.setdefault(_LIDAR, []).append(stamp)
-            if planes is None or traj is None:
+            if planes is None or traj is None or t_b_l is None:
                 continue
             xyz, t_off, _, _, _ = cloud_to_arrays(msg)
             n_nan += int(np.isnan(xyz).any(axis=1).sum())
@@ -156,6 +166,8 @@ def _bag_section(bag: _Bag, bridge_report: dict | None) -> Section:
             "" if has_gt else _GT_MISSING,
         )
     )
+    if bag.T_b_l is None:
+        rows.append(Row("T_b_l", None, "missing", "/tf_static", None, _NO_T_B_L))
     dropped_gnss = (bridge_report or {}).get("n_dropped_gnss", 0)
     for topic in sorted(bag.topics):
         st = np.asarray(bag.stamps.get(topic, []), dtype=np.int64)
@@ -204,11 +216,17 @@ def _pipeline_params(path: Path | None) -> dict:
     return cfg.get("mss_node", {}).get("ros__parameters", cfg)
 
 
-def _load_planes(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    items = yaml.safe_load(path.read_text())
-    normals = np.array([p["n"] for p in items], dtype=float)
-    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
-    return normals, np.array([p["d"] for p in items], dtype=float)
+def load_planes(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Planes ``n . p = d`` from YAML; ``n`` and ``d`` are scaled by the same ``1/|n|``."""
+    items = yaml.safe_load(Path(path).read_text())
+    normals = np.array([p["n"] for p in items], dtype=float).reshape(-1, 3)
+    d = np.array([p["d"] for p in items], dtype=float)
+    norms = np.linalg.norm(normals, axis=1)
+    bad = np.flatnonzero(~(norms > 0))
+    if bad.size:
+        msg = f"{path}: plane {int(bad[0])} has a zero-norm normal n"
+        raise ValueError(msg)
+    return normals / norms[:, None], d / norms
 
 
 def _resolve(bag_dir: Path) -> tuple[Path, Path]:
@@ -249,7 +267,7 @@ def run(
     if bag.gt:
         t, p, q = zip(*bag.gt, strict=True)
         traj = Trajectory(np.array(t, dtype=np.int64), np.array(p), np.array(q))
-    plane_arrays = _load_planes(planes) if planes is not None else None
+    plane_arrays = load_planes(planes) if planes is not None else None
     min_range = float(prof["lidar"].get("min_range_m", 0.0))
     dists, coss, n_nan, n_not_inf = _lidar_pass(bag_path, bag, traj, plane_arrays, min_range)
 
@@ -272,24 +290,27 @@ def run(
         )
     if traj is None:
         sections += [_missing_gt(n) for n in ("GNSS", "Wheel odom")]
-        if planes is not None:
+        if planes is not None and bag.T_b_l is not None:
             sections.append(_missing_gt("LiDAR"))
     else:
         if bag.gnss:
             t, lla, cov = zip(*bag.gnss, strict=True)
             p_b_g = np.asarray(pipe.get("frames", {}).get("p_b_g_m", [0.0, 0.0, 0.0]), float)
-            sections.append(
-                gnss_section(
-                    np.array(t, dtype=np.int64),
-                    np.array(lla),
-                    np.array(cov),
-                    traj,
-                    prof["gnss"],
-                    p_b_g,
-                    pipe.get("gnss"),
-                )
+            gnss = gnss_section(
+                np.array(t, dtype=np.int64),
+                np.array(lla),
+                np.array(cov),
+                traj,
+                prof["gnss"],
+                p_b_g,
+                pipe.get("gnss"),
             )
-        if plane_arrays is not None:
+            if pipeline_config is None:
+                gnss.rows.append(
+                    Row("p_b_g_m", None, "assumed 0 (no --pipeline-config)", "lever arm", None)
+                )
+            sections.append(gnss)
+        if plane_arrays is not None and bag.T_b_l is not None:
             sections.append(
                 lidar_section(dists, coss, n_nan, n_not_inf, prof["lidar"], pipe.get("lidar"))
             )

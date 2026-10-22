@@ -142,3 +142,22 @@ def test_drift_first_sample_initialised_from_stationary() -> None:
         ]
     )
     assert abs(first.std() / 0.5 - 1) < 0.1
+
+
+def test_non_increasing_stamp_rejected_without_state_change() -> None:
+    deg = _deg()
+    assert deg.step(T0 + DT_NS, P0) is not None
+    assert deg.step(T0, P0) is None  # backwards
+    assert deg.n_rejected == 1
+    assert deg.step(T0 + 2 * DT_NS, P0) is not None
+    # Rejection consumed no draws: the accepted steps match a run without the bad stamp.
+    ref = _deg()
+    a = ref.step(T0 + DT_NS, P0)
+    b = ref.step(T0 + 2 * DT_NS, P0)
+    deg2 = _deg()
+    deg2.step(T0 + DT_NS, P0)
+    deg2.step(T0 + DT_NS, P0)  # repeated stamp, also rejected
+    c = deg2.step(T0 + 2 * DT_NS, P0)
+    assert a is not None and b is not None and c is not None
+    assert deg2.n_rejected == 1
+    assert b.lla == c.lla

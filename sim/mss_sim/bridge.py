@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,7 @@ _OUT_TYPES = {
     _GT: "nav_msgs/msg/Odometry",
     _TF: "tf2_msgs/msg/TFMessage",
 }
-_LIDAR_FRAME, _ODOM_FRAME, _BODY_FRAME = "lidar_link", "odom", "base_link"
+_LIDAR_FRAME, _ODOM_FRAME = "lidar_link", "odom"
 _COV_DIAGONAL_KNOWN = 2  # NavSatFix COVARIANCE_TYPE_DIAGONAL_KNOWN
 _SERVICE_GPS = 1  # NavSatStatus SERVICE_GPS
 _COV6_SIZE = 36
@@ -56,18 +57,23 @@ class BridgeReport:
     n_dropped_gnss: int
     n_odom_errors: int
     n_gt_clamped: int
+    n_gnss_rejected: int
 
 
-def _t_b_l_from_tf(tf_msg: Any) -> np.ndarray:
-    """4x4 ``T_b_l`` from the base_link -> lidar_link TransformStamped in a TFMessage."""
-    for ts in tf_msg.transforms:
-        if ts.header.frame_id == _BODY_FRAME and ts.child_frame_id == _LIDAR_FRAME:
-            tr, q = ts.transform.translation, ts.transform.rotation
-            t = np.eye(4)
-            t[:3, :3] = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()  # scipy: x y z w
-            t[:3, 3] = (tr.x, tr.y, tr.z)
-            return t
-    msg = f"/tf_static has no {_BODY_FRAME} -> {_LIDAR_FRAME} transform"
+def _t_b_l_from_tf(tf_msgs: Iterable[Any]) -> tuple[np.ndarray, str]:
+    """4x4 ``T_b_l`` and the body frame name from the first ``* -> lidar_link`` transform.
+
+    The body frame is that transform's parent (``header.frame_id``); nothing is hard-coded.
+    """
+    for tf_msg in tf_msgs:
+        for ts in tf_msg.transforms:
+            if ts.child_frame_id == _LIDAR_FRAME:
+                tr, q = ts.transform.translation, ts.transform.rotation
+                t = np.eye(4)
+                t[:3, :3] = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()  # scipy: x y z w
+                t[:3, 3] = (tr.x, tr.y, tr.z)
+                return t, ts.header.frame_id
+    msg = f"no /tf_static transform with child {_LIDAR_FRAME}"
     raise ValueError(msg)
 
 
@@ -108,7 +114,7 @@ class _OdomIntegrator:
         self._last_ns = t_ns
 
 
-def _odometry(stamp: int, pose: _OdomIntegrator, tw: OdomTwist) -> Any:
+def _odometry(stamp: int, pose: _OdomIntegrator, tw: OdomTwist, body_frame: str) -> Any:
     ty = TYPESTORE.types
     half = pose.yaw / 2.0
     # Quaternion field order x, y, z, w (yaw-only rotation about z).
@@ -120,7 +126,7 @@ def _odometry(stamp: int, pose: _OdomIntegrator, tw: OdomTwist) -> Any:
     )
     return ty["nav_msgs/msg/Odometry"](
         header=make_header(stamp, _ODOM_FRAME),
-        child_frame_id=_BODY_FRAME,
+        child_frame_id=body_frame,
         pose=ty["geometry_msgs/msg/PoseWithCovariance"](
             pose=ty["geometry_msgs/msg/Pose"](position=position, orientation=quat),
             covariance=np.zeros(_COV6_SIZE),
@@ -148,7 +154,8 @@ def run_bridge(
 
     with BagReader(raw_bag) as reader:
         gt = GroundTruth.from_odometry_msgs(m for _, _, m in reader.messages([_GT]))
-        t_b_l = _t_b_l_from_tf(next(m for _, _, m in reader.messages([_TF])))
+        tf_topic = [_TF] if _TF in reader.topics() else []
+        t_b_l, body_frame = _t_b_l_from_tf(m for _, _, m in reader.messages(tf_topic))
         degrader = GnssDegrader(
             profile.gnss,
             scenario.gnss,
@@ -185,10 +192,11 @@ def run_bridge(
                 elif topic == _GNSS:
                     stamp = stamp_ns(msg.header)
                     lla = (msg.latitude, msg.longitude, msg.altitude)
+                    n_rejected = degrader.n_rejected
                     sample = degrader.step(stamp, lla_to_enu(lla, scenario.origin_lla))
-                    if sample is None:
-                        n_dropped_gnss += 1
-                    else:
+                    if sample is None and degrader.n_rejected == n_rejected:
+                        n_dropped_gnss += 1  # declared outage; rejected stamps counted apart
+                    elif sample is not None:
                         fix = _navsatfix(stamp + off["gnss"], sample)
                         emit(topic, log_time + off["gnss"], fix)
                 else:  # _JOINTS -> _ODOM
@@ -196,10 +204,12 @@ def run_bridge(
                     tw = quantizer.step(stamp, list(msg.name), [float(v) for v in msg.velocity])
                     if tw is not None:
                         pose.step(stamp, tw)
-                        odom = _odometry(stamp + off["odom"], pose, tw)
+                        odom = _odometry(stamp + off["odom"], pose, tw, body_frame)
                         emit(_ODOM, log_time + off["odom"], odom)
 
     gt.to_tum(out_dir / "gt.tum")
-    report = BridgeReport(counts, n_dropped_gnss, quantizer.n_errors, gt.n_clamped)
+    report = BridgeReport(
+        counts, n_dropped_gnss, quantizer.n_errors, gt.n_clamped, degrader.n_rejected
+    )
     (out_dir / "bridge_report.json").write_text(json.dumps(asdict(report), indent=2))
     return report

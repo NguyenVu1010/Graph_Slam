@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import typing
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +82,13 @@ class NoiseProfile:
 # Float fields that must be strictly positive; every other float must be >= 0.
 _STRICTLY_POSITIVE = {"rate_hz", "ticks_per_rev", "scan_period_s"}
 _CLOCK_KEYS = ("imu", "lidar", "gnss", "odom")
+# Probabilities / fractions that must lie in [0, 1].
+_UNIT_INTERVAL = {"dropout_p", "dropout_p_grazing", "nan_fraction", "near_fraction"}
+# (min, max) field pairs that must satisfy min <= max.
+_ORDERED_PAIRS = (
+    ("multipath_amp_min_m", "multipath_amp_max_m"),
+    ("multipath_hold_min_s", "multipath_hold_max_s"),
+)
 
 
 def _is_number(value: Any) -> bool:
@@ -103,6 +111,10 @@ def _build[T](cls: type[T], mapping: Any, prefix: str) -> T:
     kwargs: dict[str, Any] = {}
     for name in names:
         kwargs[name] = _convert(name, hints[name], mapping[name], prefix + name)
+    for lo, hi in _ORDERED_PAIRS:
+        if lo in kwargs and hi in kwargs and not kwargs[lo] <= kwargs[hi]:
+            msg = f"{prefix}{lo}: must be <= {prefix}{hi}, got {kwargs[lo]!r} > {kwargs[hi]!r}"
+            raise ProfileError(msg)
     return cls(**kwargs)
 
 
@@ -113,6 +125,8 @@ def _convert(name: str, hint: Any, value: Any, path: str) -> Any:
         if not _is_number(value):
             raise ProfileError(f"{path}: expected a number, got {value!r}")
         number = float(value)
+        if not math.isfinite(number):
+            raise ProfileError(f"{path}: must be finite, got {value!r}")
     elif hint is int:
         if not isinstance(value, int) or isinstance(value, bool):
             raise ProfileError(f"{path}: expected an integer, got {value!r}")
@@ -124,6 +138,8 @@ def _convert(name: str, hint: Any, value: Any, path: str) -> Any:
             raise ProfileError(f"{path}: must be > 0, got {value!r}")
     elif not number >= 0:
         raise ProfileError(f"{path}: must be >= 0, got {value!r}")
+    if name in _UNIT_INTERVAL and not number <= 1:
+        raise ProfileError(f"{path}: must be in [0, 1], got {value!r}")
     return number
 
 

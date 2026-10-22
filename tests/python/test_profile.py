@@ -68,3 +68,25 @@ def test_wrong_type_rejected(tmp_path: Path) -> None:
     bad["gnss"]["sigma_v_m"] = "two"
     with pytest.raises(ProfileError, match=r"gnss\.sigma_v_m"):
         load_profile(_write(tmp_path, bad))
+
+
+@pytest.mark.parametrize("value", [1.5, float("inf")])
+def test_dropout_p_out_of_range_rejected(tmp_path: Path, value: float) -> None:
+    bad = _default()
+    bad["lidar"]["dropout_p"] = value
+    with pytest.raises(ProfileError, match=r"lidar\.dropout_p"):
+        load_profile(_write(tmp_path, bad))
+
+
+def test_nan_rejected(tmp_path: Path) -> None:
+    bad = _default()
+    bad["gnss"]["sigma_h_m"] = float("nan")
+    with pytest.raises(ProfileError, match=r"gnss\.sigma_h_m: must be finite"):
+        load_profile(_write(tmp_path, bad))
+
+
+def test_multipath_amp_min_above_max_rejected(tmp_path: Path) -> None:
+    bad = _default()
+    bad["gnss"]["multipath_amp_min_m"] = bad["gnss"]["multipath_amp_max_m"] + 1.0
+    with pytest.raises(ProfileError, match=r"gnss\.multipath_amp_min_m"):
+        load_profile(_write(tmp_path, bad))

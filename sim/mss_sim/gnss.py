@@ -32,6 +32,9 @@ class GnssDegrader:
     drift normals (3) -> white normals (3) -> multipath decisions (only while in multipath
     mode with no active event: start uniform, then amplitude, direction, hold uniforms).
     Outage still consumes the drift and white draws and returns ``None``.
+
+    A non-increasing stamp after the first call is bad sensor data: ``step`` returns ``None``,
+    increments ``n_rejected`` and changes no state (no rng draw, ``_last_t_ns`` kept).
     """
 
     def __init__(
@@ -53,6 +56,7 @@ class GnssDegrader:
         self._last_t_ns = t0_ns
         self._event_bias = np.zeros(3)
         self._event_end_s = -math.inf
+        self.n_rejected: int = 0
 
     def mode_at(self, t_s: float, p_enu: np.ndarray) -> str:
         pt = Point(float(p_enu[0]), float(p_enu[1]))
@@ -68,6 +72,9 @@ class GnssDegrader:
         n = self._n
         t_s = (t_ns - self._t0_ns) / 1e9
         p_true = np.asarray(p_e_g_true, dtype=float)
+        if self._drift is not None and t_ns <= self._last_t_ns:
+            self.n_rejected += 1
+            return None
 
         drift_n = self._rng.standard_normal(3)
         white_n = self._rng.standard_normal(3)

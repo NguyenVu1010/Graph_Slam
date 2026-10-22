@@ -94,11 +94,12 @@ class GroundTruth:
     def to_tum(self, path: Path) -> None:
         """Write `t x y z qx qy qz qw` (seconds, 9 decimals)."""
         q_xyzw = self.q_wxyz[:, [1, 2, 3, 0]]  # TUM file order (x, y, z, w)
-        t_s = self.t_ns / _NS_PER_S
+        rest = np.column_stack([self.p_w_b, q_xyzw])
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savetxt(
-            path,
-            np.column_stack([t_s, self.p_w_b, q_xyzw]),
-            fmt="%.9f",
-            header="t x y z qx qy qz qw",
-        )
+        lines = ["# t x y z qx qy qz qw"]
+        for t_ns, row in zip(self.t_ns.tolist(), rest, strict=True):
+            # Seconds from integers: exact nanoseconds even at epoch scale (float64 is not).
+            t_s = f"{t_ns // _NS_PER_S}.{t_ns % _NS_PER_S:09d}"
+            lines.append(" ".join([t_s, *(f"{v:.9f}" for v in row)]))
+        # LF on every OS, like np.savetxt, so the file is byte-identical across platforms.
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")

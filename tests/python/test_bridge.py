@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from conftest import _REPO, e01_scenario
+import pytest
+from conftest import _REPO, copy_bag_without, e01_scenario
 
 from mss_sim.bag_io import BagReader, cloud_to_arrays, stamp_ns
 from mss_sim.bridge import BridgeReport, run_bridge
@@ -65,11 +66,15 @@ def test_lidar_has_t_and_ring(bridged_bag: tuple[Path, BridgeReport]) -> None:
         assert msg.header.frame_id == "lidar_link"
 
 
-def test_wheel_odom_fields(bridged_bag: tuple[Path, BridgeReport]) -> None:
+def test_wheel_odom_fields(raw_bag: Fixture, bridged_bag: tuple[Path, BridgeReport]) -> None:
     out_dir, _ = bridged_bag
+    with BagReader(raw_bag[0]) as r:
+        tfs = [ts for _, _, m in r.messages(["/tf_static"]) for ts in m.transforms]
+    body = next(ts.header.frame_id for ts in tfs if ts.child_frame_id == "lidar_link")
     with BagReader(out_dir / "bag") as r:
         msgs = [m for _, _, m in r.messages(["/wheel/odom"])]
-    assert all(m.child_frame_id == "base_link" and m.header.frame_id == "odom" for m in msgs)
+    assert msgs
+    assert all(m.child_frame_id == body and m.header.frame_id == "odom" for m in msgs)
     assert msgs[-1].pose.pose.position.x > 0.5  # robot drives forward
 
 
@@ -183,3 +188,17 @@ def test_clock_offsets_shift_stamp_and_log_time(raw_bag: Fixture, tmp_path: Path
         for (t_out, s_out), (t_raw, s_raw) in zip(dst, src, strict=True):
             assert t_out - t_raw == offsets[key], out_topic
             assert s_out - s_raw == offsets[key], out_topic
+
+
+def test_missing_tf_static_raises(raw_bag: Fixture, tmp_path: Path) -> None:
+    raw, info = raw_bag
+    no_tf = copy_bag_without(raw, tmp_path / "no_tf", "/tf_static")
+    with pytest.raises(ValueError, match="lidar_link"):
+        run_bridge(no_tf, e01_scenario(info), load_profile(e01_scenario(info).profile), tmp_path)
+
+
+def test_report_has_gnss_rejected(bridged_bag: tuple[Path, BridgeReport]) -> None:
+    out_dir, report = bridged_bag
+    assert report.n_gnss_rejected == 0
+    saved = json.loads((out_dir / "bridge_report.json").read_text())
+    assert saved["n_gnss_rejected"] == 0

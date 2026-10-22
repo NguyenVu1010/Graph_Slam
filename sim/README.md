@@ -16,7 +16,7 @@ PYTHONPATH=sim python -m mss_sim gt-to-tum <bag> <out.tum>
 
 `bridge` prints the report as one JSON line and writes, under `<out_dir>`: `bag/` (MCAP; must not
 exist yet), `gt.tum` and `bridge_report.json` (`n_msgs`, `n_dropped_gnss`, `n_odom_errors`,
-`n_gt_clamped`). Output topics: `/lidar/points` (adds per-point `t` and `ring`, motion skew,
+`n_gt_clamped`, `n_gnss_rejected`). Output topics: `/lidar/points` (adds per-point `t` and `ring`, motion skew,
 dropout, bad points), `/imu/data`, `/gnss/fix` (degraded, `position_covariance_type = 2`),
 `/wheel/odom` (quantised encoders, believed kinematics), `/ground_truth` and `/tf_static`
 (copied). `/joint_states` is consumed, not re-emitted; `/clock` is not produced offline.

@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import pytest
 
 from mss_sim.odom import OdomTwist, WheelQuantizer, integrate_pose
 from mss_sim.profile import Kinematics, OdomNoise
@@ -74,6 +75,25 @@ def test_backwards_or_repeated_stamp_returns_none() -> None:
     assert q.step(T0, NAMES, [1.0, 1.0]) is None
     assert q.step(T0 + DT_NS, NAMES, [1.0, 1.0]) is None
     assert q.n_errors == 2
+    assert q.step(T0 + 2 * DT_NS, NAMES, [1.0, 1.0]) is not None
+
+
+def test_nan_rate_skipped_without_state_change() -> None:
+    q = WheelQuantizer(_noise(), np.random.default_rng(1))
+    q.step(T0, NAMES, [1.0, 1.0])
+    assert q.step(T0 + DT_NS, NAMES, [math.nan, 1.0]) is None
+    assert q.n_errors == 1
+    tw = q.step(T0 + 2 * DT_NS, NAMES, [1.0, 1.0])
+    assert tw is not None
+    # dt spans both periods (the NaN step did not advance time): v = rate * r_believed.
+    assert tw.v_mps == pytest.approx(1.0 * BELIEVED.wheel_radius_m, rel=1e-2)
+
+
+def test_short_velocity_list_skipped() -> None:
+    q = WheelQuantizer(_noise(), np.random.default_rng(1))
+    q.step(T0, NAMES, [1.0, 1.0])
+    assert q.step(T0 + DT_NS, NAMES, [1.0]) is None
+    assert q.n_errors == 1
     assert q.step(T0 + 2 * DT_NS, NAMES, [1.0, 1.0]) is not None
 
 

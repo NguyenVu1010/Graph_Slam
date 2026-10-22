@@ -9,12 +9,19 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
-from conftest import _REPO
+from conftest import _REPO, copy_bag_without
 from rosbags.rosbag2 import Reader, Writer
 from rosbags.typesys import Stores, get_typestore
 
 from mss_eval.noise_measure import expected_dropout, imu_section, lidar_section, ray_residuals
-from mss_eval.noise_report import Report, Row, estimate_gnss_sigma, estimate_range_sigma, run
+from mss_eval.noise_report import (
+    Report,
+    Row,
+    estimate_gnss_sigma,
+    estimate_range_sigma,
+    load_planes,
+    run,
+)
 from mss_sim.bridge import BridgeReport
 from mss_sim.synth import SynthInfo
 
@@ -237,3 +244,35 @@ def test_gnss_sigma_rejects_multipath_steps() -> None:
     sigma, excluded = estimate_gnss_sigma(r, 1.0)
     assert abs(sigma - 1.0) <= 0.15
     assert excluded == pytest.approx(0.10, abs=0.02)
+
+
+def test_load_planes_scales_d_with_normal(tmp_path: Path) -> None:
+    path = tmp_path / "planes.yaml"
+    path.write_text(yaml.safe_dump([{"n": [0, 0, 2], "d": 2}, {"n": [3, 4, 0], "d": -10}]))
+    n, d = load_planes(path)
+    np.testing.assert_allclose(n, [[0, 0, 1], [0.6, 0.8, 0]])
+    np.testing.assert_allclose(d, [1.0, -2.0])
+    path.write_text(yaml.safe_dump([{"n": [0, 0, 0], "d": 1}]))
+    with pytest.raises(ValueError, match="zero-norm"):
+        load_planes(path)
+
+
+def test_missing_lidar_transform_skips_lidar(
+    bridged_bag: tuple[Path, BridgeReport], planes_file: Path, tmp_path: Path
+) -> None:
+    src, _ = bridged_bag
+    bag = copy_bag_without(src / "bag", tmp_path / "no_tf" / "bag", "/tf_static")
+    report = run(bag, _PROFILE, tmp_path / "out", planes=planes_file)
+    assert "LiDAR" not in {s.name for s in report.sections}
+    row = _row(report, "Bag", "T_b_l")
+    assert row.ok is None
+    assert row.note == "no lidar transform in /tf_static; LiDAR rows skipped"
+
+
+def test_gnss_lever_arm_assumed_zero_without_pipeline_config(
+    report_dir: tuple[Report, Path],
+) -> None:
+    report, _ = report_dir
+    row = _row(report, "GNSS", "p_b_g_m")
+    assert row.measured == "assumed 0 (no --pipeline-config)"
+    assert row.ok is None

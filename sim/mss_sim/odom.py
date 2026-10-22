@@ -22,9 +22,10 @@ class WheelQuantizer:
     The twist uses ``kinematics_believed`` (deliberately wrong), so integrated odometry is
     biased relative to the true motion that generated the wheel rates.
 
-    ``step`` returns ``None`` and increments ``n_errors`` when a joint name is missing or the
-    stamp does not increase. The very first valid call only establishes the time base (there
-    is no dt yet): it returns ``None`` without counting an error and draws no noise.
+    ``step`` returns ``None`` and increments ``n_errors`` (log-and-skip, no state change) when a
+    joint name is missing, ``velocity_radps`` and ``names`` differ in length, a wheel rate is not
+    finite, or the stamp does not increase. The very first valid call only establishes the time
+    base (there is no dt yet): it returns ``None`` without counting an error and draws no noise.
     """
 
     def __init__(
@@ -45,7 +46,15 @@ class WheelQuantizer:
         self.n_errors = 0
 
     def step(self, t_ns: int, names: list[str], velocity_radps: list[float]) -> OdomTwist | None:
-        if self._left not in names or self._right not in names:
+        # Validate everything before touching any state.
+        if self._left not in names or self._right not in names or len(velocity_radps) != len(names):
+            self.n_errors += 1
+            return None
+        rates = (
+            velocity_radps[names.index(self._left)],
+            velocity_radps[names.index(self._right)],
+        )
+        if not (math.isfinite(rates[0]) and math.isfinite(rates[1])):
             self.n_errors += 1
             return None
         if self._last_t_ns is None:
@@ -57,10 +66,6 @@ class WheelQuantizer:
 
         dt = (t_ns - self._last_t_ns) / 1e9
         self._last_t_ns = t_ns
-        rates = (
-            velocity_radps[names.index(self._left)],
-            velocity_radps[names.index(self._right)],
-        )
         v_wheel = [0.0, 0.0]
         kin = self._noise.kinematics_believed
         for i in range(2):

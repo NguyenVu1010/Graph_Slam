@@ -73,11 +73,17 @@ def test_bounds(gt: GroundTruth) -> None:
 
 
 def test_tum_round_trip(gt: GroundTruth, tmp_path: Path) -> None:
+    t0 = 1_700_000_000_000_000_000  # epoch-scale stamps
+    gt = GroundTruth(gt.t_ns + t0 + 123, gt.p_w_b, gt.q_wxyz)
     path = tmp_path / "gt.tum"
     gt.to_tum(path)
     traj = read_tum(path)
     assert len(traj) == _N
-    np.testing.assert_allclose(traj.t_s, gt.t_ns * 1e-9, atol=1e-9)
+    # read_tum parses to float64: ~1e-7 s resolution at 1.7e9 s.
+    np.testing.assert_allclose(traj.t_s, gt.t_ns / 1e9, rtol=0, atol=1e-6)
+    # The text itself keeps exact nanoseconds.
+    lines = [ln for ln in path.read_text().splitlines() if not ln.startswith("#")]
+    assert lines[1].split()[0] == "1700000000.005000123"
     np.testing.assert_allclose(traj.p, gt.p_w_b, atol=1e-9)
     # File order is x y z w; memory order is w x y z.
     np.testing.assert_allclose(traj.q_xyzw[:, :3], gt.q_wxyz[:, 1:], atol=1e-9)

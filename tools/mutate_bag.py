@@ -36,8 +36,11 @@ def mutate(
 
     Reordering swaps the log times of a selected message and the next surviving message on
     the same topic when they are less than ``window_ns`` apart; stamps and payloads are kept.
+
+    rng: ``SeedSequence(seed).spawn(5)[4]``, the ``mutate`` stream of the plan's spawn order
+    [lidar, gnss, odom, imu, mutate] (the bridge uses the first three).
     """
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(np.random.SeedSequence(seed).spawn(5)[4])
     with BagReader(in_bag) as r:
         types = r.topics()
         msgs = list(r.raw_messages(list(types)))

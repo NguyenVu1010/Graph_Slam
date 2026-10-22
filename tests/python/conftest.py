@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from mss_sim.bag_io import BagReader, BagWriter
 from mss_sim.bridge import BridgeReport, run_bridge
 from mss_sim.profile import load_profile
 from mss_sim.scenario import load_scenario
@@ -38,3 +39,14 @@ def bridged_bag(
     out_dir = tmp_path_factory.mktemp("bridged") / "out"
     report = run_bridge(raw, scenario, load_profile(scenario.profile), out_dir, seed=42)
     return out_dir, report
+
+
+def copy_bag_without(src: Path, dst: Path, drop_topic: str) -> Path:
+    """Byte-for-byte copy of bag ``src`` into ``dst`` without ``drop_topic``."""
+    with BagReader(src) as r, BagWriter(dst) as w:
+        types = {t: ty for t, ty in r.topics().items() if t != drop_topic}
+        for topic, typename in types.items():
+            w.add_topic(topic, typename)
+        for topic, t_ns, raw in r.raw_messages(list(types)):
+            w.write_raw(topic, t_ns, raw)
+    return dst
