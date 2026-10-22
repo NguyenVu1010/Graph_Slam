@@ -1,0 +1,35 @@
+# Single source of tunables for bench, tests and ros2_node (installed to the package share).
+# Every value has a unit in its key or a comment and is validated at start-up.
+# New features ship behind a flag that defaults to the previous behaviour.
+mss_node:
+  ros__parameters:
+    # Single-thread, fixed-seed mode so runs reproduce bit for bit.
+    deterministic: true
+    random_seed: 42
+
+    frames:
+      world: "map"
+      body: "imu_link"     # b = IMU
+      lidar: "lidar_link"  # l
+      gnss: "gnss_link"    # g, antenna
+      # T_b_l: LiDAR in body. Quaternion in Hamilton order (w, x, y, z).
+      T_b_l:
+        translation_m: [0.0, 0.0, 0.0]
+        quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
+      # p_b_g: GNSS antenna lever arm expressed in body, metres.
+      p_b_g_m: [0.0, 0.0, 0.0]
+
+    imu:
+      rate_hz: 200.0
+      acc_noise_density: 0.0  # m/s^2/sqrt(Hz)  TODO from datasheet
+      gyro_noise_density: 0.0  # rad/s/sqrt(Hz)  TODO from datasheet
+      acc_random_walk: 0.0     # m/s^3/sqrt(Hz)
+      gyro_random_walk: 0.0    # rad/s^2/sqrt(Hz)
+      gravity_mps2: 9.80665
+
+    gnss:
+      enabled: false
+    wheel_odom:
+      enabled: false
+    loop_closure:
+      enabled: false

@@ -1,0 +1,23 @@
+[project]
+name = "mss-tools"
+version = "0.0.1"
+description = "Python tooling for multi-sensor-slam: simulation, evaluation, data fetch. Never links against core."
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+eval = ["evo>=1.28", "matplotlib>=3.8"]
+dev = ["ruff>=0.6", "pytest>=8"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["eval", "sim", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "ANN"]
+ignore = ["ANN401"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+pythonpath = ["eval", "sim", "tools"]
