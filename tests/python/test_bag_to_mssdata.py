@@ -1,6 +1,7 @@
 """bag_to_mssdata: bridged MCAP bag -> flat binary dataset for the C++ bench."""
 
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -315,3 +316,14 @@ def test_lidar_reorder_and_duplicate_stamps(tmp_path: Path) -> None:
         markers.append(float(np.frombuffer(raw, LIDAR_POINT_DTYPE, offset=12)["xyz"][0, 0]))
     assert starts == [100, 200]
     assert markers == [1.0, 2.0]  # the first-logged scan of the duplicated stamp survives
+
+
+def test_cpp_reader_agrees() -> None:
+    """Cross-check hook: the C++ DatasetReader (via mss_bench) must replay what Python wrote.
+
+    Task 8 fills this in once mss_bench reads datasets; until then it only checks the env var.
+    """
+    bench = os.environ.get("MSS_BENCH_BIN")
+    if not bench:
+        pytest.skip("MSS_BENCH_BIN is not set (path to mss_bench)")
+    assert Path(bench).is_file(), f"MSS_BENCH_BIN={bench} is not a file"

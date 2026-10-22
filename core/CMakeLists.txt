@@ -14,7 +14,7 @@ if(MSS_WITH_GTSAM)
   find_package(GTSAM REQUIRED)
 endif()
 
-set(MSS_MODULES common preprocess map scan_match degeneracy imu gnss odom loop backend pipeline)
+set(MSS_MODULES common preprocess map scan_match degeneracy imu gnss odom loop backend pipeline io)
 foreach(module IN LISTS MSS_MODULES)
   add_subdirectory(${module})
 endforeach()
