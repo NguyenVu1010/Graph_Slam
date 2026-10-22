@@ -18,10 +18,11 @@ from bag_to_mssdata import (
     LIDAR_POINT_DTYPE,
     ODOM_DTYPE,
     ConvertReport,
+    _sorted_unique,
     convert,
 )
 from mss_sim import synth
-from mss_sim.bag_io import TYPESTORE, BagWriter, make_header
+from mss_sim.bag_io import TYPESTORE, BagWriter, CloudArrays, arrays_to_cloud, make_header
 from mss_sim.bridge import BridgeReport
 from mss_sim.geodesy import lla_to_enu
 from mss_sim.synth import SynthInfo
@@ -249,3 +250,68 @@ def test_unknown_cov_without_pipeline_config_is_an_error(tmp_path: Path) -> None
     bag = _bag_with_unknown_cov(tmp_path / "bag")
     with pytest.raises(ValueError, match="pipeline-config"):
         convert(bag, tmp_path / "ds")
+
+
+def test_missing_pipeline_config_warns_and_defaults_p_b_g(
+    bridged_bag: tuple[Path, BridgeReport], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "ds"
+    convert(bridged_bag[0] / "bag", out, origin_lla=_ORIGIN_LLA)
+    assert "p_b_g_m defaults to [0, 0, 0]" in capsys.readouterr().err
+    index = json.loads((out / "index.json").read_text(encoding="utf-8"))
+    assert index["p_b_g_m"] == [0.0, 0.0, 0.0]
+
+
+def test_sorted_unique_orders_and_keeps_first_of_ties() -> None:
+    rec = np.zeros(6, dtype=ODOM_DTYPE)
+    rec["t"] = [30, 10, 20, 10, 30, 5]
+    rec["v"] = [0, 1, 2, 3, 4, 5]
+    out = _sorted_unique(rec)
+    assert out["t"].tolist() == [5, 10, 20, 30]
+    assert out["v"].tolist() == [5, 1, 2, 0]  # first occurrence of each tied stamp wins
+
+
+def _scan(stamp: int, marker: float) -> object:
+    n = 4
+    arrays = CloudArrays(
+        xyz=np.full((n, 3), marker, dtype=np.float32),
+        intensity=np.zeros(n, np.float32),
+        t_ns=np.arange(n, dtype=np.uint32),
+        ring=np.zeros(n, np.uint16),
+        height=1,
+        width=n,
+    )
+    return arrays_to_cloud(arrays, stamp, "lidar_link")
+
+
+def test_lidar_reorder_and_duplicate_stamps(tmp_path: Path) -> None:
+    ty = TYPESTORE.types
+    bag = tmp_path / "bag"
+    tf = ty["geometry_msgs/msg/TransformStamped"](
+        header=make_header(0, "base_link"),
+        child_frame_id="lidar_link",
+        transform=ty["geometry_msgs/msg/Transform"](
+            translation=ty["geometry_msgs/msg/Vector3"](x=0.0, y=0.0, z=0.0),
+            rotation=ty["geometry_msgs/msg/Quaternion"](x=0.0, y=0.0, z=0.0, w=1.0),
+        ),
+    )
+    # Log order: stamp 200 (marker 2), stamp 100 (marker 1), stamp 200 again (marker 9, duplicate).
+    with BagWriter(bag) as w:
+        w.add_topic("/lidar/points", "sensor_msgs/msg/PointCloud2")
+        w.add_topic("/tf_static", "tf2_msgs/msg/TFMessage")
+        w.write("/tf_static", 0, ty["tf2_msgs/msg/TFMessage"](transforms=[tf]))
+        w.write("/lidar/points", 1_000, _scan(200, 2.0))
+        w.write("/lidar/points", 2_000, _scan(100, 1.0))
+        w.write("/lidar/points", 3_000, _scan(200, 9.0))
+    out = tmp_path / "ds"
+    report = convert(bag, out)
+    assert report.n["lidar"] == 2
+    files = sorted((out / "lidar").iterdir())
+    assert [f.name for f in files] == ["000000.bin", "000001.bin"]
+    starts, markers = [], []
+    for f in files:
+        raw = f.read_bytes()
+        starts.append(int(np.frombuffer(raw, LIDAR_HEADER_DTYPE, count=1)["t_start"][0]))
+        markers.append(float(np.frombuffer(raw, LIDAR_POINT_DTYPE, offset=12)["xyz"][0, 0]))
+    assert starts == [100, 200]
+    assert markers == [1.0, 2.0]  # the first-logged scan of the duplicated stamp survives

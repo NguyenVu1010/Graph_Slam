@@ -34,7 +34,7 @@ Thư mục phẳng mà `bench` đọc không cần ROS hay thư viện MCAP. Sin
 | 32 | f64 x9 | `cov` | hiệp phương sai 3x3 theo hàng, m^2, khung `e` |
 | 104 | int8 | `status` | `NavSatStatus.status` (-1 không fix, 0 fix, 1 SBAS, 2 GBAS) |
 
-`cov` lấy nguyên `position_covariance` khi `position_covariance_type != 0`. Khi bằng 0 (không biết), bộ chuyển đổi điền `diag(sigma_h^2, sigma_h^2, sigma_v^2)` từ `gnss.sigma_h_m`, `gnss.sigma_v_m` trong file cấu hình pipeline (`--pipeline-config`) và đặt `gnss_cov_filled_from_sigma = true`; thiếu cấu hình thì báo lỗi.
+`cov` lấy nguyên `position_covariance` khi `position_covariance_type != 0`. Khi bằng 0 (không biết), bộ chuyển đổi điền `diag(sigma_h^2, sigma_h^2, sigma_v^2)` từ `gnss.sigma_h_m`, `gnss.sigma_v_m` trong file cấu hình pipeline (`--pipeline-config`) và đặt `gnss_cov_filled_from_sigma = true`; thiếu cấu hình thì báo lỗi. `gnss_cov_filled_from_sigma` là `true` nếu có ÍT NHẤT MỘT dòng được điền.
 
 ## `odom.bin` (24 B/bản ghi)
 
@@ -64,7 +64,7 @@ Một file một quét, đánh số từ 0 theo thời gian.
 | 8 | uint32 | `n` | số điểm |
 | 12 + 22 i | f32 x3 | `xyz` | m, khung `l` (LiDAR) |
 | 24 + 22 i | f32 | `intensity` | |
-| 28 + 22 i | uint32 | `t_offset` | ns so với `t_start` |
+| 28 + 22 i | uint32 | `t_offset` | ns so với `t_start`, phải < 2^32 ns (khoảng 4,29 s) |
 | 32 + 22 i | uint16 | `ring` | chỉ số tia |
 
 Điểm bị rơi giữ nguyên NaN/inf (lõi lọc ở preprocess). Điểm theo thứ tự hàng-trước của cloud có tổ chức. Bag thô không có `t`/`ring` bị từ chối.
@@ -78,7 +78,7 @@ Một file một quét, đánh số từ 0 theo thời gian.
     "imu":   {"file": "imu.bin",  "count": 1200},
     "gnss":  {"file": "gnss.bin", "count": 30},
     "odom":  {"file": "odom.bin", "count": 300},
-    "gt":    {"file": "gt.bin",   "count": 4001},
+    "gt":    {"file": "gt.bin",   "count": 1201},
     "lidar": {"dir": "lidar",     "count": 60}
   },
   "origin_lla": [21.0278, 105.8342, 12.0],

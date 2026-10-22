@@ -218,6 +218,9 @@ def convert(
     counts["lidar"] = len(kept)
 
     t_b_l, body_frame = tf_info
+    if params is None:
+        print("warning: no --pipeline-config, p_b_g_m defaults to [0, 0, 0]", file=sys.stderr)
+    p_b_g_m = params.p_b_g_m if params else (0.0, 0.0, 0.0)
     index = {
         "version": FORMAT_VERSION,
         "topics": {
@@ -226,7 +229,7 @@ def convert(
         },
         "origin_lla": list(used_origin),
         "T_b_l": t_b_l,
-        "p_b_g_m": list(params.p_b_g_m) if params else [0.0, 0.0, 0.0],
+        "p_b_g_m": list(p_b_g_m),
         "body_frame": body_frame,
         "lidar_frame": _LIDAR_FRAME,
         "gnss_cov_filled_from_sigma": filled,
