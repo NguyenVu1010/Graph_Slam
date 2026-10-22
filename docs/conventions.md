@@ -22,7 +22,9 @@ Every module follows these. If a change needs something different, write an ADR 
 ## Perturbation
 
 Right perturbation on SE(3): `T <- T * Exp(delta)`, tangent order `delta = [rho, phi]`
-(translation, rotation). This matches GTSAM `Pose3`, so backend factors need no re-ordering.
+(translation, rotation). This is the Sophus order. GTSAM `Pose3` uses `[phi, rho]`, so
+`backend` permutes vectors (`P v`) and covariances (`P Sigma P^T`) at its boundary and nowhere
+else; see `docs/derivations/lie_conventions.md` and `tests/unit/backend/test_lie_gtsam.cpp`.
 
 Jacobians are named `J_<residual>_<variable>`: `J_r_xi`, `J_dp_bg`. Before writing one,
 state the residual, the variables and the perturbation in a comment, then write the

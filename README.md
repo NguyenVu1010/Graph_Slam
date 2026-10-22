@@ -40,6 +40,18 @@ tools/wsl/setup.sh
 tools/wsl/build.sh --no-gtsam   # then without --no-gtsam for the full build
 ```
 
+Latency benchmark and dataset replay (no ROS). Convert a bag once, then replay it:
+
+```sh
+python tools/bag_to_mssdata.py <bag> <out> --pipeline-config config/sim/warehouse.yaml
+mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR
+```
+
+`--out` is required; `DIR` receives `est.tum` and `bench.json`, and a summary table goes to
+stdout. Exit codes: 0 success; 2 usage, config, dataset or output error; 3 the replay finished
+but some records were not processed (dropped or rejected, see `bench.json`). Format:
+`docs/mssdata_format.md`, decision: `docs/adr/014-bench-dataset-format.md`.
+
 Desktop with ROS 2 Jazzy (workspace contains this repo under `src/`):
 
 ```sh
