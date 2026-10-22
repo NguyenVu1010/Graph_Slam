@@ -39,5 +39,5 @@ numerical-difference test (relative error < 1e-6).
 
 ## Core types (`mss/common/types.hpp`)
 
-`Pose{R, p}`, `PoseCovariance` (6x6, `[rho, phi]` order), `ImuSample{acc_b, gyro_b}`.
+`Pose{R, p}`, `PoseCovariance` (6x6, `[rho, phi]` order), `ImuSample{t, acc_b, gyro_b}`.
 Modules outside `backend` exchange only these; GTSAM types never cross a module boundary.
