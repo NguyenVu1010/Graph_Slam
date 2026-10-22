@@ -1,0 +1,19 @@
+# build trees (cmake + colcon)
+build/
+build-*/
+install/
+log/
+# python
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+.pytest_cache/
+# results never go in the source tree
+results/
+# test data fetched by tools/fetch_test_data.sh
+tests/data/
+# editors
+.vscode/
+.idea/
+*.swp

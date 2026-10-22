@@ -1,0 +1,7 @@
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+find_dependency(Eigen3 3.4 REQUIRED)
+if(@MSS_WITH_GTSAM@)
+  find_dependency(GTSAM REQUIRED)
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/mss_coreTargets.cmake")

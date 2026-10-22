@@ -1,0 +1,44 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang-format-18
+      - run: git ls-files '*.cpp' '*.hpp' | xargs clang-format-18 --dry-run --Werror
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install ruff
+      - run: ruff check . && ruff format --check .
+
+  core-no-gtsam:
+    # Thin runner: core + unit tests without GTSAM. Full build with GTSAM runs in docker below.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libeigen3-dev libgtest-dev
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMSS_WITH_GTSAM=OFF -DMSS_WERROR=ON
+      - run: cmake --build build --parallel 2
+      - run: ctest --test-dir build --output-on-failure
+
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[dev]"
+      - run: pytest
+
+  docker-full:
+    # ROS 2 Jazzy + GTSAM; also where integration tests E-01..E-03 will run against eval/baselines.json.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f docker/deps.Dockerfile -t mss-deps .
+      - run: docker build -f docker/Dockerfile --build-arg DEPS=mss-deps -t mss .
