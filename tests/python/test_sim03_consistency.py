@@ -10,7 +10,7 @@ from mss_sim.scenario import load_scenario
 
 REPO = Path(__file__).resolve().parents[2]
 ADR_T_B_L_TRANSLATION_M = [0.10, 0.0, 0.50]
-ADR_T_B_L_QUATERNION_WXYZ = [0.99985, 0.0, 0.01745, 0.0]
+ADR_T_B_L_QUATERNION_WXYZ = [0.99984770, 0.0, 0.01745241, 0.0]
 ADR_P_B_G_M = [-0.20, 0.10, 0.60]
 
 
