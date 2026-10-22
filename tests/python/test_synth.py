@@ -8,7 +8,7 @@ import pytest
 from mss_sim.bag_io import BagReader, cloud_to_arrays, stamp_ns
 from mss_sim.geodesy import lla_to_enu
 from mss_sim.gt import GroundTruth
-from mss_sim.synth import SynthInfo
+from mss_sim.synth import SynthInfo, write_synthetic_raw_bag
 
 _TOPICS = {
     "/ground_truth": "nav_msgs/msg/Odometry",
@@ -77,7 +77,7 @@ def test_lidar_points_lie_on_planes(raw_bag: tuple[Path, SynthInfo]) -> None:
     assert n_finite_total > 0
 
 
-def test_lidar_misses_are_inf_and_ring_zero_is_lowest(raw_bag: tuple[Path, SynthInfo]) -> None:
+def test_lidar_inside_box_all_finite_and_grid_layout(raw_bag: tuple[Path, SynthInfo]) -> None:
     _, msg = _read(raw_bag, "/lidar/points")[0]
     xyz = cloud_to_arrays(msg).xyz.reshape(16, 720, 3)
     assert np.isfinite(xyz).all()  # inside a closed box every ray hits
@@ -146,3 +146,19 @@ def test_tf_static_identity(raw_bag: tuple[Path, SynthInfo]) -> None:
         0,
     )
     assert tf.transform.rotation.w == 1.0
+
+
+def test_lidar_non_returns_are_inf_in_all_coordinates(tmp_path: Path) -> None:
+    info = write_synthetic_raw_bag(
+        tmp_path, duration_s=0.2, max_range_m=9.0, origin_lla=(21.0278, 105.8342, 12.0)
+    )
+    assert info.duration_s == 0.2
+    with BagReader(tmp_path / "raw") as reader:
+        (_, _, msg), *_ = reader.messages(["/lidar/points"])
+    xyz = cloud_to_arrays(msg).xyz.reshape(16, 720, 3)
+    assert not np.isnan(xyz).any()
+    miss = np.isinf(xyz).any(axis=2)
+    assert miss.any() and not miss.all()
+    assert np.isinf(xyz[miss]).all()  # inf in x, y and z together
+    assert miss[:, 0].any()  # column 0 has an exactly-zero y direction component
+    assert np.linalg.norm(xyz[~miss], axis=1).max() <= 9.0 + 1e-5

@@ -24,7 +24,7 @@ _NS_PER_S = 1_000_000_000
 _GT_HZ, _IMU_HZ, _LIDAR_HZ, _GNSS_HZ, _JOINT_HZ = 200, 200, 10, 5, 50
 _RINGS, _COLUMNS = 16, 720
 _ELEVATION_DEG = (-15.0, 15.0)  # ring 0 lowest
-_MAX_RANGE_M = 100.0
+_DEFAULT_MAX_RANGE_M = 100.0
 _INTENSITY = 100.0
 _F32 = 7  # sensor_msgs/PointField FLOAT32
 _RAW_FIELDS = ("x", "y", "z", "intensity")
@@ -82,9 +82,13 @@ def _scan_dirs() -> np.ndarray:
 
 
 def _raycast(
-    origin: np.ndarray, rot: np.ndarray, planes: list[tuple[np.ndarray, float]], dirs_l: np.ndarray
+    origin: np.ndarray,
+    rot: np.ndarray,
+    planes: list[tuple[np.ndarray, float]],
+    dirs_l: np.ndarray,
+    max_range_m: float,
 ) -> np.ndarray:
-    """Nearest positive plane hit per ray in the LiDAR frame; ``inf`` for misses / > 100 m."""
+    """Nearest positive plane hit per ray in the LiDAR frame; ``inf`` x, y, z for non-returns."""
     dirs_w = dirs_l @ rot.T
     best = np.full(len(dirs_w), np.inf)
     for n, d in planes:
@@ -92,8 +96,12 @@ def _raycast(
         with np.errstate(divide="ignore", invalid="ignore"):
             t = (d - origin @ n) / denom
         best = np.where((denom != 0) & (t > 0) & (t < best), t, best)
-    best[best > _MAX_RANGE_M] = np.inf
-    return best[:, None] * dirs_l
+    best[best > max_range_m] = np.inf
+    # Only scale rays that hit: inf * 0 would give nan for an exactly-zero direction component.
+    xyz = np.full(dirs_l.shape, np.inf)
+    hit = np.isfinite(best)
+    xyz[hit] = best[hit, None] * dirs_l[hit]
+    return xyz
 
 
 def _raw_cloud(stamp: int, xyz: np.ndarray) -> object:
@@ -204,6 +212,7 @@ def write_synthetic_raw_bag(
     box_half_m: tuple[float, float, float] = (10.0, 6.0, 3.0),
     omega_radps: float = 0.3,
     speed_mps: float = 0.5,
+    max_range_m: float = _DEFAULT_MAX_RANGE_M,
     origin_lla: Lla,
 ) -> SynthInfo:
     """Write a raw bag into ``out_dir / "raw"`` and describe it."""
@@ -252,7 +261,7 @@ def write_synthetic_raw_bag(
             bag.write(
                 "/lidar/points",
                 int(s),
-                _raw_cloud(int(s), _raycast(p1[0], rot1[0], planes, dirs_l)),
+                _raw_cloud(int(s), _raycast(p1[0], rot1[0], planes, dirs_l, max_range_m)),
             )
 
         stamps = _times(duration_s, _GNSS_HZ)
