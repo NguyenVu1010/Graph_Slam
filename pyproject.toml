@@ -9,6 +9,14 @@ dependencies = ["numpy>=1.26"]
 eval = ["evo>=1.28", "matplotlib>=3.8"]
 dev = ["ruff>=0.6", "pytest>=8"]
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# Packages live under eval/ (and later sim/, tools/); the C++ dirs are not Python packages.
+[tool.setuptools.packages.find]
+where = ["eval"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
