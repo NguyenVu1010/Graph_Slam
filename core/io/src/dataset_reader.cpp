@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <limits>
 #include <string>
+#include <sys/stat.h>
 #include <system_error>
 #include <unistd.h>
 #include <utility>
@@ -17,8 +18,6 @@
 
 #include <Eigen/Geometry>
 #include <yaml-cpp/yaml.h>
-
-#include <sys/stat.h>
 
 namespace mss::io {
 

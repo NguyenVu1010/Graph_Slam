@@ -351,5 +351,7 @@ def test_cpp_reader_agrees(converted: tuple[Path, ConvertReport], tmp_path: Path
     assert result["n_odom"] == report.n["odom"]
     assert result["n_scans"] + result["n_dropped_scans"] == report.n["lidar"]
     assert result["n_rejected_imu"] == 0
+    assert result["n_dropped_imu"] == 0
+    assert result["n_dropped_aux"] == 0
     est = (out / "est.tum").read_text(encoding="utf-8").splitlines()
     assert len(est) == result["n_scans"]
