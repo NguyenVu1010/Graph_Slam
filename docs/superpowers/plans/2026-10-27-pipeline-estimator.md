@@ -87,7 +87,7 @@ The controller rules on these before implementation. Each task states what it do
 **Interfaces:**
 - Produces: the formulas every later task cites by section number (`pipeline.md §N`).
 
-- [ ] **Step 1: Write `docs/derivations/pipeline.md`** with these sections (English, formulas in the style of `scan_match.md`):
+- [x] **Step 1: Write `docs/derivations/pipeline.md`** with these sections (English, formulas in the style of `scan_match.md`):
   - §1 IMU cut at keyframe/scan time. Samples with `t < t_start` are integrated, then the interpolated sample `s(t_start)` (acc and gyro linear in time between the bracketing samples); the next interval starts by re-feeding `s(t_start)`. Hence `delta.dt_s * 1e9 == t_j - t_i` up to rounding, inside the backend tolerance `1.5e9 / rate_hz` ns, and `predict()` returns a state exactly at `t_start`. A raw sample at exactly `t_start` is its own interpolation.
   - §2 Deskew trajectory. `x0` = predicted state at `t_start`; preintegrator reset at `x0.bias`, fed `s(t_start)` then each sample with `t_start < t`, up to and including the first sample with `t >= t_end` (`t_end = scan_end_time`); `T_b0_b(t_k) = x0.T_w_b^-1 * predict(x0, g_w).T_w_b`. Subsampling when more than `ImuTrajectory::kMaxImuPerScan` entries: keep entry indices `round(j * (N - 1) / (kMax - 1))`, `j = 0..kMax-1` (both ends kept).
   - §3 LiDAR result to body. `T_w_b = T_w_l * T_b_l^-1`; perturbation `T_w_l Exp(xi_l) T_l_b = T_w_b Exp(Ad(T_b_l) xi_l)`, so `J_xib_xil = Ad(T_b_l)` and `cov_b = Ad(T_b_l) cov_l Ad(T_b_l)^T` (`transform_covariance(cov_l, T_b_l)`); degeneracy eigenvectors `V_b = Ad(T_b_l) V_l`, eigenvalues and flags unchanged (no re-normalisation).
@@ -102,7 +102,7 @@ The controller rules on these before implementation. Each task states what it do
     `a_w = a_t [cos psi, sin psi, 0] + kappa v^2 [-sin psi, cos psi, 0]`,
     `acc_b = R_w_b^T (a_w - g_w)`, `gyro_b = [0, 0, omega]`. `static_s = ramp_s = 0` reduces to the constant circle of `sim/mss_sim/synth.py`.
 - [ ] **Step 2: Write ADR-017** (Vietnamese like the other ADRs, template `000-template.md`, status "đề xuất"): decisions = (a) single-thread `EstimatorCore` behind the existing queues; (b) IMU cut by interpolated boundary sample (§1); (c) only keyframe clouds go into the `VoxelMap` (consistent with ADR-016 rebuild), inserted at the optimised pose; (d) LiDAR factor measurement per §4; (e) GNSS fixes attached to the next keyframe, shifted per §5, `T_e_w` = latest aligner estimate per factor; (f) no estimate before IMU init; failed scan match = IMU prediction, no keyframe; (g) stub backend (MSS_WITH_GTSAM=OFF): optimize errors fall back to the front-end state, logged once per failure streak. Alternatives table: per-scan map insertion; fixed `T_e_w` after first alignment; keyframe at every GNSS fix. Consequences: run_once allocates on keyframe scans (GTSAM); `T_e_w` refinement feeds back own trajectory.
-- [ ] **Step 3: Apply Contract issue 3 to `estimator.hpp` comments** (only if approved; text as in the issue). Build: GTSAM command with `--target test_estimator` still compiles. Expected: `BUILD OK`.
+- [x] **Step 3: Apply Contract issue 3 to `estimator.hpp` comments** (only if approved; text as in the issue). Build: GTSAM command with `--target test_estimator` still compiles. Expected: `BUILD OK`.
 - [ ] **Step 4: Commit**
 ```bash
 git add docs/derivations/pipeline.md docs/derivations/README.md docs/adr/017-single-thread-estimator-data-flow.md docs/adr/README.md core/pipeline/include/mss/pipeline/estimator.hpp

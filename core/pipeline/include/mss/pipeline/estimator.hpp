@@ -25,8 +25,10 @@ namespace mss::pipeline {
 /// therefore call run_once() as often as they like: processing early never reorders or
 /// starves a scan. flush() ignores the gate (end of data).
 ///
-/// Current phase (Task 8): single-threaded only; the module algorithms are not plugged
-/// in yet, so latest_state() reports an identity pose (see latest_state()).
+/// Current phase: the modules are plugged in (IMU static initialisation, deskew, scan
+/// matching, keyframes, backend::Graph, ADR-016 keyframe store and map cache, GNSS and
+/// wheel factors; docs/derivations/pipeline.md) and run single-threaded inside
+/// run_once() / flush(). start() / stop() remain no-ops (threads are a later PR, ADR-005).
 ///
 /// Keyframe-boundary duties of the estimator (contract for imu, odom and backend):
 ///   - keyframe time = scan `t_start`;
@@ -60,8 +62,9 @@ class Estimator {
   /// Builds every module and reserves every buffer: a pool of
   /// `realtime.scan_queue_depth + 2` ScanFrames of `realtime.max_points_per_scan` points,
   /// the IMU queue (`imu_queue_depth`) and the GNSS/wheel queues (`aux_queue_depth`).
-  /// No allocation happens after the constructor on any push_*/run_once/flush path
-  /// (Status errors returned there use string literals, see result.hpp).
+  /// No allocation happens after the constructor on the push_* paths and on run_once /
+  /// flush for non-keyframe scans (Status errors returned there use string literals, see
+  /// result.hpp); keyframe scans allocate inside backend::Graph (see run_once()).
   /// Preconditions: `cfg` comes from load_config (validated).
   /// Errors: throws (initialisation may throw) std::invalid_argument from module
   ///   constructors or when a realtime.*_queue_depth is <= 0 or above its compile-time
@@ -126,11 +129,15 @@ class Estimator {
   /// Tests: E-01, E-03.
   common::Status push_odom(const common::WheelSample& s);
 
-  /// Copy of the most recent estimate. Before the first scan has been processed it is a
-  /// default-constructed Estimate (state.t == Timestamp{}, identity pose, keyframe_id 0);
-  /// callers detect "no estimate yet" by `state.t == Timestamp{}`.
-  /// Current phase (Task 8): state.t = t_start of the last processed scan, pose identity,
-  /// zero velocity and bias, cov zero (no algorithm plugged in yet).
+  /// Copy of the most recent estimate. Until the IMU is initialised (imu.init_window_s of
+  /// still data before a scan) and the first keyframe exists it is a default-constructed
+  /// Estimate (state.t == Timestamp{}, identity pose, keyframe_id 0); callers detect
+  /// "no estimate yet" by `state.t == Timestamp{}`.
+  /// Afterwards: state.t = `t_start` of the last scan that produced an estimate; T_w_b,
+  /// v_w_b and bias from the front-end state (optimised keyframe state on keyframe scans,
+  /// scan-matched pose plus IMU-predicted velocity otherwise, IMU prediction when scan
+  /// matching fails); cov = marginal of the keyframe or the scan-match covariance in b;
+  /// keyframe_id = last keyframe.
   /// Frames: state.T_w_b, v_w_b in w; cov [rho, phi] of T_w_b. Hot path: no allocation.
   /// Tests: Task 8 test_estimator (LatestStateTimestampFollowsScans), E-01.
   common::Estimate latest_state() const;
@@ -147,14 +154,17 @@ class Estimator {
   /// `deterministic: true` this (plus flush()) is the only way processing happens, and
   /// two runs over the same input produce bit-identical results (E-02).
   /// Errors: none returned; per-message failures are logged and counted.
-  /// Hot path: yes (per scan); no allocation.
+  /// Hot path: yes (per scan); allocation-free on non-keyframe scans. Keyframe scans
+  ///   allocate inside backend::Graph (GTSAM iSAM2) and when a KeyframeStore slot grows.
   /// Tests: Task 8 test_estimator (RunOnceDrainsQueues, ScanWaitsForImuCoverage), E-02.
   void run_once();
 
   /// End of data: like run_once() but without the IMU coverage gate, so every queued
   /// message is processed in key order and all queues are empty on return. Call once
   /// when the input ends (bench at EOF, node shutdown).
-  /// Errors: none returned. Hot path: no (once); no allocation.
+  /// A scan whose end no IMU sample reaches (data ends mid-scan) is consumed (n_scans,
+  /// n_skipped_scans, n_uncovered_scans) without an estimate update.
+  /// Errors: none returned. Hot path: no (once); allocates only as run_once() does.
   /// Tests: Task 8 test_estimator (ScanWaitsForImuCoverage), bench component tests.
   void flush();
 
