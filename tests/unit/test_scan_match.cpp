@@ -2,13 +2,20 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <filesystem>
+#include <limits>
+#include <optional>
 #include <random>
+#include <stdexcept>
 
 #include <gtest/gtest.h>
 
 #include "mss/common/lie.hpp"
+#include "mss/common/scan_frame.hpp"
 #include "mss/common/types.hpp"
 #include "mss/map/voxel_map.hpp"
+#include "mss/pipeline/config.hpp"
 #include "mss/scan_match/scan_matcher.hpp"
 
 #include "alloc_counter.hpp"
@@ -112,6 +119,102 @@ TEST(PlaneFit, FewerThanThreeIsNullopt) {
   EXPECT_TRUE(detail::fit_plane(
                   make_buffer({Vec3(0.0, 0.0, 0.0), Vec3(1.0, 0.0, 0.0), Vec3(0.0, 1.0, 0.0)}))
                   .has_value());
+}
+
+pipeline::Config default_config() {
+  const common::Result<pipeline::Config> cfg =
+      pipeline::load_config(std::filesystem::path{MSS_REPO_DIR} / "config/default.yaml");
+  if (!cfg.is_ok()) {
+    throw std::runtime_error("default config: " + cfg.reason());
+  }
+  return cfg.value();
+}
+
+// Pushes an `nx` x `ny` grid with `spacing_m` on the plane z = `z_m` (frame of the scan).
+void push_grid(common::ScanFrame& scan, int nx, int ny, double spacing_m, double z_m) {
+  for (int i = 0; i < nx; ++i) {
+    for (int j = 0; j < ny; ++j) {
+      scan.push(static_cast<float>(i * spacing_m),
+                static_cast<float>(j * spacing_m),
+                static_cast<float>(z_m),
+                0.0F,
+                0U,
+                0U);
+    }
+  }
+}
+
+TEST(ScanMatcher, ConstructorRejectsInvalidConfig) {
+  const pipeline::Config c = default_config();
+  const std::size_t kMax = c.realtime.max_points_per_scan;
+  EXPECT_NO_THROW(ScanMatcher(c.scan_match, c.degeneracy, kMax));
+  const auto expect_throw = [&](void (*mutate)(ScanMatchConfig&)) {
+    ScanMatchConfig bad = c.scan_match;
+    mutate(bad);
+    EXPECT_THROW(ScanMatcher(bad, c.degeneracy, kMax), std::invalid_argument);
+  };
+  expect_throw([](ScanMatchConfig& s) { s.max_iterations = 0; });
+  expect_throw([](ScanMatchConfig& s) { s.rot_tol_rad = 0.0; });
+  expect_throw([](ScanMatchConfig& s) { s.trans_tol_m = -1.0; });
+  expect_throw([](ScanMatchConfig& s) { s.max_corr_dist_m = 0.0; });
+  expect_throw([](ScanMatchConfig& s) { s.plane_rms_max_m = 0.0; });
+  expect_throw([](ScanMatchConfig& s) { s.robust_huber_delta_m = 0.0; });
+  expect_throw([](ScanMatchConfig& s) { s.min_inliers = 5; });
+  expect_throw([](ScanMatchConfig& s) { s.cov_scale = 0.0; });
+  expect_throw(
+      [](ScanMatchConfig& s) { s.rot_tol_rad = std::numeric_limits<double>::quiet_NaN(); });
+  EXPECT_THROW(ScanMatcher(c.scan_match, c.degeneracy, 0), std::invalid_argument);
+}
+
+TEST(ScanMatcher, ScanSizeBoundary) {
+  const pipeline::Config c = default_config();
+  ScanMatcher matcher(c.scan_match, c.degeneracy, 4);
+  const map::VoxelMap empty_map(c.map);
+  common::ScanFrame scan(5);
+  push_grid(scan, 5, 1, 0.1, 0.0);
+  const common::Result<common::MatchResult> r5 = matcher.align(scan, empty_map, Pose{});
+  ASSERT_FALSE(r5.is_ok());
+  EXPECT_EQ(r5.reason(), "scan larger than reserved max_points");
+  scan.clear();
+  push_grid(scan, 4, 1, 0.1, 0.0);
+  const common::Result<common::MatchResult> r4 = matcher.align(scan, empty_map, Pose{});
+  ASSERT_FALSE(r4.is_ok());
+  EXPECT_EQ(r4.reason(), "too few inliers");
+}
+
+TEST(ScanMatcher, NonFiniteInitialPose) {
+  const pipeline::Config c = default_config();
+  ScanMatcher matcher(c.scan_match, c.degeneracy, 16);
+  const map::VoxelMap m(c.map);
+  common::ScanFrame scan(9);
+  push_grid(scan, 3, 3, 0.1, 0.0);
+  Pose T;
+  T.p.x() = std::numeric_limits<double>::quiet_NaN();
+  const common::Result<common::MatchResult> r1 = matcher.align(scan, m, T);
+  ASSERT_FALSE(r1.is_ok());
+  EXPECT_EQ(r1.reason(), "non-finite initial pose");
+  Pose T2;
+  T2.R(1, 2) = std::numeric_limits<double>::infinity();
+  const common::Result<common::MatchResult> r2 = matcher.align(scan, m, T2);
+  ASSERT_FALSE(r2.is_ok());
+  EXPECT_EQ(r2.reason(), "non-finite initial pose");
+}
+
+TEST(ScanMatcher, EmptyScanOrMapIsTooFewInliers) {
+  const pipeline::Config c = default_config();
+  ScanMatcher matcher(c.scan_match, c.degeneracy, 16);
+  map::VoxelMap grid_map(c.map);
+  common::ScanFrame grid(9);
+  push_grid(grid, 3, 3, 0.1, 0.0);
+  grid_map.insert(grid, Pose{});
+  const common::ScanFrame empty_scan(9);
+  const common::Result<common::MatchResult> r1 = matcher.align(empty_scan, grid_map, Pose{});
+  ASSERT_FALSE(r1.is_ok());
+  EXPECT_EQ(r1.reason(), "too few inliers");
+  const map::VoxelMap empty_map(c.map);
+  const common::Result<common::MatchResult> r2 = matcher.align(grid, empty_map, Pose{});
+  ASSERT_FALSE(r2.is_ok());
+  EXPECT_EQ(r2.reason(), "too few inliers");
 }
 
 }  // namespace

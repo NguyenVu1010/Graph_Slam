@@ -137,7 +137,7 @@ git commit -m "feat(scan_match): point-to-plane residual, Jacobian and k-NN plan
   - `struct PoseError { double trans_m; double rot_rad; }; PoseError pose_error(const common::Pose& est, const common::Pose& truth)` (`|p_est - p_true|`, `|so3_log(R_true^T R_est)|`).
   - Constants (planner's calls): map spacing 0.125 m; room scan spacing 0.5 m (~720 points); `kTruthRoom = Pose{so3_exp((0.02, -0.03, 0.2)), (0.4, -0.3, 0.2)}`.
 
-- [ ] **Step 1: Write the failing unit tests** (append to `tests/unit/test_scan_match.cpp`; configs from `load_config`)
+- [x] **Step 1: Write the failing unit tests** (append to `tests/unit/test_scan_match.cpp`; configs from `load_config`)
 
 ```cpp
 TEST(ScanMatcher, ConstructorRejectsInvalidConfig) {
@@ -158,7 +158,7 @@ TEST(ScanMatcher, EmptyScanOrMapIsTooFewInliers) {
 }
 ```
 
-- [ ] **Step 2: Write the failing component tests** in `tests/component/test_scan_match_component.cpp` (room map `room_points_w(0.125)`, room scan `room_points_w(0.5)` seen from `kTruthRoom`)
+- [x] **Step 2: Write the failing component tests** in `tests/component/test_scan_match_component.cpp` (room map `room_points_w(0.125)`, room scan `room_points_w(0.5)` seen from `kTruthRoom`)
 
 ```cpp
 // S-02: 10 trials, std::mt19937(2), init = perturb(truth, 0.5 m, 10 deg) (the bound = worst case).
@@ -185,7 +185,7 @@ TEST(ScanMatchComponent, NonFinitePointsSkipped) {
 }
 ```
 
-- [ ] **Step 3: Register and run to verify they fail.** Append to `tests/component/CMakeLists.txt`:
+- [x] **Step 3: Register and run to verify they fail.** Append to `tests/component/CMakeLists.txt`:
 ```cmake
 mss_add_test(test_scan_match_component test_scan_match_component.cpp
   ${CMAKE_SOURCE_DIR}/tests/unit/alloc_counter_impl.cpp)
@@ -195,7 +195,7 @@ target_compile_definitions(test_scan_match_component PRIVATE
 ```
 Run the build command with `--target test_scan_match`, then with `--target test_scan_match_component`. Expected: link errors on `ScanMatcher::ScanMatcher` / `ScanMatcher::align`.
 
-- [ ] **Step 4: Implement the constructor and `align`** in `core/scan_match/src/scan_matcher.cpp`. Constructor: validate exactly the header list (`!(x > 0)` form; `min_inliers < 6`; `max_points == 0`), copy configs, `p_l_.resize(max_points)`. `align` (Task 4 adds the enabled branch at the `[Task 4]` marks):
+- [x] **Step 4: Implement the constructor and `align`** in `core/scan_match/src/scan_matcher.cpp`. Constructor: validate exactly the header list (`!(x > 0)` form; `min_inliers < 6`; `max_points == 0`), copy configs, `p_l_.resize(max_points)`. `align` (Task 4 adds the enabled branch at the `[Task 4]` marks):
 ```
 if scan.size() > max_points_            -> error "scan larger than reserved max_points"
 if any entry of T_init.R, T_init.p non-finite -> error "non-finite initial pose"
@@ -218,9 +218,9 @@ result.cov = cov_scale * llt.solve(Mat6::Identity()) from the LAST factorisation
 ```
 `Eigen::LLT<common::Mat6>` is a local (fixed size, no allocation).
 
-- [ ] **Step 5: Run to verify they pass.** Build command with `--target test_scan_match` (Expected: `[  PASSED  ] 9 tests.`), then with `--target test_scan_match_component` (Expected: `[  PASSED  ] 5 tests.`). If S-02 misses its iteration or accuracy bound, do not loosen it: stop and report the measured numbers (Test_CI_CD: thresholds change only in a PR with a reason).
+- [x] **Step 5: Run to verify they pass.** Build command with `--target test_scan_match` (Expected: `[  PASSED  ] 9 tests.`), then with `--target test_scan_match_component` (Expected: `[  PASSED  ] 5 tests.`). If S-02 misses its iteration or accuracy bound, do not loosen it: stop and report the measured numbers (Test_CI_CD: thresholds change only in a PR with a reason).
 
-- [ ] **Step 6: Format check, then commit**
+- [x] **Step 6: Format check, then commit**
 ```bash
 git add core/scan_match tests/unit/test_scan_match.cpp tests/component/scan_match_scenes.hpp tests/component/test_scan_match_component.cpp tests/component/CMakeLists.txt
 git commit -m "feat(scan_match): Huber IRLS Gauss-Newton scan-to-map alignment"

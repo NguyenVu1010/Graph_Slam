@@ -10,10 +10,12 @@
 namespace mss::scan_match::detail {
 
 struct PlaneFit {
-  common::Vec3 q_w = common::Vec3::Zero();  // m, centroid of the neighbours, frame w
-  common::Vec3 n_w =
-      common::Vec3::UnitZ();  // unit normal (eigenvector of the smallest eigenvalue), w
-  double rms_m = 0.0;         // m, RMS point-to-plane distance = sqrt(lambda_min / n)
+  // m, centroid of the neighbours, frame w.
+  common::Vec3 q_w = common::Vec3::Zero();
+  // Unit normal in w: eigenvector of the smallest eigenvalue of the scatter matrix.
+  common::Vec3 n_w = common::Vec3::UnitZ();
+  // m, RMS point-to-plane distance of the neighbours = sqrt(lambda_min / n).
+  double rms_m = 0.0;
 };
 
 // Least-squares plane through `buf.p_w[0, buf.size)`. nullopt when buf.size < 3.

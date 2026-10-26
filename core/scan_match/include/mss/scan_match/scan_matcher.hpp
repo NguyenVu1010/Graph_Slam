@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 
 #include "mss/common/result.hpp"
 #include "mss/common/scan_frame.hpp"
@@ -62,8 +63,13 @@ class ScanMatcher {
   /// residual and Jacobian from point_to_plane_residual(), IRLS Huber weight
   /// `w = 1 if |r| <= delta else delta / |r|` (delta = `robust_huber_delta_m`), applied to
   /// both `J^T J` and `J^T r`. Solve `H xi = -g` (H = sum w J^T J, g = sum w J^T r).
-  /// If `deg_cfg.enabled`: `report = degeneracy::analyze(H, deg_cfg)` and
-  /// `xi = degeneracy::project_update(xi, report)` on EVERY iteration. Then update
+  /// If `deg_cfg.enabled`, on EVERY iteration: `report = degeneracy::analyze(H, deg_cfg)`;
+  /// the flagged eigenvalues of H are raised to `eig_threshold`
+  /// (`H_reg = H + sum_{k flagged} (eig_threshold - lambda_k) v_k v_k^T`); solve
+  /// `H_reg xi = -g`; then `xi = degeneracy::project_update(xi, report)`. For an
+  /// invertible H this equals projecting `-H^-1 g`, and it stays defined when H is
+  /// singular along a flagged direction (docs/derivations/scan_match.md). With nothing
+  /// flagged `H_reg == H`. Then update
   /// `T_w_l <- T_w_l * Exp(xi)`.
   /// Stops when `|xi.head<3>()| < trans_tol_m` and `|xi.tail<3>()| < rot_tol_rad`
   /// (converged = true) or after `max_iterations` updates (converged = false).
@@ -76,7 +82,11 @@ class ScanMatcher {
   ///     (linearised at the estimate before the last update), NOT projected. The
   ///     pipeline still calls degeneracy::analyze + relax_covariance on it for the
   ///     factor covariance;
-  ///   - `cov = cov_scale * H^-1` (m^2, rad^2 blocks).
+  ///   - `cov = cov_scale * sigma_r^2 * A^-1` (m^2, rad^2 blocks), symmetrised, where
+  ///     `A = H` (degeneracy disabled) or `H_reg` (enabled) of the final iteration,
+  ///     `sigma_r^2 = sum(w r^2) / sum(w)` (m^2) is the Huber-weighted mean squared
+  ///     point-to-plane residual of that iteration's inliers, and `cov_scale` is the
+  ///     dimensionless multiplier from config.
   /// Body-frame conversion is the pipeline's job, not this class's: the pipeline uses
   /// `transform_covariance(cov, T_b_l)` (lie.hpp) to express cov in b, and rotates the
   /// degeneracy directions with `se3_adj(T_b_l)` (see degeneracy.hpp).
@@ -89,8 +99,10 @@ class ScanMatcher {
   ///   - "non-finite initial pose";
   ///   - "too few inliers" when inliers < `min_inliers` in any iteration (includes an
   ///     empty scan or empty map);
-  ///   - "singular Hessian" when `Eigen::LLT<Mat6>(H).info() != Eigen::Success` (in any
-  ///     iteration, or for the final cov).
+  ///   - "singular Hessian" when `Eigen::LLT<Mat6>(A).info() != Eigen::Success` in any
+  ///     iteration (A = H, or H_reg when degeneracy is enabled: then only an unflagged
+  ///     direction that is not positive definite fails), or when the update or the final
+  ///     pose / cov is not finite.
   ///   Not converging within max_iterations is NOT an error: ok with converged = false;
   ///   the pipeline decides whether to use it.
   /// Keeps no reference to `scan_l` or `map` after return.
@@ -102,6 +114,24 @@ class ScanMatcher {
   common::Result<common::MatchResult> align(const common::ScanFrame& scan_l,
                                             const map::VoxelMap& map,
                                             const common::Pose& T_w_l_init);
+
+ private:
+  // One Gauss-Newton accumulation at `T_w_l` over `p_l_[0, n)`: fills H, g (zeroed first),
+  // `sum_w_r2_m2` = sum w r^2 (m^2) and `sum_w` = sum w; returns the inlier count.
+  // Hot path: no allocation, logging or exceptions.
+  int build_system(const map::VoxelMap& map,
+                   std::size_t n,
+                   const common::Pose& T_w_l,
+                   common::Mat6& H,
+                   common::Vec6& g,
+                   double& sum_w_r2_m2,
+                   double& sum_w);
+
+  ScanMatchConfig cfg_;
+  degeneracy::DegeneracyConfig deg_cfg_;
+  std::size_t max_points_ = 0;     // points, capacity of p_l_
+  std::vector<common::Vec3> p_l_;  // m, frame l: finite scan points in double, sized once
+  map::NeighborBuffer nbr_;        // k-NN scratch, reused per point
 };
 
 }  // namespace mss::scan_match

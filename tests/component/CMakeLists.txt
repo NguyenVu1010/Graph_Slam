@@ -13,3 +13,8 @@ mss_add_test(test_preprocess_component test_preprocess_deskew_plane.cpp)
 
 # imu: static init + preintegration on a tilted circle (known answer).
 mss_add_test(test_imu_component test_imu_component.cpp)
+
+# scan_match: point-to-plane registration on synthetic room / corridor (known pose).
+mss_add_test(test_scan_match_component test_scan_match_component.cpp
+  ${CMAKE_SOURCE_DIR}/tests/unit/alloc_counter_impl.cpp)
+target_include_directories(test_scan_match_component PRIVATE ${CMAKE_SOURCE_DIR}/tests/unit)
