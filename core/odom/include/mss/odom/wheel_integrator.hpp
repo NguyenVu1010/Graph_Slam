@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Eigen/Core>
+
 #include "mss/common/result.hpp"
 #include "mss/common/types.hpp"
 #include "mss/odom/config.hpp"
@@ -32,6 +34,8 @@ namespace mss::odom {
 /// as ADR-005 assigns). No heap memory.
 class WheelIntegrator {
  public:
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
   /// Errors: throws std::invalid_argument when `speed_sigma_mps < 0` or
   ///   `yaw_rate_sigma_radps < 0`.
   /// Frames: `T_b_o` = pose of the odometry frame o in b (frames.T_b_o, default identity).
@@ -59,6 +63,20 @@ class WheelIntegrator {
   /// Errors: none. Hot path: yes (per keyframe); no allocation.
   /// Tests: O-01, O-02.
   common::OdomDelta take_delta();
+
+ private:
+  // Accumulation state since the last take_delta(), in the odometry frame o of the start
+  // sample (o0): SE(2) pose (x, y, yaw) of o_k in o0 and its covariance.
+  WheelOdomConfig cfg_;
+  common::Pose T_b_o_;
+  bool has_sample_ = false;      // true once the first sample set the start time
+  common::Timestamp t_start_{};  // t0 of the next delta
+  common::Timestamp t_last_{};   // time of the last accepted sample
+  double x_m_ = 0.0;             // m, x of o_k in o0
+  double y_m_ = 0.0;             // m, y of o_k in o0
+  double yaw_rad_ = 0.0;         // rad, yaw of o_k in o0 (not wrapped)
+  // 3x3 covariance of the SE(2) right tangent [rho_x, rho_y, phi_z] of T_o0_ok (m, rad).
+  Eigen::Matrix3d cov_o_ = Eigen::Matrix3d::Zero();
 };
 
 }  // namespace mss::odom
