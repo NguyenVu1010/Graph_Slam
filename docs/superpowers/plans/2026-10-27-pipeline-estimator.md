@@ -395,5 +395,5 @@ git commit -m "fix(bench): drain before every scan push so a late IMU sample can
   GTSAM's TBB workers allocate on their own threads after the first optimize().
 - `PushScanCopiesWithoutAlloc` and `RunOnceOrdersByKeyWithTieOrder` also needed updated
   expectations (still-IMU prefix / no estimate), beyond the four tests named in Step 3.
-- Box world IMU acc noise density 2.0e-3 (not 5.8e-3): at 200 Hz the default density gives
-  a per-sample std above `imu.init_max_acc_std_mps2`, so initialisation never passes.
+- Controller ruling: `imu.init_max_acc_std_mps2` raised to 0.3 m/s^2 (about 3.6x the
+  per-sample noise 5.8e-3 * sqrt(200) = 0.082); the box world uses the default IMU noise.

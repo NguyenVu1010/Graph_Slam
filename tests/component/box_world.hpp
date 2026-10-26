@@ -56,10 +56,8 @@ struct BoxWorldParams {
   double gnss_rate_hz = 5.0;
   common::Pose T_b_l = box_default_T_b_l();
   common::Vec3 p_b_g{-0.20, 0.10, 0.60};  // m, antenna lever arm in b
-  // IMU white noise densities. The acc density is below config/default.yaml's 5.8e-3: at
-  // 200 Hz that value gives a per-sample std (0.082 m/s^2) above
-  // imu.init_max_acc_std_mps2 (0.05), so the static initialisation would never pass.
-  double acc_noise_density = 2.0e-3;      // m/s^2/sqrt(Hz)
+  // IMU white noise densities, equal to config/default.yaml.
+  double acc_noise_density = 5.8e-3;      // m/s^2/sqrt(Hz)
   double gyro_noise_density = 3.5e-4;     // rad/s/sqrt(Hz)
   double gnss_sigma_m = 0.5;              // m, GNSS white noise per axis
   double gnss_yaw_e_w_deg = 30.0;         // deg, yaw of T_e_w
