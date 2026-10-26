@@ -56,6 +56,11 @@ TEST(Config, LoadsDefaultFile) {
   EXPECT_DOUBLE_EQ(c.gnss.max_cov_m2, 25.0);
   EXPECT_DOUBLE_EQ(c.wheel_odom.yaw_rate_sigma_radps, 0.02);
   EXPECT_EQ(c.map.max_voxels, 500000U);
+  EXPECT_DOUBLE_EQ(c.map.keyframe_voxel_m, 0.5);
+  EXPECT_EQ(c.map.max_keyframes, 1000U);
+  EXPECT_EQ(c.map.window_keyframes, 50);
+  EXPECT_DOUBLE_EQ(c.map.rebuild_trans_m, 0.05);
+  EXPECT_NEAR(c.map.rebuild_rot_rad, 0.5 * std::acos(-1.0) / 180.0, 1e-12);
   EXPECT_TRUE(c.frames.T_b_l.R.isApprox(Mat3::Identity(), 1e-12));
   EXPECT_TRUE(c.frames.T_b_l.p.isZero(0.0));
   EXPECT_TRUE(c.frames.T_b_o.R.isApprox(Mat3::Identity(), 1e-12));

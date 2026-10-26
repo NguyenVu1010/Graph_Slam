@@ -225,6 +225,20 @@ void VoxelMap::erase_slot(std::size_t slot) {
   slots_[i].voxel = kEmptySlot;
 }
 
+void VoxelMap::clear() {
+  std::fill(slots_.begin(), slots_.end(), HashSlot{});
+  std::fill(voxels_.begin(), voxels_.end(), VoxelMeta{});
+  // points_ is not zeroed: only the `count` entries of a used voxel are ever read.
+  const std::size_t n_voxels = voxels_.size();
+  for (std::size_t i = 0; i < n_voxels; ++i) {
+    free_[i] = static_cast<std::uint32_t>(n_voxels - 1 - i);  // index 0 popped first
+  }
+  free_top_ = n_voxels;
+  num_voxels_ = 0;
+  num_points_ = 0;
+  dropped_ = 0;
+}
+
 void VoxelMap::prune(const common::Vec3& p_w_b) {
   const double r2 = cfg_.prune_radius_m * cfg_.prune_radius_m;
   for (std::size_t v = 0; v < voxels_.size(); ++v) {
