@@ -10,16 +10,16 @@ namespace {
 
 // Writes r^T S^-1 r to *nis and returns nullptr, or returns the error reason (a string
 // literal, so callers wrap it without allocating).
-const char* compute_nis(const common::Vec3& r_e, const common::Mat3& S_e, double* nis) {
-  if (!r_e.allFinite() || !S_e.allFinite()) {
+const char* compute_nis(const common::Vec3& r_e, const common::Mat3& s_e, double* nis) {
+  if (!r_e.allFinite() || !s_e.allFinite()) {
     return "non-finite innovation";
   }
-  const Eigen::LLT<common::Mat3> llt(S_e);
+  const Eigen::LLT<common::Mat3> llt(s_e);
   if (llt.info() != Eigen::Success) {
     return "innovation covariance not positive definite";
   }
-  const common::Vec3 S_inv_r = llt.solve(r_e);
-  *nis = r_e.dot(S_inv_r);
+  const common::Vec3 s_inv_r = llt.solve(r_e);
+  *nis = r_e.dot(s_inv_r);
   return nullptr;
 }
 
@@ -40,18 +40,18 @@ common::Vec3 gnss_residual(const common::Vec3& p_e_g,
   return r;
 }
 
-common::Result<double> innovation_nis(const common::Vec3& r_e, const common::Mat3& S_e) {
+common::Result<double> innovation_nis(const common::Vec3& r_e, const common::Mat3& s_e) {
   double nis = 0.0;
-  const char* reason = compute_nis(r_e, S_e, &nis);
+  const char* reason = compute_nis(r_e, s_e, &nis);
   if (reason != nullptr) {
     return common::Result<double>::error(reason);
   }
   return common::Result<double>::ok(nis);
 }
 
-common::Status chi_square_gate(const common::Vec3& r_e, const common::Mat3& S_e, double threshold) {
+common::Status chi_square_gate(const common::Vec3& r_e, const common::Mat3& s_e, double threshold) {
   double nis = 0.0;
-  const char* reason = compute_nis(r_e, S_e, &nis);
+  const char* reason = compute_nis(r_e, s_e, &nis);
   if (reason != nullptr) {
     return common::Status::error(reason);
   }

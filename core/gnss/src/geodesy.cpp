@@ -24,9 +24,9 @@ common::Vec3 lla_to_ecef(const Lla& lla) {
   const double h = lla.alt_m;
   const double sin_lat = std::sin(lat);
   const double n = kWgs84AM / std::sqrt(1.0 - kE2 * sin_lat * sin_lat);
-  return common::Vec3((n + h) * std::cos(lat) * std::cos(lon),
-                      (n + h) * std::cos(lat) * std::sin(lon),
-                      (n * (1.0 - kE2) + h) * sin_lat);
+  return {(n + h) * std::cos(lat) * std::cos(lon),
+          (n + h) * std::cos(lat) * std::sin(lon),
+          (n * (1.0 - kE2) + h) * sin_lat};
 }
 
 Lla ecef_to_lla(const common::Vec3& xyz) {
@@ -59,11 +59,11 @@ common::Mat3 r_e_ecef(const Lla& origin) {
   const double cl = std::cos(lat);
   const double so = std::sin(lon);
   const double co = std::cos(lon);
-  common::Mat3 R;
-  R << -so, co, 0.0,           //
+  common::Mat3 R_e_ecef;
+  R_e_ecef << -so, co, 0.0,    //
       -sl * co, -sl * so, cl,  //
       cl * co, cl * so, sl;
-  return R;
+  return R_e_ecef;
 }
 
 }  // namespace

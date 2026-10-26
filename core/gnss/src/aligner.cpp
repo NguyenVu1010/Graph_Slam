@@ -38,7 +38,7 @@ common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
     return ResultPose::error("not enough pairs");
   }
 
-  const double n = static_cast<double>(n_pairs_);
+  const auto n = static_cast<double>(n_pairs_);
   const Eigen::Vector2d mean_a_h = sum_w_.head<2>() / n;
   const double spread_sq_m2 = sum_w_h_sq_m2_ / n - mean_a_h.squaredNorm();
   const double spread_m = std::sqrt(spread_sq_m2 > 0.0 ? spread_sq_m2 : 0.0);
@@ -46,8 +46,9 @@ common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
     return ResultPose::error("insufficient horizontal spread");
   }
 
-  const Eigen::Matrix2d C_c = sum_we_ - sum_w_.head<2>() * sum_e_.head<2>().transpose() / n;  // m^2
-  const double yaw_rad = std::atan2(C_c(0, 1) - C_c(1, 0), C_c(0, 0) + C_c(1, 1));
+  const Eigen::Matrix2d cross_c =
+      sum_we_ - sum_w_.head<2>() * sum_e_.head<2>().transpose() / n;  // m^2
+  const double yaw_rad = std::atan2(cross_c(0, 1) - cross_c(1, 0), cross_c(0, 0) + cross_c(1, 1));
   const double c = std::cos(yaw_rad);
   const double s = std::sin(yaw_rad);
 

@@ -31,10 +31,10 @@ common::Vec3 gnss_residual(const common::Vec3& p_e_g,
 /// Normalised innovation squared r^T S^-1 r (S in m^2, r in m, both in e).
 /// Errors: "non-finite innovation" (r or S non-finite), "innovation covariance not
 /// positive definite" (LLT fails). No allocation.
-common::Result<double> innovation_nis(const common::Vec3& r_e, const common::Mat3& S_e);
+common::Result<double> innovation_nis(const common::Vec3& r_e, const common::Mat3& s_e);
 
 /// Chi-square gate: ok when NIS <= threshold. Errors: those of innovation_nis, then
 /// "chi-square gate exceeded". No allocation.
-common::Status chi_square_gate(const common::Vec3& r_e, const common::Mat3& S_e, double threshold);
+common::Status chi_square_gate(const common::Vec3& r_e, const common::Mat3& s_e, double threshold);
 
 }  // namespace mss::gnss::detail
