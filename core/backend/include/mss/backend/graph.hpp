@@ -93,9 +93,11 @@ class Graph {
 
   /// Adds a relative-pose (between) factor from LiDAR scan matching:
   /// residual `Log(T_bi_bj^-1 * (T_w_bi^-1 * T_w_bj))` in [rho, phi].
-  /// `cov`: 6x6 [rho, phi], right perturbation of T_bi_bj (frame b_j); the pipeline has
-  ///   already converted it from l to b and applied degeneracy::relax_covariance when
-  ///   degeneracy is enabled. Used as-is (permuted to GTSAM order inside).
+  /// `cov`: 6x6 [rho, phi], right perturbation of T_bi_bj (frame b_j);
+  ///   `scan_match::ScanMatcher::align` has already applied `degeneracy::relax_covariance`
+  ///   to it when degeneracy is enabled; the pipeline only converts it from l to b
+  ///   (adjoint of T_b_l) and must not relax it again. Used as-is (permuted to GTSAM order
+  ///   inside).
   /// `degeneracy`: may be nullptr. When non-null it must be in the same b_j tangent
   ///   (eigvecs rotated with se3_adj(T_b_l) by the pipeline). In this contract it does
   ///   NOT change the factor: it is recorded for diagnostics only (number of degenerate
