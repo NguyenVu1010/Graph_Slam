@@ -132,7 +132,9 @@ TEST(Estimator, PushScanCopiesWithoutAlloc) {
     for (int k = 2; k < 7; ++k) {
       step(k, all_ok);
     }
-    allocs = AllocCounter::count();  // read before gtest macros allocate
+    // This thread only: a TBB-enabled GTSAM starts worker threads after keyframe 0's
+    // optimize() that allocate asynchronously on their own threads.
+    allocs = AllocCounter::count_this_thread();  // read before gtest macros allocate
   }
   EXPECT_TRUE(all_ok);
   EXPECT_EQ(allocs, 0U);

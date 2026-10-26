@@ -283,7 +283,9 @@ TEST(PipelineComponent, NonKeyframeScanDoesNotAllocate) {
       s.scan_at(s.t_scan(k));
     }
   }
-  const std::size_t allocs = AllocCounter::count();
+  // This thread only: a TBB-enabled GTSAM starts worker threads after the first optimize()
+  // that allocate asynchronously on their own threads.
+  const std::size_t allocs = AllocCounter::count_this_thread();
   EXPECT_EQ(allocs, 0U);
   EXPECT_EQ(s.core().counters().n_keyframes, 1U);
   EXPECT_EQ(s.core().counters().n_match_failures, 0U);
