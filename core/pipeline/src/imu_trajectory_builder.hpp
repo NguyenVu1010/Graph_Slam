@@ -27,4 +27,18 @@ common::Status build_imu_trajectory(const ImuBuffer& imu,
                                     imu::Preintegrator& scratch,
                                     imu::ImuTrajectory& traj);
 
+/// Body state at `t` (docs/derivations/pipeline.md section 5): `scratch` := `pred` (the
+/// prediction preintegrator, reset at `x0.t` and fed up to `pred_last_t`), advanced through
+/// the buffered samples in (pred_last_t, t) and the sample interpolated at `t` (when
+/// t > pred_last_t and the buffer covers t), then predict(x0, g_w).
+/// Preconditions: t >= pred_last_t; `x0.t` is the first sample time of `pred`.
+/// Hot path: per GNSS fix; no allocation.
+common::NavState predict_state_at(const ImuBuffer& imu,
+                                  const imu::Preintegrator& pred,
+                                  common::Timestamp pred_last_t,
+                                  const common::NavState& x0,
+                                  common::Timestamp t,
+                                  const common::Vec3& g_w,
+                                  imu::Preintegrator& scratch);
+
 }  // namespace mss::pipeline::detail

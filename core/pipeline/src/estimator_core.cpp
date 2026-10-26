@@ -180,9 +180,16 @@ void EstimatorCore::on_gnss(const common::GnssMeasurement& m) {
   }
   gnss_late_streak_ = false;
   if (!gnss_deferred_.push(m)) {
-    ++counters_.n_gnss_rejected;  // the oldest deferred fix was overwritten
+    ++counters_.n_gnss_ring_overflow;  // the oldest deferred fix was overwritten
   }
   process_deferred_gnss();
+}
+
+void EstimatorCore::on_end_of_data() {
+  counters_.n_gnss_unfused_eof += gnss_deferred_.size();
+  common::GnssMeasurement m;
+  while (gnss_deferred_.pop(m)) {
+  }
 }
 
 void EstimatorCore::process_deferred_gnss() {
@@ -198,19 +205,9 @@ void EstimatorCore::process_deferred_gnss() {
 }
 
 void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
-  // Body pose at m.t (pipeline.md section 5): the prediction advanced through the buffered
-  // samples before m.t, then the sample interpolated at m.t.
-  scratch_ = pred_;
-  for (std::size_t i = imu_.first_after(pred_last_t_); i < imu_.size() && imu_.at(i).t < m.t; ++i) {
-    (void)scratch_.integrate(imu_.at(i));
-  }
-  if (m.t > pred_last_t_) {
-    const std::optional<common::ImuSample> s = imu_.interpolate(m.t);
-    if (s) {
-      (void)scratch_.integrate(*s);
-    }
-  }
-  const common::NavState x = scratch_.predict(front_, g_w_);
+  // Body pose at m.t (pipeline.md section 5).
+  const common::NavState x =
+      predict_state_at(imu_, pred_, pred_last_t_, front_, m.t, g_w_, scratch_);
   FixOutcome outcome = FixOutcome::kAccepted;
   (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome);
   if (outcome == FixOutcome::kAccepted || outcome == FixOutcome::kNotAligned) {

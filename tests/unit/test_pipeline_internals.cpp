@@ -275,6 +275,26 @@ TEST(ImuTrajectory, ErrorsWhenImuMissesScan) {
   EXPECT_EQ(f.traj.size, 0U);
 }
 
+// N-3: the state used for a GNSS fix at t is the prediction interpolated at t, not the
+// pose of the previous IMU sample. Constant velocity 1 m/s along x, t mid-interval.
+TEST(ImuTrajectory, PredictStateAtInterpolatesMidInterval) {
+  TrajFixture f;
+  ASSERT_NO_FATAL_FAILURE(
+      fill(f.buf, 0, 300 * kMs, kImuPeriodNs, Vec3(0.0, 0.0, kG), Vec3::Zero()));
+  NavState x0 = state_at(100 * kMs);
+  x0.v_w_b = Vec3(1.0, 0.0, 0.0);
+  imu::Preintegrator pred(imu_config());
+  pred.reset(x0.bias);
+  ASSERT_TRUE(pred.integrate(*f.buf.interpolate(x0.t)).is_ok());
+  const Timestamp t{x0.t.ns + 12 * kMs + kMs / 2};  // 12.5 ms: between samples 110 and 115
+  const NavState x = predict_state_at(f.buf, pred, x0.t, x0, t, kGw, f.scratch);
+  EXPECT_NEAR(x.T_w_b.p.x(), 0.0125, 1e-9);  // the previous sample (110 ms) would give 0.010
+  EXPECT_LT(x.T_w_b.p.tail<2>().norm(), 1e-9);
+  EXPECT_EQ(x.t, t);
+  const NavState same = predict_state_at(f.buf, pred, x0.t, x0, x0.t, kGw, f.scratch);
+  EXPECT_LT(same.T_w_b.p.norm(), 1e-12);  // t == x0.t: x0 itself
+}
+
 TEST(ImuTrajectory, BuildDoesNotAllocate) {
   TrajFixture f;
   ASSERT_NO_FATAL_FAILURE(

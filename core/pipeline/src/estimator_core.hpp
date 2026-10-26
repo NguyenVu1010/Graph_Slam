@@ -29,23 +29,25 @@ namespace mss::pipeline::detail {
 
 /// GNSS fixes waiting for the IMU sample at or after their time (pipeline.md section 5).
 /// At 5-10 Hz GNSS and >= 100 Hz IMU at most one or two wait; when full, the oldest is
-/// dropped and counted in n_gnss_rejected.
+/// dropped and counted in n_gnss_ring_overflow.
 constexpr std::size_t kMaxDeferredGnss = 32;
 
 /// Diagnostic counters of EstimatorCore, all since construction.
 struct CoreCounters {
-  std::uint64_t n_keyframes = 0;         ///< keyframes added to the graph
-  std::uint64_t n_match_failures = 0;    ///< scans whose scan matching failed
-  std::uint64_t n_skipped_scans = 0;     ///< scans that produced no estimate
-  std::uint64_t n_uncovered_scans = 0;   ///< of those: IMU does not span the scan
-  std::uint64_t n_map_rebuilds = 0;      ///< VoxelMap rebuilds (ADR-016)
-  std::uint64_t n_gnss_factors = 0;      ///< GNSS factors added
-  std::uint64_t n_gnss_rejected = 0;     ///< fixes rejected (gate_fix, chi-square, pose)
-  std::uint64_t n_gnss_late = 0;         ///< fixes older than the last processed scan start
-  std::uint64_t n_nonfinite_imu = 0;     ///< IMU samples dropped (non-finite acc or gyro)
-  std::uint64_t n_odom_factors = 0;      ///< wheel factors added
-  std::uint64_t n_odom_rejected = 0;     ///< wheel deltas dropped by the time check
-  std::uint64_t n_backend_failures = 0;  ///< optimize() errors (stub build: every keyframe)
+  std::uint64_t n_keyframes = 0;           ///< keyframes added to the graph
+  std::uint64_t n_match_failures = 0;      ///< scans whose scan matching failed
+  std::uint64_t n_skipped_scans = 0;       ///< scans that produced no estimate
+  std::uint64_t n_uncovered_scans = 0;     ///< of those: IMU does not span the scan
+  std::uint64_t n_map_rebuilds = 0;        ///< VoxelMap rebuilds (ADR-016)
+  std::uint64_t n_gnss_factors = 0;        ///< GNSS factors added
+  std::uint64_t n_gnss_rejected = 0;       ///< fixes rejected (gate_fix, chi-square, pose)
+  std::uint64_t n_gnss_late = 0;           ///< fixes older than the last processed scan start
+  std::uint64_t n_gnss_ring_overflow = 0;  ///< deferred fixes overwritten (ring full)
+  std::uint64_t n_gnss_unfused_eof = 0;    ///< deferred fixes left at end of data (no IMU after)
+  std::uint64_t n_nonfinite_imu = 0;       ///< IMU samples dropped (non-finite acc or gyro)
+  std::uint64_t n_odom_factors = 0;        ///< wheel factors added
+  std::uint64_t n_odom_rejected = 0;       ///< wheel deltas dropped by the time check
+  std::uint64_t n_backend_failures = 0;    ///< optimize() errors (stub build: every keyframe)
 };
 
 /// The per-message algorithm of the single-threaded estimator (docs/derivations/pipeline.md,
@@ -72,6 +74,9 @@ class EstimatorCore {
   /// estimate needed). Fixes older than the last processed scan start are rejected
   /// (n_gnss_late). No allocation.
   void on_gnss(const common::GnssMeasurement& m);
+  /// End of data (Estimator::flush): deferred fixes that no IMU sample reached are
+  /// dropped and counted in n_gnss_unfused_eof.
+  void on_end_of_data();
   /// Processes one raw scan (frame l). Non-keyframe scans do not allocate.
   void on_scan(const common::ScanFrame& raw_l);
 

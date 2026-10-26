@@ -404,6 +404,60 @@ TEST(PipelineComponent, ScanMatchFailureFallsBackToImuPrediction) {  // Review F
   EXPECT_EQ(s.core().latest().state.t, Timestamp{s.t_scan(6)});
 }
 
+// N-1: more than kMaxDeferredGnss fixes waiting for IMU overflow the ring (counted).
+TEST(PipelineComponent, GnssRingOverflowCounted) {
+  Config cfg = StaticCore::make_cfg(true);
+  detail::EstimatorCore core(cfg);
+  BoxWorldParams p;
+  ScanFrame scan(static_cast<std::size_t>(p.rings * p.columns));
+  test::box_scan(p, Timestamp{p.t0_ns}, scan);
+  const std::int64_t t_scan = p.t0_ns + 2'000'000'000;
+  scan.t_start = Timestamp{t_scan};
+  std::int64_t t = p.t0_ns;
+  for (; t <= common::scan_end_time(scan).ns + 5'000'000; t += 5'000'000) {
+    core.on_imu(test::box_imu(p, Timestamp{t}, nullptr));
+  }
+  core.on_scan(scan);
+  ASSERT_TRUE(core.has_estimate());
+  // Fixes after the last IMU sample: none can be fused yet.
+  for (std::size_t k = 0; k < detail::kMaxDeferredGnss + 3; ++k) {
+    common::GnssMeasurement m;
+    m.t = Timestamp{t + static_cast<std::int64_t>(k) * 1'000'000};
+    m.cov = common::Mat3::Identity() * 0.25;
+    core.on_gnss(m);
+  }
+  EXPECT_EQ(core.counters().n_gnss_ring_overflow, 3U);
+  core.on_end_of_data();
+  EXPECT_EQ(core.counters().n_gnss_unfused_eof, detail::kMaxDeferredGnss);
+}
+
+// N-2: a fix stamped after the last IMU sample is still waiting at flush(): counted, so
+// n_gnss = fused + rejected + late + overflow + unfused.
+TEST(PipelineComponent, TrailingGnssFixCountedAtFlush) {
+  BoxWorldParams p;
+  Estimator est(StaticCore::make_cfg(true));
+  ScanFrame scan(static_cast<std::size_t>(p.rings * p.columns));
+  test::box_scan(p, Timestamp{p.t0_ns}, scan);
+  scan.t_start = Timestamp{p.t0_ns + 2'000'000'000};
+  ASSERT_TRUE(est.push_scan(scan).is_ok());
+  std::int64_t t = p.t0_ns;
+  for (; t <= common::scan_end_time(scan).ns + 5'000'000; t += 5'000'000) {
+    ASSERT_TRUE(est.push_imu(test::box_imu(p, Timestamp{t}, nullptr)).is_ok());
+    est.run_once();
+  }
+  ASSERT_NE(est.latest_state().state.t, Timestamp{});
+  common::GnssMeasurement m;
+  m.t = Timestamp{t + 1'000'000};  // after the last IMU sample
+  m.cov = common::Mat3::Identity() * 0.25;
+  ASSERT_TRUE(est.push_gnss(m).is_ok());
+  est.flush();
+  const Estimator::Stats st = est.stats();
+  EXPECT_EQ(st.n_gnss, 1U);
+  EXPECT_EQ(st.n_gnss_unfused_eof, 1U);
+  EXPECT_EQ(st.n_gnss_ring_overflow, 0U);
+  EXPECT_EQ(st.n_gnss_late, 0U);
+}
+
 TEST(PipelineComponent, OldScanSkipped) {  // Review Focus 3
   StaticCore s;
   s.scan_at(s.t_scan(0));

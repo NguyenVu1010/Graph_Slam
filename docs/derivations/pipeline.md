@@ -77,7 +77,8 @@ LIO-SAM. ADR-004 notes that this is optimistic (the map itself is not error-free
 
 Pose at the fix time. GNSS is merged by `m.t`, so the IMU sample at or after `m.t` usually
 sorts after the fix. The core therefore defers each fix in a fixed ring
-(`kMaxDeferredGnss` = 32; full: oldest dropped and counted) until an IMU sample with
+(`kMaxDeferredGnss` = 32; full: oldest dropped, `Stats::n_gnss_ring_overflow`; fixes still
+waiting at `flush()` because no IMU sample follows them: `Stats::n_gnss_unfused_eof`) until an IMU sample with
 `t >= m.t` is buffered; then `T_w_b(m.t)` is predicted from the front-end state at the last
 scan start `t_s` through the buffered samples in `(t_s, m.t)` and the sample interpolated
 at `m.t` (section 1). A fix with `m.t < t_s` (pushed late, after a scan with a later start

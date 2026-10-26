@@ -68,4 +68,24 @@ common::Status build_imu_trajectory(const ImuBuffer& imu,
   return common::Status::ok();
 }
 
+common::NavState predict_state_at(const ImuBuffer& imu,
+                                  const imu::Preintegrator& pred,
+                                  common::Timestamp pred_last_t,
+                                  const common::NavState& x0,
+                                  common::Timestamp t,
+                                  const common::Vec3& g_w,
+                                  imu::Preintegrator& scratch) {
+  scratch = pred;
+  for (std::size_t i = imu.first_after(pred_last_t); i < imu.size() && imu.at(i).t < t; ++i) {
+    (void)scratch.integrate(imu.at(i));
+  }
+  if (t > pred_last_t) {
+    const std::optional<common::ImuSample> s = imu.interpolate(t);
+    if (s) {
+      (void)scratch.integrate(*s);
+    }
+  }
+  return scratch.predict(x0, g_w);
+}
+
 }  // namespace mss::pipeline::detail
