@@ -168,7 +168,7 @@ git commit -m "feat(gnss): alignment thresholds and chi-square gate level from G
   - `common::Status build_imu_trajectory(const ImuBuffer& imu, const common::NavState& x0, common::Timestamp t_end, const common::Vec3& g_w, imu::Preintegrator& scratch, imu::ImuTrajectory& traj)` — `x0.t` is the scan `t_start`; pipeline.md §2. Errors (literals): `"imu does not cover scan start"`, `"imu does not cover scan end"`. No allocation.
   - `common::PoseCovariance lidar_cov_in_body(const common::PoseCovariance& cov_l, const common::Pose& T_b_l)`; `common::DegeneracyReport degeneracy_in_body(const common::DegeneracyReport& r_l, const common::Pose& T_b_l)` (pipeline.md §3).
 
-- [ ] **Step 1: Write the failing tests** (`test_pipeline_internals.cpp`; IMU at 200 Hz, `g = 9.80665`, seeds fixed)
+- [x] **Step 1: Write the failing tests** (`test_pipeline_internals.cpp`; IMU at 200 Hz, `g = 9.80665`, seeds fixed)
 ```cpp
 TEST(ImuBuffer, PushRejectsNonIncreasing)            // push t=10, t=10 -> false, size 1
 TEST(ImuBuffer, FullDropsOldest)                     // kMaxImuQueue + 1 pushes -> front().t == second sample
@@ -201,10 +201,10 @@ TEST(Frames, LidarCovInBodyMatchesNumericalJacobian) {
 TEST(Frames, DegeneracyEigvecsRotatedToBody)        // eigvecs == se3_adj(T_b_l) * eigvecs_l (1e-12);
                                                      // eigvals and degenerate[] unchanged
 ```
-- [ ] **Step 2: Run to verify they fail** — no-GTSAM command, `--target test_pipeline_internals`. Expected: compile errors.
-- [ ] **Step 3: Implement** the three units per the Interfaces block and pipeline.md §1-§3. `build_imu_trajectory`: count the entries first (N = 1 + samples in `(t_start, t_last]`), precompute the kept indices, integrate every sample, store only kept ones.
-- [ ] **Step 4: Run** — same target. Expected: PASS.
-- [ ] **Step 5: Format check, commit**
+- [x] **Step 2: Run to verify they fail** — no-GTSAM command, `--target test_pipeline_internals`. Expected: compile errors.
+- [x] **Step 3: Implement** the three units per the Interfaces block and pipeline.md §1-§3. `build_imu_trajectory`: count the entries first (N = 1 + samples in `(t_start, t_last]`), precompute the kept indices, integrate every sample, store only kept ones.
+- [x] **Step 4: Run** — same target. Expected: PASS.
+- [x] **Step 5: Format check, commit**
 ```bash
 git add core/pipeline/src/imu_buffer.* core/pipeline/src/imu_trajectory_builder.* core/pipeline/src/frames.* core/pipeline/CMakeLists.txt tests/unit/test_pipeline_internals.cpp tests/unit/CMakeLists.txt
 git commit -m "feat(pipeline): IMU ring buffer, deskew trajectory builder and LiDAR-to-body covariance"
