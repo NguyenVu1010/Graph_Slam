@@ -47,16 +47,23 @@ class Estimator {
  public:
   /// Per-run counters, all since construction.
   struct Stats {
-    std::uint64_t n_scans = 0;          ///< scans processed by run_once() / flush()
-    std::uint64_t n_imu = 0;            ///< IMU samples processed by run_once() / flush()
-    std::uint64_t n_gnss = 0;           ///< GNSS fixes processed by run_once() / flush()
-    std::uint64_t n_odom = 0;           ///< wheel samples processed by run_once() / flush()
-    std::uint64_t n_dropped_scans = 0;  ///< scans discarded by push_scan (queue full or too big)
-    std::uint64_t n_rejected_imu = 0;   ///< samples refused by push_imu (non-increasing t)
-    std::uint64_t n_dropped_imu = 0;    ///< queued IMU samples overwritten (IMU queue full)
-    std::uint64_t n_dropped_aux = 0;    ///< queued GNSS + wheel messages overwritten (full)
-    double push_scan_us_p50 = 0.0;      ///< us, median wall time of push_scan()
-    double push_scan_us_p95 = 0.0;      ///< us, 95th percentile wall time of push_scan()
+    std::uint64_t n_scans = 0;            ///< scans processed by run_once() / flush()
+    std::uint64_t n_imu = 0;              ///< IMU samples processed by run_once() / flush()
+    std::uint64_t n_gnss = 0;             ///< GNSS fixes processed by run_once() / flush()
+    std::uint64_t n_odom = 0;             ///< wheel samples processed by run_once() / flush()
+    std::uint64_t n_dropped_scans = 0;    ///< scans discarded by push_scan (queue full or too big)
+    std::uint64_t n_rejected_imu = 0;     ///< samples refused by push_imu (non-increasing t)
+    std::uint64_t n_dropped_imu = 0;      ///< queued IMU samples overwritten (IMU queue full)
+    std::uint64_t n_dropped_aux = 0;      ///< queued GNSS + wheel messages overwritten (full)
+    std::uint64_t n_keyframes = 0;        ///< keyframes added to the backend graph
+    std::uint64_t n_match_failures = 0;   ///< scans whose scan matching failed (IMU fallback)
+    std::uint64_t n_skipped_scans = 0;    ///< processed scans that produced no estimate
+    std::uint64_t n_uncovered_scans = 0;  ///< of those: no IMU up to the scan end (flush, EOF)
+    std::uint64_t n_map_rebuilds = 0;     ///< VoxelMap rebuilds after a keyframe correction
+    std::uint64_t n_gnss_factors = 0;     ///< GNSS factors added to the graph
+    std::uint64_t n_odom_factors = 0;     ///< wheel-odometry factors added to the graph
+    double push_scan_us_p50 = 0.0;        ///< us, median wall time of push_scan()
+    double push_scan_us_p95 = 0.0;        ///< us, 95th percentile wall time of push_scan()
   };
 
   /// Builds every module and reserves every buffer: a pool of

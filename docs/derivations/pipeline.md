@@ -117,3 +117,16 @@ Static for `static_s`, then a speed ramp over `ramp_s` on a circle of constant c
 `static_s = ramp_s = 0` reduces to the constant circle of `sim/mss_sim/synth.py`. The LiDAR
 is ray-cast against the six planes of an axis-aligned box centred at the origin; column `c`
 of a scan is fired at `t_start + c * scan_period / columns`, from the LiDAR pose at that time.
+
+## 8. Message hand-over and IMU initialisation window
+
+The Estimator's k-way merge keys a scan by its end time, so the IMU sample that covers the
+scan end (the first with `t >= t_end`, needed by section 2) sorts after the scan. When a
+scan is dequeued, `drain` first hands the core every queued IMU sample up to and including
+that one; only IMU samples move ahead of the scan, never wheel or GNSS messages, so the
+processing order of everything else is unchanged.
+
+Static initialisation at the first scan with start `t` uses the buffered samples from the
+last one at or before `t - init_window_s` to the first one at or after `t`, so the window
+spans at least `init_window_s` whatever the sample phase. Until it succeeds no estimate is
+published (`latest_state().state.t == Timestamp{}`).

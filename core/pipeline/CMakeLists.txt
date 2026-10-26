@@ -4,6 +4,7 @@
 add_library(mss_pipeline STATIC
   src/config.cpp
   src/estimator.cpp
+  src/estimator_core.cpp
   src/frames.cpp
   src/gnss_fusion.cpp
   src/imu_buffer.cpp
