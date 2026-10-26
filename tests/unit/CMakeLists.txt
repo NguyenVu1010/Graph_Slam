@@ -16,3 +16,5 @@ mss_add_test(test_imu test_imu_preintegrator.cpp test_imu_covariance.cpp test_im
 mss_add_test(test_gnss test_gnss_geodesy.cpp test_gnss_gate.cpp test_gnss_aligner.cpp
   alloc_counter_impl.cpp)
 target_include_directories(test_gnss PRIVATE ${CMAKE_SOURCE_DIR}/core/gnss/src)
+mss_add_test(test_scan_match test_scan_match.cpp)
+target_include_directories(test_scan_match PRIVATE ${CMAKE_SOURCE_DIR}/core/scan_match/src)

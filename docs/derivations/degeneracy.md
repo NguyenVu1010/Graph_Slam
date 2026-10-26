@@ -77,6 +77,12 @@ i.e. `f v_k^T cov v_k` for flagged directions and `v_k^T cov v_k` for the others
 symmetrisation removes rounding asymmetry only (it does not change `v^T cov' v`). With
 `f = 1`, `A = I` up to rounding. `cov'` stays positive definite because `A` is invertible.
 
+Caller: `scan_match::ScanMatcher::align` applies `relax_covariance` to `MatchResult::cov`
+(when enabled, with the final iteration's report), so that covariance is final. The relaxed
+covariance is the only degeneracy mitigation in the factor; the pipeline passes the
+DegeneracyReport to backend for diagnostics only (see graph.hpp) and must not call
+relax_covariance again.
+
 ## 5. Frames
 
 Everything here lives in the tangent of the pose the Hessian was built for: l for scan

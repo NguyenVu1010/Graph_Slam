@@ -12,6 +12,7 @@ struct ScanMatchConfig {
   double robust_huber_delta_m = 0.0;  // m, Huber threshold on the point-to-plane residual
   int min_inliers = 0;                // fewer inliers -> match fails
   double cov_scale = 0.0;             // multiplier on the inverse-Hessian covariance
+  double min_residual_sigma_m = 0.0;  // m, floor on the residual sigma used for the covariance
 };
 
 }  // namespace mss::scan_match

@@ -169,6 +169,16 @@ TEST(Config, NegativeSigmaRejected) {
   EXPECT_TRUE(mentions(cfg.reason(), "gnss.sigma_h_m")) << cfg.reason();
 }
 
+TEST(Config, ScanMatchResidualSigmaFloor) {
+  const auto ok = load_config(kDefault);
+  ASSERT_TRUE(ok.is_ok()) << ok.reason();
+  EXPECT_DOUBLE_EQ(ok.value().scan_match.min_residual_sigma_m, 0.005);
+  const auto cfg = parse_config(read_file(kDefault),
+                                overlay("    scan_match:\n      min_residual_sigma_m: 0.0\n"));
+  ASSERT_FALSE(cfg.is_ok());
+  EXPECT_TRUE(mentions(cfg.reason(), "scan_match.min_residual_sigma_m")) << cfg.reason();
+}
+
 TEST(Config, AllErrorsReported) {
   std::string text = replace_once(read_file(kDefault), "      rate_hz: 200.0\n", "");
   text = replace_once(text, "sigma_h_m: 1.5", "sigma_h_m: -1.5");
