@@ -421,6 +421,8 @@ Config read_config(Reader& r) {
   r.field("scan_match.robust_huber_delta_m", c.scan_match.robust_huber_delta_m);
   r.field("scan_match.min_inliers", c.scan_match.min_inliers);
   r.field("scan_match.cov_scale", c.scan_match.cov_scale);
+  // Floor on the residual sigma: a zero floor would allow a zero (singular) covariance.
+  r.field("scan_match.min_residual_sigma_m", c.scan_match.min_residual_sigma_m, Range::kPositive);
 
   r.field("degeneracy.enabled", c.degeneracy.enabled);
   r.field("degeneracy.eig_threshold", c.degeneracy.eig_threshold, Range::kNonNegative);
