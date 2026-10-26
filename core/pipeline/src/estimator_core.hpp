@@ -65,10 +65,10 @@ class EstimatorCore {
   /// Processes one raw scan (frame l). Non-keyframe scans do not allocate.
   void on_scan(const common::ScanFrame& raw_l);
 
-  bool has_estimate() const { return has_estimate_; }
+  [[nodiscard]] bool has_estimate() const { return has_estimate_; }
   /// Latest estimate (Estimator::latest_state() semantics). Default until has_estimate().
-  const common::Estimate& latest() const { return latest_; }
-  const CoreCounters& counters() const { return counters_; }
+  [[nodiscard]] const common::Estimate& latest() const { return latest_; }
+  [[nodiscard]] const CoreCounters& counters() const { return counters_; }
 
  private:
   // Feeds `s` to both preintegrators when it is newer than the last fed sample.

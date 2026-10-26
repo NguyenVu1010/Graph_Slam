@@ -42,11 +42,11 @@ class GnssFusion {
                       const common::Pose& T_w_bk,
                       std::array<common::GnssMeasurement, kMaxAuxQueue>& out);
 
-  bool aligned() const { return aligned_; }
+  [[nodiscard]] bool aligned() const { return aligned_; }
   /// Latest aligner estimate (identity until aligned()). Maps w to e.
-  const common::Pose& T_e_w() const { return T_e_w_; }
+  [[nodiscard]] const common::Pose& T_e_w() const { return T_e_w_; }
   /// Accepted fixes dropped from the full pending queue so far.
-  std::uint64_t n_pending_dropped() const { return n_pending_dropped_; }
+  [[nodiscard]] std::uint64_t n_pending_dropped() const { return n_pending_dropped_; }
 
  private:
   struct PendingFix {

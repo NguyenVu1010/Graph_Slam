@@ -42,9 +42,11 @@ class MapWindow {
   explicit MapWindow(std::size_t window_keyframes);
   /// Appends; when full the oldest entry is dropped.
   void push(common::KeyId id, const common::Pose& T_w_b);
-  std::size_t size() const { return size_; }
+  [[nodiscard]] std::size_t size() const { return size_; }
   /// Entry i, 0 = oldest. Precondition: i < size().
-  const WindowEntry& at(std::size_t i) const { return slots_[(head_ + i) % slots_.size()]; }
+  [[nodiscard]] const WindowEntry& at(std::size_t i) const {
+    return slots_[(head_ + i) % slots_.size()];
+  }
   void set_pose(std::size_t i, const common::Pose& T_w_b);
 
  private:

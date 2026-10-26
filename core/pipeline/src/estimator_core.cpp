@@ -194,7 +194,8 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
   }
   // No IMU up to the scan end: only possible at flush() (Review Focus 4). Nothing is
   // integrated, so the state stays at the previous scan.
-  if (imu_.empty() || imu_.back().t < t_end || imu_.front().t > t) {
+  const std::optional<common::ImuSample> s_t = imu_.interpolate(t);
+  if (!s_t || imu_.back().t < t_end) {
     ++counters_.n_skipped_scans;
     ++counters_.n_uncovered_scans;
     common::log_warn("scan not covered by imu samples, skipped");
@@ -222,8 +223,7 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
       }
       return;
     }
-    const std::optional<common::ImuSample> s_t = imu_.interpolate(t);
-    boundary_ = *s_t;  // t lies inside the buffer (checked above)
+    boundary_ = *s_t;
     initialised_ = true;
     front_ = common::NavState{};
     front_.t = t;
@@ -243,7 +243,6 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
     for (std::size_t i = imu_.first_after(pred_last_t_); i < imu_.size() && imu_.at(i).t < t; ++i) {
       feed_preintegrators(imu_.at(i));
     }
-    const std::optional<common::ImuSample> s_t = imu_.interpolate(t);
     boundary_ = *s_t;
     feed_preintegrators(boundary_);
     pred_last_t_ = t;

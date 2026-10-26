@@ -35,14 +35,16 @@ class KeyframeStore {
   /// stored).
   common::Status add(common::KeyId id, common::Timestamp t, const common::ScanFrame& cloud_l);
 
-  std::size_t size() const { return size_; }
-  std::size_t capacity() const { return slots_.size(); }
+  [[nodiscard]] std::size_t size() const { return size_; }
+  [[nodiscard]] std::size_t capacity() const { return slots_.size(); }
   /// Keyframe i, 0 = oldest kept. Precondition: i < size().
-  const KeyframeEntry& at(std::size_t i) const { return slots_[(head_ + i) % slots_.size()]; }
+  [[nodiscard]] const KeyframeEntry& at(std::size_t i) const {
+    return slots_[(head_ + i) % slots_.size()];
+  }
   /// Keyframe `id`, or nullptr when it was evicted or never added. O(log size()).
-  const KeyframeEntry* find(common::KeyId id) const;
+  [[nodiscard]] const KeyframeEntry* find(common::KeyId id) const;
   /// Keyframes evicted so far.
-  std::uint64_t n_evicted() const { return n_evicted_; }
+  [[nodiscard]] std::uint64_t n_evicted() const { return n_evicted_; }
 
  private:
   std::vector<KeyframeEntry> slots_;

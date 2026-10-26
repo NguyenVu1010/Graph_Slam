@@ -23,26 +23,28 @@ class ImuBuffer {
   /// pushing when it must see that sample).
   bool push(const common::ImuSample& s);
 
-  std::size_t size() const { return size_; }
-  bool empty() const { return size_ == 0; }
-  bool full() const { return size_ == data_.size(); }
+  [[nodiscard]] std::size_t size() const { return size_; }
+  [[nodiscard]] bool empty() const { return size_ == 0; }
+  [[nodiscard]] bool full() const { return size_ == data_.size(); }
   static constexpr std::size_t capacity() { return kMaxImuQueue; }
 
   /// Sample i, 0 = oldest. Precondition: i < size().
-  const common::ImuSample& at(std::size_t i) const { return data_[(head_ + i) % data_.size()]; }
+  [[nodiscard]] const common::ImuSample& at(std::size_t i) const {
+    return data_[(head_ + i) % data_.size()];
+  }
   /// Precondition: !empty().
-  const common::ImuSample& front() const { return at(0); }
-  const common::ImuSample& back() const { return at(size_ - 1); }
+  [[nodiscard]] const common::ImuSample& front() const { return at(0); }
+  [[nodiscard]] const common::ImuSample& back() const { return at(size_ - 1); }
   /// Removes the oldest sample. Precondition: !empty().
   void pop_front();
 
   /// Sample at time `t`, acc and gyro linear in time between the bracketing samples
   /// (docs/derivations/pipeline.md section 1). A raw sample at exactly `t` is returned
   /// as is. nullopt when `t` lies outside [front().t, back().t] or the buffer is empty.
-  std::optional<common::ImuSample> interpolate(common::Timestamp t) const;
+  [[nodiscard]] std::optional<common::ImuSample> interpolate(common::Timestamp t) const;
 
   /// Index of the first sample with `at(i).t > t` (size() when there is none).
-  std::size_t first_after(common::Timestamp t) const;
+  [[nodiscard]] std::size_t first_after(common::Timestamp t) const;
 
   /// Copies the samples with `t0 <= t <= t1` into `out[0, n)` and returns n.
   std::size_t copy_range(common::Timestamp t0,

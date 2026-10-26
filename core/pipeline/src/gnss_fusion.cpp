@@ -21,11 +21,11 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
     // G-02: S = m.cov + J P J^T, P := 0 when not finite (pipeline.md section 5).
     Eigen::Matrix<double, 3, 6> J_r_xi;
     const common::Vec3 r = gnss::gnss_residual(m.p_e_g, T_e_w_, T_w_b_fix, p_b_g_, &J_r_xi);
-    common::Mat3 S = m.cov;
+    common::Mat3 s_e = m.cov;
     if (P_w_b.allFinite()) {
-      S += J_r_xi * P_w_b * J_r_xi.transpose();
+      s_e += J_r_xi * P_w_b * J_r_xi.transpose();
     }
-    common::Status chi2 = gnss::chi_square_gate(r, S, chi2_gate_);
+    common::Status chi2 = gnss::chi_square_gate(r, s_e, chi2_gate_);
     if (!chi2.is_ok()) {
       return chi2;
     }
