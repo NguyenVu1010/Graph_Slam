@@ -409,9 +409,14 @@ Config read_config(Reader& r) {
   r.field("map.voxel_m", c.map.voxel_m, Range::kPositive);
   r.field("map.max_points_per_voxel", c.map.max_points_per_voxel, Range::kPositive);
   r.field("map.knn_k", c.map.knn_k, Range::kPositive);
-  r.field("map.prune_radius_m", c.map.prune_radius_m);
-  r.field("map.prune_period_s", c.map.prune_period_s);
+  r.field("map.prune_radius_m", c.map.prune_radius_m, Range::kPositive);
+  r.field("map.prune_period_s", c.map.prune_period_s, Range::kPositive);
   r.field("map.max_voxels", c.map.max_voxels, Range::kPositive);
+  r.field("map.keyframe_voxel_m", c.map.keyframe_voxel_m, Range::kPositive);
+  r.field("map.max_keyframes", c.map.max_keyframes, Range::kPositive);
+  r.field("map.window_keyframes", c.map.window_keyframes, Range::kPositive);
+  r.field("map.rebuild_trans_m", c.map.rebuild_trans_m, Range::kPositive);
+  r.angle_deg("map.rebuild_rot_deg", c.map.rebuild_rot_rad, Range::kPositive);
 
   r.field("scan_match.max_iterations", c.scan_match.max_iterations, Range::kPositive);
   r.field("scan_match.rot_tol_rad", c.scan_match.rot_tol_rad);

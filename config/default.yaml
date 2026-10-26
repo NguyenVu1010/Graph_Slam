@@ -63,6 +63,11 @@ mss_node:
       prune_radius_m: 100.0      # voxels farther than this from the body are removed, m
       prune_period_s: 5.0        # how often pruning runs, s
       max_voxels: 500000         # hard cap on voxel count (memory bound on Pi5, ADR-007)
+      keyframe_voxel_m: 0.5      # extra downsampling of keyframe clouds in the store, m (ADR-016)
+      max_keyframes: 1000        # keyframe store bound (about 36 MB at 3k points/keyframe, ADR-016)
+      window_keyframes: 50       # keyframes rebuilt into the VoxelMap cache after a correction (ADR-016)
+      rebuild_trans_m: 0.05      # rebuild when the oldest window keyframe moved more than this, m
+      rebuild_rot_deg: 0.5       # or rotated more than this, deg (radians in code)
 
     scan_match:
       max_iterations: 10         # Gauss-Newton iterations per scan
