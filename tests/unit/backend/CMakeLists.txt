@@ -5,3 +5,15 @@ mss_add_test(test_lie_gtsam test_lie_gtsam.cpp)
 target_link_libraries(test_lie_gtsam PRIVATE gtsam)
 mss_add_test(test_imu_preint_gtsam test_imu_preint_gtsam.cpp)
 target_link_libraries(test_imu_preint_gtsam PRIVATE gtsam)
+
+# Tests of core/backend internals: link GTSAM and see core/backend/src (internal headers).
+function(mss_add_backend_test name)
+  mss_add_test(${name} ${ARGN})
+  target_link_libraries(${name} PRIVATE gtsam)
+  target_include_directories(${name} PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/backend/src ${CMAKE_SOURCE_DIR}/tests/unit)
+endfunction()
+mss_add_backend_test(test_backend_conversions test_backend_conversions.cpp)
+mss_add_backend_test(test_backend_factors test_backend_factors.cpp)
+mss_add_backend_test(test_backend_graph test_backend_graph.cpp)
+mss_add_backend_test(test_backend_isam test_backend_isam.cpp)
