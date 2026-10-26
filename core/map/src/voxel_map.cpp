@@ -1,6 +1,7 @@
 #include "mss/map/voxel_map.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -152,9 +153,56 @@ void VoxelMap::insert(const common::ScanFrame& scan, const common::Pose& T_w_l) 
   }
 }
 
-int VoxelMap::knn(const common::Vec3& /*p_w*/, int /*k*/, NeighborBuffer& out) const {
+int VoxelMap::knn(const common::Vec3& p_w, int k, NeighborBuffer& out) const {
   out.size = 0;
-  return 0;
+  const int k_eff = std::min(k <= 0 ? cfg_.knn_k : k, NeighborBuffer::kMaxNeighbors);
+  const std::optional<Key> q = key_of(p_w);
+  if (!q) {
+    return 0;
+  }
+  const std::size_t n_per_voxel = static_cast<std::size_t>(cfg_.max_points_per_voxel);
+  // Squared distances of out.p_w[0, n) in double: ranking is done in double, out.dist2 is float.
+  std::array<double, NeighborBuffer::kMaxNeighbors> d2s{};
+  int n = 0;
+  for (std::int32_t dz = -1; dz <= 1; ++dz) {
+    for (std::int32_t dy = -1; dy <= 1; ++dy) {
+      for (std::int32_t dx = -1; dx <= 1; ++dx) {
+        const std::uint32_t v = find_voxel((*q)[0] + dx, (*q)[1] + dy, (*q)[2] + dz);
+        if (v == kEmptySlot) {
+          continue;
+        }
+        const VoxelMeta& meta = voxels_[v];
+        const float* pts = &points_[static_cast<std::size_t>(v) * n_per_voxel * 3];
+        for (std::int32_t s = 0; s < meta.count; ++s) {
+          const float* p = pts + static_cast<std::size_t>(s) * 3;
+          const double ex = static_cast<double>(p[0]) - p_w.x();
+          const double ey = static_cast<double>(p[1]) - p_w.y();
+          const double ez = static_cast<double>(p[2]) - p_w.z();
+          const double d2 = ex * ex + ey * ey + ez * ez;
+          // Strict <: on equal d2 the earlier candidate (visit order, then slot) stays first.
+          if (n == k_eff && !(d2 < d2s[static_cast<std::size_t>(n - 1)])) {
+            continue;
+          }
+          int j = (n < k_eff) ? n++ : n - 1;
+          while (j > 0 && d2 < d2s[static_cast<std::size_t>(j - 1)]) {
+            const std::size_t u = static_cast<std::size_t>(j);
+            d2s[u] = d2s[u - 1];
+            out.p_w[u] = out.p_w[u - 1];
+            --j;
+          }
+          const std::size_t u = static_cast<std::size_t>(j);
+          d2s[u] = d2;
+          out.p_w[u] = common::Vec3(p[0], p[1], p[2]);
+        }
+      }
+    }
+  }
+  for (int i = 0; i < n; ++i) {
+    const std::size_t u = static_cast<std::size_t>(i);
+    out.dist2[u] = static_cast<float>(d2s[u]);
+  }
+  out.size = n;
+  return n;
 }
 
 void VoxelMap::prune(const common::Vec3& /*p_w_b*/) {}

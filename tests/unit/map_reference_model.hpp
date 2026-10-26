@@ -28,6 +28,7 @@ struct RefNeighbor {
 class RefMap {
  public:
   using Key = std::array<std::int32_t, 3>;
+  static constexpr int kMaxNeighbors = 32;  // NeighborBuffer::kMaxNeighbors
 
   explicit RefMap(const MapConfig& cfg) : cfg_(cfg) {}
 
@@ -62,7 +63,50 @@ class RefMap {
   // Scans ALL stored points and keeps those whose voxel key is within 1 of the query key on
   // every axis. Stable-sorts them by (double d2, visit index (dz+1)*9+(dy+1)*3+(dx+1), slot)
   // and returns the first min(k_eff, 32).
-  std::vector<RefNeighbor> knn(const common::Vec3& p_w, int k) const;
+  std::vector<RefNeighbor> knn(const common::Vec3& p_w, int k) const {
+    const int k_eff = std::min(k <= 0 ? cfg_.knn_k : k, kMaxNeighbors);
+    const std::optional<Key> q = key_of_double(p_w);
+    if (!q) {
+      return {};
+    }
+    struct Candidate {
+      double d2;
+      int visit;
+      int slot;
+      std::array<float, 3> p;
+    };
+    std::vector<Candidate> cands;
+    for (const auto& kv : voxels_) {
+      const std::int64_t dx = std::int64_t{kv.first[0]} - (*q)[0];
+      const std::int64_t dy = std::int64_t{kv.first[1]} - (*q)[1];
+      const std::int64_t dz = std::int64_t{kv.first[2]} - (*q)[2];
+      if (dx < -1 || dx > 1 || dy < -1 || dy > 1 || dz < -1 || dz > 1) {
+        continue;
+      }
+      const int visit = static_cast<int>((dz + 1) * 9 + (dy + 1) * 3 + (dx + 1));
+      for (int s = 0; s < kv.second.count; ++s) {
+        const std::array<float, 3>& p = kv.second.slots[static_cast<std::size_t>(s)];
+        const double ex = static_cast<double>(p[0]) - p_w.x();
+        const double ey = static_cast<double>(p[1]) - p_w.y();
+        const double ez = static_cast<double>(p[2]) - p_w.z();
+        cands.push_back(Candidate{ex * ex + ey * ey + ez * ez, visit, s, p});
+      }
+    }
+    std::stable_sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) {
+      if (a.d2 != b.d2) {
+        return a.d2 < b.d2;
+      }
+      if (a.visit != b.visit) {
+        return a.visit < b.visit;
+      }
+      return a.slot < b.slot;
+    });
+    std::vector<RefNeighbor> out;
+    for (std::size_t i = 0; i < cands.size() && i < static_cast<std::size_t>(k_eff); ++i) {
+      out.push_back(RefNeighbor{static_cast<float>(cands[i].d2), cands[i].p});
+    }
+    return out;
+  }
 
   void prune(const common::Vec3& p_w_b) {
     const double r2 = cfg_.prune_radius_m * cfg_.prune_radius_m;
