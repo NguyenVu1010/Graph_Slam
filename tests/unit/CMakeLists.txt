@@ -11,3 +11,5 @@ mss_add_test(test_voxel_map test_voxel_map.cpp alloc_counter_impl.cpp)
 add_subdirectory(odom)
 mss_add_test(test_preprocess test_preprocessor.cpp test_preprocess_deskew_table.cpp
   test_preprocess_voxel_set.cpp alloc_counter_impl.cpp)
+mss_add_test(test_imu test_imu_preintegrator.cpp test_imu_covariance.cpp test_imu_initializer.cpp
+             alloc_counter_impl.cpp)

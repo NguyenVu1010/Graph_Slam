@@ -8,3 +8,6 @@ endif()
 mss_add_test(test_degeneracy_scenes test_degeneracy_scenes.cpp)
 mss_add_test(test_odom_component test_odom_component.cpp)
 mss_add_test(test_preprocess_component test_preprocess_deskew_plane.cpp)
+
+# imu: static init + preintegration on a tilted circle (known answer).
+mss_add_test(test_imu_component test_imu_component.cpp)
