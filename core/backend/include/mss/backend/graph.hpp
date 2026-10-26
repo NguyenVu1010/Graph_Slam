@@ -32,9 +32,10 @@ namespace mss::backend {
 /// Ownership/threading: single-threaded; owned by pipeline::Estimator and used only on
 /// the backend thread (ADR-005). Move-only (owns the iSAM2 instance through `impl_`).
 ///
-/// Build without GTSAM (MSS_WITH_GTSAM=OFF): `graph.cpp` built without GTSAM compiles the
-/// same API; `optimize()` returns `Result::error("built without GTSAM")`, other calls are
-/// no-ops (marginal_cov returns the NaN matrix). Contract only: graph.cpp is not written yet.
+/// Build without GTSAM (MSS_WITH_GTSAM=OFF): `src/graph_stub.cpp` replaces `graph.cpp` and
+/// compiles the same API; `optimize()` and `keyframe_state()` return
+/// `Result::error("built without GTSAM")`, other calls are no-ops (marginal_cov returns the
+/// NaN matrix). Derivations: docs/derivations/backend_factors.md; ADR-015.
 class Graph {
  public:
   /// Inputs:
@@ -49,7 +50,8 @@ class Graph {
   /// Errors: throws std::invalid_argument when `imu_cfg.rate_hz <= 0`,
   ///   `imu_cfg.gravity_mps2 <= 0`, `keyframe_dist_m <= 0`,
   ///   `keyframe_rot_rad <= 0`, `relinearize_threshold <= 0`, `relinearize_skip <= 0`,
-  ///   any prior sigma `<= 0`, a random walk `< 0`, or `p_b_g` non-finite.
+  ///   any prior sigma `<= 0`, a random walk `<= 0` (a zero sigma cannot enter the bias
+  ///   factor; pipeline::load_config also requires > 0), or `p_b_g` non-finite.
   ///   (The keyframe thresholds are applied by the pipeline; Graph validates the whole
   ///   struct it receives.)
   /// Hot path: no. Tests: B-01..B-04 construct it.
@@ -168,6 +170,18 @@ class Graph {
   ///   NaN (never zero, which would claim certainty).
   /// Hot path: no. Tests: B-02, B-04.
   common::PoseCovariance marginal_cov(common::KeyId k) const;
+
+  /// State of keyframe `k` as of the last successful optimize(): T_w_b from the iSAM2
+  /// estimate; v_w_b and bias from the estimate when those variables are in the graph
+  /// (a keyframe with no IMU factor has none), else from the keyframe's initial guess
+  /// x0; t = the keyframe time passed to add_keyframe. Used by the pipeline to correct the
+  /// map with the optimised keyframe poses (ADR-005).
+  /// Frames: T_w_b, v_w_b in w; bias in b. Units: SI.
+  /// Errors (Result::error): "unknown keyframe" when `k` was never added;
+  ///   "keyframe not optimised" when its pose is not in the graph yet (no successful
+  ///   optimize() since a factor on it was added); "built without GTSAM" in the stub.
+  /// Hot path: no. Tests: B-02, B-03, B-04.
+  common::Result<common::NavState> keyframe_state(common::KeyId k) const;
 
  private:
   struct Impl;
