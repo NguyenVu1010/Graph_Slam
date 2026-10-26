@@ -18,13 +18,11 @@
 #include "mss/pipeline/config.hpp"
 #include "mss/scan_match/scan_matcher.hpp"
 
-#include "alloc_counter.hpp"
 #include "plane_fit.hpp"
 
 namespace mss::scan_match {
 namespace {
 
-using common::Mat3;
 using common::Pose;
 using common::Vec3;
 using common::Vec6;
@@ -161,6 +159,7 @@ TEST(ScanMatcher, ConstructorRejectsInvalidConfig) {
   expect_throw([](ScanMatchConfig& s) { s.robust_huber_delta_m = 0.0; });
   expect_throw([](ScanMatchConfig& s) { s.min_inliers = 5; });
   expect_throw([](ScanMatchConfig& s) { s.cov_scale = 0.0; });
+  expect_throw([](ScanMatchConfig& s) { s.min_residual_sigma_m = 0.0; });
   expect_throw(
       [](ScanMatchConfig& s) { s.rot_tol_rad = std::numeric_limits<double>::quiet_NaN(); });
   EXPECT_THROW(ScanMatcher(c.scan_match, c.degeneracy, 0), std::invalid_argument);

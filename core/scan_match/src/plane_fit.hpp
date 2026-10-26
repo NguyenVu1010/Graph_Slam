@@ -9,6 +9,10 @@
 // section 3.
 namespace mss::scan_match::detail {
 
+// A plane needs at least 3 points (geometry, not a tunable). Shared by the fit and the
+// correspondence gate in scan_matcher.cpp.
+constexpr int kMinPlanePoints = 3;
+
 struct PlaneFit {
   // m, centroid of the neighbours, frame w.
   common::Vec3 q_w = common::Vec3::Zero();

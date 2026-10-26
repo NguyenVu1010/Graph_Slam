@@ -8,10 +8,6 @@
 
 namespace mss::scan_match::detail {
 
-namespace {
-constexpr int kMinPlanePoints = 3;  // a plane needs 3 points (geometry, not a tunable)
-}  // namespace
-
 std::optional<PlaneFit> fit_plane(const map::NeighborBuffer& buf) {
   if (buf.size < kMinPlanePoints) {
     return std::nullopt;

@@ -88,7 +88,7 @@ fail. With no flags `H_reg == H` bit for bit, so enabling the flag in a well-con
 changes nothing. `LLT(H_reg)` can only fail when an UNflagged `lambda_k <= 0`, which cannot
 happen when `tau > 0` (every `lambda_k < tau` is flagged) except through non-finite H; that
 remains the "singular Hessian" error. `MatchResult::H` stays the raw, unregularised H, which
-the pipeline analyses again for `relax_covariance`.
+the pipeline may analyse again to obtain the DegeneracyReport (section 6).
 
 ## 6. Covariance
 
@@ -102,21 +102,43 @@ Huber-weighted mean squared residual
 computed during the last accumulation pass (no extra pass), at the same linearisation point
 as the reported H. Then
 
-    cov = cov_scale * sigma_r^2 * A^-1,   A = H (disabled) or H_reg (enabled),
-    cov <- 0.5 (cov + cov^T)
+    s2  = max(sigma_r^2, min_residual_sigma_m^2)
+    C   = cov_scale * s2 * A^-1,   A = H (disabled) or H_reg (enabled),
+    C  <- 0.5 (C + C^T)
+    cov = C                                        (degeneracy disabled)
+    cov = relax_covariance(C, report, deg_cfg)     (enabled; report of the final iteration)
 
-with `cov_scale` a dimensionless multiplier (`scan_match.cov_scale`, default 1.0). With
-degeneracy enabled, a flagged direction gets `v_k^T cov v_k = cov_scale * sigma_r^2 / tau`; the
-pipeline then inflates it with `relax_covariance`. The variance scales with the noise level:
-for scan noise `sigma`, `sigma_r^2 ~ sigma^2` and H barely changes, so 3x the noise gives about
-9x the position variance (test `CovarianceScalesWithNoise`). ADR-004 notes that Hessian
-covariances are over-confident (correlated residuals, model error); `cov_scale` is the knob
-for that.
+with `cov_scale` a dimensionless multiplier (`scan_match.cov_scale`, default 1.0) and
+`min_residual_sigma_m` a floor on the residual sigma (`scan_match.min_residual_sigma_m`,
+default 0.005 m, validated > 0). The variance scales with the noise level: for scan noise
+`sigma`, `sigma_r^2 ~ sigma^2` and H barely changes, so 3x the noise gives about 9x the
+position variance (test `CovarianceScalesWithNoise`). ADR-004 notes that Hessian covariances
+are over-confident (correlated residuals, model error); `cov_scale` is the knob for that.
+
+Floor: a noise-free synthetic scan (Gazebo with noise disabled) fits to float rounding, so
+`sigma_r^2` is near zero and `C` would be near zero or exactly zero, which a backend noise
+model cannot use (singular, or an ill-conditioned information of ~1e14). The floor makes
+`C >= cov_scale * min_residual_sigma_m^2 * A^-1` (test `NoiseFreeCovarianceAtFloor`).
+
+Degenerate directions: `C` alone would be wrong along a flagged direction `v_k`. There
+`H_reg` has eigenvalue `tau` instead of `lambda_k < tau`, so `v_k^T C v_k =
+cov_scale * s2 / tau`, SMALLER than the unregularised `cov_scale * s2 / lambda_k` (infinite for
+an exact corridor) and not a valid uncertainty. The matcher therefore applies the degeneracy
+module's `relax_covariance` itself, so `MatchResult::cov` is final (the pipeline must not relax
+it again): along `v_k` the variance becomes `relax_factor * cov_scale * s2 / tau`, at least
+`relax_factor` times the regularised value and, with the defaults, larger than every unflagged
+variance `cov_scale * s2 / lambda_j` (`lambda_j >= tau`) since `relax_factor > 1` (test
+`D03_CorridorProjectedNotSingular`). This is still a finite number, not "no information": the
+backend additionally masks flagged directions through the DegeneracyReport (ADR-004). With
+nothing flagged `relax_covariance` is the exact identity, so enabling the flag in a
+well-constrained scene changes nothing.
+
+Tuning note: `eig_threshold` is absolute, so it depends on the point count. A sparse but
+well-constrained scan (the 720-point synthetic room) has a smallest eigenvalue of 77 in the
+first iteration and 141 at convergence, so `tau = 100` flags a healthy direction there.
 
 Note: `sum(w)` rather than `n - 6` in the denominator: with hundreds of inliers the
-difference is negligible, and the weighted mean is consistent with the IRLS weights. A
-noise-free synthetic scan gives `sigma_r^2` near zero (rounding to float only), so the
-covariance is then tiny but still positive definite.
+difference is negligible, and the weighted mean is consistent with the IRLS weights.
 
 ## 7. Loop and errors
 
@@ -129,7 +151,7 @@ covariance is then tiny but still positive definite.
       A = H or H_reg (section 5); LLT(A) fails or xi non-finite -> "singular Hessian"
       xi = -A^-1 g, projected if enabled; T <- T * Exp(xi)
       stop when |xi_rho| < trans_tol_m and |xi_phi| < rot_tol_rad   (converged)
-    cov from the last factorisation (section 6); non-finite -> "singular Hessian"
+    cov from the last factorisation, floored and relaxed (section 6); non-finite -> "singular Hessian"
 
 The reported H, inliers and covariance belong to the last iteration, i.e. linearised at the
 estimate before the last update; `T_w_l` is the estimate after it. Not converging within

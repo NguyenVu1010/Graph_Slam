@@ -62,14 +62,19 @@ const Pose kTruthRoom{common::so3_exp(Vec3(0.02, -0.03, 0.2)), Vec3(0.4, -0.3, 0
 // RMS gate and bias the known answer by about 1 cm (measured); 48 keeps every map point.
 constexpr int kSceneMaxPointsPerVoxel = 48;
 
-// config/default.yaml with map.max_points_per_voxel = kSceneMaxPointsPerVoxel.
-pipeline::Config default_config() {
+// config/default.yaml exactly as shipped.
+pipeline::Config shipped_config() {
   const common::Result<pipeline::Config> cfg =
       pipeline::load_config(std::filesystem::path{MSS_REPO_DIR} / "config/default.yaml");
   if (!cfg.is_ok()) {
     throw std::runtime_error("default config: " + cfg.reason());
   }
-  pipeline::Config c = cfg.value();
+  return cfg.value();
+}
+
+// config/default.yaml with map.max_points_per_voxel = kSceneMaxPointsPerVoxel.
+pipeline::Config default_config() {
+  pipeline::Config c = shipped_config();
   c.map.max_points_per_voxel = kSceneMaxPointsPerVoxel;
   return c;
 }
@@ -125,6 +130,63 @@ TEST(ScanMatchComponent, S02_KnownTransformRecovered) {
     const Eigen::LLT<Mat6> llt(m.cov);
     EXPECT_EQ(llt.info(), Eigen::Success) << "trial " << trial;
   }
+}
+
+// S-02 at the SHIPPED map config (max_points_per_voxel = 20). Pins a known weakness: on box
+// edges the voxel ring drops part of one face, 5-NN neighbourhoods mix two faces, still pass
+// plane_rms_max_m and bias the answer (about 9.5 mm / 0.08 deg measured). A planarity gate
+// (ADR-007 follow-up, new tunable) should make this error shrink. Same limits as S-02.
+TEST(ScanMatchComponent, S02_DefaultMapConfigEdgeBias) {
+  const pipeline::Config cfg = shipped_config();
+  map::VoxelMap m(cfg.map);
+  insert_points(m, room_points_w(kMapSpacingM));
+  ScanMatcher matcher(cfg.scan_match, cfg.degeneracy, cfg.realtime.max_points_per_scan);
+  const std::vector<Vec3> scan_w = room_points_w(kRoomScanSpacingM);
+  ScanFrame scan(scan_w.size());
+  make_scan(scan, scan_w, kTruthRoom);
+  std::mt19937 rng(2);
+  double worst_m = 0.0;
+  double worst_deg = 0.0;
+  for (int trial = 0; trial < 10; ++trial) {
+    const Pose init = perturb(kTruthRoom, 0.5, 10.0 * kDegToRad, rng);
+    const common::Result<MatchResult> r = matcher.align(scan, m, init);
+    ASSERT_TRUE(r.is_ok()) << "trial " << trial << ": " << r.reason();
+    const MatchResult& res = r.value();
+    const PoseError e = pose_error(res.T_w_l, kTruthRoom);
+    worst_m = std::max(worst_m, e.trans_m);
+    worst_deg = std::max(worst_deg, e.rot_rad / kDegToRad);
+    EXPECT_TRUE(res.converged) << "trial " << trial;
+    EXPECT_LE(res.iterations, 10) << "trial " << trial;
+    EXPECT_LT(e.trans_m, 0.01) << "trial " << trial;
+    EXPECT_LT(e.rot_rad, 0.1 * kDegToRad) << "trial " << trial;
+  }
+  std::printf("S-02 default map config: worst err_m=%.2e err_deg=%.2e\n", worst_m, worst_deg);
+  RecordProperty("edge_bias_worst_um", static_cast<int>(std::lround(worst_m * 1e6)));
+}
+
+// Noise-free scan at the true pose: sigma_r^2 is ~0 (float rounding), so the covariance sits
+// at the floor cov_scale * min_residual_sigma_m^2 * H^-1, not at zero.
+TEST(ScanMatchComponent, NoiseFreeCovarianceAtFloor) {
+  RoomFixture f;
+  ScanMatcher matcher(f.cfg.scan_match, f.cfg.degeneracy, f.cfg.realtime.max_points_per_scan);
+  const std::vector<Vec3> scan_w = room_points_w(kRoomScanSpacingM);
+  ScanFrame scan(scan_w.size());
+  make_scan(scan, scan_w, kTruthRoom);
+  const common::Result<MatchResult> r = matcher.align(scan, f.map, kTruthRoom);
+  ASSERT_TRUE(r.is_ok()) << r.reason();
+  const MatchResult& m = r.value();
+  const double floor_m2 =
+      f.cfg.scan_match.min_residual_sigma_m * f.cfg.scan_match.min_residual_sigma_m;
+  const double c = f.cfg.scan_match.cov_scale * floor_m2;
+  const Mat6 cov_H = m.cov * m.H;
+  EXPECT_LT((cov_H - c * Mat6::Identity()).norm(), 1e-6 * c);
+  const double pos_trace_m2 = m.cov.topLeftCorner<3, 3>().trace();
+  std::printf("noise-free cov position trace %.3e m^2 (floor sigma %.3f m)\n",
+              pos_trace_m2,
+              f.cfg.scan_match.min_residual_sigma_m);
+  EXPECT_GT(pos_trace_m2, 0.0);
+  const Eigen::LLT<Mat6> llt(m.cov);
+  EXPECT_EQ(llt.info(), Eigen::Success);
 }
 
 // cov = cov_scale * sigma_r^2 * H^-1: 3x the scan noise gives about 9x the position variance.
@@ -391,7 +453,8 @@ struct CorridorFixture {
 
 // Test_CI_CD D-03 inside the matcher: an exactly degenerate corridor (lambda = 0 along x) is
 // solved (not "singular Hessian"), the observable DoF are recovered, the estimate does not
-// move along the axis and the covariance there is cov_scale * sigma_r^2 / eig_threshold.
+// move along the axis and the covariance there is relaxed: relax_factor times the regularised
+// value cov_scale * sigma_r^2 / eig_threshold, larger than every unflagged variance.
 TEST(ScanMatchComponent, D03_CorridorProjectedNotSingular) {
   CorridorFixture f;
   ScanMatcher matcher(f.cfg.scan_match, f.cfg.degeneracy, f.cfg.realtime.max_points_per_scan);
@@ -417,21 +480,39 @@ TEST(ScanMatchComponent, D03_CorridorProjectedNotSingular) {
   const Vec3 axis_l = m.T_w_l.R.transpose() * Vec3::UnitX();
   EXPECT_GT(std::abs(v0.head<3>().dot(axis_l)), std::cos(5.0 * kDegToRad));
 
-  // cov = c * H_reg^-1 with c = cov_scale * sigma_r^2 > 0, so cov * H_reg = c * I.
-  Mat6 H_reg = m.H;
+  // cov = relax_covariance(c * H_reg^-1), c = cov_scale * max(sigma_r^2, floor^2) > 0.
+  // H_reg shares H's eigenvectors, so along unflagged v_j: v_j^T cov v_j = c / lambda_j;
+  // along flagged v_k: relax_factor * c / eig_threshold.
+  const double tau = f.cfg.degeneracy.eig_threshold;
+  const double relax = f.cfg.degeneracy.relax_factor;
+  double c = -1.0;
+  double min_unflagged_var = std::numeric_limits<double>::infinity();
+  double max_unflagged_var = 0.0;
   for (int k = 0; k < 6; ++k) {
     if (report.degenerate[static_cast<std::size_t>(k)]) {
-      const Vec6 v_k = report.eigvecs.col(k);
-      H_reg.noalias() +=
-          (f.cfg.degeneracy.eig_threshold - report.eigvals(k)) * (v_k * v_k.transpose());
+      continue;
     }
+    const Vec6 v_k = report.eigvecs.col(k);
+    const double var_k = v_k.dot(m.cov * v_k);
+    const double c_k = var_k * report.eigvals(k);
+    if (c < 0.0) {
+      c = c_k;
+    }
+    EXPECT_NEAR(c_k / c, 1.0, 1e-6) << "direction " << k;
+    min_unflagged_var = std::min(min_unflagged_var, var_k);
+    max_unflagged_var = std::max(max_unflagged_var, var_k);
   }
-  const Mat6 cov_H = m.cov * H_reg;
-  const double c = cov_H.trace() / 6.0;
   ASSERT_GT(c, 0.0);
-  EXPECT_LT((cov_H - c * Mat6::Identity()).norm(), 1e-6 * c * 6.0);
   const double var_axis = v0.dot(m.cov * v0);
-  EXPECT_NEAR(var_axis * f.cfg.degeneracy.eig_threshold / c, 1.0, 1e-6);
+  std::printf("D-03 cov: axis var %.3e m^2, unflagged var [%.3e, %.3e], c %.3e\n",
+              var_axis,
+              min_unflagged_var,
+              max_unflagged_var,
+              c);
+  EXPECT_NEAR(var_axis * tau / (relax * c), 1.0, 1e-6);
+  EXPECT_GE(var_axis, relax * c / tau * (1.0 - 1e-9));
+  EXPECT_GT(var_axis, min_unflagged_var);
+  EXPECT_GT(var_axis, max_unflagged_var);
 }
 
 // Enabled with nothing flagged (6-sided room): bitwise equal to disabled. The scan is the

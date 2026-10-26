@@ -45,8 +45,8 @@ class ScanMatcher {
   /// Units: `max_points` in points (normally realtime.max_points_per_scan).
   /// Errors: throws std::invalid_argument when `max_iterations <= 0`, `rot_tol_rad <= 0`,
   ///   `trans_tol_m <= 0`, `max_corr_dist_m <= 0`, `plane_rms_max_m <= 0`,
-  ///   `robust_huber_delta_m <= 0`, `min_inliers < 6`, `cov_scale <= 0` or
-  ///   `max_points == 0`. (6 = number of pose DoF, not a tunable.)
+  ///   `robust_huber_delta_m <= 0`, `min_inliers < 6`, `cov_scale <= 0`,
+  ///   `min_residual_sigma_m <= 0` or `max_points == 0`. (6 = number of pose DoF, not a tunable.)
   /// Hot path: no (allocates).
   /// Tests: S-02..S-05 construct it.
   ScanMatcher(const ScanMatchConfig& cfg,
@@ -80,13 +80,17 @@ class ScanMatcher {
   ///     kept in the last iteration;
   ///   - `H`: the Gauss-Newton Hessian `sum w J_r_xi^T J_r_xi` of the final iteration
   ///     (linearised at the estimate before the last update), NOT projected. The
-  ///     pipeline still calls degeneracy::analyze + relax_covariance on it for the
-  ///     factor covariance;
-  ///   - `cov = cov_scale * sigma_r^2 * A^-1` (m^2, rad^2 blocks), symmetrised, where
-  ///     `A = H` (degeneracy disabled) or `H_reg` (enabled) of the final iteration,
+  ///     pipeline may call degeneracy::analyze on it to get the DegeneracyReport;
+  ///   - `cov` (m^2, rad^2 blocks), FINAL (the pipeline must not relax it again):
+  ///     `C = cov_scale * max(sigma_r^2, min_residual_sigma_m^2) * A^-1`, symmetrised,
+  ///     where `A = H` (degeneracy disabled) or `H_reg` (enabled) of the final iteration,
   ///     `sigma_r^2 = sum(w r^2) / sum(w)` (m^2) is the Huber-weighted mean squared
   ///     point-to-plane residual of that iteration's inliers, and `cov_scale` is the
-  ///     dimensionless multiplier from config.
+  ///     dimensionless multiplier from config. Disabled: `cov = C`. Enabled:
+  ///     `cov = degeneracy::relax_covariance(C, report, deg_cfg)` with the final
+  ///     iteration's report, so a flagged direction gets
+  ///     `relax_factor * cov_scale * sigma_r^2 / eig_threshold`. The backend additionally
+  ///     masks flagged directions through the DegeneracyReport (ADR-004).
   /// Body-frame conversion is the pipeline's job, not this class's: the pipeline uses
   /// `transform_covariance(cov, T_b_l)` (lie.hpp) to express cov in b, and rotates the
   /// degeneracy directions with `se3_adj(T_b_l)` (see degeneracy.hpp).

@@ -1,5 +1,6 @@
 #include "mss/scan_match/scan_matcher.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <optional>
@@ -20,7 +21,6 @@ namespace mss::scan_match {
 namespace {
 
 constexpr int kPoseDof = 6;  // SE(3) degrees of freedom (geometry, not a tunable)
-constexpr int kMinPlanePoints = 3;
 
 bool pose_finite(const common::Pose& pose) {
   return pose.R.allFinite() && pose.p.allFinite();
@@ -57,6 +57,9 @@ ScanMatcher::ScanMatcher(const ScanMatchConfig& cfg,
   if (!(cfg.cov_scale > 0.0)) {
     throw std::invalid_argument("scan_match.cov_scale must be > 0");
   }
+  if (!(cfg.min_residual_sigma_m > 0.0)) {
+    throw std::invalid_argument("scan_match.min_residual_sigma_m must be > 0");
+  }
   if (max_points == 0) {
     throw std::invalid_argument("scan_match: max_points must be > 0");
   }
@@ -82,7 +85,7 @@ int ScanMatcher::build_system(const map::VoxelMap& map,
     const common::Vec3& p_l = p_l_[j];
     const common::Vec3 p_w = T_w_l * p_l;
     const int k = map.knn(p_w, 0, nbr_);
-    if (k < kMinPlanePoints || static_cast<double>(nbr_.dist2[0]) > max_corr_dist2_m2) {
+    if (k < detail::kMinPlanePoints || static_cast<double>(nbr_.dist2[0]) > max_corr_dist2_m2) {
       continue;
     }
     const std::optional<detail::PlaneFit> fit = detail::fit_plane(nbr_);
@@ -131,6 +134,7 @@ common::Result<common::MatchResult> ScanMatcher::align(const common::ScanFrame& 
   Eigen::LLT<common::Mat6> llt;
   double sum_w_r2_m2 = 0.0;
   double sum_w = 0.0;
+  common::DegeneracyReport report;  // last iteration's analysis (enabled only)
   for (int it = 1; it <= cfg_.max_iterations; ++it) {
     const int inliers = build_system(map, n, T_w_l, hessian, g, sum_w_r2_m2, sum_w);
     if (inliers < cfg_.min_inliers) {
@@ -140,7 +144,7 @@ common::Result<common::MatchResult> ScanMatcher::align(const common::ScanFrame& 
     if (deg_cfg_.enabled) {
       // Raise flagged eigenvalues to eig_threshold, solve, then project (derivation
       // section 5). With nothing flagged hessian_reg == hessian bit for bit.
-      const common::DegeneracyReport report = degeneracy::analyze(hessian, deg_cfg_);
+      report = degeneracy::analyze(hessian, deg_cfg_);
       common::Mat6 hessian_reg = hessian;
       for (int k = 0; k < kPoseDof; ++k) {
         if (report.degenerate[static_cast<std::size_t>(k)]) {
@@ -174,12 +178,14 @@ common::Result<common::MatchResult> ScanMatcher::align(const common::ScanFrame& 
       break;
     }
   }
-  // cov = cov_scale * sigma_r^2 * A^-1 (A = H or H_reg) from the last factorisation (derivation
-  // section 6).
-  const double sigma_r2_m2 = sum_w_r2_m2 / sum_w;
+  // cov = cov_scale * max(sigma_r^2, min_residual_sigma_m^2) * A^-1 (A = H or H_reg) from the
+  // last factorisation, then inflated along flagged directions (derivation section 6).
+  const double sigma_floor_m2 = cfg_.min_residual_sigma_m * cfg_.min_residual_sigma_m;
+  const double sigma_r2_m2 = std::max(sum_w_r2_m2 / sum_w, sigma_floor_m2);
   const common::Mat6 a_inv = llt.solve(common::Mat6::Identity());
   const common::Mat6 cov = (cfg_.cov_scale * sigma_r2_m2) * a_inv;
-  result.cov = 0.5 * (cov + cov.transpose());
+  const common::Mat6 cov_sym = 0.5 * (cov + cov.transpose());
+  result.cov = deg_cfg_.enabled ? degeneracy::relax_covariance(cov_sym, report, deg_cfg_) : cov_sym;
   result.T_w_l = T_w_l;
   if (!pose_finite(T_w_l) || !result.cov.allFinite()) {
     return R::error("singular Hessian");

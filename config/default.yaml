@@ -73,6 +73,7 @@ mss_node:
       robust_huber_delta_m: 0.1  # Huber kernel threshold on point-to-plane residual, m
       min_inliers: 100           # fewer inliers than this -> match fails
       cov_scale: 1.0             # multiplier on the inverse-Hessian covariance (dimensionless)
+      min_residual_sigma_m: 0.005  # floor on the residual sigma used for the covariance, m
 
     degeneracy:
       enabled: false             # flag: off until evaluated (D-03)
