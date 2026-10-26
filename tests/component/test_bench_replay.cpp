@@ -1,5 +1,6 @@
 // Component test: mss_bench replays a small synthetic mssdata dataset with a known record
 // count and writes est.tum and bench.json under --out.
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -17,6 +18,8 @@
 #include "mss/common/types.hpp"
 #include "mss/io/dataset_format.hpp"
 #include "mss/io/dataset_writer.hpp"
+
+#include "box_world.hpp"
 
 namespace {
 
@@ -62,22 +65,26 @@ class TempDir {
 // `lead_ms` milliseconds of IMU (and, with `with_aux`, GNSS and wheel) data come before
 // the first scan. Without `with_aux` the dataset has no GNSS or wheel records. With
 // `dup_imu` the IMU sample at t = kT0 + 500 ms is written twice (same timestamp), which the
-// writer accepts and Estimator::push_imu rejects.
+// writer accepts and Estimator::push_imu rejects. `imu_offset_ms` shifts every IMU stamp
+// (kT0 + offset + k * 5 ms); `extra_imu` appends that many IMU samples at the end (one
+// reaches past the last scan's end, so flush() leaves no scan uncovered).
 void write_dataset(const fs::path& dir,
                    int lead_ms = 0,
                    bool with_aux = true,
-                   bool dup_imu = false) {
+                   bool dup_imu = false,
+                   int imu_offset_ms = 0,
+                   int extra_imu = 0) {
   mss::io::DatasetIndex meta;
   auto created = mss::io::DatasetWriter::create(dir, meta);
   ASSERT_TRUE(created.is_ok()) << created.reason();
   mss::io::DatasetWriter w = std::move(created).value();
-  const int n_imu = 200 * (1000 + lead_ms) / 1000;
+  const int n_imu = 200 * (1000 + lead_ms) / 1000 + extra_imu;
   const int n_gnss = with_aux ? 5 * (1000 + lead_ms) / 1000 : 0;
   const int n_odom = with_aux ? 50 * (1000 + lead_ms) / 1000 : 0;
   const std::int64_t t_scan0 = kT0 + lead_ms * kMs;
   for (int k = 0; k < n_imu; ++k) {
     ImuSample s;
-    s.t = Timestamp{kT0 + k * 5 * kMs};
+    s.t = Timestamp{kT0 + imu_offset_ms * kMs + k * 5 * kMs};
     s.acc_b = Vec3(0.0, 0.0, 9.80665);
     ASSERT_TRUE(w.write_imu(s).is_ok());
     if (dup_imu && k == 100) {
@@ -134,12 +141,15 @@ std::string bench_cmd(const fs::path& data, const fs::path& out, const fs::path&
   return cmd;
 }
 
+// C-09. 2 s of still IMU before the first scan, so the IMU initialises at scan 0 and every
+// scan produces an estimate; one extra IMU sample (t = 3000 ms) reaches past the last scan's
+// end (2998.9 ms), so flush() leaves no scan uncovered: 10 trajectory lines.
 TEST(BenchReplay, ReplaysSyntheticDataset) {
   TempDir tmp;
   const fs::path data = tmp.path() / "mssdata";
   const fs::path out = tmp.path() / "out";
-  ASSERT_NO_FATAL_FAILURE(write_dataset(data));
-  const std::string cmd = bench_cmd(data, out);
+  ASSERT_NO_FATAL_FAILURE(write_dataset(data, 2000, true, false, 0, 1));
+  const std::string cmd = bench_cmd(data, out) + " 2>/dev/null";
   ASSERT_EQ(run(cmd), 0) << cmd;
 
   std::ifstream tum(out / "est.tum");
@@ -148,23 +158,32 @@ TEST(BenchReplay, ReplaysSyntheticDataset) {
   int n_lines = 0;
   while (std::getline(tum, line)) {
     if (n_lines == 0) {
-      EXPECT_EQ(line, "1.000000000 0 0 0 0 0 0 1");  // identity pose, TUM (x, y, z, w)
+      // First estimate at scan 0 (t = 3 s), still at the initial position.
+      EXPECT_EQ(line.rfind("3.000000000 ", 0), 0U) << line;
+      std::istringstream ss(line);
+      double t_s = 0.0;
+      double x = 1.0;
+      double y = 1.0;
+      double z = 1.0;
+      ss >> t_s >> x >> y >> z;
+      EXPECT_LT(std::sqrt(x * x + y * y + z * z), 1e-6) << line;
     }
     ++n_lines;
   }
   EXPECT_EQ(n_lines, 10);
 
   const std::string json = read_file(out / "bench.json");
-  EXPECT_NE(json.find("\"n_imu\": 200"), std::string::npos) << json;
-  EXPECT_NE(json.find("\"n_gnss\": 5"), std::string::npos) << json;
-  EXPECT_NE(json.find("\"n_odom\": 50"), std::string::npos) << json;
-  EXPECT_NE(json.find("\"n_scans\": 10"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_imu\": 601,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_gnss\": 15,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_odom\": 150,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_scans\": 10,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_uncovered_scans\": 0,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"gt\": 10"), std::string::npos) << json;
   EXPECT_NE(json.find("\"replay_wall_s\""), std::string::npos) << json;
   // records == processed for every stream
-  EXPECT_NE(json.find("\"imu\": 200,"), std::string::npos) << json;
-  EXPECT_NE(json.find("\"gnss\": 5,"), std::string::npos) << json;
-  EXPECT_NE(json.find("\"odom\": 50,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"imu\": 601,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"gnss\": 15,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"odom\": 150,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"lidar\": 10,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"n_dropped_imu\": 0,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"n_dropped_aux\": 0,"), std::string::npos) << json;
@@ -244,6 +263,53 @@ TEST(BenchReplay, SmallImuQueueStillComplete) {
   EXPECT_NE(json.find("\"n_imu\": 200,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"n_scans\": 10,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"n_dropped_imu\": 0,"), std::string::npos) << json;
+}
+
+// Regression: with the IMU stamped 3 ms after the LiDAR grid, the sample covering scan
+// k-1's end arrives after scan k's record. Draining only after a scan push left two
+// uncovered scans queued and the third push dropped one (scan_queue_depth 2).
+TEST(BenchReplay, ImuStampOffsetDoesNotDropScans) {
+  TempDir tmp;
+  const fs::path data = tmp.path() / "mssdata";
+  const fs::path out = tmp.path() / "out";
+  ASSERT_NO_FATAL_FAILURE(write_dataset(data, 0, true, false, 3));
+  const std::string cmd = bench_cmd(data, out) + " 2>/dev/null";
+  ASSERT_EQ(run(cmd), 0) << cmd;
+  const std::string json = read_file(out / "bench.json");
+  EXPECT_NE(json.find("\"n_dropped_scans\": 0,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_scans\": 10,"), std::string::npos) << json;
+}
+
+// E-02: two runs over the same input give byte-identical trajectories.
+TEST(BenchReplay, E02_TwoRunsAreBitIdentical) {
+  TempDir tmp;
+  mss::test::BoxWorldParams params;
+  params.motion_s = 5.0;
+  const fs::path data = tmp.path() / "mssdata";
+  ASSERT_TRUE(mss::test::write_box_dataset(data, params).is_ok());
+  const fs::path overlay = tmp.path() / "box.yaml";
+  {
+    std::ofstream f(overlay);
+    f << mss::test::box_overlay_yaml(params, true);
+  }
+  const fs::path out1 = tmp.path() / "out1";
+  const fs::path out2 = tmp.path() / "out2";
+  const std::string cmd1 = bench_cmd(data, out1, overlay) + " >/dev/null 2>&1";
+  const std::string cmd2 = bench_cmd(data, out2, overlay) + " >/dev/null 2>&1";
+  ASSERT_EQ(run(cmd1), 0) << cmd1;
+  ASSERT_EQ(run(cmd2), 0) << cmd2;
+  const std::string tum1 = read_file(out1 / "est.tum");
+  const std::string tum2 = read_file(out2 / "est.tum");
+  EXPECT_FALSE(tum1.empty());
+  EXPECT_TRUE(tum1 == tum2) << "est.tum differs between two runs";
+  const std::string json1 = read_file(out1 / "bench.json");
+  const std::string json2 = read_file(out2 / "bench.json");
+  const auto n_scans = [](const std::string& json) {
+    const std::size_t pos = json.find("\"n_scans\": ");
+    return pos == std::string::npos ? std::string() : json.substr(pos, json.find(',', pos) - pos);
+  };
+  EXPECT_FALSE(n_scans(json1).empty()) << json1;
+  EXPECT_EQ(n_scans(json1), n_scans(json2));
 }
 
 TEST(BenchReplay, MissingDatasetExits2AndWritesNothing) {

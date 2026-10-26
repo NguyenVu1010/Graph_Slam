@@ -14,6 +14,8 @@
 #include "mss/pipeline/bounded_queue.hpp"
 #include "mss/pipeline/merge_order.hpp"
 
+#include "estimator_core.hpp"
+
 namespace mss::pipeline {
 namespace {
 
@@ -62,6 +64,7 @@ struct Estimator::Impl {
     if (c.realtime.max_points_per_scan == 0) {
       throw std::invalid_argument("realtime.max_points_per_scan: must be > 0");
     }
+    core = std::make_unique<detail::EstimatorCore>(c);
     // Pool: every queued scan plus one being processed plus one spare.
     pool.resize(scan_depth + 2);
     for (common::ScanFrame& f : pool) {
@@ -85,12 +88,23 @@ struct Estimator::Impl {
 
   // A scan with ordering key `key` is covered once an accepted IMU sample has t >= key
   // (push_imu keeps last_imu_t strictly increasing, so the latest accepted t decides).
-  bool imu_covers(common::Timestamp key) const { return have_imu && key <= last_imu_t; }
+  // Only finite samples count: the core drops non-finite ones, so they cannot cover a scan.
+  bool imu_covers(common::Timestamp key) const {
+    return have_finite_imu && key <= last_finite_imu_t;
+  }
 
   // k-way merge of the queue heads by key (see Estimator::run_once()). With
   // `require_imu_coverage`, stops at the first scan in key order that no IMU sample covers
   // yet, leaving it and everything after it queued.
   void drain(bool require_imu_coverage);
+
+  void feed_imu(const common::ImuSample& s) {
+    core->on_imu(s);
+    if (s.acc_b.allFinite() && s.gyro_b.allFinite()) {  // the core drops the others
+      core_has_imu = true;
+      core_last_imu_t = s.t;  // push_imu keeps the queue strictly increasing
+    }
+  }
 
   void record_push_latency(double us) {
     latency_us[latency_next] = us;
@@ -103,6 +117,9 @@ struct Estimator::Impl {
   std::size_t imu_depth;
   std::size_t aux_depth;
 
+  // Every module and the per-message algorithm (docs/derivations/pipeline.md).
+  std::unique_ptr<detail::EstimatorCore> core;
+
   std::vector<common::ScanFrame> pool;
   std::vector<bool> slot_busy;
 
@@ -113,6 +130,12 @@ struct Estimator::Impl {
 
   bool have_imu = false;
   common::Timestamp last_imu_t{};
+  // Latest accepted IMU sample with finite acc and gyro (coverage gate).
+  bool have_finite_imu = false;
+  common::Timestamp last_finite_imu_t{};
+  // Latest IMU sample handed to the core (drain).
+  bool core_has_imu = false;
+  common::Timestamp core_last_imu_t{};
 
   common::Estimate latest;
   Stats stats;
@@ -138,32 +161,44 @@ void Estimator::Impl::drain(bool require_imu_coverage) {
       case Source::kImu: {
         common::ImuSample sample;
         imu.pop(sample);
-        ++stats.n_imu;  // no IMU module yet: processing = counting
+        ++stats.n_imu;
+        feed_imu(sample);
         break;
       }
       case Source::kWheel: {
         common::WheelSample sample;
         odom.pop(sample);
         ++stats.n_odom;
+        core->on_wheel(sample);
         break;
       }
       case Source::kGnss: {
         common::GnssMeasurement m;
         gnss.pop(m);
         ++stats.n_gnss;
+        core->on_gnss(m);
         break;
       }
       case Source::kScan: {
         if (require_imu_coverage && !imu_covers(scans.front().key)) {
           return;  // wait for IMU up to the scan end; later messages stay queued too
         }
+        // The core needs the IMU up to the first sample at or after the scan end (deskew,
+        // docs/derivations/pipeline.md section 2). That sample sorts after the scan, so it
+        // is handed over now; only IMU samples move ahead of the scan, never wheel or GNSS.
+        while (!imu.empty() && !(core_has_imu && scans.front().key <= core_last_imu_t)) {
+          common::ImuSample sample;
+          imu.pop(sample);
+          ++stats.n_imu;
+          feed_imu(sample);
+        }
         ScanEntry entry;
         scans.pop(entry);
         ++stats.n_scans;
-        // No algorithm yet (Task 8): identity pose, zero velocity and bias, zero cov,
-        // stamped with the scan start time (the keyframe time).
-        latest = common::Estimate{};
-        latest.state.t = pool[entry.slot].t_start;
+        core->on_scan(pool[entry.slot]);
+        if (core->has_estimate()) {
+          latest = core->latest();
+        }
         release_slot(entry.slot);
         break;
       }
@@ -222,6 +257,10 @@ common::Status Estimator::push_imu(const common::ImuSample& sample) {
   }
   s.have_imu = true;
   s.last_imu_t = sample.t;
+  if (sample.acc_b.allFinite() && sample.gyro_b.allFinite()) {
+    s.have_finite_imu = true;
+    s.last_finite_imu_t = sample.t;
+  }
   if (s.imu.size() >= s.imu_depth) {
     common::ImuSample dropped;
     s.imu.pop(dropped);
@@ -269,6 +308,7 @@ void Estimator::run_once() {
 
 void Estimator::flush() {
   impl_->drain(/*require_imu_coverage=*/false);
+  impl_->core->on_end_of_data();
 }
 
 void Estimator::start() {
@@ -291,6 +331,18 @@ void Estimator::stop() {
 Estimator::Stats Estimator::stats() const {
   const Impl& s = *impl_;
   Stats out = s.stats;
+  const detail::CoreCounters& c = s.core->counters();
+  out.n_keyframes = c.n_keyframes;
+  out.n_match_failures = c.n_match_failures;
+  out.n_skipped_scans = c.n_skipped_scans;
+  out.n_uncovered_scans = c.n_uncovered_scans;
+  out.n_map_rebuilds = c.n_map_rebuilds;
+  out.n_gnss_factors = c.n_gnss_factors;
+  out.n_odom_factors = c.n_odom_factors;
+  out.n_gnss_late = c.n_gnss_late;
+  out.n_gnss_ring_overflow = c.n_gnss_ring_overflow;
+  out.n_gnss_unfused_eof = c.n_gnss_unfused_eof;
+  out.n_nonfinite_imu = c.n_nonfinite_imu;
   const std::size_t n = s.latency_count;
   if (n > 0) {
     // Off the hot path: sort a copy of the stored samples.
