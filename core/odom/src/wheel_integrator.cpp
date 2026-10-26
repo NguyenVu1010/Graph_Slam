@@ -63,6 +63,7 @@ common::Mat3 rot_z(double yaw_rad) {
 
 }  // namespace
 
+// NOLINTNEXTLINE(modernize-pass-by-value): signature is frozen in wheel_integrator.hpp.
 WheelIntegrator::WheelIntegrator(const WheelOdomConfig& cfg, const common::Pose& T_b_o)
     : cfg_(cfg), T_b_o_(T_b_o) {
   // !(x >= 0) also rejects NaN.
