@@ -137,6 +137,23 @@ TEST(GnssAligner, StationaryJitterNeverAligns) {
   }
 }
 
+TEST(GnssAligner, FrozenFixWhileMovingNeverAligns) {
+  // Review I-1: the receiver repeats one fix while the body drives 40 m. The w side has
+  // plenty of spread, the e side none: yaw is unobservable, so no pose may be returned.
+  GnssAligner aligner(cfg());
+  const Vec3 p_e_g_frozen(120.0, -45.0, 3.0);
+  const Vec3 p_b_g(-0.20, 0.10, 0.60);
+  for (int n = 1; n <= 200; ++n) {
+    const Pose T_w_b = body_on_line(n - 1, 10.0 * kDeg);
+    const auto res = aligner.update(p_e_g_frozen, T_w_b, p_b_g);
+    if (n < GnssAligner::kMinPairsForAlignment) {
+      EXPECT_EQ(res.reason(), "not enough pairs") << "n " << n;
+    } else {
+      EXPECT_EQ(res.reason(), "insufficient horizontal spread") << "n " << n;
+    }
+  }
+}
+
 TEST(GnssAligner, NoAllocation) {
   GnssAligner aligner(cfg());
   const Pose T_e_w = yaw_pose(0.5, Vec3(10.0, 20.0, 1.0));

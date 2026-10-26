@@ -1,6 +1,8 @@
-#include <cmath>
+#include "mss/gnss/gnss.hpp"  // own header first (CLAUDE.md)
+// The file name differs from the header name, so clang-format cannot detect the main
+// include; this comment keeps it in its own block.
 
-#include "mss/gnss/gnss.hpp"
+#include <cmath>
 
 namespace mss::gnss {
 

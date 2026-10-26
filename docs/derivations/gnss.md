@@ -108,7 +108,10 @@ Horizontal spread (RMS distance of `p_w_g,h` from its centroid):
 
     spread = sqrt(max(0, sum |a_h|^2 / n - |sum a_h / n|^2))
 
-Below `kMinHorizontalSpreadM` yaw is unobservable and no transform is returned.
+The same spread is computed on the e side from `sum b` and `sum |b_h|^2`. If either side is
+below `kMinHorizontalSpreadM`, yaw is unobservable and no transform is returned. The e-side
+check catches a receiver that repeats or holds one fix while the body moves: then
+`C_c ~ 0` and `atan2(~0, ~0)` would give an arbitrary yaw.
 
 Observability: `sigma_yaw ~ sigma_h / sqrt(sum |a_c,h|^2)`. A straight 30 m path at 1 m/s
 and 5 Hz has 151 fixes and `sum |a_c,h|^2 ~ n L^2 / 12 ~ 151 * 900 / 12 ~ 1.13e4 m^2`, so at

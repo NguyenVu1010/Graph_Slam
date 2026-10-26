@@ -66,13 +66,14 @@ class GnssAligner {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  /// Minimum number of accepted pairs before update() returns a transform. Start value;
-  /// the gnss module moves it to GnssConfig (YAML `gnss.align_min_pairs`) when it
-  /// implements the aligner.
+  /// Minimum number of accepted pairs before update() returns a transform. Moving it to
+  /// GnssConfig (YAML `gnss.align_min_pairs`) is pending (gnss plan Contract issue 2,
+  /// owned by the pipeline).
   static constexpr int kMinPairsForAlignment = 10;
-  /// Minimum RMS horizontal distance (m) of the w-frame antenna positions from their
-  /// centroid; below it yaw is unobservable. Start value; moved to GnssConfig (YAML
-  /// `gnss.align_min_spread_m`) by the gnss module.
+  /// Minimum RMS horizontal distance (m) of the antenna positions from their centroid,
+  /// required on both the w side and the e side; below it yaw is unobservable. Moving it
+  /// to GnssConfig (YAML `gnss.align_min_spread_m`) is pending (gnss plan Contract
+  /// issue 2, owned by the pipeline).
   static constexpr double kMinHorizontalSpreadM = 1.0;
 
   /// Errors: none (GnssConfig needs no validation here). Hot path: no.
@@ -92,8 +93,8 @@ class GnssAligner {
   ///   1. "non-finite input" (pair NOT added);
   ///   2. "not enough pairs" while fewer than kMinPairsForAlignment pairs were added,
   ///      counting this one (the pair IS added);
-  ///   3. "insufficient horizontal spread" while the spread is < kMinHorizontalSpreadM
-  ///      (the pair IS added).
+  ///   3. "insufficient horizontal spread" while the w-side or the e-side spread is
+  ///      < kMinHorizontalSpreadM (the pair IS added).
   /// Hot path: no (per fix); no allocation on the success path and on error paths that
   /// use string literals, no logging.
   /// Tests: G-03 (yaw error < 0.5 deg after 30 m), G-04 (lever arm).
@@ -111,6 +112,7 @@ class GnssAligner {
   common::Vec3 sum_e_ = common::Vec3::Zero();         // m, sum b
   Eigen::Matrix2d sum_we_ = Eigen::Matrix2d::Zero();  // m^2, sum a_h b_h^T
   double sum_w_h_sq_m2_ = 0.0;                        // m^2, sum |a_h|^2
+  double sum_e_h_sq_m2_ = 0.0;                        // m^2, sum |b_h|^2
 };
 
 }  // namespace mss::gnss

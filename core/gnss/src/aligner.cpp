@@ -1,8 +1,10 @@
+#include "mss/gnss/gnss.hpp"  // own header first (CLAUDE.md)
+// The file name differs from the header name, so clang-format cannot detect the main
+// include; this comment keeps it in its own block.
+
 #include <cmath>
 
 #include <Eigen/Core>
-
-#include "mss/gnss/gnss.hpp"
 
 namespace mss::gnss {
 
@@ -32,6 +34,7 @@ common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
   sum_e_ += b;
   sum_we_ += a_h * b_h.transpose();
   sum_w_h_sq_m2_ += a_h.squaredNorm();
+  sum_e_h_sq_m2_ += b_h.squaredNorm();
   ++n_pairs_;
 
   if (n_pairs_ < kMinPairsForAlignment) {
@@ -39,10 +42,15 @@ common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
   }
 
   const auto n = static_cast<double>(n_pairs_);
+  // Yaw needs horizontal motion on BOTH sides: a frozen or repeated GNSS fix while the
+  // body moves gives cross_c ~ 0 and an arbitrary atan2 (docs/derivations/gnss.md s. 4).
   const Eigen::Vector2d mean_a_h = sum_w_.head<2>() / n;
-  const double spread_sq_m2 = sum_w_h_sq_m2_ / n - mean_a_h.squaredNorm();
-  const double spread_m = std::sqrt(spread_sq_m2 > 0.0 ? spread_sq_m2 : 0.0);
-  if (spread_m < kMinHorizontalSpreadM) {
+  const Eigen::Vector2d mean_b_h = sum_e_.head<2>() / n;
+  const double spread_w_sq_m2 = sum_w_h_sq_m2_ / n - mean_a_h.squaredNorm();
+  const double spread_e_sq_m2 = sum_e_h_sq_m2_ / n - mean_b_h.squaredNorm();
+  const double spread_w_m = std::sqrt(spread_w_sq_m2 > 0.0 ? spread_w_sq_m2 : 0.0);
+  const double spread_e_m = std::sqrt(spread_e_sq_m2 > 0.0 ? spread_e_sq_m2 : 0.0);
+  if (spread_w_m < kMinHorizontalSpreadM || spread_e_m < kMinHorizontalSpreadM) {
     return ResultPose::error("insufficient horizontal spread");
   }
 
