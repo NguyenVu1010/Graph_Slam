@@ -64,7 +64,7 @@
   ```
   Test binary `test_scan_match` (Task 2 extends it), with `core/scan_match/src` on its include path.
 
-- [ ] **Step 1: Write `docs/derivations/scan_match.md`** (formulas, no code), sections:
+- [x] **Step 1: Write `docs/derivations/scan_match.md`** (formulas, no code), sections:
   1. Residual `r = n_w . (T_w_l p_l - q_w)`; variable `xi = [rho, phi]`, right perturbation; frames (p_l in l, q_w and n_w in w).
   2. Jacobian: `T Exp(xi) p ~ R (p + rho + phi x p) + t` gives `J_r_xi = [ (R^T n_w)^T , -(R^T n_w)^T skew(p_l) ]` = `[n_l ; p_l x n_l]^T`, `n_l = R^T n_w`; units (unitless, m/rad). A flipped normal flips r and J together, so H and g do not depend on its sign.
   3. Plane fit: centroid `q`, scatter `S = sum (x_i - q)(x_i - q)^T`, `n` = eigenvector of `lambda_min(S)`, `rms = sqrt(lambda_min / n)`; acceptance per the header (>= 3 neighbours, `dist2[0] <= max_corr_dist_m^2`, `rms <= plane_rms_max_m`). A collinear neighbourhood has `rms = 0` and an arbitrary normal; rejecting it would need a new tunable (open question, not in this plan).
@@ -73,7 +73,7 @@
   6. Covariance `cov = cov_scale * H^-1` (`H_reg^-1` when enabled), symmetrised `0.5 (C + C^T)`; the consistent form `cov_scale * s2 * H^-1`, `s2 = sum w r^2 / (n - 6)` (Contract issue 1); ADR-004 note that Hessian covariances are over-confident.
   7. Loop: stop test `|xi_rho| < trans_tol_m && |xi_phi| < rot_tol_rad` after the update; the reported H is the last one built (before the last update); error list.
 
-- [ ] **Step 2: Write the failing tests** in `tests/unit/test_scan_match.cpp`
+- [x] **Step 2: Write the failing tests** in `tests/unit/test_scan_match.cpp`
 
 ```cpp
 // S-01: 100 trials, std::mt19937(1): p_l, q_w uniform in [-10, 10]^3 m, n_w random unit,
@@ -98,16 +98,16 @@ TEST(PlaneFit, FewerThanThreeIsNullopt) {
 }
 ```
 
-- [ ] **Step 3: Register and run to verify it fails.** Append to `tests/unit/CMakeLists.txt`:
+- [x] **Step 3: Register and run to verify it fails.** Append to `tests/unit/CMakeLists.txt`:
 `mss_add_test(test_scan_match test_scan_match.cpp alloc_counter_impl.cpp)` and
 `target_include_directories(test_scan_match PRIVATE ${CMAKE_SOURCE_DIR}/core/scan_match/src)`.
 Run the build command with `--target test_scan_match`. Expected: link error `undefined reference to mss::scan_match::point_to_plane_residual`.
 
-- [ ] **Step 4: CMake + implement.** `core/scan_match/CMakeLists.txt` follows `core/degeneracy/CMakeLists.txt`: `add_library(mss_scan_match STATIC src/point_to_plane.cpp src/plane_fit.cpp src/scan_matcher.cpp)`, alias `mss::scan_match`, `mss_set_target_defaults`, PUBLIC include dir (same generator expressions), `target_link_libraries(mss_scan_match PUBLIC mss::common mss::map mss::degeneracy)`. Residual: `n_l = R^T n_w` once, `r = n_w.dot(T_w_l * p_l - q_w)`, J per the header formula. `fit_plane`: centre first, then accumulate S; `Eigen::SelfAdjointEigenSolver<common::Mat3>::compute` (not `computeDirect`: more accurate on near-flat sets; planner's call); `rms_m = sqrt(max(lambda_0, 0) / n)`.
+- [x] **Step 4: CMake + implement.** `core/scan_match/CMakeLists.txt` follows `core/degeneracy/CMakeLists.txt`: `add_library(mss_scan_match STATIC src/point_to_plane.cpp src/plane_fit.cpp src/scan_matcher.cpp)`, alias `mss::scan_match`, `mss_set_target_defaults`, PUBLIC include dir (same generator expressions), `target_link_libraries(mss_scan_match PUBLIC mss::common mss::map mss::degeneracy)`. Residual: `n_l = R^T n_w` once, `r = n_w.dot(T_w_l * p_l - q_w)`, J per the header formula. `fit_plane`: centre first, then accumulate S; `Eigen::SelfAdjointEigenSolver<common::Mat3>::compute` (not `computeDirect`: more accurate on near-flat sets; planner's call); `rms_m = sqrt(max(lambda_0, 0) / n)`.
 
-- [ ] **Step 5: Run to verify it passes.** Build command with `--target test_scan_match`. Expected: `[  PASSED  ] 5 tests.` and `BUILD OK`.
+- [x] **Step 5: Run to verify it passes.** Build command with `--target test_scan_match`. Expected: `[  PASSED  ] 5 tests.` and `BUILD OK`.
 
-- [ ] **Step 6: Format check, then commit**
+- [x] **Step 6: Format check, then commit**
 ```bash
 git add docs/derivations core/scan_match tests/unit/test_scan_match.cpp tests/unit/CMakeLists.txt
 git commit -m "feat(scan_match): point-to-plane residual, Jacobian and k-NN plane fit"
