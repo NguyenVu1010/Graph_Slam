@@ -22,6 +22,7 @@
 #include "mss/common/types.hpp"
 
 #include "backend_test_config.hpp"
+#include "constants.hpp"
 #include "conversions.hpp"
 #include "gnss_factor.hpp"
 #include "graph_scenarios.hpp"
@@ -43,8 +44,8 @@ using test::CapturingLogger;
 using test::default_backend_config;
 using test::default_imu_config;
 
-constexpr double kLoopCauchyK = 3.5485;  // graph.cpp, backend_factors.md section 5
-constexpr double kDragLimitM = 0.1;      // B-03: 5 x the 0.02 m edge position sigma
+using detail::kLoopCauchyK;          // constants.hpp, backend_factors.md section 5
+constexpr double kDragLimitM = 0.1;  // B-03: 5 x the 0.02 m edge position sigma
 
 NavState state_or_fail(const Graph& g, KeyId k) {
   const common::Result<NavState> r = g.keyframe_state(k);

@@ -102,6 +102,12 @@ that the iSAM2 Cholesky factorisation cannot handle.
 the `Logmap` of the error, so its Jacobian omits `Jr^-1(e)`: it is exact at zero error and
 approximate (relative error of order `|e|`) elsewhere. This is GTSAM's standard behaviour and
 is the same for iSAM2 and the batch optimiser (B-04); B-01 checks it at zero error.
+The approximation changes the Gauss-Newton step, so its fixed point differs from the true MAP
+estimate only by terms of relative order `|e|^2`: negligible for consistent LiDAR edges
+(residuals at sigma level) and for loops, whose large residuals the Cauchy kernel
+down-weights. If LiDAR covariances become very tight, two exact alternatives exist: build
+GTSAM with `GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR`, or use a custom between factor that
+reuses `odom::relative_pose_residual` (exact `Jr^-1`) the way `OdomBetweenFactor` does.
 
 Loop: the same factor with `noiseModel::Robust::Create(mEstimator::Cauchy::Create(k),
 Gaussian::Covariance(P cov P^T))`. GTSAM reweights on the whitened norm `|e|` with weight
@@ -148,7 +154,24 @@ unconstrained keyframe is never inserted; its state is reported from the guess w
 covariance). When `ISAM2::update` throws (e.g. indeterminant system) or the estimate is not
 finite, the iSAM2 instance may be half-updated, so it is rebuilt from the committed factors
 at the last good estimate; pending factors are dropped, pending keyframe-0 priors and the
-keyframe guesses are kept, and `optimize()` returns `"optimization failed: ..."`.
+keyframe guesses are kept, and `optimize()` returns `"optimization failed: ..."`. If the
+rebuild itself throws, iSAM2 restarts empty: the last estimate becomes the keyframe guesses
+and every committed factor is queued again for the next `optimize()` (logged as an error).
+
+Pose re-anchor after a failure. Dropping the pending factors also drops the edges `(k-1, k)`
+that tied the keyframes added since the last success to the anchored graph, and the pipeline
+never adds them again. Every keyframe whose pose is not in iSAM2 after a failure is marked
+orphaned. In each `optimize()`, the keys of the pending factors are split into connected
+components (by shared factors); a component that holds no key already in iSAM2 and not
+`X(0)`, and contains an orphaned keyframe, gets a `PriorFactor<Pose3>` on its lowest pose
+key (the oldest keyframe of the island), centred on that keyframe's guess, with the
+first-keyframe sigmas (§2), and one warning line. A keyframe stops being orphaned once its
+pose is in iSAM2. Components without an orphaned keyframe are not anchored, so an
+under-constrained new keyframe (e.g. a GNSS fix alone) still fails as before.
+
+Non-finite guess. `add_keyframe` replaces a non-finite `x0` pose, velocity or bias by the
+previous keyframe's guess (identity / zero for keyframe 0) with one warning line; the
+keyframe is still added, so KeyIds stay dense, and no non-finite value reaches GTSAM.
 
 Re-anchor. If an IMU factor is rejected in the middle of the chain (e.g. `1 -> 2`), the next
 accepted factor `2 -> 3` would bring in `V(2)` and `B(2)` with no link to keyframe 0, so the
@@ -162,7 +185,7 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | --- | --- |
 | §1 permutation of covariances | `BackendConversions.CovariancePermutationMatchesGtsamWhitening`, `BackendConversions.PermuteCovIsInvolution` |
 | §1 pose conversion | `BackendConversions.PoseRoundTrip` |
-| §3 IMU Jacobians (numerical, < 1e-6) | B-01 `BackendFactors.B01_ImuFactorJacobians` |
+| §3 IMU Jacobians (numerical, < 1e-6) and full `delta.cov` noise | B-01 `BackendFactors.B01_ImuFactorJacobians` |
 | §3 zero residual at the prediction | B-01 `BackendFactors.B01_ImuFactorZeroAtPrediction` |
 | §6 GNSS Jacobian and sign | B-01 `BackendFactors.B01_GnssFactorJacobians`, `BackendFactors.B01_GnssFactorZeroWhenConsistent` |
 | §7 rank-3 odom whitening and Jacobians | B-01 `BackendFactors.B01_OdomFactorRotatedSingularCov`, `BackendFactors.B01_OdomFactorZeroCovRejected` |
@@ -171,6 +194,7 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §5 pose graph | B-02 `BackendGraph.B02_SquareLoopNoiseFreeConvergesExactly`, `BackendGraph.B02_SquareLoopNoisyWithinMarginalBounds` |
 | §3, §4 IMU chain and time check | `BackendGraph.ImuChainRecoversTrajectory`, `BackendGraph.ImuTimeCheckRejectsMismatch` |
 | §6 in the graph | `BackendGraph.GnssFactorPullsPosition` |
+| §9 pose re-anchor, non-finite guess, duplicate IMU factor | `BackendGraph.FailedOptimizeDoesNotStrandLaterKeyframes`, `BackendGraph.AddKeyframeNonFiniteGuessIsSanitised`, `BackendGraph.DuplicateImuFactorRejected` |
 | §9 | `BackendGraph.ImuGapReanchorsVelocityAndBias`, `BackendGraph.OptimizeFailureDropsPendingFactorsKeepsKeyframes`, `BackendGraph.LatestKeyframeWithoutFactorsReturnsGuessAndNanCov` |
 | input validation | `BackendGraph.RejectsBadCovariances`, `BackendApi.ConstructorRejectsInvalidConfig` |
 | §5 robust loop | B-03 `BackendIsam.B03_OutlierLoopDragsLessThanTenCm`, `BackendIsam.B03_ControlNonRobustOutlierDragsMoreThanTenCm` |

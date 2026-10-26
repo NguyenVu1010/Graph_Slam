@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <exception>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -30,6 +31,7 @@
 
 #include "mss/common/logger.hpp"
 
+#include "constants.hpp"
 #include "conversions.hpp"
 #include "gnss_factor.hpp"
 #include "imu_factor.hpp"
@@ -46,10 +48,7 @@ using common::NavState;
 using common::Vec3;
 using Vec6 = Eigen::Matrix<double, 6, 1>;
 
-// Robust kernel width for loop factors (backend_factors.md section 5, ADR-015):
-// sqrt(chi2_6(0.95)) = sqrt(12.5916), in whitened (Mahalanobis) units. A
-// backend.loop_cauchy_k YAML key comes with the loop module.
-constexpr double kLoopCauchyK = 3.5485;
+using detail::kLoopCauchyK;  // constants.hpp
 constexpr double kNsPerS = 1e9;
 constexpr double kMsPerNs = 1e-6;
 // IMU duration tolerance in sample periods (graph.hpp, add_imu_factor).
@@ -124,9 +123,14 @@ struct Graph::Impl {
   Vec3 g_w = Vec3::Zero();
   gtsam::ISAM2Params params;
   std::unique_ptr<gtsam::ISAM2> isam;
-  std::vector<NavState> guesses;        // index = KeyId; t = keyframe time
-  std::vector<bool> imu_end_committed;  // index = KeyId: a committed IMU factor ends here
-  std::vector<KeyId> imu_end_pending;   // keyframes where a pending IMU factor ends
+  std::vector<NavState> guesses;          // index = KeyId; t = keyframe time
+  std::vector<bool> imu_end_committed;    // index = KeyId: a committed IMU factor ends here
+  std::vector<KeyId> imu_end_pending;     // keyframes where a pending IMU factor ends
+  std::vector<bool> imu_start_committed;  // index = KeyId: a committed IMU factor starts here
+  std::vector<KeyId> imu_start_pending;   // keyframes where a pending IMU factor starts
+  // index = KeyId: the keyframe pose was not in iSAM2 when an optimize() failed, so the
+  // factors linking it to the anchored graph may have been dropped (section 9).
+  std::vector<bool> orphaned;
   gtsam::NonlinearFactorGraph pending_priors;
   gtsam::NonlinearFactorGraph pending_factors;
   gtsam::NonlinearFactorGraph committed_factors;
@@ -134,6 +138,18 @@ struct Graph::Impl {
   std::size_t degenerate_keyframes = 0;
 
   [[nodiscard]] bool known(KeyId k) const { return k < guesses.size(); }
+
+  [[nodiscard]] bool imu_starts_at(KeyId k) const {
+    if (imu_start_committed[k]) {
+      return true;
+    }
+    for (const KeyId e : imu_start_pending) {
+      if (e == k) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   [[nodiscard]] bool imu_ends_at(KeyId k) const {
     if (imu_end_committed[k]) {
@@ -204,7 +220,9 @@ struct Graph::Impl {
   }
 
   // After a failed update the iSAM2 instance may be half-updated: rebuild it from the
-  // committed factors at the last good estimate (section 9).
+  // committed factors at the last good estimate (section 9). If the rebuild itself throws,
+  // restart from a fresh iSAM2: the last estimate becomes the keyframe guesses and every
+  // committed factor is queued again (as pending priors) for the next optimize().
   void rebuild() {
     isam = std::make_unique<gtsam::ISAM2>(params);
     if (committed_factors.empty()) {
@@ -213,7 +231,80 @@ struct Graph::Impl {
     try {
       isam->update(committed_factors, last_estimate);
     } catch (const std::exception& e) {
-      common::log_error(std::string("backend: rebuilding iSAM2 failed: ") + e.what());
+      common::log_error(
+          std::string("backend: rebuilding iSAM2 failed, all factors queued again: ") + e.what());
+      isam = std::make_unique<gtsam::ISAM2>(params);
+      for (KeyId k = 0; k < guesses.size(); ++k) {
+        guesses[k] = state_of(k, last_estimate);
+        imu_end_committed[k] = false;
+        imu_start_committed[k] = false;
+      }
+      pending_priors.push_back(committed_factors);
+      committed_factors = gtsam::NonlinearFactorGraph();
+      last_estimate = gtsam::Values();
+    }
+  }
+
+  // Pose re-anchor (section 9): a connected component of `graph` (by factor keys) that
+  // holds no key already in iSAM2 and not X(0), and contains an orphaned keyframe, gets a
+  // pose prior on its lowest pose key, centred on the guess, with the first-keyframe sigmas.
+  void anchor_orphan_components(gtsam::NonlinearFactorGraph& graph,
+                                const gtsam::Values& held) const {
+    std::map<gtsam::Key, gtsam::Key> parent;
+    const auto find = [&parent](gtsam::Key k) {
+      while (parent[k] != k) {
+        k = parent[k];
+      }
+      return k;
+    };
+    for (const gtsam::NonlinearFactor::shared_ptr& f : graph) {
+      if (!f || f->keys().empty()) {
+        continue;
+      }
+      for (const gtsam::Key key : f->keys()) {
+        parent.emplace(key, key);
+      }
+      const gtsam::Key root = find(f->keys().front());
+      for (const gtsam::Key key : f->keys()) {
+        const gtsam::Key r = find(key);
+        if (r != root) {
+          parent[r] = root;
+        }
+      }
+    }
+    struct Component {
+      bool anchored = false;
+      bool has_orphan = false;
+      bool has_pose = false;
+      KeyId lowest_pose = 0;
+    };
+    std::map<gtsam::Key, Component> components;
+    for (const auto& entry : parent) {
+      const gtsam::Key key = entry.first;
+      Component& c = components[find(key)];
+      const gtsam::Symbol sym(key);
+      const auto k = static_cast<KeyId>(sym.index());
+      c.anchored = c.anchored || held.exists(key) || key == detail::pose_key(0);
+      c.has_orphan = c.has_orphan || orphaned[k];
+      if (sym.chr() == 'x' && (!c.has_pose || k < c.lowest_pose)) {
+        c.has_pose = true;
+        c.lowest_pose = k;
+      }
+    }
+    for (const auto& entry : components) {
+      const Component& c = entry.second;
+      if (c.anchored || !c.has_orphan || !c.has_pose) {
+        continue;
+      }
+      Vec6 pose_sigmas;
+      pose_sigmas << Vec3::Constant(cfg.prior_rot_sigma_rad),
+          Vec3::Constant(cfg.prior_pos_sigma_m);  // GTSAM order [phi, rho]
+      graph.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(
+          detail::pose_key(c.lowest_pose),
+          detail::to_gtsam(guesses[c.lowest_pose].T_w_b),
+          gtsam::noiseModel::Diagonal::Sigmas(pose_sigmas));
+      common::log_warn("backend: optimize: keyframe " + std::to_string(c.lowest_pose) +
+                       " re-anchored with a pose prior (disconnected after a failed optimize)");
     }
   }
 };
@@ -251,8 +342,27 @@ common::KeyId Graph::add_keyframe(common::Timestamp t, const common::NavState& x
   }
   NavState guess = x0;
   guess.t = t;
+  const NavState fallback = k > 0 ? m.guesses.back() : NavState{};
+  const bool pose_ok = pose_finite(x0.T_w_b);
+  const bool vel_ok = x0.v_w_b.allFinite();
+  const bool bias_ok = x0.bias.ba.allFinite() && x0.bias.bg.allFinite();
+  if (!pose_ok || !vel_ok || !bias_ok) {
+    common::log_warn("backend: add_keyframe " + std::to_string(k) +
+                     ": non-finite x0 replaced by the previous keyframe guess");
+    if (!pose_ok) {
+      guess.T_w_b = fallback.T_w_b;
+    }
+    if (!vel_ok) {
+      guess.v_w_b = fallback.v_w_b;
+    }
+    if (!bias_ok) {
+      guess.bias = fallback.bias;
+    }
+  }
   m.guesses.push_back(guess);
   m.imu_end_committed.push_back(false);
+  m.imu_start_committed.push_back(false);
+  m.orphaned.push_back(false);
   if (k == 0) {
     m.push_keyframe0_priors();
   }
@@ -270,6 +380,10 @@ void Graph::add_imu_factor(common::KeyId i,
   }
   if (j != i + 1) {
     reject(call, "keyframes not consecutive");
+    return;
+  }
+  if (m.imu_starts_at(i)) {
+    reject(call, "duplicate IMU factor");
     return;
   }
   if (!delta_finite(delta)) {
@@ -322,6 +436,7 @@ void Graph::add_imu_factor(common::KeyId i,
     m.push_velocity_bias_priors(i, m.pending_factors);
   }
   m.imu_end_pending.push_back(j);
+  m.imu_start_pending.push_back(i);
 }
 
 void Graph::add_lidar_factor(common::KeyId i,
@@ -441,6 +556,7 @@ common::Result<common::Estimate> Graph::optimize() {
   graph.push_back(m.pending_factors);
   gtsam::Values new_values;
   const gtsam::Values& held = m.isam->getLinearizationPoint();
+  m.anchor_orphan_components(graph, held);
   for (const gtsam::Key key : graph.keys()) {
     if (!held.exists(key)) {
       m.insert_guess(key, new_values);
@@ -463,7 +579,14 @@ common::Result<common::Estimate> Graph::optimize() {
   if (!failure.empty()) {
     m.pending_factors = gtsam::NonlinearFactorGraph();
     m.imu_end_pending.clear();
+    m.imu_start_pending.clear();
     m.rebuild();
+    const gtsam::Values& kept = m.isam->getLinearizationPoint();
+    for (KeyId k = 0; k < m.guesses.size(); ++k) {
+      if (!kept.exists(detail::pose_key(k))) {
+        m.orphaned[k] = true;
+      }
+    }
     return common::Result<common::Estimate>::error("optimization failed: " + failure);
   }
 
@@ -474,6 +597,15 @@ common::Result<common::Estimate> Graph::optimize() {
     m.imu_end_committed[e] = true;
   }
   m.imu_end_pending.clear();
+  for (const KeyId st : m.imu_start_pending) {
+    m.imu_start_committed[st] = true;
+  }
+  m.imu_start_pending.clear();
+  for (KeyId k = 0; k < m.guesses.size(); ++k) {
+    if (estimate.exists(detail::pose_key(k))) {
+      m.orphaned[k] = false;
+    }
+  }
   m.last_estimate = estimate;
 
   const KeyId latest = m.guesses.size() - 1;

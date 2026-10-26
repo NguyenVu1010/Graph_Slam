@@ -18,6 +18,7 @@
 #include "mss/imu/preintegrator.hpp"
 #include "mss/odom/odom_residual.hpp"
 
+#include "constants.hpp"
 #include "conversions.hpp"
 #include "factor_test_utils.hpp"
 #include "gnss_factor.hpp"
@@ -97,6 +98,10 @@ TEST(BackendFactors, B01_ImuFactorJacobians) {
         pose_key(0), vel_key(0), pose_key(1), vel_key(1), bias_key(0), delta, kGravityW);
     const gtsam::Values values = imu_values(x_i, x_j, b_i);
     ASSERT_GT(f.unwhitenedError(values).norm(), 1e-3);
+    // The noise model is the full delta.cov (not diagonalised): 2 error = r^T cov^-1 r.
+    const Eigen::Matrix<double, 9, 1> r = f.unwhitenedError(values);
+    const double expected = r.dot(delta.cov.ldlt().solve(r));
+    EXPECT_NEAR(2.0 * f.error(values), expected, 1e-9 * expected);
     MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f, values);
     EXPECT_LT(max_relative_jacobian_error(f, values), kRelJacTol) << "rep " << rep;
   }
@@ -212,7 +217,7 @@ TEST(BackendFactors, B01_BetweenAndRobustLoopJacobians) {
   const Pose Z = random_pose(rng);
   const auto gaussian = gtsam::noiseModel::Gaussian::Covariance(permute_cov(S_m));
   const auto robust = gtsam::noiseModel::Robust::Create(
-      gtsam::noiseModel::mEstimator::Cauchy::Create(3.5485), gaussian);
+      gtsam::noiseModel::mEstimator::Cauchy::Create(kLoopCauchyK), gaussian);
 
   // T_j such that the mss residual is L * u with |u| = the whitened norm.
   const auto values_at = [&](double whitened_norm) {
@@ -242,7 +247,7 @@ TEST(BackendFactors, B01_BetweenAndRobustLoopJacobians) {
   const gtsam::Values v01 = values_at(0.1);
   EXPECT_NEAR(f_gauss.whitenedError(v01).norm(), 0.1, 1e-9);
   // At |e| = 0.1 the robust linearisation is the Gaussian one scaled by sqrt(w).
-  const double w = 1.0 / (1.0 + (0.1 / 3.5485) * (0.1 / 3.5485));
+  const double w = 1.0 / (1.0 + (0.1 / kLoopCauchyK) * (0.1 / kLoopCauchyK));
   const auto lin_g = boost::dynamic_pointer_cast<gtsam::JacobianFactor>(f_gauss.linearize(v01));
   const auto lin_r = boost::dynamic_pointer_cast<gtsam::JacobianFactor>(f_robust.linearize(v01));
   ASSERT_TRUE(lin_g && lin_r);

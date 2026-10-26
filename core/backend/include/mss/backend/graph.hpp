@@ -71,6 +71,8 @@ class Graph {
   /// Frames: x0.T_w_b, x0.v_w_b in w; x0.bias in b. Units: SI.
   /// Preconditions: `x0.t == t`; `t` strictly greater than the previous keyframe's t.
   ///   A violation is logged; the keyframe is still added (KeyIds stay dense).
+  ///   A non-finite x0 pose, velocity or bias is logged and replaced by the previous
+  ///   keyframe's guess (identity / zero for the first keyframe); it never reaches GTSAM.
   /// Errors: none returned. Hot path: no (per keyframe, about 1 Hz). Tests: B-02, B-04.
   common::KeyId add_keyframe(common::Timestamp t, const common::NavState& x0);
 
@@ -161,6 +163,11 @@ class Graph {
   ///     system). The exception is caught inside. Pending keyframes are kept (with their
   ///     priors and initial values); only the pending factors added since the last
   ///     successful optimize() are dropped. KeyIds remain valid and dense.
+  ///     Keyframes whose linking factors were dropped this way are re-anchored later: a
+  ///     group of new variables that connects neither to the optimised graph nor to
+  ///     keyframe 0 and contains such a keyframe gets a pose prior (first-keyframe sigmas,
+  ///     centred on the guess) on its oldest keyframe, with one log line
+  ///     (docs/derivations/backend_factors.md section 9).
   /// Hot path: no (per keyframe; may take tens of ms on the backend thread).
   /// Tests: B-02, B-03, B-04 (iSAM2 vs batch Levenberg-Marquardt < 1e-6).
   common::Result<common::Estimate> optimize();

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -173,6 +174,90 @@ TEST(BackendGraph, ImuGapReanchorsVelocityAndBias) {
   ASSERT_TRUE(r.is_ok()) << r.reason();
   EXPECT_EQ(r.value().keyframe_id, 3U);
   EXPECT_TRUE(r.value().cov.allFinite());
+  for (int n = 0; n < 5; ++n) {
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+  // X(1) follows from the anchored IMU factor 0 -> 1, X(2) from the LiDAR edge.
+  for (KeyId k = 1; k <= 2; ++k) {
+    EXPECT_LT(pose_error(state_or_fail(g, k).T_w_b, c.truth[k].T_w_b), 1e-6) << "keyframe " << k;
+  }
+}
+
+TEST(BackendGraph, DuplicateImuFactorRejected) {
+  const test::ImuChain c = test::imu_chain(7, 2, 40);
+  Graph g(default_backend_config(), default_imu_config(), Vec3::Zero());
+  g.add_keyframe(c.truth[0].t, c.truth[0]);
+  g.add_keyframe(c.truth[1].t, c.truth[1]);
+  {
+    CapturingLogger log;
+    g.add_imu_factor(0, 1, c.deltas[0]);
+    EXPECT_TRUE(log.warnings.empty());
+    g.add_imu_factor(0, 1, c.deltas[0]);  // pending duplicate
+    ASSERT_EQ(log.warnings.size(), 1U);
+    EXPECT_NE(log.warnings[0].find("duplicate"), std::string::npos);
+  }
+  ASSERT_TRUE(g.optimize().is_ok());
+  CapturingLogger log;
+  g.add_imu_factor(0, 1, c.deltas[0]);  // committed duplicate
+  EXPECT_EQ(log.warnings.size(), 1U);
+}
+
+// Review I-1: after a failed optimize() the factors linking keyframe 1 were dropped; the
+// later IMU + LiDAR chain 1 -> 2 -> 3 -> 4 must still be solvable (pose re-anchor, §9).
+TEST(BackendGraph, FailedOptimizeDoesNotStrandLaterKeyframes) {
+  const test::ImuChain c = test::imu_chain(7, 5, 40);
+  std::vector<NavState> guess = perturbed_guesses(c.truth);
+  guess[1] = c.truth[1];
+  const Mat6 lidar_cov = Mat6::Identity() * 1e-4;
+  Graph g(default_backend_config(), default_imu_config(), Vec3::Zero());
+  g.add_keyframe(c.truth[0].t, c.truth[0]);
+  ASSERT_TRUE(g.optimize().is_ok());
+  g.add_keyframe(c.truth[1].t, guess[1]);
+  common::GnssMeasurement m;
+  m.p_e_g = c.truth[1].T_w_b.p;
+  m.cov = Mat3::Identity() * 0.01;
+  g.add_gnss_factor(1, m, Pose{});  // 3 of 6 DoF: indeterminant
+  ASSERT_FALSE(g.optimize().is_ok());
+  for (KeyId k = 2; k <= 4; ++k) {
+    g.add_keyframe(c.truth[k].t, guess[k]);
+    g.add_imu_factor(k - 1, k, c.deltas[k - 1]);
+    g.add_lidar_factor(
+        k - 1, k, c.truth[k - 1].T_w_b.inverse() * c.truth[k].T_w_b, lidar_cov, nullptr);
+    const common::Result<Estimate> r = g.optimize();
+    ASSERT_TRUE(r.is_ok()) << "keyframe " << k << ": " << r.reason();
+    EXPECT_EQ(r.value().keyframe_id, k);
+  }
+  for (int n = 0; n < 5; ++n) {
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+  for (KeyId k = 1; k <= 4; ++k) {
+    const NavState x = state_or_fail(g, k);
+    EXPECT_TRUE(x.T_w_b.p.allFinite() && x.T_w_b.R.allFinite() && x.v_w_b.allFinite());
+    // The re-anchor prior holds X(1) at its guess (= truth); LiDAR edges are exact.
+    EXPECT_LT(pose_error(x.T_w_b, c.truth[k].T_w_b), 1e-6) << "keyframe " << k;
+  }
+  EXPECT_TRUE(g.marginal_cov(4).allFinite());
+}
+
+// Review I-2: a non-finite guess never reaches GTSAM.
+TEST(BackendGraph, AddKeyframeNonFiniteGuessIsSanitised) {
+  const test::Scenario s = test::square_loop(false, 0);
+  Graph g(default_backend_config(), default_imu_config(), Vec3::Zero());
+  g.add_keyframe(s.truth[0].t, s.truth[0]);
+  NavState bad = s.truth[1];
+  bad.T_w_b.p.x() = std::nan("");
+  bad.v_w_b.y() = std::numeric_limits<double>::infinity();
+  {
+    CapturingLogger log;
+    EXPECT_EQ(g.add_keyframe(bad.t, bad), 1U);
+    EXPECT_EQ(log.warnings.size(), 1U);
+  }
+  g.add_lidar_factor(0, 1, s.edge_meas[0], s.edge_cov, nullptr);
+  for (int n = 0; n < 5; ++n) {
+    const common::Result<Estimate> r = g.optimize();
+    ASSERT_TRUE(r.is_ok()) << r.reason();
+  }
+  EXPECT_LT(pose_error(state_or_fail(g, 1).T_w_b, s.truth[1].T_w_b), 1e-6);
 }
 
 TEST(BackendGraph, GnssFactorPullsPosition) {
