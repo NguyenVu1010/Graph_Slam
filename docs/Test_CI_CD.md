@@ -28,6 +28,11 @@ Mỗi bảng ghi đầu vào và tiêu chí đạt. Các ngưỡng là giá tr�
 | C-02 | Jacobian trái/phải và adjoint | Điểm ngẫu nhiên | Sai lệch tương đối so với sai phân số < 1e-6 |
 | C-03 | Timestamp nano giây | Giá trị biên, chuyển đổi qua lại với giây | Không mất độ chính xác, thứ tự giữ nguyên |
 | C-04 | Đọc cấu hình YAML | File thiếu trường, sai kiểu | Báo lỗi rõ tên trường, không dùng giá trị mặc định âm thầm |
+| C-05 | `lie.hpp` Exp/Log/Jacobian/adjoint (`tests/unit/test_lie.cpp`) | Vector ngẫu nhiên seed cố định, gồm góc gần 0 và gần π | Khứ hồi Exp/Log < 1e-9; Jr/Jl so với sai phân số < 1e-6 (sai số Frobenius tương đối); Jr·Jr⁻¹ = I (1e-9); Ad khớp phép liên hợp; `boxplus/boxminus` và `transform_covariance` (P Σ Pᵀ) đúng |
+| C-06 | `ScanFrame` reserve một lần, không cấp phát (`tests/unit/test_scan_frame.cpp`) | `reserve` rồi `push`/`copy_from`/di chuyển với bộ đếm cấp phát | 0 lần cấp phát sau `reserve`; `push` khi đầy trả `false`; `clear` giữ capacity; `scan_end_time` = `t_start` + max `t_offset_ns` |
+| C-07 | Bộ đọc/ghi mssdata (`tests/unit/test_dataset_io.cpp`) | Ghi rồi đọc lại dataset nhỏ; file lidar bị cắt; index thiếu hoặc sai số lượng; thời gian lùi | Khứ hồi từng bản ghi giống hệt; thứ tự khi trùng timestamp ổn định (imu, odom, gnss, gt, lidar); `next` không cấp phát; mọi lỗi trả `Status` kèm lý do, không ném ngoại lệ |
+| C-08 | `Estimator` hàng đợi và thứ tự (`tests/unit/test_estimator.cpp`) | Đẩy scan/IMU/GNSS/odom, hàng đợi đầy, IMU lùi thời gian | `push_scan` không cấp phát sau khi dựng; đầy thì bỏ scan cũ nhất và đếm vào `n_dropped_scans`; IMU không tăng bị từ chối; `run_once` xử lý theo khóa thời gian với thứ tự IMU, odom, GNSS, scan khi trùng |
+| C-09 | `mss_bench` phát lại (`tests/component/test_bench_replay.cpp`) | Dataset tổng hợp 1 s (200 imu, 5 gnss, 50 odom, 10 scan) chạy `mss_bench` qua `std::system` | Exit 0; `est.tum` đúng 10 dòng; `bench.json` có `n_imu` 200, `n_gnss` 5, `n_odom` 50, `n_scans` 10 và bộ đếm bỏ = 0; cảm biến đi trước lidar không bị bỏ; còn bản ghi chưa xử lý thì exit 3; dataset thiếu thì exit 2 và không ghi gì |
 
 ### preprocess — deskew, voxel
 
@@ -42,7 +47,7 @@ Mỗi bảng ghi đầu vào và tiêu chí đạt. Các ngưỡng là giá tr�
 
 | ID | Test | Đầu vào | Tiêu chí đạt |
 | --- | --- | --- | --- |
-| M-01 | kNN đúng | 100.000 điểm, 1.000 truy vấn | Kết quả trùng tìm kiếm vét cạn |
+| M-01 | kNN đúng | 100.000 điểm, 1.000 truy vấn | Kết quả trùng tìm kiếm vét cạn giới hạn trong lân cận 27 voxel (`knn` chỉ tìm trong 27 voxel quanh điểm truy vấn, nên so với vét cạn trên đúng tập điểm đó, theo `voxel_map.hpp`) |
 | M-02 | Giới hạn bộ nhớ | Chèn liên tục, robot đi xa | Số điểm mỗi voxel ≤ N; voxel ngoài bán kính bị xóa |
 | M-03 | Tốc độ (ghi lại, không chặn) | Benchmark chèn và truy vấn | Lưu số đo để so qua các commit |
 

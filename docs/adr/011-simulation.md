@@ -87,8 +87,8 @@ Chế độ gắn theo thời đoạn hoặc theo vùng không gian (đa giác t
 | --- | --- | --- |
 | Nhiễu khoảng cách | Gauss trên range, Gazebo | σ = 0.02 m |
 | Rớt điểm | Bernoulli theo điểm, thêm xác suất cao hơn khi góc tới lớn | p = 0.02; p = 0.3 khi góc tới > 80° |
-| Timestamp từng điểm | `t_i = t_scan + (azimuth_i / 2π) · T_scan`, trường `t` uint32 ns offset, `ring` uint16 | T_scan = 0.1 s |
-| Méo chuyển động | tiêm từ ground truth: `p_i ← T_l(t_i)⁻¹ · T_l(t_scan) · p_i` với `T_l(t)` nội suy từ `/ground_truth` | luôn bật; tắt được để test P-02 |
+| Timestamp từng điểm | `t_i = t_start + (azimuth_i / 2π) · T_scan` (`t_start` = `header.stamp`), trường `t` uint32 ns offset, `ring` uint16 | T_scan = 0.1 s |
+| Méo chuyển động | tiêm từ ground truth: `p_i ← T_l(t_i)⁻¹ · T_l(t_start) · p_i` với `T_l(t)` nội suy từ `/ground_truth` | luôn bật; tắt được để test P-02. Deskew đưa điểm về khung `l` tại `t_start` (không phải cuối scan); điểm có `t_offset_ns == 0` không đổi |
 | Tầm tối thiểu | điểm < 0.5 m bị loại ở sensor; `sim_bridge` chèn thêm 0.1% điểm NaN và điểm "trên thân robot" | để test P-04 |
 
 **Wheel odom**:

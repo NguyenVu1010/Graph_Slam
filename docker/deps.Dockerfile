@@ -2,6 +2,7 @@
 FROM ros:jazzy-ros-base-noble
 
 ARG GTSAM_VERSION=4.2.0
+ARG SOPHUS_VERSION=1.22.10
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,6 +11,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       clang-format-18 clang-tidy-18 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
+RUN git clone --depth 1 --branch ${SOPHUS_VERSION} https://github.com/strasdat/Sophus.git /tmp/sophus \
+    && cmake -S /tmp/sophus -B /tmp/sophus/build -G Ninja \
+         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+         -DBUILD_SOPHUS_TESTS=OFF -DBUILD_SOPHUS_EXAMPLES=OFF -DSOPHUS_USE_BASIC_LOGGING=ON \
+    && cmake --build /tmp/sophus/build --parallel 2 \
+    && cmake --install /tmp/sophus/build \
+    && rm -rf /tmp/sophus
+
+# ldconfig: GTSAM installs libgtsam.so and libmetis-gtsam.so to /usr/local/lib without RPATH;
+# refresh the loader cache so test binaries (and gtest_discover_tests) can load them.
 RUN git clone --depth 1 --branch ${GTSAM_VERSION} https://github.com/borglab/gtsam.git /tmp/gtsam \
     && cmake -S /tmp/gtsam -B /tmp/gtsam/build -G Ninja \
          -DCMAKE_BUILD_TYPE=Release \
@@ -18,6 +29,7 @@ RUN git clone --depth 1 --branch ${GTSAM_VERSION} https://github.com/borglab/gts
          -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF \
     && cmake --build /tmp/gtsam/build --parallel 2 \
     && cmake --install /tmp/gtsam/build \
+    && ldconfig \
     && rm -rf /tmp/gtsam
 
 RUN pip3 install --break-system-packages ruff pytest numpy
