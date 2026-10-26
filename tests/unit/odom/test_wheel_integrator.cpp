@@ -6,6 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
+#include <Eigen/Eigenvalues>
 #include <gtest/gtest.h>
 
 #include "mss/common/lie.hpp"
@@ -226,6 +227,173 @@ TEST(WheelIntegrator, MultiTurnWraps) {
   const OdomDelta d = run_constant(make_cfg(), Pose{}, 401, kV, omega);
   EXPECT_LT(pose_error(d.T_b0_b1, arc_pose(kV, omega, 8.0)), 1e-9);
   EXPECT_EQ(d.t1, Timestamp{8'000'000'000});
+}
+
+// ---- Covariance (derivation section 3) ----
+
+TEST(WheelIntegrator, SingleSampleCovKnownAnswer) {
+  const OdomDelta d = run_constant(make_cfg(), Pose{}, 2, kV, 0.0);
+  const double s = kV * kDtS;  // m
+  const double sv2 = kSigmaV * kSigmaV;
+  const double so2 = kSigmaOmega * kSigmaOmega;
+  const double dt2 = kDtS * kDtS;
+  Mat6 expected = Mat6::Zero();
+  expected(0, 0) = sv2 * dt2;
+  expected(1, 1) = (0.5 * s) * (0.5 * s) * so2 * dt2;
+  expected(1, 5) = 0.5 * s * so2 * dt2;
+  expected(5, 1) = expected(1, 5);
+  expected(5, 5) = so2 * dt2;
+  for (int i = 0; i < 6; ++i) {
+    for (int j = 0; j < 6; ++j) {
+      if (expected(i, j) == 0.0) {
+        EXPECT_EQ(d.cov(i, j), 0.0) << i << "," << j;
+      } else {
+        EXPECT_NEAR(d.cov(i, j), expected(i, j), 1e-18) << i << "," << j;
+      }
+    }
+  }
+}
+
+constexpr int kNumDiffSamples = 21;
+
+// Delta for readings v_k, omega_k at t = k * kDtNs; sample 0 only sets the start.
+OdomDelta run_readings(const WheelOdomConfig& cfg,
+                       const Pose& T_b_o,
+                       const double* v,
+                       const double* omega) {
+  WheelIntegrator wi(cfg, T_b_o);
+  for (int k = 0; k < kNumDiffSamples; ++k) {
+    EXPECT_TRUE(wi.integrate(make_sample(k * kDtNs, v[k], omega[k])).is_ok());
+  }
+  return wi.take_delta();
+}
+
+// Numerical-difference test of A_k, B_k: cov == sum_k J_k diag(sv^2, so^2) J_k^T, where
+// J_k is the derivative of T_b0_b1 (right tangent) w.r.t. the reading (v_k, omega_k).
+TEST(WheelIntegrator, CovMatchesNumericalPropagation) {
+  constexpr double kH = 1e-6;  // central-difference step (m/s, rad/s)
+  const Pose T_b_o = make_tbo();
+  const WheelOdomConfig cfg = make_cfg();
+  double v[kNumDiffSamples];
+  double omega[kNumDiffSamples];
+  for (int k = 0; k < kNumDiffSamples; ++k) {
+    v[k] = 0.5 + 0.02 * k;
+    omega[k] = 0.3 - 0.03 * k;
+  }
+  const OdomDelta d0 = run_readings(cfg, T_b_o, v, omega);
+  Mat6 cov_num = Mat6::Zero();
+  for (int k = 1; k < kNumDiffSamples; ++k) {
+    for (int which = 0; which < 2; ++which) {
+      double* x = which == 0 ? &v[k] : &omega[k];
+      const double x0 = *x;
+      *x = x0 + kH;
+      const Vec6 plus = common::boxminus(run_readings(cfg, T_b_o, v, omega).T_b0_b1, d0.T_b0_b1);
+      *x = x0 - kH;
+      const Vec6 minus = common::boxminus(run_readings(cfg, T_b_o, v, omega).T_b0_b1, d0.T_b0_b1);
+      *x = x0;
+      const Vec6 j = (plus - minus) / (2.0 * kH);
+      const double sigma = which == 0 ? kSigmaV : kSigmaOmega;
+      cov_num += sigma * sigma * j * j.transpose();
+    }
+  }
+  EXPECT_LT((d0.cov - cov_num).norm() / cov_num.norm(), 1e-6);
+}
+
+TEST(WheelIntegrator, CovSymmetricPsdSingular) {
+  const OdomDelta dt = run_constant(make_cfg(), make_tbo(), 51, kV, kOmega);
+  EXPECT_TRUE(dt.cov == dt.cov.transpose());
+
+  const OdomDelta d = run_constant(make_cfg(), Pose{}, 51, kV, kOmega);
+  EXPECT_TRUE(d.cov == d.cov.transpose());
+  for (const int i : {2, 3, 4}) {
+    EXPECT_TRUE(d.cov.row(i).isZero(0.0)) << i;
+    EXPECT_TRUE(d.cov.col(i).isZero(0.0)) << i;
+  }
+  const int idx[3] = {0, 1, 5};
+  common::Mat3 block;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      block(i, j) = d.cov(idx[i], idx[j]);
+    }
+  }
+  const Eigen::SelfAdjointEigenSolver<common::Mat3> es(block);
+  EXPECT_GE(es.eigenvalues().minCoeff(), -1e-15);
+  EXPECT_GT(es.eigenvalues().minCoeff(), 0.0);  // planar block is full rank after motion
+}
+
+TEST(WheelIntegrator, ZeroSigmaGivesZeroCov) {
+  const OdomDelta d = run_constant(make_cfg(0.0, 0.0), make_tbo(), 51, kV, kOmega);
+  EXPECT_TRUE(d.cov.isZero(0.0));
+  const OdomDelta ref = run_constant(make_cfg(), make_tbo(), 51, kV, kOmega);
+  EXPECT_TRUE(d.T_b0_b1.R == ref.T_b0_b1.R);
+  EXPECT_TRUE(d.T_b0_b1.p == ref.T_b0_b1.p);
+}
+
+// Review focus 1: pure rotation in place.
+TEST(WheelIntegrator, PureRotationInPlace) {
+  const OdomDelta d = run_constant(make_cfg(), Pose{}, 51, 0.0, kOmega);
+  EXPECT_TRUE(d.T_b0_b1.p == Vec3::Zero());
+  EXPECT_LT(pose_error(d.T_b0_b1, arc_pose(0.0, kOmega, 1.0)), 1e-12);
+  const double sv2 = kSigmaV * kSigmaV;
+  const double so2 = kSigmaOmega * kSigmaOmega;
+  const double dt2 = kDtS * kDtS;
+  const double a = kOmega * kDtS;  // rad per sample
+  const double yaw_var = 50.0 * so2 * dt2;
+  EXPECT_NEAR(d.cov(5, 5), yaw_var, 1e-12 * yaw_var);
+  EXPECT_LT(std::abs(d.cov(0, 5)), 1e-20);
+  EXPECT_LT(std::abs(d.cov(1, 5)), 1e-20);
+  // Speed noise still enters rho; rotations preserve the trace of the rho block.
+  const double rho_trace = 50.0 * sv2 * dt2 * (2.0 - 2.0 * std::cos(a)) / (a * a);
+  EXPECT_NEAR(d.cov(0, 0) + d.cov(1, 1), rho_trace, 1e-12 * rho_trace);
+}
+
+// Review focus 2: reverse driving.
+TEST(WheelIntegrator, ReverseDrivingStraight) {
+  const OdomDelta back = run_constant(make_cfg(), Pose{}, 51, -kV, 0.0);
+  const OdomDelta fwd = run_constant(make_cfg(), Pose{}, 51, kV, 0.0);
+  EXPECT_LT((back.T_b0_b1.p - Vec3(-0.8, 0.0, 0.0)).norm(), 1e-12);
+  EXPECT_TRUE(back.T_b0_b1.R == common::Mat3::Identity());
+  Mat6 expected = fwd.cov;
+  expected(1, 5) = -expected(1, 5);
+  expected(5, 1) = -expected(5, 1);
+  EXPECT_NE(fwd.cov(1, 5), 0.0);
+  EXPECT_LT((back.cov - expected).norm() / fwd.cov.norm(), 1e-12);
+}
+
+// Review focus 5: 2 s dropout; the next sample's reading is held over the gap.
+TEST(WheelIntegrator, LongGapHeldReading) {
+  WheelIntegrator wi(make_cfg(), Pose{});
+  ASSERT_TRUE(wi.integrate(make_sample(0, kV, 0.0)).is_ok());
+  ASSERT_TRUE(wi.integrate(make_sample(kDtNs, kV, 0.0)).is_ok());
+  ASSERT_TRUE(wi.integrate(make_sample(kDtNs + 2'000'000'000, kV, 0.0)).is_ok());
+  const OdomDelta d = wi.take_delta();
+  EXPECT_NEAR(d.T_b0_b1.p.x(), kV * 2.02, 1e-12);
+  const double expected = kSigmaV * kSigmaV * (kDtS * kDtS + 2.0 * 2.0);
+  EXPECT_NEAR(d.cov(0, 0), expected, 1e-12 * expected);
+}
+
+TEST(WheelIntegrator, HotPathNoAllocation) {
+  WheelIntegrator wi(make_cfg(), make_tbo());
+  ASSERT_TRUE(wi.integrate(make_sample(0, kV, kOmega)).is_ok());
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  int ok_count = 0;
+  double sum = 0.0;
+  AllocCounter::reset();
+  {
+    const EigenMallocGuard guard;
+    for (int k = 1; k <= 1000; ++k) {
+      ok_count += wi.integrate(make_sample(k * kDtNs, kV, kOmega)).is_ok() ? 1 : 0;
+    }
+    ok_count += wi.integrate(make_sample(1001 * kDtNs, nan, kOmega)).is_ok() ? 1 : 0;
+    ok_count += wi.integrate(make_sample(0, kV, kOmega)).is_ok() ? 1 : 0;
+    for (int i = 0; i < 10; ++i) {
+      const OdomDelta d = wi.take_delta();
+      sum += d.cov(0, 0) + d.T_b0_b1.p.x();
+    }
+  }
+  EXPECT_EQ(AllocCounter::count(), 0U);
+  EXPECT_EQ(ok_count, 1000);
+  EXPECT_TRUE(std::isfinite(sum));
 }
 
 }  // namespace
