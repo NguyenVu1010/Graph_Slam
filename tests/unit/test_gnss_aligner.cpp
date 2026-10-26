@@ -1,6 +1,7 @@
 #include <cmath>
 #include <limits>
 #include <random>
+#include <string>
 
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
@@ -152,6 +153,44 @@ TEST(GnssAligner, FrozenFixWhileMovingNeverAligns) {
       EXPECT_EQ(res.reason(), "insufficient horizontal spread") << "n " << n;
     }
   }
+}
+
+// Body on a 5 m circle (yaw tangent), antenna lever arm applied; noise-free pairs.
+Pose body_on_circle(int k) {
+  const double a = 0.5 * k;
+  return yaw_pose(a + 0.5 * kPi, Vec3(5.0 * std::cos(a), 5.0 * std::sin(a), 0.0));
+}
+
+TEST(GnssAligner, UsesConfiguredMinPairs) {
+  GnssConfig c = cfg();
+  c.align_min_pairs = 3;
+  GnssAligner aligner(c);
+  const Pose T_e_w = yaw_pose(30.0 * kDeg, Vec3(5.0, -3.0, 1.0));
+  const Vec3 p_b_g(-0.20, 0.10, 0.60);
+  for (int n = 1; n <= 3; ++n) {
+    const Pose T_w_b = body_on_circle(n);
+    const auto res = aligner.update(T_e_w * (T_w_b * p_b_g), T_w_b, p_b_g);
+    if (n < 3) {
+      EXPECT_EQ(res.reason(), "not enough pairs") << "n " << n;
+    } else {
+      ASSERT_TRUE(res.is_ok()) << res.reason();
+      EXPECT_NEAR(wrap_pi(yaw_of(res.value().R) - 30.0 * kDeg), 0.0, 1e-9);
+    }
+  }
+}
+
+TEST(GnssAligner, UsesConfiguredSpread) {
+  GnssConfig c = cfg();
+  c.align_min_spread_m = 10.0;
+  GnssAligner aligner(c);
+  const Pose T_e_w = yaw_pose(30.0 * kDeg, Vec3(5.0, -3.0, 1.0));
+  const Vec3 p_b_g(-0.20, 0.10, 0.60);
+  std::string last;
+  for (int n = 1; n <= 12; ++n) {
+    const Pose T_w_b = body_on_circle(n);
+    last = aligner.update(T_e_w * (T_w_b * p_b_g), T_w_b, p_b_g).reason();
+  }
+  EXPECT_EQ(last, "insufficient horizontal spread");
 }
 
 TEST(GnssAligner, NoAllocation) {

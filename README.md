@@ -48,7 +48,11 @@ mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR
 ```
 
 `--out` is required; `DIR` receives `est.tum` and `bench.json`, and a summary table goes to
-stdout. Exit codes: 0 success; 2 usage, config, dataset or output error; 3 the replay finished
+stdout. `est.tum` has one line per scan that produced an estimate; there are none before the
+IMU static initialisation, which needs `imu.init_window_s` of still IMU data before a scan.
+Besides the record and drop counts, `bench.json` reports `n_keyframes`, `n_match_failures`,
+`n_skipped_scans` (scans without an estimate), `n_uncovered_scans` (of those, no IMU up to
+the scan end at end of data), `n_map_rebuilds`, `n_gnss_factors` and `n_odom_factors`. Exit codes: 0 success; 2 usage, config, dataset or output error; 3 the replay finished
 but some records were not processed (dropped or rejected, see `bench.json`). Format:
 `docs/mssdata_format.md`, decision: `docs/adr/014-bench-dataset-format.md`.
 
@@ -89,6 +93,12 @@ and validates both files at start-up and reports every bad key in one message
 non-unit quaternions. Angles are given in degrees with a `_deg` suffix in YAML and loaded
 into `_rad` fields in radians (angular rates use `_radps` keys and are already in rad/s);
 quaternions are Hamilton `[w, x, y, z]` with a `_wxyz` suffix.
+
+GNSS fusion keys: `gnss.align_min_pairs` (accepted fixes before the w->e alignment is used),
+`gnss.align_min_spread_m` (minimum RMS horizontal spread of those fixes, m) and
+`gnss.chi2_gate` (NIS threshold of the chi-square innovation gate, 3 DoF, default the 95 %
+quantile 7.81). `imu.init_max_acc_std_mps2` must exceed the per-sample accelerometer noise
+`acc_noise_density * sqrt(rate_hz)` by about 3x, or the static initialisation never passes.
 
 ## Before committing
 

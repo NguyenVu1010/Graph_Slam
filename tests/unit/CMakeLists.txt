@@ -23,3 +23,7 @@ mss_add_test(test_backend_api test_backend_api.cpp)
 if(NOT MSS_WITH_GTSAM)
   mss_add_test(test_backend_stub test_backend_stub.cpp)
 endif()
+# pipeline internals (core/pipeline/src helpers, not installed).
+mss_add_test(test_pipeline_internals test_pipeline_internals.cpp test_pipeline_gnss_fusion.cpp
+  alloc_counter_impl.cpp)
+target_include_directories(test_pipeline_internals PRIVATE ${CMAKE_SOURCE_DIR}/core/pipeline/src)

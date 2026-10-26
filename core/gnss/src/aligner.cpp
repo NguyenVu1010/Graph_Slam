@@ -8,9 +8,8 @@
 
 namespace mss::gnss {
 
-// The thresholds are the header constants kMinPairsForAlignment / kMinHorizontalSpreadM
-// until the pipeline adds them to GnssConfig (plan Contract issue 2), so cfg is unused.
-GnssAligner::GnssAligner(const GnssConfig& /*cfg*/) {}
+GnssAligner::GnssAligner(const GnssConfig& cfg)
+    : min_pairs_(cfg.align_min_pairs), min_spread_m_(cfg.align_min_spread_m) {}
 
 // Closed-form 4-DoF fit over running sums; docs/derivations/gnss.md section 4.
 common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
@@ -37,7 +36,7 @@ common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
   sum_e_h_sq_m2_ += b_h.squaredNorm();
   ++n_pairs_;
 
-  if (n_pairs_ < kMinPairsForAlignment) {
+  if (n_pairs_ < min_pairs_) {
     return ResultPose::error("not enough pairs");
   }
 
@@ -50,7 +49,7 @@ common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
   const double spread_e_sq_m2 = sum_e_h_sq_m2_ / n - mean_b_h.squaredNorm();
   const double spread_w_m = std::sqrt(spread_w_sq_m2 > 0.0 ? spread_w_sq_m2 : 0.0);
   const double spread_e_m = std::sqrt(spread_e_sq_m2 > 0.0 ? spread_e_sq_m2 : 0.0);
-  if (spread_w_m < kMinHorizontalSpreadM || spread_e_m < kMinHorizontalSpreadM) {
+  if (spread_w_m < min_spread_m_ || spread_e_m < min_spread_m_) {
     return ResultPose::error("insufficient horizontal spread");
   }
 
