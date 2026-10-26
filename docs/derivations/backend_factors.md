@@ -98,7 +98,10 @@ that the iSAM2 Cholesky factorisation cannot handle.
 
 `BetweenFactor<Pose3>(X_i, X_j, Z = T_bi_bj)`, GTSAM error `Logmap(Z^-1 T_i^-1 T_j)` in
 `[phi, rho]` = `P` times the header's mss residual; noise
-`noiseModel::Gaussian::Covariance(P cov P^T)`.
+`noiseModel::Gaussian::Covariance(P cov P^T)`. GTSAM differentiates only `Between()`, not
+the `Logmap` of the error, so its Jacobian omits `Jr^-1(e)`: it is exact at zero error and
+approximate (relative error of order `|e|`) elsewhere. This is GTSAM's standard behaviour and
+is the same for iSAM2 and the batch optimiser (B-04); B-01 checks it at zero error.
 
 Loop: the same factor with `noiseModel::Robust::Create(mEstimator::Cauchy::Create(k),
 Gaussian::Covariance(P cov P^T))`. GTSAM reweights on the whitened norm `|e|` with weight
@@ -163,7 +166,7 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §3 zero residual at the prediction | B-01 `BackendFactors.B01_ImuFactorZeroAtPrediction` |
 | §6 GNSS Jacobian and sign | B-01 `BackendFactors.B01_GnssFactorJacobians`, `BackendFactors.B01_GnssFactorZeroWhenConsistent` |
 | §7 rank-3 odom whitening and Jacobians | B-01 `BackendFactors.B01_OdomFactorRotatedSingularCov`, `BackendFactors.B01_OdomFactorZeroCovRejected` |
-| §5 permuted noise and Cauchy wrap | B-01 `BackendFactors.B01_BetweenAndRobustLoopJacobians` |
+| §5 permuted noise and Cauchy wrap (at zero error; `sqrt(w)` scaling at 0.1) | B-01 `BackendFactors.B01_BetweenAndRobustLoopJacobians` |
 | §2, §8 priors and marginal order | `BackendGraph.MarginalCovIsMssOrder` |
 | §5 pose graph | B-02 `BackendGraph.B02_SquareLoopNoiseFreeConvergesExactly`, `BackendGraph.B02_SquareLoopNoisyWithinMarginalBounds` |
 | §3, §4 IMU chain and time check | `BackendGraph.ImuChainRecoversTrajectory`, `BackendGraph.ImuTimeCheckRejectsMismatch` |

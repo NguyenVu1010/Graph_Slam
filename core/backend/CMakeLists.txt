@@ -5,7 +5,8 @@
 # are no-ops (see graph.hpp). Derivations: docs/derivations/backend_factors.md; ADR-015.
 if(MSS_WITH_GTSAM)
   add_library(mss_backend STATIC
-    src/graph.cpp src/conversions.cpp src/validate.cpp)
+    src/graph.cpp src/conversions.cpp src/validate.cpp
+    src/imu_factor.cpp src/gnss_factor.cpp src/odom_factor.cpp)
   target_link_libraries(mss_backend PRIVATE gtsam mss::odom)
 else()
   add_library(mss_backend STATIC src/graph_stub.cpp src/validate.cpp)
