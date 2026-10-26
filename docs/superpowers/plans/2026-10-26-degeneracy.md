@@ -228,7 +228,7 @@ Reference values (numpy, different RNG, same sigmas 0.01): corridor at yaw 30 de
 
 Common setup: `cfg = {true, 100.0, 10.0}` (default.yaml values with the flag on), `kYawRad` = 30 deg in radians, `point_sigma_m = 0.01`, `normal_sigma = 0.01`, seed 42, `axis6 = [R_z(kYawRad) e_x ; 0, 0, 0]`.
 
-- [ ] **Step 1: Write the scene header and the tests**
+- [x] **Step 1: Write the scene header and the tests**
 
 ```cpp
 TEST(DegeneracyScenes, D01_CorridorFlaggedAlongAxis) {
@@ -258,21 +258,21 @@ TEST(DegeneracyScenes, SinglePlaneThreeDirections) {
 }
 ```
 
-- [ ] **Step 2: Register and run**
+- [x] **Step 2: Register and run**
 
 Append `mss_add_test(test_degeneracy_scenes test_degeneracy_scenes.cpp)` to `tests/component/CMakeLists.txt` outside the `if(MSS_BUILD_BENCH)` block. Run the build command with `--target test_degeneracy_scenes`.
 Expected: `[  PASSED  ] 5 tests.` (The functions already exist; if D-01 or D-02 fails, check the scene builder against the geometry above, do not tune the threshold.)
 
-- [ ] **Step 3: Full build and ctest**
+- [x] **Step 3: Full build and ctest**
 
 Run the build command without `--target`. Expected: all tests pass and the last line is `BUILD OK: <home>/mss-build/feat-degeneracy-nogtsam`.
 
-- [ ] **Step 4: clang-tidy on the new source**
+- [x] **Step 4: clang-tidy on the new source**
 
 Run: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-degeneracy && cmake -B ~/mss-build/feat-degeneracy-nogtsam -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > /dev/null && clang-tidy-18 -p ~/mss-build/feat-degeneracy-nogtsam core/degeneracy/src/degeneracy.cpp"`
 Expected: no warnings in `core/degeneracy/` (fix any that appear there).
 
-- [ ] **Step 5: Format check, then commit**
+- [x] **Step 5: Format check, then commit**
 
 ```bash
 git add tests/component/degeneracy_scenes.hpp tests/component/test_degeneracy_scenes.cpp tests/component/CMakeLists.txt
