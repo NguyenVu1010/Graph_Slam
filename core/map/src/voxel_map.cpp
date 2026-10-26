@@ -205,7 +205,49 @@ int VoxelMap::knn(const common::Vec3& p_w, int k, NeighborBuffer& out) const {
   return n;
 }
 
-void VoxelMap::prune(const common::Vec3& /*p_w_b*/) {}
+void VoxelMap::erase_slot(std::size_t slot) {
+  // Linear probing without tombstones: move later entries of the chain back into the hole
+  // unless their home lies cyclically in (hole, j].
+  std::size_t i = slot;
+  std::size_t j = slot;
+  while (true) {
+    j = (j + 1) & mask_;
+    const HashSlot& next = slots_[j];
+    if (next.voxel == kEmptySlot) {
+      break;
+    }
+    const std::size_t h = home_slot(next.kx, next.ky, next.kz);
+    if (((j - h) & mask_) >= ((j - i) & mask_)) {
+      slots_[i] = next;
+      i = j;
+    }
+  }
+  slots_[i].voxel = kEmptySlot;
+}
+
+void VoxelMap::prune(const common::Vec3& p_w_b) {
+  const double r2 = cfg_.prune_radius_m * cfg_.prune_radius_m;
+  for (std::size_t v = 0; v < voxels_.size(); ++v) {
+    VoxelMeta& meta = voxels_[v];
+    if (!meta.used) {
+      continue;
+    }
+    const common::Vec3 centre_w((meta.kx + 0.5) * cfg_.voxel_m,
+                                (meta.ky + 0.5) * cfg_.voxel_m,
+                                (meta.kz + 0.5) * cfg_.voxel_m);
+    const common::Vec3 d = centre_w - p_w_b;
+    if (!(d.squaredNorm() > r2)) {
+      continue;
+    }
+    erase_slot(find_slot(meta.kx, meta.ky, meta.kz));
+    --num_voxels_;
+    num_points_ -= static_cast<std::size_t>(meta.count);
+    meta.count = 0;
+    meta.head = 0;
+    meta.used = false;
+    free_[free_top_++] = static_cast<std::uint32_t>(v);
+  }
+}
 
 std::size_t VoxelMap::num_voxels() const {
   return num_voxels_;

@@ -376,5 +376,115 @@ TEST(VoxelMap, KnnDoesNotAllocate) {
   EXPECT_GT(hits, 0);
 }
 
+TEST(VoxelMap, M02_PruneRemovesVoxelsOutsideRadius) {
+  MapConfig c = default_map_config();
+  c.voxel_m = 1.0;
+  c.prune_radius_m = 10.0;
+  VoxelMap m(c);
+  const Vec3 a(0.5, 0.5, 0.5);  // centre (0.5, 0.5, 0.5)
+  const Vec3 b(1.5, 0.5, 0.5);  // centre (1.5, 0.5, 0.5)
+  m.insert(make_scan({a, b}), Pose{});
+  ASSERT_EQ(m.num_voxels(), 2u);
+  m.prune(Vec3(-9.5, 0.5, 0.5));  // a: exactly 10 m (kept), b: 11 m (removed)
+  EXPECT_EQ(m.num_voxels(), 1u);
+  EXPECT_EQ(m.num_points(), 1u);
+  NeighborBuffer buf;
+  const int n = m.knn(b, 32, buf);
+  ASSERT_EQ(n, 1);
+  EXPECT_TRUE(contains(buf, n, a));
+}
+
+TEST(VoxelMap, PruneFreesSlotsForReuse) {
+  MapConfig c = default_map_config();
+  c.max_voxels = 4;
+  VoxelMap m(c);
+  std::vector<Vec3> old_pts;
+  for (int i = 0; i < 4; ++i) {
+    old_pts.emplace_back(0.25 + 0.5 * i, 0.25, 0.25);
+  }
+  m.insert(make_scan(old_pts), Pose{});
+  ASSERT_EQ(m.num_voxels(), 4u);
+  m.prune(Vec3(1000.0, 0.0, 0.0));
+  EXPECT_EQ(m.num_voxels(), 0u);
+  EXPECT_EQ(m.num_points(), 0u);
+  std::vector<Vec3> new_pts;
+  for (int i = 0; i < 4; ++i) {
+    new_pts.emplace_back(0.25 + 0.5 * i, 0.75, 0.25);
+  }
+  m.insert(make_scan(new_pts), Pose{});
+  EXPECT_EQ(m.num_dropped(), 0u);
+  EXPECT_EQ(m.num_voxels(), 4u);
+  NeighborBuffer buf;
+  int found = 0;
+  for (const Vec3& p : new_pts) {
+    const int n = m.knn(p, 32, buf);
+    found += contains(buf, n, p) ? 1 : 0;
+    for (const Vec3& o : old_pts) {
+      EXPECT_FALSE(contains(buf, n, o));
+    }
+  }
+  EXPECT_EQ(found, 4);
+}
+
+TEST(VoxelMap, PruneKeepsProbeChainsIntact) {
+  std::mt19937 rng(3);
+  MapConfig c = default_map_config();
+  c.max_voxels = 64;  // hash capacity 128
+  c.prune_radius_m = 1.0;
+  VoxelMap m(c);
+  RefMap r(c);
+  std::uniform_real_distribution<double> in_voxel(0.05, 0.45);
+  std::vector<Vec3> pts;
+  for (int z = 0; z < 4; ++z) {
+    for (int y = 0; y < 4; ++y) {
+      for (int x = 0; x < 4; ++x) {
+        for (int i = 0; i < 3; ++i) {
+          const double ox = in_voxel(rng);
+          const double oy = in_voxel(rng);
+          const double oz = in_voxel(rng);
+          pts.emplace_back(0.5 * x + ox, 0.5 * y + oy, 0.5 * z + oz);
+        }
+      }
+    }
+  }
+  const ScanFrame scan = make_scan(pts);
+  m.insert(scan, Pose{});
+  r.insert(scan, Pose{});
+  ASSERT_EQ(m.num_voxels(), 64u);
+  std::uniform_real_distribution<double> body(-0.5, 2.5);
+  for (int round = 0; round < 6; ++round) {
+    const double bx = body(rng);
+    const double by = body(rng);
+    const double bz = body(rng);
+    m.prune(Vec3(bx, by, bz));
+    r.prune(Vec3(bx, by, bz));
+    ASSERT_EQ(m.num_voxels(), r.num_voxels()) << "round " << round;
+    EXPECT_EQ(m.num_points(), r.num_points()) << "round " << round;
+    for (int z = 0; z < 4; ++z) {
+      for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+          expect_knn_matches(m, r, Vec3(0.5 * x + 0.25, 0.5 * y + 0.25, 0.5 * z + 0.25), 32);
+        }
+      }
+    }
+  }
+  EXPECT_LT(m.num_voxels(), 64u);
+}
+
+TEST(VoxelMap, PruneDoesNotAllocate) {
+  std::mt19937 rng(6);
+  VoxelMap m(default_map_config());
+  const ScanFrame scan = make_scan(uniform_points(rng, 10000, -150.0, 150.0));
+  m.insert(scan, Pose{});
+  AllocCounter::reset();
+  {
+    EigenMallocGuard g;
+    m.prune(Vec3(50.0, 0.0, 0.0));
+    m.insert(scan, Pose{});
+  }
+  EXPECT_EQ(AllocCounter::count(), 0u);
+  EXPECT_GT(m.num_voxels(), 0u);
+}
+
 }  // namespace
 }  // namespace mss::map

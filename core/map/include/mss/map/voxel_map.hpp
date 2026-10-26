@@ -133,6 +133,8 @@ class VoxelMap {
   std::size_t home_slot(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
   // Slot that holds the key, or the empty slot that ends its probe sequence.
   std::size_t find_slot(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
+  // Empties slots_[slot] by backward-shift deletion, so probe chains stay intact.
+  void erase_slot(std::size_t slot);
 
   MapConfig cfg_;
   std::vector<HashSlot> slots_;      // capacity: power of two >= 2 * max_voxels
