@@ -16,7 +16,7 @@ Cần đại số tuyến tính cỡ nhỏ cố định (3×3, 6×6) trên đư�
 | GTSAM | 4.2.x, build từ source | chỉ `backend` | chuyển `Pose` ↔ `gtsam::Pose3` tại biên `backend`; không type GTSAM nào thoát ra ngoài |
 | PCL | không dùng | — | chuyển `PointCloud2` → span trong `ros2_node` bằng đọc trực tiếp buffer; kNN do `map` tự làm (ADR-007). Thêm PCL khi có nhu cầu thật, bằng ADR mới |
 
-- Thứ tự tangent của Sophus `SE3::log()` là `[ρ, φ]`, trùng GTSAM `Pose3`, nên không cần hoán đổi; lớp bọc có static_assert bằng test C-02 đối chiếu với `gtsam::Pose3::Logmap` trong test của `backend`.
+- Thứ tự tangent của Sophus `SE3::log()` là `[ρ, φ]`, là thứ tự của dự án; GTSAM `Pose3` dùng `[φ, ρ]`, nên chỉ `backend` hoán đổi vector (`P`) và hiệp phương sai (`P Σ Pᵀ`) tại biên (`docs/derivations/lie_conventions.md`); test `tests/unit/backend/test_lie_gtsam.cpp` đối chiếu với `gtsam::Pose3::Logmap`.
 - Mọi Jacobian giải tích do dự án viết (point-to-plane, preintegration theo bias, odom) có file suy dẫn trong `docs/derivations/` và test sai phân số.
 
 ## Phương án đã cân nhắc

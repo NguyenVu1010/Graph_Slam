@@ -31,3 +31,5 @@ ADR-002 và ADR-003 chốt CMake + colcon và lõi không ROS, nhưng chưa nói
 ## Hệ quả
 
 Mọi vi phạm phân lớp là lỗi link. Thêm module là ba dòng CMake. Đổi lại, có hai cách build (root CMake và colcon) phải giữ đồng bộ, và `core/CMakeLists.txt` phải tự đứng được như một project.
+
+Trong job CI `docker-full`, colcon coi `CMakeLists.txt` gốc là package `multi_sensor_slam` (thư mục CMake thường cũng là package colcon), nên build cả superbuild, kể cả test. `docker/Dockerfile` chạy `colcon test --packages-select multi_sensor_slam` rồi `colcon test-result` trong bước build image, nên các test liên kết GTSAM chạy trên CI và làm build image thất bại khi có lỗi. Image deps chạy `ldconfig` sau khi cài GTSAM vào `/usr/local/lib`.

@@ -46,4 +46,14 @@ python tools/mutate_bag.py <in_bag> <out_bag> [--drop P] [--reorder P] [--window
 E-03 bags skip the noise report: reordering violates its ordering check by design. Run the
 report on the E-01 bag the E-03 bag was derived from.
 
+## Chuyển đổi cho bench
+
+`tools/bag_to_mssdata.py` chuyển bag đã qua cầu nối sang thư mục nhị phân phẳng `mssdata` cho `bench` (không cần ROS trên Pi5; ADR-014, layout trong `docs/mssdata_format.md`):
+
+```
+python tools/bag_to_mssdata.py <bag_dir> <out_dir> [--origin-lla LAT LON ALT] [--pipeline-config cfg.yaml]
+```
+
+Gốc ENU mặc định là fix GNSS đầu tiên. `--pipeline-config` cấp `frames.p_b_g_m` và sigma GNSS (dùng khi bag không có hiệp phương sai). In báo cáo một dòng JSON.
+
 Tests: `python -m pytest tests/python`; lint: `ruff check . && ruff format --check .`.

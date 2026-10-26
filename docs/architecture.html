@@ -98,7 +98,7 @@
   <div class="legend">
     <span class="l-done">đã code, test pass</span>
     <span class="l-stub">có code khung, chưa có logic</span>
-    <span class="l-plan">dự kiến (chỉ có target CMake)</span>
+    <span class="l-plan">dự kiến (đã cố định header giao diện, chưa có thân hàm)</span>
     <span class="l-io">đầu vào / đầu ra</span>
     <span class="l-ext">ngoài core</span>
   </div>
@@ -121,7 +121,7 @@
 // status: done | stub | planned | io | ext     fn.real: true = có trong code
 // ============================================================================
 const DATA = {
-  repo: { commit: "18c235e", date: "2026-10-22", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
+  repo: { commit: "aa4286d", date: "2026-10-23", branch: "feat/core-foundation", url: "https://github.com/NguyenVu1010/Graph_Slam" },
   ci: { run: 39808309796, jobs: [
     { name: "lint", ok: true, note: "clang-format 18 + ruff" },
     { name: "core-no-gtsam", ok: true, note: "CMake + GTest, -Werror" },
@@ -144,17 +144,17 @@ const DATA = {
       inputs: ["Encoder / rosbag"], outputs: ["v, omega (hoặc tick) + Timestamp"], fns: [] },
 
     // -------------------------------------------------------------- stage 1
-    { id: "preprocess", status: "planned", name: "preprocess", short: "deskew, voxel", x: 190, y: 70, w: 140, h: 54,
+    { id: "preprocess", status: "planned", name: "preprocess", short: "interface fixed, no impl", x: 190, y: 70, w: 140, h: 54,
       desc: "Lọc theo khoảng cách, bù chuyển động (deskew) bằng quỹ đạo IMU trong scan, giảm mẫu voxel. Hot path: không cấp phát heap, không copy cloud.",
       inputs: ["Span điểm thô + Timestamp (in_lidar)", "Quỹ đạo T_w_b(t) trong scan (imu)"],
-      outputs: ["ScanFrame: điểm đã deskew trong frame l tại thời điểm cuối scan, buffer tái sử dụng"],
+      outputs: ["ScanFrame: điểm đã deskew trong frame l tại t_start (= header.stamp), buffer tái sử dụng"],
       fns: [
         { id: "process", name: "Preprocessor::process", sig: "Result<ScanFrame&> process(PointSpan in, const ImuTrajectory& traj)", stage: 0, note: "Điểm vào duy nhất, chạy mỗi scan. Trả reason khi quá ít điểm." },
         { id: "range", name: "filter_range", sig: "void filter_range(PointSpan, min_m, max_m, Buffer&)", stage: 1, note: "Loại điểm quá gần/xa." },
-        { id: "deskew", name: "deskew_points", sig: "void deskew_points(Buffer&, const ImuTrajectory&, Timestamp t_end)", stage: 2, note: "p_l(t_end) = T_l_b * T_b(t_end)_b(t) * T_b_l * p_l(t)." },
+        { id: "deskew", name: "deskew_points", sig: "void deskew_points(Buffer&, const ImuTrajectory&, Timestamp t_start)", stage: 2, note: "p_l(t_start) = T_l_b * T_b0_b(t) * T_b_l * p_l(t); điểm có t_offset = 0 không đổi." },
         { id: "voxel", name: "voxel_downsample", sig: "void voxel_downsample(Buffer&, double leaf_m)", stage: 3, note: "Hash voxel cố định kích thước, reserve một lần." } ],
       calls: [["process","range"],["range","deskew"],["deskew","voxel"]] },
-    { id: "imu", status: "planned", name: "imu", short: "init + preintegration", x: 190, y: 180, w: 140, h: 54,
+    { id: "imu", status: "planned", name: "imu", short: "interface fixed, no impl", x: 190, y: 180, w: 140, h: 54,
       desc: "Khởi tạo trọng lực và bias khi đứng yên; tích phân trước (preintegration) giữa hai keyframe; dự đoán pose cho scan matching. Jacobian theo bias có test sai phân số.",
       inputs: ["ImuSample + Timestamp (in_imu)", "Bias ước lượng từ backend"],
       outputs: ["Dự đoán T_w_b, v_w_b cho scan_match", "PreintegratedDelta{dR, dv, dp, cov, J_dp_bg, J_dv_ba, ...} cho backend"],
@@ -165,7 +165,7 @@ const DATA = {
         { id: "pred", name: "predict_pose", sig: "Pose predict_pose(const State& x0, const PreintegratedDelta&, Vec3 g_w)", stage: 2, note: "Khởi tạo cho scan_match." },
         { id: "reset", name: "Preintegrator::reset", sig: "void reset(const ImuBias&)", stage: 3, note: "Sau mỗi keyframe." } ],
       calls: [["init","integ"],["integ","jac"],["integ","pred"],["jac","reset"]] },
-    { id: "gnss", status: "planned", name: "gnss", short: "LLA → ENU", x: 190, y: 290, w: 140, h: 54,
+    { id: "gnss", status: "planned", name: "gnss", short: "interface fixed, no impl", x: 190, y: 290, w: 140, h: 54,
       desc: "Chuyển lat/lon/alt sang frame e (ENU) tại gốc cố định, áp cánh tay đòn p_b_g, đóng gói thành phép đo vị trí cho backend.",
       inputs: ["Fix GNSS + cov (in_gnss)", "p_b_g từ config"],
       outputs: ["GnssMeasurement{p_e_g, cov, Timestamp}", "T_e_w sau khi căn chỉnh (alignment) đủ điểm"],
@@ -174,7 +174,7 @@ const DATA = {
         { id: "gate", name: "gate_fix", sig: "Status gate_fix(const GnssMeasurement&, max_cov_m2)", stage: 1, note: "Loại fix có cov lớn; log và bỏ qua, không abort." },
         { id: "align", name: "GnssAligner::update", sig: "Result<Pose> update(p_e_g, p_w_b)", stage: 2, note: "Ước lượng T_e_w (yaw + dịch) bằng Umeyama khi có ≥ N cặp." } ],
       calls: [["lla","gate"],["gate","align"]] },
-    { id: "odom", status: "planned", name: "odom", short: "wheel integration", x: 190, y: 400, w: 140, h: 54,
+    { id: "odom", status: "planned", name: "odom", short: "interface fixed, no impl", x: 190, y: 400, w: 140, h: 54,
       desc: "Tích phân vận tốc bánh xe thành dịch chuyển tương đối giữa hai keyframe trong frame b, kèm hiệp phương sai theo quãng đường.",
       inputs: ["v, omega + Timestamp (in_odom)"],
       outputs: ["OdomDelta{T_b0_b1, cov} cho backend"],
@@ -184,7 +184,7 @@ const DATA = {
       calls: [["integ","delta"]] },
 
     // -------------------------------------------------------------- stage 2
-    { id: "scan_match", status: "planned", name: "scan_match", short: "point-to-plane GN", x: 380, y: 70, w: 140, h: 54,
+    { id: "scan_match", status: "planned", name: "scan_match", short: "interface fixed, no impl", x: 380, y: 70, w: 140, h: 54,
       desc: "Đăng ký ScanFrame vào bản đồ bằng Gauss-Newton point-to-plane, khởi tạo từ dự đoán IMU. Trả pose, hiệp phương sai và Hessian H cho phân tích suy biến. Có chế độ deterministic. Mọi thay đổi phải kèm số bench desktop và Pi5.",
       inputs: ["ScanFrame (preprocess)", "T_w_l khởi tạo (imu)", "Truy vấn knn / mặt phẳng (map)"],
       outputs: ["MatchResult{T_w_l, cov 6x6, H 6x6, inliers}", "Hessian H cho degeneracy"],
@@ -195,7 +195,7 @@ const DATA = {
         { id: "solve", name: "solve_gauss_newton", sig: "Vec6 solve_gauss_newton(const Mat6& H, const Vec6& b)", stage: 3, note: "LDLT trên 6x6; H được trả ra cho degeneracy." },
         { id: "conv", name: "check_convergence", sig: "bool check_convergence(const Vec6& delta, rot_tol_rad, trans_tol_m)", stage: 4, note: "" } ],
       calls: [["align","corr"],["corr","res"],["res","solve"],["solve","conv"],["conv","corr"]] },
-    { id: "map", status: "planned", name: "map", short: "voxel map", x: 380, y: 180, w: 140, h: 54,
+    { id: "map", status: "planned", name: "map", short: "interface fixed, no impl", x: 380, y: 180, w: 140, h: 54,
       desc: "Bản đồ voxel hash trong frame w: chèn ScanFrame theo pose, truy vấn knn và mặt phẳng cục bộ, cắt tỉa theo bán kính quanh robot để giữ bộ nhớ cố định trên Pi5.",
       inputs: ["ScanFrame + T_w_l (sau scan_match)", "Pose đã hiệu chỉnh từ backend (loop)"],
       outputs: ["knn / mặt phẳng cho scan_match", "Keyframe + cloud cho loop", "Bản đồ xuất ra (PointCloud2 / PCD)"],
@@ -207,7 +207,7 @@ const DATA = {
       calls: [["insert","knn"],["knn","plane"],["insert","prune"]] },
 
     // -------------------------------------------------------------- stage 3
-    { id: "degeneracy", status: "planned", name: "degeneracy", short: "eigen of H", x: 570, y: 70, w: 140, h: 54,
+    { id: "degeneracy", status: "planned", name: "degeneracy", short: "interface fixed, no impl", x: 570, y: 70, w: 140, h: 54,
       desc: "Phân tích phổ của Hessian 6x6 từ scan matching để phát hiện hướng suy biến (hành lang, mặt phẳng), rồi chiếu bỏ cập nhật theo hướng đó và báo cho backend nới lỏng hoặc khoá yếu tố LiDAR.",
       inputs: ["H 6x6 (scan_match)"],
       outputs: ["DegeneracyReport{eigvals, degenerate_dirs, mask}", "Delta đã chiếu cho scan_match (tuỳ chọn)"],
@@ -215,7 +215,7 @@ const DATA = {
         { id: "analyze", name: "analyze", sig: "DegeneracyReport analyze(const Mat6& H, double eig_threshold)", stage: 0, note: "SelfAdjointEigenSolver trên 6x6." },
         { id: "project", name: "project_update", sig: "Vec6 project_update(const Vec6& delta, const DegeneracyReport&)", stage: 1, note: "Zhang & Singh 2016 style projection." } ],
       calls: [["analyze","project"]] },
-    { id: "loop", status: "planned", name: "loop", short: "loop closure", x: 570, y: 180, w: 140, h: 54,
+    { id: "loop", status: "planned", name: "loop", short: "interface fixed, no impl", x: 570, y: 180, w: 140, h: 54,
       desc: "Tìm keyframe cũ gần vị trí hiện tại, xác minh bằng scan matching, sinh ràng buộc vòng cho backend. Chạy trên luồng riêng, tắt mặc định (loop_closure.enabled: false).",
       inputs: ["Keyframe mới + cloud (map)", "Pose hiện tại (backend)"],
       outputs: ["LoopConstraint{i, j, T_bi_bj, cov}"],
@@ -225,7 +225,7 @@ const DATA = {
       calls: [["query","verify"]] },
 
     // -------------------------------------------------------------- backend
-    { id: "backend", status: "planned", name: "backend", short: "GTSAM iSAM2", x: 800, y: 70, w: 150, h: 164,
+    { id: "backend", status: "planned", name: "backend", short: "interface fixed, no impl", x: 800, y: 70, w: 150, h: 164,
       desc: "Nơi duy nhất include GTSAM. Factor graph với biến pose, vận tốc, bias; yếu tố IMU preintegrated, LiDAR between/prior, GNSS position, odom between, loop between. Chỉ trả core types (Pose, PoseCovariance).",
       inputs: ["PreintegratedDelta (imu)", "MatchResult (scan_match)", "DegeneracyReport", "GnssMeasurement (gnss)", "OdomDelta (odom)", "LoopConstraint (loop)"],
       outputs: ["Estimate{T_w_b, v_w_b, bias, cov} mới nhất", "Pose đã hiệu chỉnh của các keyframe (cho map)"],
@@ -248,22 +248,66 @@ const DATA = {
       desc: "Bản đồ voxel trong frame w, xuất theo chu kỳ hoặc khi dừng.", inputs: ["VoxelMap (map)"], outputs: ["sensor_msgs/PointCloud2, file PCD"], fns: [] },
 
     // -------------------------------------------------------------- base + apps
-    { id: "pipeline", status: "planned", name: "pipeline", short: "Estimator, threads, queues", x: 800, y: 400, w: 150, h: 54,
-      desc: "Module duy nhất tạo luồng: front-end (preprocess + scan_match), backend, loop. Nối qua hàng đợi có giới hạn. Mỗi trạng thái chia sẻ có một chủ sở hữu và mutex. deterministic: true chạy đơn luồng, seed cố định.",
-      inputs: ["Mọi message từ apps (push_*)"], outputs: ["latest_state(), map snapshot, callback kết quả"],
+    { id: "pipeline", status: "stub", name: "pipeline", short: "Estimator (1 luồng), config", x: 800, y: 400, w: 150, h: 54,
+      desc: "Module duy nhất tạo luồng (dự kiến): front-end (preprocess + scan_match), backend, loop. Hiện có load_config/parse_config (YAML + overlay, báo mọi lỗi một lần) và Estimator đơn luồng: hàng đợi có giới hạn, pool ScanFrame cấp phát một lần, run_once() rút hàng đợi theo khóa thời gian, latest_state() là pose identity vì chưa có thuật toán. deterministic: true chạy đơn luồng.",
+      inputs: ["Mọi message từ apps (push_*)", "default.yaml + overlay (load_config)"], outputs: ["latest_state(), map snapshot, callback kết quả"],
       fns: [
-        { id: "ctor", name: "Estimator::Estimator", sig: "explicit Estimator(const Config&)", stage: 0, note: "Config từ YAML, validate, có thể throw." },
-        { id: "p_scan", name: "Estimator::push_scan", sig: "Status push_scan(PointSpan, Timestamp)", stage: 1, note: "Đưa vào hàng đợi front-end, không block." },
-        { id: "p_imu", name: "Estimator::push_imu", sig: "Status push_imu(const ImuSample&, Timestamp)", stage: 1, note: "" },
-        { id: "p_gnss", name: "Estimator::push_gnss", sig: "Status push_gnss(const GnssFix&, Timestamp)", stage: 1, note: "" },
-        { id: "p_odom", name: "Estimator::push_odom", sig: "Status push_odom(const WheelSample&, Timestamp)", stage: 1, note: "" },
+        { id: "load", name: "load_config", real: true, sig: "common::Result<Config> load_config(const std::filesystem::path& default_yaml, const std::optional<std::filesystem::path>& overlay = std::nullopt)", stage: 0, note: "Gộp default + overlay, validate, không ném; lỗi dạng <dotted.key>: <reason>." },
+        { id: "ctor", name: "Estimator::Estimator", real: true, sig: "explicit Estimator(const Config& cfg)", stage: 0, note: "Cấp phát pool và hàng đợi một lần; có thể throw khi cấu hình sai." },
+        { id: "p_scan", name: "Estimator::push_scan", real: true, sig: "common::Status push_scan(const common::ScanFrame& scan)", stage: 1, note: "Sao chép vào khung trống; hàng đợi đầy thì bỏ scan cũ nhất và trả lỗi." },
+        { id: "p_imu", name: "Estimator::push_imu", real: true, sig: "common::Status push_imu(const common::ImuSample& s)", stage: 1, note: "Từ chối timestamp không tăng." },
+        { id: "p_gnss", name: "Estimator::push_gnss", real: true, sig: "common::Status push_gnss(const common::GnssMeasurement& m)", stage: 1, note: "" },
+        { id: "p_odom", name: "Estimator::push_odom", real: true, sig: "common::Status push_odom(const common::WheelSample& s)", stage: 1, note: "" },
+        { id: "run_once", name: "Estimator::run_once", real: true, sig: "void run_once()", stage: 2, note: "Rút mọi hàng đợi theo khóa thời gian (scan theo thời điểm cuối), chỉ đếm." },
         { id: "fe", name: "front_end_loop", sig: "void front_end_loop()  // thread", stage: 2, note: "preprocess → scan_match → map.insert → đẩy keyframe cho backend." },
         { id: "be", name: "backend_loop", sig: "void backend_loop()  // thread", stage: 2, note: "Graph::add_* → optimize → cập nhật state." },
-        { id: "state", name: "Estimator::latest_state", sig: "Estimate latest_state() const", stage: 3, note: "Đọc dưới mutex state_." } ],
-      calls: [["ctor","p_scan"],["ctor","p_imu"],["p_scan","fe"],["p_imu","fe"],["p_gnss","be"],["p_odom","be"],["fe","be"],["be","state"]] },
+        { id: "state", name: "Estimator::latest_state", real: true, sig: "common::Estimate latest_state() const", stage: 3, note: "Hiện: t = scan cuối, pose identity." } ],
+      tests: [
+        { name: "Config.LoadsDefaultFile", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "Config.OverlayWarehouse", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "Config.MissingKeyNamed", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "Config.WrongTypeNamed", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "Config.UnknownKeyNamed", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "Config.OverlayTypeMismatch", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "Config.UnnormalisedQuaternionRejected", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "Config.NegativeSigmaRejected", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "Config.AllErrorsReported", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "Config.MalformedInputReturnsErrorWithoutThrowing", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "BoundedQueue.PushPopOverwriteOldest", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.PushScanCopiesWithoutAlloc", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.ScanQueueFullDropsOldest", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.OversizedScanRejected", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.ImuNonIncreasingRejected", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.RunOnceDrainsQueues", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.LatestStateTimestampFollowsScans", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.RunOnceOrdersByKeyWithTieOrder", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.PoolCyclesUnderSustainedOverflow", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.QueueOverflowCountsDrops", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.ConfigDepthAboveCompileTimeMaxThrows", file: "tests/unit/test_estimator.cpp", ok: true },
+        { name: "Estimator.StartStopAreNoOps", file: "tests/unit/test_estimator.cpp", ok: true } ],
+      calls: [["load","ctor"],["ctor","p_scan"],["ctor","p_imu"],["p_scan","run_once"],["p_imu","run_once"],["p_gnss","run_once"],["p_odom","run_once"],["run_once","state"],["p_scan","fe"],["p_imu","fe"],["p_gnss","be"],["p_odom","be"],["fe","be"],["be","state"]] },
+    { id: "io", status: "done", name: "io", short: "mssdata reader / writer", x: 630, y: 400, w: 150, h: 54,
+      desc: "Đọc và ghi dataset mssdata (ADR-014, docs/mssdata_format.md) không phụ thuộc thư viện ngoài. DatasetReader gộp imu, odom, gnss, gt, lidar theo timestamp (trùng thì theo thứ tự đó) và nạp scan vào ScanFrame đã reserve, không cấp phát. Lỗi trả Status, không ném; chỉ máy little-endian.",
+      inputs: ["Thư mục mssdata (index.json, *.bin, lidar/*.bin) từ tools/bag_to_mssdata.py"], outputs: ["Record + ScanFrame cho bench / Estimator"],
+      tests: [
+        { name: "DatasetIo.RecordSizesMatchFormat", file: "tests/unit/test_dataset_io.cpp", ok: true },
+        { name: "DatasetIo.WriteThenReadRoundTrip", file: "tests/unit/test_dataset_io.cpp", ok: true },
+        { name: "DatasetIo.TieOrderIsStable", file: "tests/unit/test_dataset_io.cpp", ok: true },
+        { name: "DatasetIo.NextDoesNotAllocate", file: "tests/unit/test_dataset_io.cpp", ok: true },
+        { name: "DatasetIo.TruncatedLidarFileIsStatusError", file: "tests/unit/test_dataset_io.cpp", ok: true },
+        { name: "DatasetIo.TooManyPointsRejected", file: "tests/unit/test_dataset_io.cpp", ok: true },
+        { name: "DatasetIo.MissingIndexIsError", file: "tests/unit/test_dataset_io.cpp", ok: true },
+        { name: "DatasetIo.CountMismatchIsError", file: "tests/unit/test_dataset_io.cpp", ok: true },
+        { name: "DatasetIo.WriterRejectsBackwardTimeAndNonEmptyDir", file: "tests/unit/test_dataset_io.cpp", ok: true } ],
+      fns: [
+        { id: "open", name: "DatasetReader::open", real: true, sig: "static common::Result<DatasetReader> open(const std::filesystem::path& dir, std::size_t max_points_per_scan)", stage: 0, note: "Đọc index.json, kiểm tra số lượng và kích thước file lidar (12 + n·22 B)." },
+        { id: "next", name: "DatasetReader::next", real: true, sig: "common::Result<bool> next(Record& out, common::ScanFrame& scan)", stage: 1, note: "Bản ghi kế tiếp theo thời gian; false khi hết." },
+        { id: "create", name: "DatasetWriter::create", real: true, sig: "static common::Result<DatasetWriter> create(const std::filesystem::path& dir, const DatasetIndex& meta)", stage: 0, note: "Dùng trong test để tạo dataset tổng hợp." },
+        { id: "wl", name: "DatasetWriter::write_lidar", real: true, sig: "common::Status write_lidar(const common::ScanFrame& scan)", stage: 1, note: "" } ],
+      calls: [["open","next"],["create","wl"]] },
     { id: "common", status: "done", name: "common", short: "types, Timestamp, Result, logger", x: 190, y: 500, w: 760, h: 46,
-      desc: "Kiểu dùng chung cho mọi module: Timestamp int64 ns, Status/Result<T> thay cho exception trên hot path, Pose{R, p} với phép hợp thành khử frame, ImuSample, logger interface (sink mặc định stderr, ros2_node thay bằng rclcpp).",
-      inputs: ["Không có (tầng đáy)"], outputs: ["mss/common/{timestamp,result,types,logger}.hpp cho mọi module"],
+      desc: "Kiểu dùng chung cho mọi module: Timestamp int64 ns, Status/Result<T> thay cho exception trên hot path, Pose{R, p} với phép hợp thành khử frame, các kiểu trao đổi (ImuSample, GnssMeasurement, WheelSample, NavState, ...), lie.hpp (bọc Sophus: Exp/Log, Jacobian, adjoint, boxplus, transform_covariance, thứ tự [rho, phi]), Span và ScanFrame (SoA, reserve một lần, không cấp phát khi push/copy), logger interface (sink mặc định stderr, ros2_node thay bằng rclcpp).",
+      inputs: ["Không có (tầng đáy)"], outputs: ["mss/common/{timestamp,result,types,lie,span,scan_frame,logger}.hpp cho mọi module"],
       tests: [
         { name: "Timestamp.ComparesAsInteger", file: "tests/unit/test_timestamp.cpp", ok: true },
         { name: "Timestamp.SecondsBetweenIsSigned", file: "tests/unit/test_timestamp.cpp", ok: true },
@@ -271,7 +315,29 @@ const DATA = {
         { name: "Result.ErrorCarriesReason", file: "tests/unit/test_result.cpp", ok: true },
         { name: "Status.OkAndError", file: "tests/unit/test_result.cpp", ok: true },
         { name: "Pose.CompositionCancelsFrames", file: "tests/unit/test_pose.cpp", ok: true },
-        { name: "Pose.InverseRoundTrips", file: "tests/unit/test_pose.cpp", ok: true } ],
+        { name: "Pose.InverseRoundTrips", file: "tests/unit/test_pose.cpp", ok: true },
+        { name: "Lie.So3ExpLogRoundTrip", file: "tests/unit/test_lie.cpp", ok: true },
+        { name: "Lie.Se3ExpLogRoundTrip", file: "tests/unit/test_lie.cpp", ok: true },
+        { name: "Lie.JrMatchesNumericDiff", file: "tests/unit/test_lie.cpp", ok: true },
+        { name: "Lie.JrInvIsInverseOfJr", file: "tests/unit/test_lie.cpp", ok: true },
+        { name: "Lie.JlEqualsJrOfNegPhi", file: "tests/unit/test_lie.cpp", ok: true },
+        { name: "Lie.SkewIsCrossProduct", file: "tests/unit/test_lie.cpp", ok: true },
+        { name: "Lie.AdjointMatchesConjugation", file: "tests/unit/test_lie.cpp", ok: true },
+        { name: "Lie.BoxplusBoxminus", file: "tests/unit/test_lie.cpp", ok: true },
+        { name: "Lie.TransformCovarianceIsCongruence", file: "tests/unit/test_lie.cpp", ok: true },
+        { name: "Lie.SophusRoundTrip", file: "tests/unit/test_lie.cpp", ok: true },
+        { name: "ScanFrame.ReserveOnceThenPushNoAlloc", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "ScanFrame.PushWhenFullReturnsFalse", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "ScanFrame.CopyFromNoAlloc", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "ScanFrame.MoveKeepsData", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "ScanFrame.MovedFromIsEmptyAndReusable", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "AllocCounter.CountsOneHeapAllocation", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "ScanFrame.ClearKeepsCapacity", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "ScanFrame.BulkWriteThenSetSize", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "ScanFrame.ReserveAgainOnlyWhenEmpty", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "Span.ConstFromVectorAndArray", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "ScanFrame.EndTimeIsStartPlusMaxOffset", file: "tests/unit/test_scan_frame.cpp", ok: true },
+        { name: "Types.DefaultsAreZeroed", file: "tests/unit/test_types.cpp", ok: true } ],
       fns: [
         { id: "ts_sec", name: "seconds_between", real: true, sig: "constexpr double seconds_between(Timestamp from, Timestamp to)", stage: 0, note: "Nơi duy nhất thời gian thành double (dt)." },
         { id: "ts_from", name: "timestamp_from_sec_nsec", real: true, sig: "constexpr Timestamp timestamp_from_sec_nsec(int64 sec, int64 nsec)", stage: 0, note: "Dùng ở biên I/O (ROS header.stamp)." },
@@ -279,10 +345,16 @@ const DATA = {
         { id: "res_ok", name: "Result<T>::ok / error / value", real: true, sig: "static Result ok(T); static Result error(std::string); const T& value() const&", stage: 1, note: "value() yêu cầu is_ok()." },
         { id: "pose_mul", name: "Pose::operator*", real: true, sig: "Vec3 operator*(const Vec3& p_b) const; Pose operator*(const Pose& T_b_c) const", stage: 2, note: "p_a = T_a_b * p_b; T_a_c = T_a_b * T_b_c." },
         { id: "pose_inv", name: "Pose::inverse", real: true, sig: "Pose inverse() const", stage: 2, note: "" },
+        { id: "so3e", name: "so3_exp", real: true, sig: "Mat3 so3_exp(const Vec3& phi)", stage: 2, note: "Rodrigues; xử lý góc gần 0." },
+        { id: "se3l", name: "se3_log", real: true, sig: "Vec6 se3_log(const Pose& T)", stage: 2, note: "Trả xi = [rho, phi]." },
+        { id: "bplus", name: "boxplus", real: true, sig: "Pose boxplus(const Pose& T, const Vec6& delta)", stage: 2, note: "T * Exp(delta), right perturbation." },
+        { id: "tcov", name: "transform_covariance", real: true, sig: "PoseCovariance transform_covariance(const PoseCovariance& cov_x, const Pose& T_y_x)", stage: 2, note: "Đổi hiệp phương sai giữa hai frame bằng adjoint." },
+        { id: "sf_push", name: "ScanFrame::push", real: true, sig: "bool push(float x, float y, float z, float intensity, std::uint32_t t_offset_ns, std::uint16_t ring) noexcept", stage: 3, note: "false khi đầy, không cấp phát." },
+        { id: "sf_end", name: "scan_end_time", real: true, sig: "inline Timestamp scan_end_time(const ScanFrame& scan)", stage: 3, note: "t_start + max t_offset_ns; khóa sắp xếp của scan trong Estimator." },
         { id: "set_log", name: "set_logger", real: true, sig: "void set_logger(Logger* logger)", stage: 3, note: "nullptr → quay về sink stderr." },
         { id: "log_x", name: "log_debug / info / warn / error", real: true, sig: "void log_info(std::string_view msg) ...", stage: 3, note: "Không gọi theo từng điểm trong hot path." },
         { id: "stderr", name: "StderrLogger::log", real: true, sig: "void log(LogLevel, std::string_view) override  // anonymous ns", stage: 4, note: "fprintf(stderr) với tag mức log." } ],
-      calls: [["log_x","stderr"],["set_log","stderr"]] },
+      calls: [["log_x","stderr"],["set_log","stderr"],["so3e","se3l"],["se3l","bplus"],["bplus","tcov"],["sf_push","sf_end"]] },
 
     { id: "ros2_node", status: "stub", name: "ros2_node", short: "mss_ros2 / mss_node", x: 1040, y: 290, w: 150, h: 54,
       desc: "Adapter mỏng: message ROS 2 ↔ core struct, launch, params từ config/default.yaml. Hiện tại chỉ cài RclcppLogger và spin; subscription/publisher sẽ nối khi pipeline có.",
@@ -297,14 +369,19 @@ const DATA = {
         { id: "pub", name: "publish_state", sig: "void publish_state(const Estimate&)", stage: 2, note: "Odometry + TF map→imu_link." } ],
       calls: [["main","rl"],["main","on_lidar"],["main","on_imu"],["on_lidar","pub"]] },
     { id: "bench", status: "stub", name: "bench", short: "mss_bench", x: 1040, y: 400, w: 150, h: 54,
-      desc: "Chạy dataset qua Estimator không cần ROS, đo p50/p95/CPU từng stage. Bắt buộc báo số trước/sau cho mọi thay đổi hot path. Hiện tại chỉ parse tham số và log.",
-      inputs: ["config.yaml, thư mục dataset"], outputs: ["Bảng p50/p95/CPU, file TUM cho eval"],
-      tests: [{ name: "build -Werror (core-no-gtsam, docker-full)", file: ".github/workflows/ci.yml", ok: true }],
+      desc: "Phát lại dataset mssdata qua Estimator không cần ROS, rút hàng đợi theo watermark (thời điểm kết thúc scan). Ghi est.tum (pose identity vì chưa có thuật toán) và bench.json (Stats, p50/p95 push_scan, số bản ghi). Exit 0; 2 lỗi cấu hình/dataset/đầu ra; 3 còn bản ghi không được xử lý. Bắt buộc báo số trước/sau cho mọi thay đổi hot path.",
+      inputs: ["mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR"], outputs: ["DIR/est.tum, DIR/bench.json, bảng tóm tắt trên stdout"],
+      tests: [
+        { name: "test_bench_replay: ReplaysSyntheticDataset", file: "tests/component/test_bench_replay.cpp", ok: true },
+        { name: "test_bench_replay: SensorsLeadingLidarAreNotDropped", file: "tests/component/test_bench_replay.cpp", ok: true },
+        { name: "test_bench_replay: ImuOnlyLeadIsNotDropped", file: "tests/component/test_bench_replay.cpp", ok: true },
+        { name: "test_bench_replay: UnprocessedRecordsExit3", file: "tests/component/test_bench_replay.cpp", ok: true },
+        { name: "test_bench_replay: MissingDatasetExits2AndWritesNothing", file: "tests/component/test_bench_replay.cpp", ok: true },
+        { name: "test_bench_replay: MissingOutIsUsageError", file: "tests/component/test_bench_replay.cpp", ok: true },
+        { name: "build -Werror (core-no-gtsam, docker-full)", file: ".github/workflows/ci.yml", ok: true } ],
       fns: [
-        { id: "main", name: "main", real: true, sig: "int main(int argc, char** argv)", stage: 0, note: "Kiểm tra argc, log, return." },
-        { id: "run", name: "run_dataset", sig: "BenchReport run_dataset(const Config&, const Dataset&)", stage: 1, note: "Phát lại theo timestamp, deterministic." },
-        { id: "pct", name: "report_percentiles", sig: "void report_percentiles(const BenchReport&)", stage: 2, note: "" } ],
-      calls: [["main","run"],["run","pct"]] },
+        { id: "main", name: "main", real: true, sig: "int main(int argc, char** argv)  // mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR", stage: 0, note: "load_config, DatasetReader::open, vòng next → push_* + run_once theo watermark, ghi est.tum và bench.json." } ],
+      calls: [] },
     { id: "eval", status: "done", name: "eval (py)", short: "TUM, noise report, evo", x: 1040, y: 500, w: 150, h: 46,
       desc: "Không link core; chỉ đọc file TUM. ATE/RPE bằng evo, ablation, plots, so với eval/baselines.json (PR fail nếu ATE xấu hơn 20%). Đã có TUM reader/writer và noise report (ADR-011 §7): so profile nhiễu khai báo với nhiễu đo trong bag (IMU Allan, GNSS, LiDAR, odom, bag).",
       inputs: ["File TUM từ bench / ros2 bag export", "Bag nhiễu + gt.tum từ sim bridge"], outputs: ["results/<run-id>/: ATE, RPE, plots", "noise_report.html / .json", "so sánh với baselines.json"],
@@ -357,8 +434,9 @@ const DATA = {
         { id: "pscan", name: "process_scan", real: true, sig: "def process_scan(arrays: CloudArrays, stamp_ns: int, gt: GroundTruth, T_b_l: np.ndarray, noise: LidarNoise, rng: np.random.Generator, *, skew: bool = True, range_sigma_apply: bool = False) -> CloudArrays", stage: 2, note: "Thêm t, ring, skew, dropout, điểm xấu." },
         { id: "gstep", name: "GnssDegrader.step", real: true, sig: "def step(self, t_ns: int, p_e_g_true: np.ndarray) -> GnssSample | None", stage: 2, note: "Nominal/degraded/multipath/outage; None khi mất tín hiệu." },
         { id: "wstep", name: "WheelQuantizer.step", real: true, sig: "def step(self, t_ns: int, names: list[str], velocity_radps: list[float]) -> OdomTwist | None", stage: 2, note: "Encoder lượng tử, động học tin cậy." },
+        { id: "b2m", name: "bag_to_mssdata.convert", real: true, sig: "def convert(bag_dir: Path, out_dir: Path, *, origin_lla: tuple[float, float, float] | None = None, pipeline_config: Path | None = None) -> ConvertReport", stage: 2, note: "Bag nhiễu MCAP → thư mục mssdata cho bench (ADR-014)." },
         { id: "mut", name: "mutate (tools)", real: true, sig: "def mutate(in_bag: Path, out_bag: Path, *, drop_fraction: float = 0.05, reorder_fraction: float = 0.02, window_ns: int = 20_000_000, topics: tuple[str, ...] = (\"/imu/data\", \"/lidar/points\"), seed: int = 0) -> MutateReport", stage: 3, note: "tools/mutate_bag.py: bag E-03." } ],
-      calls: [["lp","rb"],["ls","rb"],["rb","pscan"],["rb","gstep"],["rb","wstep"],["syn","rb"],["rb","mut"]] },
+      calls: [["lp","rb"],["ls","rb"],["rb","pscan"],["rb","gstep"],["rb","wstep"],["syn","rb"],["rb","mut"],["rb","b2m"]] },
   ],
 
   // edges: { f, t, l }  + tuỳ chọn: both (hai chiều), via (đi theo hành lang ngang ở y này), lx (x đặt nhãn)
@@ -373,7 +451,7 @@ const DATA = {
     { f: "gnss", t: "backend", l: "p_e_g", via: 262, lx: 560, ty: 172 },
     { f: "odom", t: "backend", l: "Δ odom", via: 270, lx: 680, ty: 194 },
     { f: "backend", t: "out_pose", l: "Estimate" }, { f: "map", t: "out_map", l: "voxels", via: 278, lx: 860 },
-    { f: "ros2_node", t: "pipeline", l: "push_* / Estimate", both: true }, { f: "bench", t: "pipeline", l: "push_*" },
+    { f: "ros2_node", t: "pipeline", l: "push_* / Estimate", both: true }, { f: "bench", t: "pipeline", l: "push_*" }, { f: "io", t: "pipeline", l: "Record", ldy: 40 }, { f: "bench", t: "io", l: "mssdata", below: 482 },
     { f: "bench", t: "eval", l: "TUM" },
     { f: "sim", t: "eval", l: "bag + gt.tum" },
   ],
@@ -401,6 +479,12 @@ const cy = m => m.y + m.h / 2, cx = m => m.x + m.w / 2;
 function sideAnchor(m, side, towardY) { return [side === "r" ? m.x + m.w : m.x, clamp(towardY, m.y + 14, m.y + m.h - 14)]; }
 
 function edgePath(a, b, e) {
+  if (e.below !== undefined) {
+    // source bottom → down to corridor y → across (under the blocks in between) → up into target bottom
+    const p = [a.x + 30, a.y + a.h], q = [cx(b), b.y + b.h], y = e.below;
+    return { d: `M${p[0]},${p[1]} V${y - 10} Q${p[0]},${y} ${p[0] - 10},${y} H${q[0] + 10} Q${q[0]},${y} ${q[0]},${y - 10} V${q[1]}`,
+             label: [(p[0] + q[0]) / 2, y - 4, "middle"] };
+  }
   if (e.via !== undefined) {
     // source right → down/up to corridor y → across → into target left at e.ty (or target centre)
     const p = sideAnchor(a, "r", cy(a)), ty = e.ty !== undefined ? e.ty : cy(b), q = [b.x, ty], y = e.via;
@@ -413,7 +497,7 @@ function edgePath(a, b, e) {
     const p = sideAnchor(a, dx > 0 ? "r" : "l", cy(b)), q = sideAnchor(b, dx > 0 ? "l" : "r", cy(a));
     const c = Math.max(40, Math.abs(dx) * 0.4), s = Math.sign(dx);
     return { d: `M${p[0]},${p[1]} C${p[0] + s * c},${p[1]} ${q[0] - s * c},${q[1]} ${q[0]},${q[1]}`,
-             label: [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2 - 5, "middle"] };
+             label: [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2 - 5 + (e.ldy || 0), "middle"] };
   }
   const p = [cx(a), dy > 0 ? a.y + a.h : a.y], q = [cx(b), dy > 0 ? b.y : b.y + b.h];
   return { d: `M${p[0]},${p[1]} L${q[0]},${q[1]}`, label: [p[0] + 7, (p[1] + q[1]) / 2 + 4, "start"] };
