@@ -52,7 +52,7 @@ Result<InitState> ImuInitializer::try_init(Span<const ImuSample> samples) {
   }
 
   // Two passes: mean, then sample (n - 1) variance per axis.
-  const double n = static_cast<double>(samples.size());
+  const auto n = static_cast<double>(samples.size());
   Vec3 acc_mean = Vec3::Zero();   // m/s^2
   Vec3 gyro_mean = Vec3::Zero();  // rad/s
   for (const ImuSample& s : samples) {
