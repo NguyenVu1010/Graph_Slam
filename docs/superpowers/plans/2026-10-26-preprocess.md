@@ -140,7 +140,7 @@ class DeskewTable {
 }  // namespace mss::preprocess::detail
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Fixture: `T_b_l` = `R_y(2 deg)`, `p = [0.10, 0, 0]` m (ADR-011 section 2 rig, planner's call); random trajectory from `std::mt19937{42}`: 21 samples 5 ms apart (200 Hz, `imu.rate_hz`), `samples[0] = (t0, identity)`, others `se3_exp` of a random `[rho, phi]` with components in [-0.2, 0.2].
 ```cpp
@@ -154,19 +154,19 @@ TEST(DeskewTable, StaticTrajectoryIsExactIdentity)   // all samples identity: an
 TEST(DeskewTable, BuildAndQueryDoNotAllocate)        // AllocCounter::count() == 0 under EigenMallocGuard for build + 1000 queries
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: build command with `--target test_preprocess`. Expected: compile error (`deskew_table.hpp` not found).
 
-- [ ] **Step 3: Implement `build` and `T_l0_l`**
+- [x] **Step 3: Implement `build` and `T_l0_l`**
 
 `build`: per Task 1 doc sections 2 and 4 (`A_k` exact identity when the sample pose is bitwise identity; `xi_k` for `k < size-1`). `T_l0_l`: `std::upper_bound` over `t_[0, size_)`; clamp at both ends; `s = static_cast<double>(t.ns - t_k.ns) / static_cast<double>(t_k1.ns - t_k.ns)`; return `A_k` without `Exp` when `t == t_k` or `xi_k` is exactly zero, else `A_k * se3_exp(s * xi_k)` (assign `s * xi_k` to a `common::Vec6` first).
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: build command with `--target test_preprocess`. Expected: PASS.
 
-- [ ] **Step 5: Format check and commit**
+- [x] **Step 5: Format check and commit**
 
 ```bash
 git add core/preprocess tests/unit/test_preprocess_deskew_table.cpp tests/unit/CMakeLists.txt

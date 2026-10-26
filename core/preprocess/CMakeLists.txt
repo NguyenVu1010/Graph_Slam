@@ -1,5 +1,5 @@
 # preprocess: range filter, IMU deskew and voxel downsampling of one LiDAR scan.
-add_library(mss_preprocess STATIC src/preprocessor.cpp)
+add_library(mss_preprocess STATIC src/preprocessor.cpp src/deskew_table.cpp)
 add_library(mss::preprocess ALIAS mss_preprocess)
 mss_set_target_defaults(mss_preprocess)
 target_include_directories(mss_preprocess PUBLIC
