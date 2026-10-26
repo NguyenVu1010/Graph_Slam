@@ -2,6 +2,9 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <vector>
 
 #include "mss/common/scan_frame.hpp"
 #include "mss/common/types.hpp"
@@ -37,7 +40,9 @@ class VoxelMap {
   /// Frames: none. Units: see MapConfig.
   /// Errors: throws std::invalid_argument when `voxel_m <= 0`, `max_points_per_voxel <= 0`,
   ///   `knn_k <= 0`, `knn_k > NeighborBuffer::kMaxNeighbors`, `max_voxels == 0` or
-  ///   `prune_radius_m <= 0`; may throw std::bad_alloc.
+  ///   `prune_radius_m <= 0`; also std::invalid_argument when `voxel_m` or
+  ///   `prune_radius_m` is not finite, `max_voxels > 2^30`, or the point storage size
+  ///   overflows std::size_t; may throw std::bad_alloc.
   /// Hot path: no (allocates).
   /// Tests: M-01, M-02.
   explicit VoxelMap(const MapConfig& cfg);
@@ -95,6 +100,50 @@ class VoxelMap {
   /// Number of stored points over all voxels, <= num_voxels() * max_points_per_voxel.
   /// O(1). Hot path safe. Tests: M-02.
   std::size_t num_points() const;
+
+ private:
+  using Key = std::array<std::int32_t, 3>;
+
+  static constexpr std::uint32_t kEmptySlot = 0xFFFFFFFFu;  // HashSlot::voxel of a free slot
+
+  // One open-addressing slot: voxel key and its pool index (kEmptySlot when free).
+  struct HashSlot {
+    std::int32_t kx = 0;
+    std::int32_t ky = 0;
+    std::int32_t kz = 0;
+    std::uint32_t voxel = kEmptySlot;
+  };
+
+  // Pool entry. Its points live in points_ from index ((pool index * N) + slot) * 3.
+  struct VoxelMeta {
+    std::int32_t kx = 0;
+    std::int32_t ky = 0;
+    std::int32_t kz = 0;
+    std::int32_t count = 0;  // stored points, <= max_points_per_voxel
+    std::int32_t head = 0;   // ring slot written next
+    bool used = false;
+  };
+
+  // Voxel key of `p_w`; nullopt when a coordinate is non-finite or floor(p / voxel_m) lies
+  // outside [INT32_MIN + 1, INT32_MAX - 1] (so key +- 1 stays representable).
+  std::optional<Key> key_of(const common::Vec3& p_w) const;
+  // Pool index of the voxel with this key, or kEmptySlot if it is absent.
+  std::uint32_t find_voxel(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
+  // Hash slot where the key's probe sequence starts.
+  std::size_t home_slot(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
+  // Slot that holds the key, or the empty slot that ends its probe sequence.
+  std::size_t find_slot(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
+
+  MapConfig cfg_;
+  std::vector<HashSlot> slots_;      // capacity: power of two >= 2 * max_voxels
+  std::size_t mask_ = 0;             // slots_.size() - 1
+  std::vector<VoxelMeta> voxels_;    // max_voxels entries
+  std::vector<float> points_;        // max_voxels * N * 3 floats, m, frame w
+  std::vector<std::uint32_t> free_;  // stack of free pool indices, top at free_[free_top_ - 1]
+  std::size_t free_top_ = 0;
+  std::size_t num_voxels_ = 0;
+  std::size_t num_points_ = 0;
+  std::size_t dropped_ = 0;
 };
 
 }  // namespace mss::map

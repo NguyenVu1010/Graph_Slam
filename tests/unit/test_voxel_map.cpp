@@ -1,0 +1,208 @@
+#include <cmath>
+#include <cstddef>
+#include <filesystem>
+#include <limits>
+#include <random>
+#include <stdexcept>
+#include <vector>
+
+#include <Eigen/Geometry>
+#include <gtest/gtest.h>
+
+#include "mss/common/scan_frame.hpp"
+#include "mss/common/types.hpp"
+#include "mss/map/voxel_map.hpp"
+#include "mss/pipeline/config.hpp"
+
+#include "alloc_counter.hpp"
+#include "map_reference_model.hpp"
+
+namespace mss::map {
+namespace {
+
+using common::Pose;
+using common::ScanFrame;
+using common::Vec3;
+using testing::default_map_config;
+using testing::push_points;
+using testing::RefMap;
+
+constexpr double kPi = 3.14159265358979323846;
+
+void construct(const MapConfig& c) {
+  const VoxelMap m(c);
+  (void)m.num_voxels();
+}
+
+ScanFrame make_scan(const std::vector<Vec3>& pts) {
+  ScanFrame scan(pts.size());
+  push_points(scan, pts);
+  return scan;
+}
+
+std::vector<Vec3> uniform_points(std::mt19937& rng, std::size_t n, double lo, double hi) {
+  std::uniform_real_distribution<double> u(lo, hi);
+  std::vector<Vec3> pts;
+  pts.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const double x = u(rng);
+    const double y = u(rng);
+    const double z = u(rng);
+    pts.emplace_back(x, y, z);
+  }
+  return pts;
+}
+
+Pose yaw_pose(double yaw_rad, const Vec3& p) {
+  Pose T;
+  T.R = Eigen::AngleAxisd(yaw_rad, Vec3::UnitZ()).toRotationMatrix();
+  T.p = p;
+  return T;
+}
+
+TEST(VoxelMap, ConstructorRejectsBadConfig) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const double v : {0.0, -0.5, nan, inf}) {
+    MapConfig c = default_map_config();
+    c.voxel_m = v;
+    EXPECT_THROW(construct(c), std::invalid_argument) << "voxel_m " << v;
+  }
+  {
+    MapConfig c = default_map_config();
+    c.max_points_per_voxel = 0;
+    EXPECT_THROW(construct(c), std::invalid_argument);
+  }
+  for (const int k : {0, 33}) {
+    MapConfig c = default_map_config();
+    c.knn_k = k;
+    EXPECT_THROW(construct(c), std::invalid_argument) << "knn_k " << k;
+  }
+  for (const std::size_t n : {std::size_t{0}, (std::size_t{1} << 30) + 1}) {
+    MapConfig c = default_map_config();
+    c.max_voxels = n;
+    EXPECT_THROW(construct(c), std::invalid_argument) << "max_voxels " << n;
+  }
+  for (const double r : {0.0, nan}) {
+    MapConfig c = default_map_config();
+    c.prune_radius_m = r;
+    EXPECT_THROW(construct(c), std::invalid_argument) << "prune_radius_m " << r;
+  }
+  EXPECT_NO_THROW(construct(default_map_config()));
+  MapConfig c32 = default_map_config();
+  c32.knn_k = NeighborBuffer::kMaxNeighbors;
+  EXPECT_NO_THROW(construct(c32));
+}
+
+TEST(VoxelMap, DefaultYamlConfigConstructs) {
+  const common::Result<pipeline::Config> cfg =
+      pipeline::load_config(std::filesystem::path{MSS_REPO_DIR} / "config/default.yaml");
+  ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+  const VoxelMap m(cfg.value().map);
+  EXPECT_EQ(m.num_voxels(), 0u);
+  EXPECT_EQ(m.num_points(), 0u);
+  EXPECT_EQ(m.num_dropped(), 0u);
+}
+
+TEST(VoxelMap, InsertCountsVoxelsAndPoints) {
+  VoxelMap m(default_map_config());
+  const ScanFrame scan = make_scan(
+      {Vec3(0.1, 0.1, 0.1), Vec3(0.2, 0.2, 0.2), Vec3(0.6, 0.1, 0.1), Vec3(-0.1, 0.1, 0.1)});
+  m.insert(scan, Pose{});
+  EXPECT_EQ(m.num_voxels(), 3u);
+  EXPECT_EQ(m.num_points(), 4u);
+  EXPECT_EQ(m.num_dropped(), 0u);
+}
+
+TEST(VoxelMap, M02_RingKeepsAtMostNPointsPerVoxel) {
+  VoxelMap m(default_map_config());
+  std::vector<Vec3> pts;
+  for (int i = 0; i < 50; ++i) {
+    pts.emplace_back(0.005 + 0.009 * i, 0.25, 0.25);
+  }
+  m.insert(make_scan(pts), Pose{});
+  EXPECT_EQ(m.num_points(), 20u);
+  EXPECT_EQ(m.num_voxels(), 1u);
+}
+
+TEST(VoxelMap, SkipsNonFiniteAndOutOfRangePoints) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  std::vector<Vec3> pts;
+  for (const double bad : {nan, inf, -inf}) {
+    pts.emplace_back(bad, 0.1, 0.1);
+    pts.emplace_back(0.1, bad, 0.1);
+    pts.emplace_back(0.1, 0.1, bad);
+  }
+  pts.emplace_back(3.0e9, 0.1, 0.1);
+  VoxelMap m(default_map_config());
+  m.insert(make_scan(pts), Pose{});
+  EXPECT_EQ(m.num_points(), 0u);
+  EXPECT_EQ(m.num_voxels(), 0u);
+  EXPECT_EQ(m.num_dropped(), 0u);
+}
+
+TEST(VoxelMap, M02_TableFullDropsNewVoxelsOnly) {
+  MapConfig c = default_map_config();
+  c.max_voxels = 4;
+  VoxelMap m(c);
+  std::vector<Vec3> pts;
+  for (int i = 0; i < 6; ++i) {
+    pts.emplace_back(0.25 + i, 0.25, 0.25);
+  }
+  m.insert(make_scan(pts), Pose{});
+  EXPECT_EQ(m.num_voxels(), 4u);
+  EXPECT_EQ(m.num_points(), 4u);
+  EXPECT_EQ(m.num_dropped(), 2u);
+  m.insert(make_scan({Vec3(0.1, 0.1, 0.1), Vec3(0.2, 0.2, 0.2), Vec3(0.3, 0.3, 0.3)}), Pose{});
+  EXPECT_EQ(m.num_voxels(), 4u);
+  EXPECT_EQ(m.num_points(), 7u);
+  EXPECT_EQ(m.num_dropped(), 2u);
+}
+
+TEST(VoxelMap, InsertMatchesReferenceCounts) {
+  std::mt19937 rng(1);
+  MapConfig c = default_map_config();
+  c.max_voxels = 3000;
+  VoxelMap m(c);
+  RefMap r(c);
+  std::uniform_real_distribution<double> yaw(-kPi, kPi);
+  std::uniform_real_distribution<double> pos(-2.0, 2.0);
+  for (int s = 0; s < 5; ++s) {
+    const ScanFrame scan = make_scan(uniform_points(rng, 2000, -5.0, 5.0));
+    const double a = yaw(rng);
+    const double x = pos(rng);
+    const double y = pos(rng);
+    const double z = pos(rng);
+    const Pose T = yaw_pose(a, Vec3(x, y, z));
+    m.insert(scan, T);
+    r.insert(scan, T);
+    EXPECT_EQ(m.num_voxels(), r.num_voxels()) << "scan " << s;
+    EXPECT_EQ(m.num_points(), r.num_points()) << "scan " << s;
+    EXPECT_EQ(m.num_dropped(), r.num_dropped()) << "scan " << s;
+  }
+  EXPECT_GT(m.num_dropped(), 0u);
+}
+
+TEST(VoxelMap, InsertDoesNotAllocate) {
+  std::mt19937 rng(4);
+  const ScanFrame scan = make_scan(uniform_points(rng, 10000, -20.0, 20.0));
+  const Pose T = yaw_pose(0.3, Vec3(1.0, 2.0, 0.5));
+  MapConfig small = default_map_config();
+  small.max_voxels = 4;
+  for (const MapConfig& c : {default_map_config(), small}) {
+    VoxelMap m(c);
+    m.insert(scan, T);
+    AllocCounter::reset();
+    {
+      EigenMallocGuard g;
+      for (int i = 0; i < 10; ++i) {
+        m.insert(scan, T);
+      }
+    }
+    EXPECT_EQ(AllocCounter::count(), 0u) << "max_voxels " << c.max_voxels;
+  }
+}
+
+}  // namespace
+}  // namespace mss::map
