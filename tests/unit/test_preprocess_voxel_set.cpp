@@ -44,6 +44,17 @@ TEST(VoxelSet, ClearForgetsAllKeys) {
   EXPECT_TRUE(set.insert(VoxelKey{-1, 7, 2}));
 }
 
+TEST(VoxelSet, FullSetRejectsNewKeysWithoutOverflow) {
+  VoxelSet set(2);
+  ASSERT_TRUE(set.insert(VoxelKey{0, 0, 0}));
+  ASSERT_TRUE(set.insert(VoxelKey{1, 0, 0}));
+  for (std::int64_t i = 2; i < 100; ++i) {
+    EXPECT_FALSE(set.insert(VoxelKey{i, 0, 0}));
+  }
+  EXPECT_FALSE(set.insert(VoxelKey{1, 0, 0}));
+  EXPECT_EQ(set.size(), 2U);
+}
+
 TEST(VoxelSet, ZeroCapacityThrows) {
   EXPECT_THROW(VoxelSet(0), std::invalid_argument);
 }

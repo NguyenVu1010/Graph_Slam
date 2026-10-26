@@ -45,8 +45,9 @@ TEST(Preprocessor, RejectsInvalidConfig) {
   EXPECT_THROW(make({-0.1, 100.0, 0.5, true}, 10), std::invalid_argument);  // min < 0
   EXPECT_THROW(make({0.5, 0.5, 0.5, true}, 10), std::invalid_argument);     // max <= min
   EXPECT_THROW(make({0.5, 0.4, 0.5, true}, 10), std::invalid_argument);
-  EXPECT_THROW(make({0.5, 100.0, -0.5, true}, 10), std::invalid_argument);  // voxel < 0
-  EXPECT_THROW(make({0.5, 100.0, 0.5, true}, 0), std::invalid_argument);    // max_points == 0
+  EXPECT_THROW(make({0.5, 100.0, -0.5, true}, 10), std::invalid_argument);   // voxel < 0
+  EXPECT_THROW(make({0.5, 100.0, 0.5, true}, 0), std::invalid_argument);     // max_points == 0
+  EXPECT_THROW(make({0.5, 100.0, 1e-20, true}, 10), std::invalid_argument);  // index overflow
 }
 
 TEST(Preprocessor, RejectsNonFiniteConfig) {
@@ -365,6 +366,25 @@ TEST(Preprocessor, SecondScanMatchesFreshInstance) {
   ASSERT_TRUE(fresh.process(b, moving_traj(), out_fresh).is_ok());
   ASSERT_GT(out_b.size(), 0U);
   EXPECT_TRUE(frames_equal(out_b, out_fresh));
+}
+
+// Review F1: input larger than max_points (an unchecked precondition) must not write past
+// the voxel set; surplus new voxels are dropped and process() still returns ok.
+TEST(Preprocessor, InputBeyondMaxPointsDoesNotOverflowVoxelSet) {
+  constexpr std::size_t kMaxPoints = 100;
+  constexpr std::size_t kInPoints = 1000;
+  common::ScanFrame in(kInPoints);
+  in.t_start = common::Timestamp{kTStartNs};
+  for (std::size_t i = 0; i < kInPoints; ++i) {  // one point per voxel, all in range
+    in.push(1.0F + static_cast<float>(i), 0.25F, 0.25F, 0.0F, 0, 0);
+  }
+  common::ScanFrame out(kInPoints);
+  Preprocessor pre = make({0.5, 2000.0, 0.5, false}, kMaxPoints);
+  ASSERT_TRUE(pre.process(in, imu::ImuTrajectory{}, out).is_ok());
+  ASSERT_EQ(out.size(), kMaxPoints);
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    EXPECT_TRUE(same_point(out, i, in, i)) << "point " << i;
+  }
 }
 
 TEST(Preprocessor, ProcessDoesNotAllocate) {

@@ -1,5 +1,6 @@
 #include "mss/preprocess/preprocessor.hpp"
 
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -11,6 +12,10 @@
 namespace mss::preprocess {
 
 namespace {
+// Largest |voxel index| allowed for max_range_m: 2^40 leaves a 2^23 margin below the
+// int64 range for the extrinsic offset and scan motion that deskew adds to a point.
+constexpr double kMaxVoxelIndex = 1099511627776.0;  // 2^40
+
 void require_finite(double v, const char* key) {
   if (!std::isfinite(v)) {
     throw std::invalid_argument(std::string(key) + " must be finite");
@@ -31,6 +36,10 @@ const PreprocessConfig& validated(const PreprocessConfig& cfg, std::size_t max_p
   if (cfg.downsample_voxel_m < 0.0) {
     throw std::invalid_argument("preprocess.downsample_voxel_m must be >= 0");
   }
+  if (cfg.downsample_voxel_m > 0.0 && cfg.max_range_m / cfg.downsample_voxel_m > kMaxVoxelIndex) {
+    throw std::invalid_argument(
+        "preprocess.downsample_voxel_m is too small for preprocess.max_range_m (index overflow)");
+  }
   if (max_points == 0) {
     throw std::invalid_argument("realtime.max_points_per_scan (max_points) must be > 0");
   }
@@ -47,6 +56,7 @@ Preprocessor::Preprocessor(const PreprocessConfig& cfg,
 common::Status Preprocessor::process(const common::ScanFrame& in,
                                      const imu::ImuTrajectory& traj,
                                      common::ScanFrame& out) {
+  assert(&in != &out);  // documented precondition (debug builds only)
   out.clear();
   if (out.capacity() < in.size()) {
     return common::Status::error("output capacity too small");
@@ -57,6 +67,9 @@ common::Status Preprocessor::process(const common::ScanFrame& in,
   out.t_start = in.t_start;
   const bool downsample = cfg_.downsample_voxel_m > 0.0;
   if (cfg_.deskew_enabled) {
+    // Documented preconditions (debug builds only): traj starts at the scan's t_start.
+    assert(traj.t_start == in.t_start);
+    assert(traj.samples[0].t == traj.t_start);
     deskew_.build(traj, T_b_l_);
   }
   if (downsample) {

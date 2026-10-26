@@ -53,6 +53,9 @@ bool VoxelSet::insert(const VoxelKey& key) noexcept {
   while (true) {
     std::uint32_t& slot = slots_[static_cast<std::size_t>(i)];
     if (slot == kEmptySlot) {
+      if (size_ == keys_.size()) {
+        return false;  // full: a new key is reported as present, so the caller drops it
+      }
       keys_[size_] = key;
       slot = static_cast<std::uint32_t>(size_);
       ++size_;

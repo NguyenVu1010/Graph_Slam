@@ -29,7 +29,8 @@ class VoxelSet {
 
   /// Forgets every key. O(slot count), no allocation.
   void clear() noexcept;
-  /// Returns true if `key` was not in the set (and adds it). Precondition: size() < max_keys.
+  /// Returns true if `key` was not in the set (and adds it). When the set already holds
+  /// max_keys keys, a new key is not stored and false is returned (treated as present).
   /// No allocation.
   bool insert(const VoxelKey& key) noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return size_; }
