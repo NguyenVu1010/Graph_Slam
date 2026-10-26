@@ -79,6 +79,14 @@ class Preintegrator {
   /// Errors: none. Hot path: yes (per scan); no allocation, logging or exceptions.
   /// Tests: I-01 (static: predicted state equals x0), I-02.
   common::NavState predict(const common::NavState& x0, const common::Vec3& g_w) const;
+
+ private:
+  common::PreintegratedDelta delta_;
+  double acc_var_ = 0.0;         // (m/s^2)^2/Hz, acc_noise_density^2
+  double gyro_var_ = 0.0;        // (rad/s)^2/Hz, gyro_noise_density^2
+  common::Timestamp t_first_{};  // first accepted sample after reset()
+  common::Timestamp t_prev_{};   // last accepted sample
+  bool has_first_ = false;       // a sample has been accepted since reset()
 };
 
 }  // namespace mss::imu
