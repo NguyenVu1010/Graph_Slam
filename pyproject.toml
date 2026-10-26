@@ -3,24 +3,25 @@ name = "mss-tools"
 version = "0.0.1"
 description = "Python tooling for multi-sensor-slam: simulation, evaluation, data fetch. Never links against core."
 requires-python = ">=3.12"
-dependencies = ["numpy>=1.26"]
+dependencies = ["numpy>=1.26", "scipy>=1.12", "pyyaml>=6", "rosbags>=0.11", "shapely>=2.0"]
 
 [project.optional-dependencies]
-eval = ["evo>=1.28", "matplotlib>=3.8"]
+eval = ["evo>=1.28", "matplotlib>=3.8", "allantools>=2024.6"]
 dev = ["ruff>=0.6", "pytest>=8"]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-# Packages live under eval/ (and later sim/, tools/); the C++ dirs are not Python packages.
+# Packages live under eval/ and sim/ (later tools/); the C++ dirs are not Python packages.
 [tool.setuptools.packages.find]
-where = ["eval"]
+where = ["eval", "sim"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 src = ["eval", "sim", "tools"]
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "ANN"]

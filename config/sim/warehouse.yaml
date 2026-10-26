@@ -1,0 +1,27 @@
+# Overlay on config/default.yaml for the simulated warehouse robot (ADR-011 section 5).
+# Only keys that differ from default. Pipeline noise = sim noise x2 (SIM-03: within [1, inflation_max]).
+mss_node:
+  ros__parameters:
+    frames:
+      T_b_l:
+        translation_m: [0.10, 0.0, 0.50]
+        # 2 deg pitch about y. Hamilton order (w, x, y, z).
+        quaternion_wxyz: [0.99985, 0.0, 0.01745, 0.0]
+      # Lever arm to the GNSS antenna in body, metres.
+      p_b_g_m: [-0.20, 0.10, 0.60]
+    imu:
+      gyro_noise_density: 3.5e-4  # rad/s/sqrt(Hz)
+      acc_noise_density: 5.8e-3   # m/s^2/sqrt(Hz)
+      gyro_random_walk: 2.0e-5    # rad/s^2/sqrt(Hz)
+      acc_random_walk: 2.0e-4     # m/s^3/sqrt(Hz)
+    gnss:
+      enabled: true
+      sigma_h_m: 1.5
+      sigma_v_m: 3.0
+    wheel_odom:
+      enabled: true
+      wheel_radius_m: 0.101   # believed, not true (0.10)
+      track_m: 0.394          # believed, not true (0.40)
+      speed_sigma_mps: 0.02
+    lidar:
+      range_sigma_m: 0.03
