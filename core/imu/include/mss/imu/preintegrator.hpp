@@ -7,6 +7,8 @@
 namespace mss::imu {
 
 /// On-manifold IMU preintegration between two keyframes (Forster et al., GTSAM scheme).
+/// Agreement is with gtsam::ManifoldPreintegration; PreintegratedCombinedMeasurements differs
+/// under GTSAM_TANGENT_PREINTEGRATION (docs/derivations/imu_preintegration.md §6).
 ///
 /// Accumulates `PreintegratedDelta` (types.hpp): dR = R_bi_bj, dv and dp in b_i, dt_s,
 /// the 9x9 covariance in GTSAM block order [phi (rot), p, v] (decision 5: no permutation
@@ -57,7 +59,8 @@ class Preintegrator {
   ///   No upper bound on dt is enforced; gap detection is the pipeline's job.
   /// Hot path: yes, per IMU sample. No logging or exceptions; no allocation on the success
   /// path and on error paths that use string literals.
-  /// Tests: I-01 (static), I-02 (constant rotation), I-03 (vs GTSAM < 1e-9),
+  /// Tests: I-01 (static), I-02 (constant rotation),
+  ///   I-03 (vs GTSAM ManifoldPreintegration < 1e-9),
   ///   I-04 (bias Jacobians vs numerical, < 1e-6), I-05 (covariance vs Monte Carlo).
   common::Status integrate(const common::ImuSample& s);
 
