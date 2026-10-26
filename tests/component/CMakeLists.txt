@@ -18,3 +18,11 @@ mss_add_test(test_imu_component test_imu_component.cpp)
 mss_add_test(test_scan_match_component test_scan_match_component.cpp
   ${CMAKE_SOURCE_DIR}/tests/unit/alloc_counter_impl.cpp)
 target_include_directories(test_scan_match_component PRIVATE ${CMAKE_SOURCE_DIR}/tests/unit)
+
+# pipeline: estimator core on the synthetic box world (known trajectory), no-alloc, robustness.
+mss_add_test(test_pipeline_component test_pipeline_component.cpp
+  ${CMAKE_SOURCE_DIR}/tests/unit/alloc_counter_impl.cpp)
+target_include_directories(test_pipeline_component PRIVATE
+  ${CMAKE_SOURCE_DIR}/tests/unit ${CMAKE_SOURCE_DIR}/core/pipeline/src)
+target_compile_definitions(test_pipeline_component PRIVATE
+  MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)

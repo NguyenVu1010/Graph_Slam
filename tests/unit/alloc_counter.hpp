@@ -26,7 +26,12 @@
 #endif
 
 struct AllocCounter {
+  // Allocations by every thread since reset().
   static std::size_t count();
+  // Allocations by the calling thread since that thread last called reset(). For code
+  // under test that is single-threaded while a library (e.g. GTSAM with TBB) may run
+  // worker threads of its own that allocate asynchronously.
+  static std::size_t count_this_thread();
   static void reset();
 };
 
@@ -46,14 +51,17 @@ struct EigenMallocGuard {
 
 namespace {
 std::atomic<std::size_t> g_alloc_count{0};
+thread_local std::size_t t_alloc_count = 0;  // zero-initialised, static TLS: no allocation
 
 void* counted_alloc(std::size_t n) noexcept {
   g_alloc_count.fetch_add(1);
+  ++t_alloc_count;
   return std::malloc(n == 0 ? 1 : n);
 }
 
 void* counted_aligned_alloc(std::size_t n, std::align_val_t al) noexcept {
   g_alloc_count.fetch_add(1);
+  ++t_alloc_count;
   const std::size_t a = static_cast<std::size_t>(al);
   // std::aligned_alloc needs a size that is a non-zero multiple of the alignment.
   const std::size_t size = ((n == 0 ? 1 : n) + a - 1) / a * a;
@@ -64,8 +72,12 @@ void* counted_aligned_alloc(std::size_t n, std::align_val_t al) noexcept {
 std::size_t AllocCounter::count() {
   return g_alloc_count.load();
 }
+std::size_t AllocCounter::count_this_thread() {
+  return t_alloc_count;
+}
 void AllocCounter::reset() {
   g_alloc_count.store(0);
+  t_alloc_count = 0;
 }
 
 void* operator new(std::size_t n) {

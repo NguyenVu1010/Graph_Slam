@@ -391,6 +391,9 @@ Config read_config(Reader& r) {
   r.field("gnss.sigma_h_m", c.gnss.sigma_h_m, Range::kNonNegative);
   r.field("gnss.sigma_v_m", c.gnss.sigma_v_m, Range::kNonNegative);
   r.field("gnss.max_cov_m2", c.gnss.max_cov_m2, Range::kPositive);
+  r.field("gnss.align_min_pairs", c.gnss.align_min_pairs, Range::kAtLeastOne);
+  r.field("gnss.align_min_spread_m", c.gnss.align_min_spread_m, Range::kPositive);
+  r.field("gnss.chi2_gate", c.gnss.chi2_gate, Range::kPositive);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);

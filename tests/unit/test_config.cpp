@@ -184,6 +184,41 @@ TEST(Config, ScanMatchResidualSigmaFloor) {
   EXPECT_TRUE(mentions(cfg.reason(), "scan_match.min_residual_sigma_m")) << cfg.reason();
 }
 
+TEST(Config, GnssGateAndAlignmentKeysLoaded) {
+  const auto cfg = load_config(kDefault);
+  ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+  EXPECT_EQ(cfg.value().gnss.align_min_pairs, 10);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_min_spread_m, 1.0);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.chi2_gate, 7.814727903251178);
+}
+
+// Ruling on the static-init threshold: it must exceed the per-sample accelerometer noise
+// acc_noise_density * sqrt(rate_hz) by about 3x, or a still sensor never initialises.
+TEST(Config, ImuInitAccThresholdAboveSampleNoise) {
+  const auto cfg = load_config(kDefault);
+  ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+  const auto& imu = cfg.value().imu;
+  const double sample_std_mps2 = imu.acc_noise_density * std::sqrt(imu.rate_hz);
+  EXPECT_GE(imu.init_max_acc_std_mps2, 3.0 * sample_std_mps2);
+  const double gyro_std_radps = imu.gyro_noise_density * std::sqrt(imu.rate_hz);
+  EXPECT_GE(imu.init_max_gyro_std_radps, gyro_std_radps);
+}
+
+TEST(Config, GnssGateKeysValidated) {
+  const std::string base = read_file(kDefault);
+  const auto pairs = parse_config(base, overlay("    gnss:\n      align_min_pairs: 0\n"));
+  ASSERT_FALSE(pairs.is_ok());
+  EXPECT_TRUE(mentions(pairs.reason(), "gnss.align_min_pairs: must be >= 1 (got 0)"))
+      << pairs.reason();
+  const auto spread = parse_config(base, overlay("    gnss:\n      align_min_spread_m: 0\n"));
+  ASSERT_FALSE(spread.is_ok());
+  EXPECT_TRUE(mentions(spread.reason(), "gnss.align_min_spread_m: must be > 0 (got 0)"))
+      << spread.reason();
+  const auto gate = parse_config(base, overlay("    gnss:\n      chi2_gate: -1\n"));
+  ASSERT_FALSE(gate.is_ok());
+  EXPECT_TRUE(mentions(gate.reason(), "gnss.chi2_gate: must be > 0 (got -1)")) << gate.reason();
+}
+
 TEST(Config, AllErrorsReported) {
   std::string text = replace_once(read_file(kDefault), "      rate_hz: 200.0\n", "");
   text = replace_once(text, "sigma_h_m: 1.5", "sigma_h_m: -1.5");

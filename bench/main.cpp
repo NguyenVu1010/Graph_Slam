@@ -4,9 +4,11 @@
 //
 // Replays an mssdata dataset (ADR-014) in time order into pipeline::Estimator: IMU, GNSS
 // and wheel records go to push_imu/push_gnss/push_odom, scans to push_scan; ground-truth
-// records are counted and ignored. run_once() is called by the Replayer below (after each
-// scan and on queue pressure); flush() at the end of the dataset. Writes only under DIR:
-//   DIR/est.tum     one line per run_once()/flush() that processed a scan, from latest_state()
+// records are counted and ignored. run_once() is called by the Replayer below (before and
+// after each scan push and on queue pressure); flush() at the end of the dataset. Writes
+// only under DIR:
+//   DIR/est.tum     one line per scan that produced an estimate, from latest_state(); none
+//                   before the IMU static initialisation (imu.init_window_s of still data)
 //   DIR/bench.json  Estimator::Stats, replay wall time and record counts per stream
 // and prints a summary table on stdout.
 // Exit codes: 0 success; 2 usage, config, dataset, estimator-init or output error (reason
@@ -104,7 +106,8 @@ struct Counts {
   std::uint64_t gt = 0;
 };
 
-// One TUM line: "t x y z qx qy qz qw" with t in seconds printed from integer ns (9 decimals).
+// One TUM line: "t x y z qx qy qz qw" with t in seconds printed from integer ns (9 decimals)
+// and the pose with 17 significant digits, so equal files mean bit-identical doubles (E-02).
 void write_tum_line(std::FILE* f, const mss::common::NavState& s) {
   const std::int64_t ns = s.t.ns;
   const bool neg = ns < 0;
@@ -115,7 +118,7 @@ void write_tum_line(std::FILE* f, const mss::common::NavState& s) {
   // Hamilton quaternion of R_w_b; Eigen stores (x, y, z, w), TUM writes (qx qy qz qw).
   const Eigen::Quaterniond q(s.T_w_b.R);
   std::fprintf(f,
-               "%s%" PRIu64 ".%09" PRIu64 " %.12g %.12g %.12g %.12g %.12g %.12g %.12g\n",
+               "%s%" PRIu64 ".%09" PRIu64 " %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n",
                neg ? "-" : "",
                sec,
                nsec,
@@ -154,6 +157,28 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"n_dropped_aux\": %" PRIu64
                ",\n"
+               "  \"n_keyframes\": %" PRIu64
+               ",\n"
+               "  \"n_match_failures\": %" PRIu64
+               ",\n"
+               "  \"n_skipped_scans\": %" PRIu64
+               ",\n"
+               "  \"n_uncovered_scans\": %" PRIu64
+               ",\n"
+               "  \"n_map_rebuilds\": %" PRIu64
+               ",\n"
+               "  \"n_gnss_factors\": %" PRIu64
+               ",\n"
+               "  \"n_odom_factors\": %" PRIu64
+               ",\n"
+               "  \"n_gnss_late\": %" PRIu64
+               ",\n"
+               "  \"n_gnss_ring_overflow\": %" PRIu64
+               ",\n"
+               "  \"n_gnss_unfused_eof\": %" PRIu64
+               ",\n"
+               "  \"n_nonfinite_imu\": %" PRIu64
+               ",\n"
                "  \"push_scan_us_p50\": %.3f,\n"
                "  \"push_scan_us_p95\": %.3f,\n"
                "  \"replay_wall_s\": %.6f,\n"
@@ -178,6 +203,17 @@ bool write_json(const fs::path& path,
                st.n_rejected_imu,
                st.n_dropped_imu,
                st.n_dropped_aux,
+               st.n_keyframes,
+               st.n_match_failures,
+               st.n_skipped_scans,
+               st.n_uncovered_scans,
+               st.n_map_rebuilds,
+               st.n_gnss_factors,
+               st.n_odom_factors,
+               st.n_gnss_late,
+               st.n_gnss_ring_overflow,
+               st.n_gnss_unfused_eof,
+               st.n_nonfinite_imu,
                st.push_scan_us_p50,
                st.push_scan_us_p95,
                replay_wall_s,
@@ -218,7 +254,11 @@ void print_table(const fs::path& dataset,
 // and leaves the scan and everything after it queued until then; see
 // Estimator::run_once()). So the replayer needs no watermark and no knowledge of scan
 // end times; it only has to call run_once() often enough that no queue overflows:
-//   - after every scan push (processes the previous, now covered, scan);
+//   - before every scan push: the previous scan is processed as soon as the IMU sample
+//     covering its end has been pushed, which may come after the next scan's record (an
+//     IMU stamp offset); so the scan queue never holds more than the scan still waiting
+//     for that sample plus the new one, and scan_queue_depth >= 2 never drops a scan;
+//   - after every scan push (processes the new scan when it is already covered);
 //   - before a push that would fill a queue to its configured depth: the replayer counts
 //     pushes per queue since the last run_once() and drains when the count reaches
 //     `depth - 1`, so sensors that lead the LiDAR (or a long scan gap) are not dropped.
@@ -231,8 +271,7 @@ class Replayer {
       : est_(est),
         tum_(tum),
         imu_limit_(static_cast<std::size_t>(rt.imu_queue_depth) - 1U),
-        aux_limit_(static_cast<std::size_t>(rt.aux_queue_depth) - 1U),
-        scan_limit_(static_cast<std::size_t>(rt.scan_queue_depth) - 1U) {}
+        aux_limit_(static_cast<std::size_t>(rt.aux_queue_depth) - 1U) {}
 
   void feed(const mss::io::Record& rec, const mss::common::ScanFrame& scan) {
     using mss::io::RecordKind;
@@ -258,9 +297,8 @@ class Replayer {
         break;
       case RecordKind::kLidar:
         ++counts_.lidar;
-        drain_if(n_scans_ >= scan_limit_);
+        drain_if(true);
         (void)est_.push_scan(scan);
-        ++n_scans_;
         drain_if(true);
         break;
       case RecordKind::kGt:
@@ -286,7 +324,6 @@ class Replayer {
     n_imu_ = 0;
     n_gnss_ = 0;
     n_odom_ = 0;
-    n_scans_ = 0;
     write_latest();
   }
 
@@ -303,11 +340,9 @@ class Replayer {
   std::FILE* tum_;
   std::size_t imu_limit_;
   std::size_t aux_limit_;
-  std::size_t scan_limit_;
   std::size_t n_imu_ = 0;  // pushes since the last run_once(), per queue
   std::size_t n_gnss_ = 0;
   std::size_t n_odom_ = 0;
-  std::size_t n_scans_ = 0;
   mss::common::Timestamp last_written_{};
   Counts counts_;
 };
