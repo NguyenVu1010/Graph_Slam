@@ -352,7 +352,7 @@ git commit -m "feat(pipeline): single-thread estimator core wiring IMU init, des
 - Consumes: `tests/component/box_world.hpp` (`write_box_dataset`, `box_overlay_yaml`).
 - Produces: `Replayer::feed` calls `run_once()` (through `drain_if(true)`) before every scan push as well as after it; `scan_limit_` removed; header comment updated (the scan queue never holds more than the scan being waited on plus the new one).
 
-- [ ] **Step 1: Write the failing tests** (`test_bench_replay.cpp`)
+- [x] **Step 1: Write the failing tests** (`test_bench_replay.cpp`)
 ```cpp
 TEST(BenchReplay, ImuStampOffsetDoesNotDropScans) {
   // write_dataset variant with imu_offset_ms = 3 (IMU at kT0 + 3 ms + k * 5 ms); the IMU sample
@@ -365,9 +365,9 @@ TEST(BenchReplay, E02_TwoRunsAreBitIdentical) {
 }
 ```
   Update `ReplaysSyntheticDataset`: `write_dataset(data, 2000)` (2 s static IMU lead so the IMU initialises at scan 0); expect 9 lines (the last scan ends at 2998.9 ms, after the last IMU sample at 2995 ms, so `flush()` skips it: Review Focus 4); first line starts with `"3.000000000 "` and its x, y, z parse to `|v| < 1e-6`; JSON count expectations become 600 IMU, 15 GNSS, 150 odom.
-- [ ] **Step 2: Run to verify `ImuStampOffsetDoesNotDropScans` fails** — no-GTSAM command `--target test_bench_replay`. Expected: FAIL on `n_dropped_scans` (the regression), the others PASS or fail only on the updated expectations.
-- [ ] **Step 3: Implement** the Replayer change.
-- [ ] **Step 4: Run** — `--target test_bench_replay` in the no-GTSAM and GTSAM builds. Expected: PASS.
+- [x] **Step 2: Run to verify `ImuStampOffsetDoesNotDropScans` fails** — no-GTSAM command `--target test_bench_replay`. Expected: FAIL on `n_dropped_scans` (the regression), the others PASS or fail only on the updated expectations.
+- [x] **Step 3: Implement** the Replayer change.
+- [x] **Step 4: Run** — `--target test_bench_replay` in the no-GTSAM and GTSAM builds. Expected: PASS.
 - [ ] **Step 5: README** — under "Latency benchmark": `est.tum` has one line per scan that produced an estimate (none before the IMU static initialisation, which needs `imu.init_window_s` of still data); config section: the three new `gnss.*` keys.
 - [ ] **Step 6: Full verification** — GTSAM command without `--target` and no-GTSAM command without `--target`. Expected: last line `BUILD OK: <dir>` for both (all ctest PASS). Then `python -m pytest tests/python -q` (Windows). Expected: PASS.
 - [ ] **Step 7: Bench numbers for the PR** — in WSL, run `~/mss-build/feat-pipeline/bench/mss_bench config/default.yaml <test_output>/E02_TwoRunsAreBitIdentical/data --overlay <its overlay> --out /tmp/mss-bench-a` three times under `/usr/bin/time -v`; record push_scan p50/p95 from bench.json, wall time and `Percent of CPU`. Paste into the PR description ("before" = identity stub, not comparable).
