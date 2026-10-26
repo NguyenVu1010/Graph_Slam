@@ -126,13 +126,13 @@ class VoxelMap {
 
   // Voxel key of `p_w`; nullopt when a coordinate is non-finite or floor(p / voxel_m) lies
   // outside [INT32_MIN + 1, INT32_MAX - 1] (so key +- 1 stays representable).
-  std::optional<Key> key_of(const common::Vec3& p_w) const;
+  [[nodiscard]] std::optional<Key> key_of(const common::Vec3& p_w) const;
   // Pool index of the voxel with this key, or kEmptySlot if it is absent.
-  std::uint32_t find_voxel(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
+  [[nodiscard]] std::uint32_t find_voxel(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
   // Hash slot where the key's probe sequence starts.
-  std::size_t home_slot(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
+  [[nodiscard]] std::size_t home_slot(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
   // Slot that holds the key, or the empty slot that ends its probe sequence.
-  std::size_t find_slot(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
+  [[nodiscard]] std::size_t find_slot(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
   // Empties slots_[slot] by backward-shift deletion, so probe chains stay intact.
   void erase_slot(std::size_t slot);
 

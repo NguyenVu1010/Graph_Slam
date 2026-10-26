@@ -53,7 +53,7 @@ VoxelMap::VoxelMap(const MapConfig& cfg) : cfg_(cfg) {
   if (!(std::isfinite(cfg.prune_radius_m) && cfg.prune_radius_m > 0.0)) {
     reject("prune_radius_m", "finite and > 0", cfg.prune_radius_m);
   }
-  const std::size_t n = static_cast<std::size_t>(cfg.max_points_per_voxel);
+  const auto n = static_cast<std::size_t>(cfg.max_points_per_voxel);
   if (n > std::numeric_limits<std::size_t>::max() / 3 / cfg.max_voxels) {
     reject("max_points_per_voxel",
            "small enough that max_voxels * N * 3 floats fit in size_t",
@@ -114,14 +114,14 @@ std::uint32_t VoxelMap::find_voxel(std::int32_t kx, std::int32_t ky, std::int32_
 
 void VoxelMap::insert(const common::ScanFrame& scan, const common::Pose& T_w_l) {
   const common::Span<const float> xyz = scan.xyz();
-  const std::size_t n_per_voxel = static_cast<std::size_t>(cfg_.max_points_per_voxel);
+  const auto n_per_voxel = static_cast<std::size_t>(cfg_.max_points_per_voxel);
   for (std::size_t i = 0; i < scan.size(); ++i) {
     const common::Vec3 p_l(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]);
     const common::Vec3 p_w = T_w_l * p_l;
     // Stored as float; the key comes from the rounded value so the point lies in its voxel.
-    const float fx = static_cast<float>(p_w.x());
-    const float fy = static_cast<float>(p_w.y());
-    const float fz = static_cast<float>(p_w.z());
+    const auto fx = static_cast<float>(p_w.x());
+    const auto fy = static_cast<float>(p_w.y());
+    const auto fz = static_cast<float>(p_w.z());
     const std::optional<Key> key = key_of(common::Vec3(fx, fy, fz));
     if (!key) {
       continue;
@@ -160,7 +160,7 @@ int VoxelMap::knn(const common::Vec3& p_w, int k, NeighborBuffer& out) const {
   if (!q) {
     return 0;
   }
-  const std::size_t n_per_voxel = static_cast<std::size_t>(cfg_.max_points_per_voxel);
+  const auto n_per_voxel = static_cast<std::size_t>(cfg_.max_points_per_voxel);
   // Squared distances of out.p_w[0, n) in double: ranking is done in double, out.dist2 is float.
   std::array<double, NeighborBuffer::kMaxNeighbors> d2s{};
   int n = 0;
@@ -185,12 +185,12 @@ int VoxelMap::knn(const common::Vec3& p_w, int k, NeighborBuffer& out) const {
           }
           int j = (n < k_eff) ? n++ : n - 1;
           while (j > 0 && d2 < d2s[static_cast<std::size_t>(j - 1)]) {
-            const std::size_t u = static_cast<std::size_t>(j);
+            const auto u = static_cast<std::size_t>(j);
             d2s[u] = d2s[u - 1];
             out.p_w[u] = out.p_w[u - 1];
             --j;
           }
-          const std::size_t u = static_cast<std::size_t>(j);
+          const auto u = static_cast<std::size_t>(j);
           d2s[u] = d2;
           out.p_w[u] = common::Vec3(p[0], p[1], p[2]);
         }
@@ -198,7 +198,7 @@ int VoxelMap::knn(const common::Vec3& p_w, int k, NeighborBuffer& out) const {
     }
   }
   for (int i = 0; i < n; ++i) {
-    const std::size_t u = static_cast<std::size_t>(i);
+    const auto u = static_cast<std::size_t>(i);
     out.dist2[u] = static_cast<float>(d2s[u]);
   }
   out.size = n;
