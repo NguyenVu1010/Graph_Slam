@@ -15,6 +15,8 @@ using common::NavState;
 using common::PreintegratedDelta;
 using common::Status;
 using common::Vec3;
+using Mat9 = Eigen::Matrix<double, 9, 9>;
+using Mat93 = Eigen::Matrix<double, 9, 3>;
 
 Preintegrator::Preintegrator(const ImuConfig& cfg) {
   // `!(x >= 0)` also rejects NaN.
@@ -75,6 +77,27 @@ Status Preintegrator::integrate(const ImuSample& s) {
   delta_.J_dv_ba += -R * dt;
   delta_.J_dv_bg += -R_ahat_J * dt;
   delta_.J_dR_bg = dR_k.transpose() * delta_.J_dR_bg - Jr * dt;
+
+  // Covariance (§4), chart [phi, p, v] = GTSAM NavState local coordinates:
+  //   Sigma <- A Sigma A^T + B (sa^2 / dt) B^T + C (sg^2 / dt) C^T.
+  // A, B, C depend only on this step (dR_k, a, w, dt), not on the old R.
+  const Mat3 dR_kT = dR_k.transpose();
+  const Mat3 dR_kT_ahat = dR_kT * a_hat;
+  Mat9 A = Mat9::Zero();
+  A.block<3, 3>(0, 0) = dR_kT;
+  A.block<3, 3>(3, 0) = -dR_kT_ahat * dt2_half;
+  A.block<3, 3>(3, 3) = dR_kT;
+  A.block<3, 3>(3, 6) = dR_kT * dt;
+  A.block<3, 3>(6, 0) = -dR_kT_ahat * dt;
+  A.block<3, 3>(6, 6) = dR_kT;
+  Mat93 B = Mat93::Zero();  // acts on accel noise
+  B.block<3, 3>(3, 0) = dR_kT * dt2_half;
+  B.block<3, 3>(6, 0) = dR_kT * dt;
+  Mat93 C = Mat93::Zero();  // acts on gyro noise
+  C.block<3, 3>(0, 0) = Jr * dt;
+  const Mat9 cov_new = A * delta_.cov * A.transpose() + B * (acc_var_ / dt) * B.transpose() +
+                       C * (gyro_var_ / dt) * C.transpose();
+  delta_.cov = cov_new;
 
   // Mean (§2): p and v use the old rotation.
   const Vec3 Ra = R * a;
