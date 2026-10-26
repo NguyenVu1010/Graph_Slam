@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Eigen/Core>
+
 #include "mss/common/result.hpp"
 #include "mss/common/types.hpp"
 #include "mss/gnss/config.hpp"
@@ -62,13 +64,16 @@ common::Status gate_fix(const common::GnssMeasurement& m, double max_cov_m2);
 /// Ownership/threading: single-threaded; owned by pipeline::Estimator (backend thread).
 class GnssAligner {
  public:
-  /// Minimum number of accepted pairs before update() returns a transform. Start value;
-  /// the gnss module moves it to GnssConfig (YAML `gnss.align_min_pairs`) when it
-  /// implements the aligner.
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  /// Minimum number of accepted pairs before update() returns a transform. Moving it to
+  /// GnssConfig (YAML `gnss.align_min_pairs`) is pending (gnss plan Contract issue 2,
+  /// owned by the pipeline).
   static constexpr int kMinPairsForAlignment = 10;
-  /// Minimum RMS horizontal distance (m) of the w-frame antenna positions from their
-  /// centroid; below it yaw is unobservable. Start value; moved to GnssConfig (YAML
-  /// `gnss.align_min_spread_m`) by the gnss module.
+  /// Minimum RMS horizontal distance (m) of the antenna positions from their centroid,
+  /// required on both the w side and the e side; below it yaw is unobservable. Moving it
+  /// to GnssConfig (YAML `gnss.align_min_spread_m`) is pending (gnss plan Contract
+  /// issue 2, owned by the pipeline).
   static constexpr double kMinHorizontalSpreadM = 1.0;
 
   /// Errors: none (GnssConfig needs no validation here). Hot path: no.
@@ -88,14 +93,26 @@ class GnssAligner {
   ///   1. "non-finite input" (pair NOT added);
   ///   2. "not enough pairs" while fewer than kMinPairsForAlignment pairs were added,
   ///      counting this one (the pair IS added);
-  ///   3. "insufficient horizontal spread" while the spread is < kMinHorizontalSpreadM
-  ///      (the pair IS added).
+  ///   3. "insufficient horizontal spread" while the w-side or the e-side spread is
+  ///      < kMinHorizontalSpreadM (the pair IS added).
   /// Hot path: no (per fix); no allocation on the success path and on error paths that
   /// use string literals, no logging.
   /// Tests: G-03 (yaw error < 0.5 deg after 30 m), G-04 (lever arm).
   common::Result<common::Pose> update(const common::Vec3& p_e_g,
                                       const common::Pose& T_w_b,
                                       const common::Vec3& p_b_g);
+
+ private:
+  // Running sums over all accepted pairs, shifted by the first pair for conditioning
+  // (docs/derivations/gnss.md section 4). a = p_w_g - ref_w_, b = p_e_g - ref_e_.
+  int n_pairs_ = 0;
+  common::Vec3 ref_w_ = common::Vec3::Zero();         // m, first p_w_g
+  common::Vec3 ref_e_ = common::Vec3::Zero();         // m, first p_e_g
+  common::Vec3 sum_w_ = common::Vec3::Zero();         // m, sum a
+  common::Vec3 sum_e_ = common::Vec3::Zero();         // m, sum b
+  Eigen::Matrix2d sum_we_ = Eigen::Matrix2d::Zero();  // m^2, sum a_h b_h^T
+  double sum_w_h_sq_m2_ = 0.0;                        // m^2, sum |a_h|^2
+  double sum_e_h_sq_m2_ = 0.0;                        // m^2, sum |b_h|^2
 };
 
 }  // namespace mss::gnss
