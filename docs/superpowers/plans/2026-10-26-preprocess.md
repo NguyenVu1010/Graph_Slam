@@ -351,7 +351,7 @@ Synthetic setup (planner's call except where cited):
 - 3600 points: point i at `t_offset = i * 100 ms / 3600`, ring `i % 16`, direction in `l(t_i)`: azimuth `-60 + 120 * i / 3600` deg, elevation `-15 + 2 * (i % 16)` deg; intersect with the plane expressed in `l(t_i)` via `T_l0_l(t_i) = T_b_l^-1 * T_b0_b(t_i) * T_b_l`; store as float.
 - cfg `{0.5, 100, voxel 0, deskew true}`, `max_points` 3600.
 
-- [ ] **Step 1: Write the test**
+- [x] **Step 1: Write the test**
 
 ```cpp
 TEST(PreprocessComponent, P01_DeskewConstantMotionPlane) {
@@ -362,15 +362,15 @@ TEST(PreprocessComponent, P01_WithoutDeskewPlaneIsSmeared) {
 }
 ```
 
-- [ ] **Step 2: Run to verify**
+- [x] **Step 2: Run to verify**
 
 Run: build command with `--target test_preprocess_component`. Expected: PASS (Task 4 already implements deskew). If `P01_DeskewConstantMotionPlane` fails, debug `DeskewTable` (superpowers:systematic-debugging) before touching the test.
 
-- [ ] **Step 3: Full build, ctest, format and tidy on every changed file**
+- [x] **Step 3: Full build, ctest, format and tidy on every changed file**
 
 Run: build command without `--target`; then the format/tidy command on `core/preprocess/src/*.cpp core/preprocess/include/mss/preprocess/*.hpp core/preprocess/include/mss/preprocess/detail/*.hpp tests/unit/test_preprocess*.cpp tests/component/test_preprocess_deskew_plane.cpp` (tidy on `core/preprocess/src/*.cpp`). Expected: ctest 100% pass, no format diff, no tidy warnings.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/component

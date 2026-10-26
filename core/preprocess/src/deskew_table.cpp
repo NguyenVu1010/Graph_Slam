@@ -9,8 +9,9 @@ namespace mss::preprocess::detail {
 
 namespace {
 // Bitwise identity test: no tolerance, so only an exact identity sample qualifies.
-bool is_exact_identity(const common::Pose& T) {
-  return (T.R.array() == common::Mat3::Identity().array()).all() && (T.p.array() == 0.0).all();
+bool is_exact_identity(const common::Pose& pose) {
+  return (pose.R.array() == common::Mat3::Identity().array()).all() &&
+         (pose.p.array() == 0.0).all();
 }
 }  // namespace
 

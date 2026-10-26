@@ -32,7 +32,7 @@ class VoxelSet {
   /// Returns true if `key` was not in the set (and adds it). Precondition: size() < max_keys.
   /// No allocation.
   bool insert(const VoxelKey& key) noexcept;
-  std::size_t size() const noexcept { return size_; }
+  [[nodiscard]] std::size_t size() const noexcept { return size_; }
 
  private:
   std::vector<std::uint32_t> slots_;  // index into keys_, kEmptySlot when free

@@ -38,8 +38,9 @@ const PreprocessConfig& validated(const PreprocessConfig& cfg, std::size_t max_p
 }
 }  // namespace
 
+// Eigen members are passed by const& (CLAUDE.md); the signature is the frozen contract.
 Preprocessor::Preprocessor(const PreprocessConfig& cfg,
-                           const common::Pose& T_b_l,
+                           const common::Pose& T_b_l,  // NOLINT(modernize-pass-by-value)
                            std::size_t max_points)
     : cfg_(validated(cfg, max_points)), T_b_l_(T_b_l), voxels_(max_points) {}
 
@@ -79,9 +80,9 @@ common::Status Preprocessor::process(const common::ScanFrame& in,
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
       continue;
     }
-    const double xd = static_cast<double>(x);
-    const double yd = static_cast<double>(y);
-    const double zd = static_cast<double>(z);
+    const double xd = x;  // widen to double
+    const double yd = y;  // widen to double
+    const double zd = z;  // widen to double
     const double range_m = std::sqrt(xd * xd + yd * yd + zd * zd);
     if (range_m < cfg_.min_range_m || range_m > cfg_.max_range_m) {
       continue;

@@ -22,7 +22,9 @@ class DeskewTable {
 
   /// T_l0_l at absolute sensor time `t`, clamped to [samples[0].t, samples[size-1].t].
   /// Returns the identity when the table is empty. Hot path: per point, no allocation.
-  common::Pose T_l0_l(common::Timestamp t) const;
+  // Frame-carrying name per docs/conventions.md.
+  // NOLINTNEXTLINE(readability-identifier-naming)
+  [[nodiscard]] common::Pose T_l0_l(common::Timestamp t) const;
 
  private:
   static constexpr std::size_t kCapacity = imu::ImuTrajectory::kMaxImuPerScan;
