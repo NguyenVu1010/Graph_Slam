@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiến trúc multi-sensor-slam</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --fg: #1b1f24; --muted: #5b6470; --panel: #ffffff; --line: #d3d9e0; --edge: #8a96a3;
+    --done: #1f8a4c; --done-bg: #e1f4e8; --stub: #c07a0a; --stub-bg: #fdf0d9; --plan: #6b7280; --plan-bg: #eceff3;
+    --accent: #2457d6; --accent-bg: #e2eaff; --io: #0b7285; --io-bg: #dcf3f8; --ext: #7c3aed; --ext-bg: #efe6ff;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --bg: #0f1216; --fg: #e6e9ee; --muted: #9aa5b1; --panel: #171b21; --line: #2b323b; --edge: #6b7784;
+    --done: #4cc47f; --done-bg: #10301f; --stub: #e3a33c; --stub-bg: #332410; --plan: #9aa5b1; --plan-bg: #22272e;
+    --accent: #7aa2ff; --accent-bg: #1a2744; --io: #4fc3dd; --io-bg: #0f2a31; --ext: #b794f6; --ext-bg: #26193d;
+  } }
+  :root[data-theme="dark"] {
+    --bg: #0f1216; --fg: #e6e9ee; --muted: #9aa5b1; --panel: #171b21; --line: #2b323b; --edge: #6b7784;
+    --done: #4cc47f; --done-bg: #10301f; --stub: #e3a33c; --stub-bg: #332410; --plan: #9aa5b1; --plan-bg: #22272e;
+    --accent: #7aa2ff; --accent-bg: #1a2744; --io: #4fc3dd; --io-bg: #0f2a31; --ext: #b794f6; --ext-bg: #26193d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header, main { max-width: 1240px; margin: 0 auto; padding: 0 16px; }
+  header { padding-top: 24px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 20px 0 8px; }
+  h3 { font-size: 14px; margin: 16px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; border: 1px solid var(--line); background: var(--panel); }
+  .chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .ok .dot { background: var(--done); } .fail .dot { background: #d6453d; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; border: 1.5px solid; }
+  .legend .l-done::before { background: var(--done-bg); border-color: var(--done); }
+  .legend .l-stub::before { background: var(--stub-bg); border-color: var(--stub); }
+  .legend .l-plan::before { background: var(--plan-bg); border-color: var(--plan); border-style: dashed; }
+  .legend .l-io::before { background: var(--io-bg); border-color: var(--io); }
+  .legend .l-ext::before { background: var(--ext-bg); border-color: var(--ext); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 12px 0; overflow: hidden; }
+  svg { width: 100%; height: auto; display: block; }
+  .node { cursor: pointer; }
+  .node rect { stroke-width: 1.5; }
+  .node:hover rect { filter: brightness(0.96); }
+  .node.sel rect { stroke: var(--accent); stroke-width: 2.5; }
+  .node text { pointer-events: none; }
+  .st-done rect { fill: var(--done-bg); stroke: var(--done); }
+  .st-stub rect { fill: var(--stub-bg); stroke: var(--stub); }
+  .st-planned rect { fill: var(--plan-bg); stroke: var(--plan); stroke-dasharray: 5 3; }
+  .st-io rect { fill: var(--io-bg); stroke: var(--io); }
+  .st-ext rect { fill: var(--ext-bg); stroke: var(--ext); }
+  .title { font-weight: 600; font-size: 13.5px; fill: var(--fg); }
+  .small { font-size: 10.5px; fill: var(--muted); }
+  .mono { font-family: var(--mono); }
+  .edge { fill: none; stroke: var(--edge); stroke-width: 1.4; }
+  .edge.hi { stroke: var(--accent); stroke-width: 2.2; }
+  .edge-label { font-size: 10px; fill: var(--muted); }
+  .edge-label.hi { fill: var(--accent); font-weight: 600; }
+  .container-box { fill: none; stroke: var(--line); stroke-dasharray: 8 5; stroke-width: 1.5; }
+  .container-label { font-size: 12px; fill: var(--muted); cursor: pointer; }
+  .container-label:hover { fill: var(--accent); }
+  .detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .detail-head h2 { margin: 0; font-family: var(--mono); }
+  .badge { font-size: 12px; padding: 2px 9px; border-radius: 999px; font-weight: 600; }
+  .b-done { background: var(--done-bg); color: var(--done); } .b-stub { background: var(--stub-bg); color: var(--stub); }
+  .b-planned { background: var(--plan-bg); color: var(--plan); } .b-io, .b-ext { background: var(--io-bg); color: var(--io); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 720px) { .cols { grid-template-columns: 1fr; } }
+  ul { margin: 4px 0; padding-left: 18px; } li { margin: 2px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+  .fn-row { padding: 6px 8px; border-left: 3px solid var(--line); margin: 6px 0; }
+  .fn-row.real { border-color: var(--done); } .fn-row.planned { border-color: var(--plan); }
+  .fn-row.sel { background: var(--accent-bg); }
+  .fn-sig { font-family: var(--mono); font-size: 12.5px; }
+  .fn-note { color: var(--muted); font-size: 13px; }
+  .hint { color: var(--muted); font-size: 13px; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+  .fnode { cursor: pointer; } .fnode rect { stroke-width: 1.4; rx: 7; }
+  .fnode.real rect { fill: var(--done-bg); stroke: var(--done); }
+  .fnode.planned rect { fill: var(--plan-bg); stroke: var(--plan); stroke-dasharray: 4 3; }
+  .fnode.sel rect { stroke: var(--accent); stroke-width: 2.4; }
+  .fnode text { font-family: var(--mono); font-size: 11px; fill: var(--fg); pointer-events: none; }
+  .ftitle { font-size: 11px; fill: var(--muted); font-weight: 600; }
+  footer { color: var(--muted); font-size: 12.5px; padding: 24px 0 40px; }
+  code { font-family: var(--mono); font-size: 12.5px; background: var(--plan-bg); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>multi-sensor-slam · kiến trúc và trạng thái</h1>
+  <div class="sub" id="repo-line"></div>
+  <div class="strip" id="ci-strip"></div>
+  <div class="legend">
+    <span class="l-done">đã code, test pass</span>
+    <span class="l-stub">có code khung, chưa có logic</span>
+    <span class="l-plan">dự kiến (chỉ có target CMake)</span>
+    <span class="l-io">đầu vào / đầu ra</span>
+    <span class="l-ext">ngoài core</span>
+  </div>
+</header>
+<main>
+  <h2>Sơ đồ tổng thể</h2>
+  <div class="hint">Nhấn vào một khối để xem đầu vào, đầu ra, test và sơ đồ hàm. Nhấn lại khối đang chọn để bỏ chọn.</div>
+  <div class="card"><svg id="overview" viewBox="0 0 1200 720" role="img" aria-label="Sơ đồ khối tổng thể"></svg></div>
+
+  <div id="detail" class="card"><div class="empty">Chưa chọn khối nào.</div></div>
+</main>
+<footer>
+  Cập nhật: sửa khối <code>DATA</code> ở đầu phần script (trạng thái module, test, hàm). Hàm đánh dấu <b>dự kiến</b> là thiết kế đề xuất, chưa có trong code.
+  Quy ước frame và Jacobian: <code>docs/conventions.md</code>. Quyết định build: <code>docs/adr/013</code>.
+</footer>
+
+<script>
+// ============================================================================
+// DATA — trạng thái repo. Chỉ cần sửa khối này khi module/test thay đổi.
+// status: done | stub | planned | io | ext     fn.real: true = có trong code
+// ============================================================================
+const DATA = {
+  repo: { commit: "18c235e", date: "2026-10-22", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
+  ci: { run: 39808309796, jobs: [
+    { name: "lint", ok: true, note: "clang-format 18 + ruff" },
+    { name: "core-no-gtsam", ok: true, note: "CMake + GTest, -Werror" },
+    { name: "python", ok: true, note: "pip install -e + pytest" },
+    { name: "docker-full", ok: true, note: "ROS 2 Jazzy + GTSAM 4.2.0, colcon -Werror" } ] },
+
+  modules: [
+    // -------------------------------------------------------------- inputs
+    { id: "in_lidar", status: "io", name: "LiDAR", short: "scan 10 Hz", x: 20, y: 70, w: 120, h: 54,
+      desc: "Quét LiDAR thô từ driver (ROS 2 PointCloud2) hoặc dataset (bench). Mỗi điểm có timestamp riêng để deskew.",
+      inputs: ["Phần cứng LiDAR / rosbag / dataset"], outputs: ["Span điểm (x, y, z, t) + Timestamp đầu scan, frame l"], fns: [] },
+    { id: "in_imu", status: "io", name: "IMU (MPU)", short: "200 Hz, FPGA đọc", x: 20, y: 180, w: 120, h: 54,
+      desc: "Mẫu IMU: gia tốc riêng và tốc độ góc trong frame b. Trên Pi5 FPGA đọc MPU và đẩy sang.",
+      inputs: ["MPU qua FPGA / rosbag"], outputs: ["ImuSample{acc_b, gyro_b} + Timestamp"], fns: [] },
+    { id: "in_gnss", status: "io", name: "GNSS", short: "fix 1–10 Hz", x: 20, y: 290, w: 120, h: 54,
+      desc: "Vị trí ăng-ten g dạng lat/lon/alt kèm hiệp phương sai. Tắt mặc định (gnss.enabled: false).",
+      inputs: ["Receiver GNSS / rosbag"], outputs: ["lat, lon, alt, cov 3x3 + Timestamp"], fns: [] },
+    { id: "in_odom", status: "io", name: "Wheel odom", short: "encoder", x: 20, y: 400, w: 120, h: 54,
+      desc: "Vận tốc dài/góc từ encoder bánh xe. Tắt mặc định (wheel_odom.enabled: false).",
+      inputs: ["Encoder / rosbag"], outputs: ["v, omega (hoặc tick) + Timestamp"], fns: [] },
+
+    // -------------------------------------------------------------- stage 1
+    { id: "preprocess", status: "planned", name: "preprocess", short: "deskew, voxel", x: 190, y: 70, w: 140, h: 54,
+      desc: "Lọc theo khoảng cách, bù chuyển động (deskew) bằng quỹ đạo IMU trong scan, giảm mẫu voxel. Hot path: không cấp phát heap, không copy cloud.",
+      inputs: ["Span điểm thô + Timestamp (in_lidar)", "Quỹ đạo T_w_b(t) trong scan (imu)"],
+      outputs: ["ScanFrame: điểm đã deskew trong frame l tại thời điểm cuối scan, buffer tái sử dụng"],
+      fns: [
+        { id: "process", name: "Preprocessor::process", sig: "Result<ScanFrame&> process(PointSpan in, const ImuTrajectory& traj)", stage: 0, note: "Điểm vào duy nhất, chạy mỗi scan. Trả reason khi quá ít điểm." },
+        { id: "range", name: "filter_range", sig: "void filter_range(PointSpan, min_m, max_m, Buffer&)", stage: 1, note: "Loại điểm quá gần/xa." },
+        { id: "deskew", name: "deskew_points", sig: "void deskew_points(Buffer&, const ImuTrajectory&, Timestamp t_end)", stage: 2, note: "p_l(t_end) = T_l_b * T_b(t_end)_b(t) * T_b_l * p_l(t)." },
+        { id: "voxel", name: "voxel_downsample", sig: "void voxel_downsample(Buffer&, double leaf_m)", stage: 3, note: "Hash voxel cố định kích thước, reserve một lần." } ],
+      calls: [["process","range"],["range","deskew"],["deskew","voxel"]] },
+    { id: "imu", status: "planned", name: "imu", short: "init + preintegration", x: 190, y: 180, w: 140, h: 54,
+      desc: "Khởi tạo trọng lực và bias khi đứng yên; tích phân trước (preintegration) giữa hai keyframe; dự đoán pose cho scan matching. Jacobian theo bias có test sai phân số.",
+      inputs: ["ImuSample + Timestamp (in_imu)", "Bias ước lượng từ backend"],
+      outputs: ["Dự đoán T_w_b, v_w_b cho scan_match", "PreintegratedDelta{dR, dv, dp, cov, J_dp_bg, J_dv_ba, ...} cho backend"],
+      fns: [
+        { id: "init", name: "ImuInitializer::try_init", sig: "Result<InitState> try_init(span<const ImuSample>)", stage: 0, note: "Ước lượng gravity_w, bg, ba khi đứng yên; thất bại nếu rung quá ngưỡng." },
+        { id: "integ", name: "Preintegrator::integrate", sig: "void integrate(const ImuSample&, double dt_s)", stage: 1, note: "Cập nhật dR, dv, dp và hiệp phương sai; không cấp phát." },
+        { id: "jac", name: "Preintegrator::bias_jacobians", sig: "void bias_jacobians(Mat3& J_dR_bg, Mat3& J_dv_ba, Mat3& J_dv_bg, Mat3& J_dp_ba, Mat3& J_dp_bg)", stage: 2, note: "Right perturbation, thứ tự [rho, phi]. Test với sai phân số < 1e-6." },
+        { id: "pred", name: "predict_pose", sig: "Pose predict_pose(const State& x0, const PreintegratedDelta&, Vec3 g_w)", stage: 2, note: "Khởi tạo cho scan_match." },
+        { id: "reset", name: "Preintegrator::reset", sig: "void reset(const ImuBias&)", stage: 3, note: "Sau mỗi keyframe." } ],
+      calls: [["init","integ"],["integ","jac"],["integ","pred"],["jac","reset"]] },
+    { id: "gnss", status: "planned", name: "gnss", short: "LLA → ENU", x: 190, y: 290, w: 140, h: 54,
+      desc: "Chuyển lat/lon/alt sang frame e (ENU) tại gốc cố định, áp cánh tay đòn p_b_g, đóng gói thành phép đo vị trí cho backend.",
+      inputs: ["Fix GNSS + cov (in_gnss)", "p_b_g từ config"],
+      outputs: ["GnssMeasurement{p_e_g, cov, Timestamp}", "T_e_w sau khi căn chỉnh (alignment) đủ điểm"],
+      fns: [
+        { id: "lla", name: "lla_to_enu", sig: "Vec3 lla_to_enu(const Lla& fix, const Lla& origin)", stage: 0, note: "WGS-84, gốc là fix đầu tiên hợp lệ." },
+        { id: "gate", name: "gate_fix", sig: "Status gate_fix(const GnssMeasurement&, max_cov_m2)", stage: 1, note: "Loại fix có cov lớn; log và bỏ qua, không abort." },
+        { id: "align", name: "GnssAligner::update", sig: "Result<Pose> update(p_e_g, p_w_b)", stage: 2, note: "Ước lượng T_e_w (yaw + dịch) bằng Umeyama khi có ≥ N cặp." } ],
+      calls: [["lla","gate"],["gate","align"]] },
+    { id: "odom", status: "planned", name: "odom", short: "wheel integration", x: 190, y: 400, w: 140, h: 54,
+      desc: "Tích phân vận tốc bánh xe thành dịch chuyển tương đối giữa hai keyframe trong frame b, kèm hiệp phương sai theo quãng đường.",
+      inputs: ["v, omega + Timestamp (in_odom)"],
+      outputs: ["OdomDelta{T_b0_b1, cov} cho backend"],
+      fns: [
+        { id: "integ", name: "WheelIntegrator::integrate", sig: "void integrate(double v_mps, double omega_radps, double dt_s)", stage: 0, note: "Mô hình unicycle phẳng." },
+        { id: "delta", name: "WheelIntegrator::take_delta", sig: "OdomDelta take_delta()", stage: 1, note: "Trả và reset tại keyframe." } ],
+      calls: [["integ","delta"]] },
+
+    // -------------------------------------------------------------- stage 2
+    { id: "scan_match", status: "planned", name: "scan_match", short: "point-to-plane GN", x: 380, y: 70, w: 140, h: 54,
+      desc: "Đăng ký ScanFrame vào bản đồ bằng Gauss-Newton point-to-plane, khởi tạo từ dự đoán IMU. Trả pose, hiệp phương sai và Hessian H cho phân tích suy biến. Có chế độ deterministic. Mọi thay đổi phải kèm số bench desktop và Pi5.",
+      inputs: ["ScanFrame (preprocess)", "T_w_l khởi tạo (imu)", "Truy vấn knn / mặt phẳng (map)"],
+      outputs: ["MatchResult{T_w_l, cov 6x6, H 6x6, inliers}", "Hessian H cho degeneracy"],
+      fns: [
+        { id: "align", name: "ScanMatcher::align", sig: "Result<MatchResult> align(const ScanFrame&, const VoxelMap&, const Pose& T_w_l_init)", stage: 0, note: "Vòng lặp GN tối đa max_iter, dừng theo ngưỡng delta." },
+        { id: "corr", name: "find_correspondences", sig: "void find_correspondences(const ScanFrame&, const VoxelMap&, const Pose&, CorrBuffer&)", stage: 1, note: "knn trong map, fit mặt phẳng, loại theo khoảng cách." },
+        { id: "res", name: "point_to_plane_residual", sig: "double point_to_plane_residual(const Corr&, const Pose& T_w_l, Vec6* J_r_xi)", stage: 2, note: "r = n^T (T_w_l p_l - q_w). J_r_xi theo right perturbation [rho, phi]. Test sai phân số." },
+        { id: "solve", name: "solve_gauss_newton", sig: "Vec6 solve_gauss_newton(const Mat6& H, const Vec6& b)", stage: 3, note: "LDLT trên 6x6; H được trả ra cho degeneracy." },
+        { id: "conv", name: "check_convergence", sig: "bool check_convergence(const Vec6& delta, rot_tol_rad, trans_tol_m)", stage: 4, note: "" } ],
+      calls: [["align","corr"],["corr","res"],["res","solve"],["solve","conv"],["conv","corr"]] },
+    { id: "map", status: "planned", name: "map", short: "voxel map", x: 380, y: 180, w: 140, h: 54,
+      desc: "Bản đồ voxel hash trong frame w: chèn ScanFrame theo pose, truy vấn knn và mặt phẳng cục bộ, cắt tỉa theo bán kính quanh robot để giữ bộ nhớ cố định trên Pi5.",
+      inputs: ["ScanFrame + T_w_l (sau scan_match)", "Pose đã hiệu chỉnh từ backend (loop)"],
+      outputs: ["knn / mặt phẳng cho scan_match", "Keyframe + cloud cho loop", "Bản đồ xuất ra (PointCloud2 / PCD)"],
+      fns: [
+        { id: "insert", name: "VoxelMap::insert", sig: "void insert(const ScanFrame&, const Pose& T_w_l)", stage: 0, note: "Giới hạn điểm/voxel, không cấp phát sau reserve." },
+        { id: "knn", name: "VoxelMap::knn", sig: "int knn(const Vec3& p_w, int k, NeighborBuffer&) const", stage: 1, note: "Tìm trong 27 voxel lân cận." },
+        { id: "plane", name: "fit_plane", sig: "bool fit_plane(const NeighborBuffer&, Vec3& n_w, double& d, double max_rms_m)", stage: 2, note: "" },
+        { id: "prune", name: "VoxelMap::prune", sig: "void prune(const Vec3& p_w_b, double radius_m)", stage: 1, note: "Gọi theo chu kỳ, ngoài hot path." } ],
+      calls: [["insert","knn"],["knn","plane"],["insert","prune"]] },
+
+    // -------------------------------------------------------------- stage 3
+    { id: "degeneracy", status: "planned", name: "degeneracy", short: "eigen of H", x: 570, y: 70, w: 140, h: 54,
+      desc: "Phân tích phổ của Hessian 6x6 từ scan matching để phát hiện hướng suy biến (hành lang, mặt phẳng), rồi chiếu bỏ cập nhật theo hướng đó và báo cho backend nới lỏng hoặc khoá yếu tố LiDAR.",
+      inputs: ["H 6x6 (scan_match)"],
+      outputs: ["DegeneracyReport{eigvals, degenerate_dirs, mask}", "Delta đã chiếu cho scan_match (tuỳ chọn)"],
+      fns: [
+        { id: "analyze", name: "analyze", sig: "DegeneracyReport analyze(const Mat6& H, double eig_threshold)", stage: 0, note: "SelfAdjointEigenSolver trên 6x6." },
+        { id: "project", name: "project_update", sig: "Vec6 project_update(const Vec6& delta, const DegeneracyReport&)", stage: 1, note: "Zhang & Singh 2016 style projection." } ],
+      calls: [["analyze","project"]] },
+    { id: "loop", status: "planned", name: "loop", short: "loop closure", x: 570, y: 180, w: 140, h: 54,
+      desc: "Tìm keyframe cũ gần vị trí hiện tại, xác minh bằng scan matching, sinh ràng buộc vòng cho backend. Chạy trên luồng riêng, tắt mặc định (loop_closure.enabled: false).",
+      inputs: ["Keyframe mới + cloud (map)", "Pose hiện tại (backend)"],
+      outputs: ["LoopConstraint{i, j, T_bi_bj, cov}"],
+      fns: [
+        { id: "query", name: "LoopDetector::query", sig: "int query(const Keyframe&, CandidateBuffer&)", stage: 0, note: "Bán kính + khoảng cách thời gian tối thiểu." },
+        { id: "verify", name: "LoopDetector::verify", sig: "Result<LoopConstraint> verify(const Keyframe& a, const Keyframe& b)", stage: 1, note: "Gọi scan_match với ngưỡng inlier chặt hơn." } ],
+      calls: [["query","verify"]] },
+
+    // -------------------------------------------------------------- backend
+    { id: "backend", status: "planned", name: "backend", short: "GTSAM iSAM2", x: 800, y: 70, w: 150, h: 164,
+      desc: "Nơi duy nhất include GTSAM. Factor graph với biến pose, vận tốc, bias; yếu tố IMU preintegrated, LiDAR between/prior, GNSS position, odom between, loop between. Chỉ trả core types (Pose, PoseCovariance).",
+      inputs: ["PreintegratedDelta (imu)", "MatchResult (scan_match)", "DegeneracyReport", "GnssMeasurement (gnss)", "OdomDelta (odom)", "LoopConstraint (loop)"],
+      outputs: ["Estimate{T_w_b, v_w_b, bias, cov} mới nhất", "Pose đã hiệu chỉnh của các keyframe (cho map)"],
+      fns: [
+        { id: "kf", name: "Graph::add_keyframe", sig: "KeyId add_keyframe(Timestamp, const Pose& T_w_b_init)", stage: 0, note: "" },
+        { id: "f_imu", name: "Graph::add_imu_factor", sig: "void add_imu_factor(KeyId i, KeyId j, const PreintegratedDelta&)", stage: 1, note: "gtsam::CombinedImuFactor." },
+        { id: "f_lidar", name: "Graph::add_lidar_factor", sig: "void add_lidar_factor(KeyId i, KeyId j, const Pose& T_bi_bj, const PoseCovariance&, const DegeneracyReport*)", stage: 1, note: "Mask hướng suy biến bằng noise lớn." },
+        { id: "f_gnss", name: "Graph::add_gnss_factor", sig: "void add_gnss_factor(KeyId, const GnssMeasurement&, const Pose& T_e_w)", stage: 1, note: "" },
+        { id: "f_odom", name: "Graph::add_odom_factor", sig: "void add_odom_factor(KeyId i, KeyId j, const OdomDelta&)", stage: 1, note: "" },
+        { id: "f_loop", name: "Graph::add_loop_factor", sig: "void add_loop_factor(const LoopConstraint&)", stage: 1, note: "" },
+        { id: "opt", name: "Graph::optimize", sig: "Result<Estimate> optimize()", stage: 2, note: "iSAM2 update; mọi factor pass EXPECT_CORRECT_FACTOR_JACOBIANS." },
+        { id: "marg", name: "Graph::marginal_cov", sig: "PoseCovariance marginal_cov(KeyId) const", stage: 3, note: "" } ],
+      calls: [["kf","f_imu"],["kf","f_lidar"],["kf","f_gnss"],["kf","f_odom"],["kf","f_loop"],["f_imu","opt"],["f_lidar","opt"],["f_gnss","opt"],["f_odom","opt"],["f_loop","opt"],["opt","marg"]] },
+
+    // -------------------------------------------------------------- outputs
+    { id: "out_pose", status: "io", name: "Pose + cov", short: "T_w_b, 6x6", x: 1040, y: 70, w: 150, h: 54,
+      desc: "Trạng thái mới nhất: T_w_b, v_w_b, bias, hiệp phương sai [rho, phi]. ros2_node xuất thành Odometry + TF; bench ghi file TUM cho eval.",
+      inputs: ["Estimate (backend)"], outputs: ["nav_msgs/Odometry, TF map→imu_link", "TUM: t x y z qx qy qz qw"], fns: [] },
+    { id: "out_map", status: "io", name: "Map", short: "PointCloud2 / PCD", x: 1040, y: 180, w: 150, h: 54,
+      desc: "Bản đồ voxel trong frame w, xuất theo chu kỳ hoặc khi dừng.", inputs: ["VoxelMap (map)"], outputs: ["sensor_msgs/PointCloud2, file PCD"], fns: [] },
+
+    // -------------------------------------------------------------- base + apps
+    { id: "pipeline", status: "planned", name: "pipeline", short: "Estimator, threads, queues", x: 800, y: 400, w: 150, h: 54,
+      desc: "Module duy nhất tạo luồng: front-end (preprocess + scan_match), backend, loop. Nối qua hàng đợi có giới hạn. Mỗi trạng thái chia sẻ có một chủ sở hữu và mutex. deterministic: true chạy đơn luồng, seed cố định.",
+      inputs: ["Mọi message từ apps (push_*)"], outputs: ["latest_state(), map snapshot, callback kết quả"],
+      fns: [
+        { id: "ctor", name: "Estimator::Estimator", sig: "explicit Estimator(const Config&)", stage: 0, note: "Config từ YAML, validate, có thể throw." },
+        { id: "p_scan", name: "Estimator::push_scan", sig: "Status push_scan(PointSpan, Timestamp)", stage: 1, note: "Đưa vào hàng đợi front-end, không block." },
+        { id: "p_imu", name: "Estimator::push_imu", sig: "Status push_imu(const ImuSample&, Timestamp)", stage: 1, note: "" },
+        { id: "p_gnss", name: "Estimator::push_gnss", sig: "Status push_gnss(const GnssFix&, Timestamp)", stage: 1, note: "" },
+        { id: "p_odom", name: "Estimator::push_odom", sig: "Status push_odom(const WheelSample&, Timestamp)", stage: 1, note: "" },
+        { id: "fe", name: "front_end_loop", sig: "void front_end_loop()  // thread", stage: 2, note: "preprocess → scan_match → map.insert → đẩy keyframe cho backend." },
+        { id: "be", name: "backend_loop", sig: "void backend_loop()  // thread", stage: 2, note: "Graph::add_* → optimize → cập nhật state." },
+        { id: "state", name: "Estimator::latest_state", sig: "Estimate latest_state() const", stage: 3, note: "Đọc dưới mutex state_." } ],
+      calls: [["ctor","p_scan"],["ctor","p_imu"],["p_scan","fe"],["p_imu","fe"],["p_gnss","be"],["p_odom","be"],["fe","be"],["be","state"]] },
+    { id: "common", status: "done", name: "common", short: "types, Timestamp, Result, logger", x: 190, y: 500, w: 760, h: 46,
+      desc: "Kiểu dùng chung cho mọi module: Timestamp int64 ns, Status/Result<T> thay cho exception trên hot path, Pose{R, p} với phép hợp thành khử frame, ImuSample, logger interface (sink mặc định stderr, ros2_node thay bằng rclcpp).",
+      inputs: ["Không có (tầng đáy)"], outputs: ["mss/common/{timestamp,result,types,logger}.hpp cho mọi module"],
+      tests: [
+        { name: "Timestamp.ComparesAsInteger", file: "tests/unit/test_timestamp.cpp", ok: true },
+        { name: "Timestamp.SecondsBetweenIsSigned", file: "tests/unit/test_timestamp.cpp", ok: true },
+        { name: "Result.OkCarriesValue", file: "tests/unit/test_result.cpp", ok: true },
+        { name: "Result.ErrorCarriesReason", file: "tests/unit/test_result.cpp", ok: true },
+        { name: "Status.OkAndError", file: "tests/unit/test_result.cpp", ok: true },
+        { name: "Pose.CompositionCancelsFrames", file: "tests/unit/test_pose.cpp", ok: true },
+        { name: "Pose.InverseRoundTrips", file: "tests/unit/test_pose.cpp", ok: true } ],
+      fns: [
+        { id: "ts_sec", name: "seconds_between", real: true, sig: "constexpr double seconds_between(Timestamp from, Timestamp to)", stage: 0, note: "Nơi duy nhất thời gian thành double (dt)." },
+        { id: "ts_from", name: "timestamp_from_sec_nsec", real: true, sig: "constexpr Timestamp timestamp_from_sec_nsec(int64 sec, int64 nsec)", stage: 0, note: "Dùng ở biên I/O (ROS header.stamp)." },
+        { id: "st_ok", name: "Status::ok / error", real: true, sig: "static Status ok(); static Status error(std::string reason)", stage: 1, note: "" },
+        { id: "res_ok", name: "Result<T>::ok / error / value", real: true, sig: "static Result ok(T); static Result error(std::string); const T& value() const&", stage: 1, note: "value() yêu cầu is_ok()." },
+        { id: "pose_mul", name: "Pose::operator*", real: true, sig: "Vec3 operator*(const Vec3& p_b) const; Pose operator*(const Pose& T_b_c) const", stage: 2, note: "p_a = T_a_b * p_b; T_a_c = T_a_b * T_b_c." },
+        { id: "pose_inv", name: "Pose::inverse", real: true, sig: "Pose inverse() const", stage: 2, note: "" },
+        { id: "set_log", name: "set_logger", real: true, sig: "void set_logger(Logger* logger)", stage: 3, note: "nullptr → quay về sink stderr." },
+        { id: "log_x", name: "log_debug / info / warn / error", real: true, sig: "void log_info(std::string_view msg) ...", stage: 3, note: "Không gọi theo từng điểm trong hot path." },
+        { id: "stderr", name: "StderrLogger::log", real: true, sig: "void log(LogLevel, std::string_view) override  // anonymous ns", stage: 4, note: "fprintf(stderr) với tag mức log." } ],
+      calls: [["log_x","stderr"],["set_log","stderr"]] },
+
+    { id: "ros2_node", status: "stub", name: "ros2_node", short: "mss_ros2 / mss_node", x: 1040, y: 290, w: 150, h: 54,
+      desc: "Adapter mỏng: message ROS 2 ↔ core struct, launch, params từ config/default.yaml. Hiện tại chỉ cài RclcppLogger và spin; subscription/publisher sẽ nối khi pipeline có.",
+      inputs: ["sensor_msgs/PointCloud2, sensor_msgs/Imu, NavSatFix, nav_msgs/Odometry (wheel)"],
+      outputs: ["nav_msgs/Odometry, TF, PointCloud2 map"],
+      tests: [{ name: "colcon build -Werror (docker-full)", file: ".github/workflows/ci.yml", ok: true }],
+      fns: [
+        { id: "main", name: "main", real: true, sig: "int main(int argc, char** argv)", stage: 0, note: "rclcpp::init, tạo node, set_logger, spin." },
+        { id: "rl", name: "RclcppLogger::log", real: true, sig: "void log(LogLevel, std::string_view) override", stage: 1, note: "Map LogLevel → RCLCPP_*." },
+        { id: "on_lidar", name: "on_lidar", sig: "void on_lidar(const PointCloud2::ConstSharedPtr&)", stage: 1, note: "PointCloud2 → PointSpan, không copy." },
+        { id: "on_imu", name: "on_imu", sig: "void on_imu(const Imu::ConstSharedPtr&)", stage: 1, note: "Quaternion chỉ ở biên, Hamilton (w,x,y,z)." },
+        { id: "pub", name: "publish_state", sig: "void publish_state(const Estimate&)", stage: 2, note: "Odometry + TF map→imu_link." } ],
+      calls: [["main","rl"],["main","on_lidar"],["main","on_imu"],["on_lidar","pub"]] },
+    { id: "bench", status: "stub", name: "bench", short: "mss_bench", x: 1040, y: 400, w: 150, h: 54,
+      desc: "Chạy dataset qua Estimator không cần ROS, đo p50/p95/CPU từng stage. Bắt buộc báo số trước/sau cho mọi thay đổi hot path. Hiện tại chỉ parse tham số và log.",
+      inputs: ["config.yaml, thư mục dataset"], outputs: ["Bảng p50/p95/CPU, file TUM cho eval"],
+      tests: [{ name: "build -Werror (core-no-gtsam, docker-full)", file: ".github/workflows/ci.yml", ok: true }],
+      fns: [
+        { id: "main", name: "main", real: true, sig: "int main(int argc, char** argv)", stage: 0, note: "Kiểm tra argc, log, return." },
+        { id: "run", name: "run_dataset", sig: "BenchReport run_dataset(const Config&, const Dataset&)", stage: 1, note: "Phát lại theo timestamp, deterministic." },
+        { id: "pct", name: "report_percentiles", sig: "void report_percentiles(const BenchReport&)", stage: 2, note: "" } ],
+      calls: [["main","run"],["run","pct"]] },
+    { id: "eval", status: "done", name: "eval (py)", short: "TUM, noise report, evo", x: 1040, y: 500, w: 150, h: 46,
+      desc: "Không link core; chỉ đọc file TUM. ATE/RPE bằng evo, ablation, plots, so với eval/baselines.json (PR fail nếu ATE xấu hơn 20%). Đã có TUM reader/writer và noise report (ADR-011 §7): so profile nhiễu khai báo với nhiễu đo trong bag (IMU Allan, GNSS, LiDAR, odom, bag).",
+      inputs: ["File TUM từ bench / ros2 bag export", "Bag nhiễu + gt.tum từ sim bridge"], outputs: ["results/<run-id>/: ATE, RPE, plots", "noise_report.html / .json", "so sánh với baselines.json"],
+      tests: [
+        { name: "test_round_trip", file: "tests/python/test_tum.py", ok: true },
+        { name: "test_rejects_wrong_field_count", file: "tests/python/test_tum.py", ok: true },
+        { name: "test_fit_recovers_white_and_walk_densities", file: "tests/python/test_allan.py", ok: true },
+        { name: "test_theory_curve_matches_formula", file: "tests/python/test_allan.py", ok: true },
+        { name: "test_oadev_of_white_noise_has_minus_half_slope", file: "tests/python/test_allan.py", ok: true },
+        { name: "test_report_writes_html_and_json", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_bag_section_passes", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_gnss_sigma_h_within_15_percent", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_imu_without_static_segment_is_informational", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_lidar_section_on_noise_free_synthetic_bag", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_range_sigma_estimator_recovers_declared_sigma", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_report_without_planes_passes", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_missing_ground_truth_fails", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_cli_exit_codes", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_imu_static_segment_gates_white_sigma", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_lidar_sigma_is_along_ray_at_mixed_incidence", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_expected_dropout_accounts_for_grazing_and_nan", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_gnss_sigma_rejects_multipath_steps", file: "tests/python/test_noise_report.py", ok: true } ],
+      fns: [
+        { id: "read", name: "read_tum", real: true, sig: "def read_tum(path: Path) -> Trajectory", stage: 0, note: "Kiểm tra 8 cột, bỏ dòng #." },
+        { id: "write", name: "write_tum", real: true, sig: "def write_tum(path: Path, traj: Trajectory) -> None", stage: 0, note: "" },
+        { id: "nrun", name: "noise_report.run", real: true, sig: "def run(bag_dir: Path, profile: Path, out_dir: Path, *, planes: Path | None = None, pipeline_config: Path | None = None, static_s: float = 5.0, allan_gate: bool = False, odom_gate: bool = False) -> Report", stage: 1, note: "Gate (exit 1) và dòng thông tin; ghi html + json vào out_dir." },
+        { id: "fit", name: "fit_white_and_walk", real: true, sig: "def fit_white_and_walk(taus: np.ndarray, adev: np.ndarray) -> tuple[float, float]", stage: 1, note: "Khớp mật độ white/random-walk từ Allan deviation." },
+        { id: "rsig", name: "estimate_range_sigma", real: true, sig: "def estimate_range_sigma(distances: np.ndarray, sigma_declared: float) -> float", stage: 1, note: "σ dọc tia từ phần dư mặt phẳng." },
+        { id: "gsig", name: "estimate_gnss_sigma", real: true, sig: "def estimate_gnss_sigma(residuals: np.ndarray, sigma_declared: float) -> tuple[float, float]", stage: 1, note: "Loại bước multipath trước khi ước lượng." },
+        { id: "ate", name: "compute_ate", sig: "def compute_ate(est: Trajectory, gt: Trajectory) -> AteResult", stage: 2, note: "Qua evo, căn chỉnh SE(3)." },
+        { id: "cmp", name: "compare_baseline", sig: "def compare_baseline(result, baselines_json) -> bool", stage: 3, note: "Ngưỡng 20%." } ],
+      calls: [["read","ate"],["ate","cmp"],["read","nrun"],["nrun","fit"],["nrun","rsig"],["nrun","gsig"]] },
+
+    { id: "sim", status: "done", name: "sim (py)", short: "noise layer, bridge", x: 1040, y: 560, w: 150, h: 46,
+      desc: "Lớp nhiễu offline (ADR-011): đọc bag thô sạch từ Gazebo, thêm nhiễu IMU/GNSS/LiDAR/odom theo profile + scenario, tất định theo seed, ghi bag MCAP và gt.tum. mutate_bag tạo bag E-03 (mất gói, đảo thứ tự). Gazebo world/driver thuộc phần B.",
+      inputs: ["Bag thô Gazebo (/ground_truth, /imu/data, /lidar/points, /gnss/fix, /joint_states)", "sim/noise/<profile>.yaml, sim/scenarios/<id>.yaml"],
+      outputs: ["Bag nhiễu (MCAP)", "gt.tum", "bridge_report.json"],
+      tests: [
+        { name: "test_pipeline_noise_within_inflation (SIM-03)", file: "tests/python/test_sim03_consistency.py", ok: true },
+        { name: "test_constant_yaw_rate_matches_analytic (SIM-04)", file: "tests/python/test_lidar.py", ok: true },
+        { name: "test_dropout_rate_and_grazing (SIM-04)", file: "tests/python/test_lidar.py", ok: true },
+        { name: "test_bridge_is_deterministic (SIM-05)", file: "tests/python/test_bridge.py", ok: true },
+        { name: "test_outage_window (SIM-06)", file: "tests/python/test_gnss.py", ok: true },
+        { name: "test_degraded_cov_scaled (SIM-06)", file: "tests/python/test_gnss.py", ok: true } ],
+      fns: [
+        { id: "lp", name: "load_profile", real: true, sig: "def load_profile(path: Path) -> NoiseProfile", stage: 0, note: "Kiểm tra đơn vị và giá trị khi nạp." },
+        { id: "ls", name: "load_scenario", real: true, sig: "def load_scenario(path: Path) -> Scenario", stage: 0, note: "Gồm seed, segment GNSS, zones." },
+        { id: "syn", name: "write_synthetic_raw_bag", real: true, sig: "def write_synthetic_raw_bag(out_dir: Path, *, duration_s: float = 6.0, seed: int = 0, organized: bool = True, box_half_m=(10.0, 6.0, 3.0), omega_radps: float = 0.3, speed_mps: float = 0.5, max_range_m: float = ..., origin_lla: Lla) -> SynthInfo", stage: 0, note: "Bag thô giả cho test, không cần Gazebo." },
+        { id: "rb", name: "run_bridge", real: true, sig: "def run_bridge(raw_bag: Path, scenario: Scenario, profile: NoiseProfile, out_dir: Path, *, seed: int | None = None, skew: bool = True) -> BridgeReport", stage: 1, note: "SeedSequence(seed).spawn(5): lidar, gnss, odom, imu, mutate." },
+        { id: "pscan", name: "process_scan", real: true, sig: "def process_scan(arrays: CloudArrays, stamp_ns: int, gt: GroundTruth, T_b_l: np.ndarray, noise: LidarNoise, rng: np.random.Generator, *, skew: bool = True, range_sigma_apply: bool = False) -> CloudArrays", stage: 2, note: "Thêm t, ring, skew, dropout, điểm xấu." },
+        { id: "gstep", name: "GnssDegrader.step", real: true, sig: "def step(self, t_ns: int, p_e_g_true: np.ndarray) -> GnssSample | None", stage: 2, note: "Nominal/degraded/multipath/outage; None khi mất tín hiệu." },
+        { id: "wstep", name: "WheelQuantizer.step", real: true, sig: "def step(self, t_ns: int, names: list[str], velocity_radps: list[float]) -> OdomTwist | None", stage: 2, note: "Encoder lượng tử, động học tin cậy." },
+        { id: "mut", name: "mutate (tools)", real: true, sig: "def mutate(in_bag: Path, out_bag: Path, *, drop_fraction: float = 0.05, reorder_fraction: float = 0.02, window_ns: int = 20_000_000, topics: tuple[str, ...] = (\"/imu/data\", \"/lidar/points\"), seed: int = 0) -> MutateReport", stage: 3, note: "tools/mutate_bag.py: bag E-03." } ],
+      calls: [["lp","rb"],["ls","rb"],["rb","pscan"],["rb","gstep"],["rb","wstep"],["syn","rb"],["rb","mut"]] },
+  ],
+
+  // edges: { f, t, l }  + tuỳ chọn: both (hai chiều), via (đi theo hành lang ngang ở y này), lx (x đặt nhãn)
+  edges: [
+    { f: "in_lidar", t: "preprocess", l: "PointSpan, t" }, { f: "in_imu", t: "imu", l: "ImuSample" },
+    { f: "in_gnss", t: "gnss", l: "lat/lon/alt" }, { f: "in_odom", t: "odom", l: "v, ω" },
+    { f: "preprocess", t: "scan_match", l: "ScanFrame" }, { f: "imu", t: "scan_match", l: "T_w_b dự đoán" },
+    { f: "scan_match", t: "map", l: "insert / knn", both: true }, { f: "scan_match", t: "degeneracy", l: "H, T_w_l" },
+    { f: "map", t: "loop", l: "keyframes" },
+    { f: "degeneracy", t: "backend", l: "pose, cov, mask" }, { f: "loop", t: "backend", l: "loop factor" },
+    { f: "imu", t: "backend", l: "Δ preint", via: 254, lx: 440, ty: 150 },
+    { f: "gnss", t: "backend", l: "p_e_g", via: 262, lx: 560, ty: 172 },
+    { f: "odom", t: "backend", l: "Δ odom", via: 270, lx: 680, ty: 194 },
+    { f: "backend", t: "out_pose", l: "Estimate" }, { f: "map", t: "out_map", l: "voxels", via: 278, lx: 860 },
+    { f: "ros2_node", t: "pipeline", l: "push_* / Estimate", both: true }, { f: "bench", t: "pipeline", l: "push_*" },
+    { f: "bench", t: "eval", l: "TUM" },
+    { f: "sim", t: "eval", l: "bag + gt.tum" },
+  ],
+};
+
+// ============================================================================
+const NS = "http://www.w3.org/2000/svg";
+const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+const byId = Object.fromEntries(DATA.modules.map(m => [m.id, m]));
+const STATUS_LABEL = { done: "đã code, test pass", stub: "khung, chưa có logic", planned: "dự kiến", io: "đầu vào / đầu ra", ext: "ngoài core" };
+let selected = null;
+
+function renderHeader() {
+  const r = DATA.repo;
+  document.getElementById("repo-line").innerHTML =
+    `Trạng thái tại commit <code>${r.commit}</code> (${r.branch}, ${r.date}) · <a href="${r.url}">${r.url.replace("https://","")}</a>`;
+  const strip = document.getElementById("ci-strip");
+  strip.innerHTML = `<span class="chip">CI run ${DATA.ci.run}</span>` + DATA.ci.jobs.map(j =>
+    `<span class="chip ${j.ok ? "ok" : "fail"}" title="${j.note}"><span class="dot"></span>${j.name}: ${j.ok ? "pass" : "fail"}</span>`).join("");
+}
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const cy = m => m.y + m.h / 2, cx = m => m.x + m.w / 2;
+// Side anchor whose y is pulled toward the other block (matters for the tall backend block).
+function sideAnchor(m, side, towardY) { return [side === "r" ? m.x + m.w : m.x, clamp(towardY, m.y + 14, m.y + m.h - 14)]; }
+
+function edgePath(a, b, e) {
+  if (e.via !== undefined) {
+    // source right → down/up to corridor y → across → into target left at e.ty (or target centre)
+    const p = sideAnchor(a, "r", cy(a)), ty = e.ty !== undefined ? e.ty : cy(b), q = [b.x, ty], y = e.via;
+    const bx = p[0] + 40, ex = q[0] - 40;
+    return { d: `M${p[0]},${p[1]} C${bx},${p[1]} ${bx - 20},${y} ${bx + 20},${y} H${ex - 20} C${ex + 20},${y} ${ex},${ty} ${q[0]},${ty}`,
+             label: [e.lx !== undefined ? e.lx : (bx + ex) / 2, y - 4, "middle"] };
+  }
+  const dx = cx(b) - cx(a), dy = cy(b) - cy(a);
+  if (Math.abs(dx) > 100) {
+    const p = sideAnchor(a, dx > 0 ? "r" : "l", cy(b)), q = sideAnchor(b, dx > 0 ? "l" : "r", cy(a));
+    const c = Math.max(40, Math.abs(dx) * 0.4), s = Math.sign(dx);
+    return { d: `M${p[0]},${p[1]} C${p[0] + s * c},${p[1]} ${q[0] - s * c},${q[1]} ${q[0]},${q[1]}`,
+             label: [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2 - 5, "middle"] };
+  }
+  const p = [cx(a), dy > 0 ? a.y + a.h : a.y], q = [cx(b), dy > 0 ? b.y : b.y + b.h];
+  return { d: `M${p[0]},${p[1]} L${q[0]},${q[1]}`, label: [p[0] + 7, (p[1] + q[1]) / 2 + 4, "start"] };
+}
+
+function renderOverview() {
+  const svg = document.getElementById("overview");
+  svg.innerHTML = "";
+  const defs = el("defs", {}, svg);
+  for (const [id, cls] of [["arrow", ""], ["arrow-hi", "hi"]]) {
+    const mk = el("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, defs);
+    el("path", { d: "M0,0 L10,5 L0,10 z", fill: cls ? "var(--accent)" : "var(--edge)" }, mk);
+  }
+  // pipeline container
+  el("rect", { x: 170, y: 40, width: 800, height: 530, rx: 14, class: "container-box" }, svg);
+  const lbl = el("text", { x: 180, y: 590, class: "container-label" }, svg);
+  lbl.textContent = "core/ — pipeline::Estimator sở hữu luồng và hàng đợi; apps chỉ link mss::pipeline";
+  lbl.addEventListener("click", () => select("pipeline"));
+
+  const edgesG = el("g", {}, svg);
+  for (const e of DATA.edges) {
+    const a = byId[e.f], b = byId[e.t]; if (!a || !b) continue;
+    const { d, label } = edgePath(a, b, e);
+    const attrs = { d, class: "edge", "marker-end": "url(#arrow)", "data-from": e.f, "data-to": e.t };
+    if (e.both) attrs["marker-start"] = "url(#arrow)";
+    el("path", attrs, edgesG);
+    const tx = el("text", { x: label[0], y: label[1], class: "edge-label", "text-anchor": label[2], "data-from": e.f, "data-to": e.t }, edgesG);
+    tx.textContent = e.l;
+  }
+  for (const m of DATA.modules) {
+    const g = el("g", { class: `node st-${m.status}`, "data-id": m.id, tabindex: 0, role: "button", "aria-label": m.name }, svg);
+    el("rect", { x: m.x, y: m.y, width: m.w, height: m.h, rx: 9 }, g);
+    const t1 = el("text", { x: m.x + m.w / 2, y: m.y + (m.h > 50 ? 22 : 20), class: "title mono", "text-anchor": "middle" }, g); t1.textContent = m.name;
+    const t2 = el("text", { x: m.x + m.w / 2, y: m.y + (m.h > 50 ? 40 : 36), class: "small", "text-anchor": "middle" }, g); t2.textContent = m.short;
+    if (m.tests && m.tests.length) {
+      const n = m.tests.filter(t => t.ok).length;
+      const b = el("text", { x: m.x + m.w - 8, y: m.y + 13, class: "small", "text-anchor": "end", fill: n === m.tests.length ? "var(--done)" : "#d6453d" }, g);
+      b.textContent = `✓ ${n}/${m.tests.length}`;
+    }
+    g.addEventListener("click", () => select(m.id));
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(m.id); } });
+  }
+}
+
+function select(id) {
+  selected = selected === id ? null : id;
+  document.querySelectorAll("#overview .node").forEach(n => n.classList.toggle("sel", n.dataset.id === selected));
+  document.querySelectorAll("#overview .edge, #overview .edge-label").forEach(e => {
+    const hi = selected && (e.dataset.from === selected || e.dataset.to === selected);
+    e.classList.toggle("hi", !!hi);
+    if (e.classList.contains("edge")) {
+      e.setAttribute("marker-end", hi ? "url(#arrow-hi)" : "url(#arrow)");
+      if (e.hasAttribute("marker-start")) e.setAttribute("marker-start", hi ? "url(#arrow-hi)" : "url(#arrow)");
+    }
+  });
+  renderDetail();
+  if (selected) document.getElementById("detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function renderDetail() {
+  const box = document.getElementById("detail");
+  if (!selected) { box.innerHTML = `<div class="empty">Chưa chọn khối nào.</div>`; return; }
+  const m = byId[selected];
+  const tests = m.tests || [];
+  const fns = m.fns || [];
+  const nReal = fns.filter(f => f.real).length;
+  const list = arr => arr.length ? `<ul>${arr.map(s => `<li>${s}</li>`).join("")}</ul>` : `<div class="hint">—</div>`;
+  box.innerHTML = `
+    <div class="detail-head"><h2>${m.name}</h2><span class="badge b-${m.status}">${STATUS_LABEL[m.status]}</span>
+      ${fns.length ? `<span class="hint">${nReal} hàm có trong code · ${fns.length - nReal} hàm dự kiến</span>` : ""}</div>
+    <p>${m.desc}</p>
+    <div class="cols"><div><h3>Đầu vào</h3>${list(m.inputs)}</div><div><h3>Đầu ra</h3>${list(m.outputs)}</div></div>
+    <h3>Test</h3>
+    ${tests.length ? `<table><tr><th>Test</th><th>File</th><th>Kết quả</th></tr>${tests.map(t =>
+      `<tr><td class="mono">${t.name}</td><td class="mono">${t.file}</td><td style="color:${t.ok ? "var(--done)" : "#d6453d"}">${t.ok ? "pass" : "fail"}</td></tr>`).join("")}</table>`
+      : `<div class="hint">Chưa có test. ${m.status === "planned" ? "Theo CLAUDE.md: mỗi Jacobian cần test sai phân số, mỗi module cần unit + component test với đáp án biết trước." : ""}</div>`}
+    ${fns.length ? `<h3>Sơ đồ hàm</h3><div class="hint">Nhấn vào một hàm để xem mô tả. Mũi tên là thứ tự gọi.</div>
+      <svg id="fn-svg" role="img" aria-label="Sơ đồ hàm của ${m.name}"></svg><div id="fn-list"></div>` : ""}`;
+  if (fns.length) renderFnDiagram(m);
+}
+
+function renderFnDiagram(m) {
+  const svg = document.getElementById("fn-svg");
+  const fns = m.fns, calls = m.calls || [];
+  const W = 190, H = 44, GX = 70, GY = 16, PAD = 20;
+  const stages = [...new Set(fns.map(f => f.stage))].sort((a, b) => a - b);
+  const col = Object.fromEntries(stages.map((s, i) => [s, i]));
+  const rows = {}; const pos = {};
+  for (const f of fns) { const c = col[f.stage]; rows[c] = (rows[c] || 0); pos[f.id] = { x: PAD + c * (W + GX), y: PAD + 18 + rows[c] * (H + GY) }; rows[c]++; }
+  const width = PAD * 2 + stages.length * W + (stages.length - 1) * GX;
+  const height = PAD * 2 + 18 + Math.max(...Object.values(rows)) * (H + GY) - GY;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.style.maxWidth = width + "px";
+  const defs = el("defs", {}, svg);
+  const mk = el("marker", { id: "farrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" }, defs);
+  el("path", { d: "M0,0 L10,5 L0,10 z", fill: "var(--edge)" }, mk);
+  stages.forEach((s, i) => { const t = el("text", { x: PAD + i * (W + GX), y: PAD + 4, class: "ftitle" }, svg); t.textContent = `bước ${i + 1}`; });
+  for (const [f, t] of calls) {
+    const a = pos[f], b = pos[t]; if (!a || !b) continue;
+    let d;
+    if (b.x > a.x) d = `M${a.x + W},${a.y + H / 2} C${a.x + W + GX / 2},${a.y + H / 2} ${b.x - GX / 2},${b.y + H / 2} ${b.x},${b.y + H / 2}`;
+    else if (b.x < a.x) d = `M${a.x},${a.y + H} C${a.x - GX / 2},${a.y + H + 30} ${b.x + W + GX / 2},${b.y + H + 30} ${b.x + W},${b.y + H}`;
+    else d = `M${a.x + W / 2},${a.y + (b.y > a.y ? H : 0)} L${b.x + W / 2},${b.y + (b.y > a.y ? 0 : H)}`;
+    el("path", { d, class: "edge", "marker-end": "url(#farrow)" }, svg);
+  }
+  for (const f of fns) {
+    const p = pos[f.id];
+    const g = el("g", { class: `fnode ${f.real ? "real" : "planned"}`, "data-fn": f.id, tabindex: 0, role: "button" }, svg);
+    el("rect", { x: p.x, y: p.y, width: W, height: H }, g);
+    const t1 = el("text", { x: p.x + 10, y: p.y + 18, "font-weight": 600 }, g); t1.textContent = f.name.length > 28 ? f.name.slice(0, 27) + "…" : f.name;
+    const t2 = el("text", { x: p.x + 10, y: p.y + 34, fill: "var(--muted)" }, g); t2.textContent = f.real ? "trong code" : "dự kiến";
+    g.addEventListener("click", () => selectFn(f.id));
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectFn(f.id); } });
+  }
+  document.getElementById("fn-list").innerHTML = fns.map(f =>
+    `<div class="fn-row ${f.real ? "real" : "planned"}" id="fn-${f.id}"><div><b class="mono">${f.name}</b> <span class="badge ${f.real ? "b-done" : "b-planned"}">${f.real ? "trong code" : "dự kiến"}</span></div>
+     <div class="fn-sig">${f.sig.replace(/</g, "&lt;")}</div>${f.note ? `<div class="fn-note">${f.note}</div>` : ""}</div>`).join("");
+}
+function selectFn(id) {
+  document.querySelectorAll("#fn-svg .fnode").forEach(n => n.classList.toggle("sel", n.dataset.fn === id));
+  document.querySelectorAll("#fn-list .fn-row").forEach(r => r.classList.toggle("sel", r.id === "fn-" + id));
+  const row = document.getElementById("fn-" + id); if (row) row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+renderHeader();
+renderOverview();
+</script>
+</body>
+</html>

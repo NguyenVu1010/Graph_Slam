@@ -1,0 +1,42 @@
+# Default sensor noise profile, ADR-011 section 3. Units are in the key names.
+imu:
+  rate_hz: 200.0
+  gyro_noise_density: 1.75e-4        # rad/s/sqrt(Hz)
+  acc_noise_density: 2.9e-3          # m/s^2/sqrt(Hz)
+  gyro_random_walk: 1.0e-5           # rad/s^2/sqrt(Hz)
+  acc_random_walk: 1.0e-4            # m/s^3/sqrt(Hz)
+  gyro_bias_sigma_radps: 0.035
+  acc_bias_sigma_mps2: 0.3
+  bias_corr_time_s: 1000.0
+gnss:
+  rate_hz: 5.0
+  sigma_h_m: 1.0
+  sigma_v_m: 2.0
+  drift_sigma_m: 0.5
+  drift_tau_s: 300.0
+  multipath_amp_min_m: 3.0
+  multipath_amp_max_m: 10.0
+  multipath_hold_min_s: 2.0
+  multipath_hold_max_s: 10.0
+  multipath_start_rate_per_s: 0.2
+  degraded_factor: 3.0
+lidar:
+  range_sigma_m: 0.02
+  dropout_p: 0.02
+  dropout_p_grazing: 0.3
+  grazing_deg: 80.0
+  scan_period_s: 0.1
+  nan_fraction: 0.001
+  near_fraction: 0.001
+  min_range_m: 0.5
+odom:
+  ticks_per_rev: 4096
+  speed_sigma_mps: 0.01
+  kinematics_true:
+    wheel_radius_m: 0.10
+    track_m: 0.40
+  kinematics_believed:
+    wheel_radius_m: 0.101            # +1.0 %
+    track_m: 0.394                   # -1.5 %
+clock_offset_ns: {imu: 0, lidar: 0, gnss: 0, odom: 0}
+inflation_max: 5.0

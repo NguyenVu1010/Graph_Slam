@@ -18,3 +18,5 @@ tests/data/
 .vscode/
 .idea/
 *.swp
+# superpowers scratch (ledgers, briefs)
+.superpowers/
