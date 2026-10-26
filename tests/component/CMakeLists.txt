@@ -1,5 +1,7 @@
 # Component tests: modules and binaries on synthetic data with a known answer.
 mss_add_test(test_voxel_map_component test_voxel_map_component.cpp)
+mss_add_test(test_gnss_component test_gnss_component.cpp)
+target_include_directories(test_gnss_component PRIVATE ${CMAKE_SOURCE_DIR}/core/gnss/src)
 if(MSS_BUILD_BENCH)
   mss_add_test(test_bench_replay test_bench_replay.cpp)
   target_compile_definitions(test_bench_replay PRIVATE MSS_BENCH_PATH="$<TARGET_FILE:mss_bench>")
