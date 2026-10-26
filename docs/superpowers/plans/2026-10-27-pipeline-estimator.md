@@ -101,9 +101,9 @@ The controller rules on these before implementation. Each task states what it do
     `p_w_b = (1/kappa) [sin psi, 1 - cos psi, 0]`, `R_w_b = Rz(psi)`,
     `a_w = a_t [cos psi, sin psi, 0] + kappa v^2 [-sin psi, cos psi, 0]`,
     `acc_b = R_w_b^T (a_w - g_w)`, `gyro_b = [0, 0, omega]`. `static_s = ramp_s = 0` reduces to the constant circle of `sim/mss_sim/synth.py`.
-- [ ] **Step 2: Write ADR-017** (Vietnamese like the other ADRs, template `000-template.md`, status "đề xuất"): decisions = (a) single-thread `EstimatorCore` behind the existing queues; (b) IMU cut by interpolated boundary sample (§1); (c) only keyframe clouds go into the `VoxelMap` (consistent with ADR-016 rebuild), inserted at the optimised pose; (d) LiDAR factor measurement per §4; (e) GNSS fixes attached to the next keyframe, shifted per §5, `T_e_w` = latest aligner estimate per factor; (f) no estimate before IMU init; failed scan match = IMU prediction, no keyframe; (g) stub backend (MSS_WITH_GTSAM=OFF): optimize errors fall back to the front-end state, logged once per failure streak. Alternatives table: per-scan map insertion; fixed `T_e_w` after first alignment; keyframe at every GNSS fix. Consequences: run_once allocates on keyframe scans (GTSAM); `T_e_w` refinement feeds back own trajectory.
+- [ ] **Step 2: Write ADR-017** (BLOCKED: docs/adr/ is outside this branch's scope allowance; reported to the controller) (Vietnamese like the other ADRs, template `000-template.md`, status "đề xuất"): decisions = (a) single-thread `EstimatorCore` behind the existing queues; (b) IMU cut by interpolated boundary sample (§1); (c) only keyframe clouds go into the `VoxelMap` (consistent with ADR-016 rebuild), inserted at the optimised pose; (d) LiDAR factor measurement per §4; (e) GNSS fixes attached to the next keyframe, shifted per §5, `T_e_w` = latest aligner estimate per factor; (f) no estimate before IMU init; failed scan match = IMU prediction, no keyframe; (g) stub backend (MSS_WITH_GTSAM=OFF): optimize errors fall back to the front-end state, logged once per failure streak. Alternatives table: per-scan map insertion; fixed `T_e_w` after first alignment; keyframe at every GNSS fix. Consequences: run_once allocates on keyframe scans (GTSAM); `T_e_w` refinement feeds back own trajectory.
 - [x] **Step 3: Apply Contract issue 3 to `estimator.hpp` comments** (only if approved; text as in the issue). Build: GTSAM command with `--target test_estimator` still compiles. Expected: `BUILD OK`.
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 ```bash
 git add docs/derivations/pipeline.md docs/derivations/README.md docs/adr/017-single-thread-estimator-data-flow.md docs/adr/README.md core/pipeline/include/mss/pipeline/estimator.hpp
 git commit -m "docs(pipeline): derivation and ADR-017 for the single-thread estimator data flow"
@@ -368,11 +368,32 @@ TEST(BenchReplay, E02_TwoRunsAreBitIdentical) {
 - [x] **Step 2: Run to verify `ImuStampOffsetDoesNotDropScans` fails** — no-GTSAM command `--target test_bench_replay`. Expected: FAIL on `n_dropped_scans` (the regression), the others PASS or fail only on the updated expectations.
 - [x] **Step 3: Implement** the Replayer change.
 - [x] **Step 4: Run** — `--target test_bench_replay` in the no-GTSAM and GTSAM builds. Expected: PASS.
-- [ ] **Step 5: README** — under "Latency benchmark": `est.tum` has one line per scan that produced an estimate (none before the IMU static initialisation, which needs `imu.init_window_s` of still data); config section: the three new `gnss.*` keys.
-- [ ] **Step 6: Full verification** — GTSAM command without `--target` and no-GTSAM command without `--target`. Expected: last line `BUILD OK: <dir>` for both (all ctest PASS). Then `python -m pytest tests/python -q` (Windows). Expected: PASS.
-- [ ] **Step 7: Bench numbers for the PR** — in WSL, run `~/mss-build/feat-pipeline/bench/mss_bench config/default.yaml <test_output>/E02_TwoRunsAreBitIdentical/data --overlay <its overlay> --out /tmp/mss-bench-a` three times under `/usr/bin/time -v`; record push_scan p50/p95 from bench.json, wall time and `Percent of CPU`. Paste into the PR description ("before" = identity stub, not comparable).
-- [ ] **Step 8: Format check, commit**
+- [ ] **Step 5: README** (BLOCKED: README.md is outside this branch's scope allowance; reported to the controller) — under "Latency benchmark": `est.tum` has one line per scan that produced an estimate (none before the IMU static initialisation, which needs `imu.init_window_s` of still data); config section: the three new `gnss.*` keys.
+- [x] **Step 6: Full verification** — GTSAM command without `--target` and no-GTSAM command without `--target`. Expected: last line `BUILD OK: <dir>` for both (all ctest PASS). Then `python -m pytest tests/python -q` (Windows). Expected: PASS.
+- [x] **Step 7: Bench numbers for the PR** — in WSL, run `~/mss-build/feat-pipeline/bench/mss_bench config/default.yaml <test_output>/E02_TwoRunsAreBitIdentical/data --overlay <its overlay> --out /tmp/mss-bench-a` three times under `/usr/bin/time -v`; record push_scan p50/p95 from bench.json, wall time and `Percent of CPU`. Paste into the PR description ("before" = identity stub, not comparable).
+- [x] **Step 8: Format check, commit**
 ```bash
 git add bench/main.cpp tests/component/test_bench_replay.cpp tests/component/CMakeLists.txt README.md
 git commit -m "fix(bench): drain before every scan push so a late IMU sample cannot drop a scan; E-02 determinism test"
 ```
+
+---
+
+## Implementation notes (PR A)
+
+- Contract issues 1-4 approved by the controller. Issue 2 is applied as a move: the helpers
+  are public in `gnss.hpp`; `mss_pipeline` and the pipeline tests do NOT add
+  `core/gnss/src` to their include path.
+- `Estimator::drain` hands the core the IMU sample covering a scan's end before the scan
+  (it sorts after the scan key); pipeline.md section 8.
+- IMU init window: from the last sample at or before `t - init_window_s` to the first
+  sample at or after `t` (a window ending at `t` is shorter than `init_window_s` off the
+  sample grid); constructor bound is `ceil(init_window_s * rate_hz) + 3 <= kMaxImuQueue`.
+- An uncovered scan (flush at EOF) is detected before any IMU is integrated: counted in
+  `n_skipped_scans` and `n_uncovered_scans`, state untouched.
+- `AllocCounter::count_this_thread()` (additive) for the two estimator no-alloc tests:
+  GTSAM's TBB workers allocate on their own threads after the first optimize().
+- `PushScanCopiesWithoutAlloc` and `RunOnceOrdersByKeyWithTieOrder` also needed updated
+  expectations (still-IMU prefix / no estimate), beyond the four tests named in Step 3.
+- Box world IMU acc noise density 2.0e-3 (not 5.8e-3): at 200 Hz the default density gives
+  a per-sample std above `imu.init_max_acc_std_mps2`, so initialisation never passes.
