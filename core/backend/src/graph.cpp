@@ -236,9 +236,9 @@ struct Graph::Impl {
       isam = std::make_unique<gtsam::ISAM2>(params);
       for (KeyId k = 0; k < guesses.size(); ++k) {
         guesses[k] = state_of(k, last_estimate);
-        imu_end_committed[k] = false;
-        imu_start_committed[k] = false;
       }
+      // The IMU start/end flags stay set: the re-queued factors are still accepted IMU
+      // factors (they never pass through add_imu_factor again).
       pending_priors.push_back(committed_factors);
       committed_factors = gtsam::NonlinearFactorGraph();
       last_estimate = gtsam::Values();
