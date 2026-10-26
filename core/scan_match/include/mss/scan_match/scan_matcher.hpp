@@ -89,8 +89,10 @@ class ScanMatcher {
   ///     dimensionless multiplier from config. Disabled: `cov = C`. Enabled:
   ///     `cov = degeneracy::relax_covariance(C, report, deg_cfg)` with the final
   ///     iteration's report, so a flagged direction gets
-  ///     `relax_factor * cov_scale * sigma_r^2 / eig_threshold`. The backend additionally
-  ///     masks flagged directions through the DegeneracyReport (ADR-004).
+  ///     `relax_factor * cov_scale * sigma_r^2 / eig_threshold`. The relaxed covariance
+  ///     is the only degeneracy mitigation in the factor; the pipeline passes the
+  ///     DegeneracyReport to backend for diagnostics only (see graph.hpp) and must not
+  ///     call relax_covariance again.
   /// Body-frame conversion is the pipeline's job, not this class's: the pipeline uses
   /// `transform_covariance(cov, T_b_l)` (lie.hpp) to express cov in b, and rotates the
   /// degeneracy directions with `se3_adj(T_b_l)` (see degeneracy.hpp).

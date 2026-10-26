@@ -128,8 +128,10 @@ module's `relax_covariance` itself, so `MatchResult::cov` is final (the pipeline
 it again): along `v_k` the variance becomes `relax_factor * cov_scale * s2 / tau`, at least
 `relax_factor` times the regularised value and, with the defaults, larger than every unflagged
 variance `cov_scale * s2 / lambda_j` (`lambda_j >= tau`) since `relax_factor > 1` (test
-`D03_CorridorProjectedNotSingular`). This is still a finite number, not "no information": the
-backend additionally masks flagged directions through the DegeneracyReport (ADR-004). With
+`D03_CorridorProjectedNotSingular`). This is still a finite number, not "no information".
+The relaxed covariance is the only degeneracy mitigation in the factor; the pipeline passes
+the DegeneracyReport to backend for diagnostics only (see graph.hpp) and must not call
+relax_covariance again. With
 nothing flagged `relax_covariance` is the exact identity, so enabling the flag in a
 well-constrained scene changes nothing.
 

@@ -78,9 +78,10 @@ symmetrisation removes rounding asymmetry only (it does not change `v^T cov' v`)
 `f = 1`, `A = I` up to rounding. `cov'` stays positive definite because `A` is invertible.
 
 Caller: `scan_match::ScanMatcher::align` applies `relax_covariance` to `MatchResult::cov`
-(when enabled, with the final iteration's report), so that covariance is final and the
-pipeline must not apply it again. The backend additionally masks flagged directions through
-the DegeneracyReport (ADR-004).
+(when enabled, with the final iteration's report), so that covariance is final. The relaxed
+covariance is the only degeneracy mitigation in the factor; the pipeline passes the
+DegeneracyReport to backend for diagnostics only (see graph.hpp) and must not call
+relax_covariance again.
 
 ## 5. Frames
 

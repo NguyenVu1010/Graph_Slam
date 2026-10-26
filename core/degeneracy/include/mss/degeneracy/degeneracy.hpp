@@ -47,8 +47,9 @@ common::Vec6 project_update(const common::Vec6& delta, const common::DegeneracyR
 /// for every degenerate eigenvector `v_k`, and cov' is symmetric (symmetrised exactly).
 /// With no flags the result equals `cov` exactly.
 /// Caller: scan_match::ScanMatcher::align applies it to MatchResult::cov (when enabled),
-///   so that cov is final; the pipeline must not apply it again. The backend additionally
-///   masks flagged directions through the DegeneracyReport (ADR-004).
+///   so that cov is final. The relaxed covariance is the only degeneracy mitigation in
+///   the factor; the pipeline passes the DegeneracyReport to backend for diagnostics only
+///   (see graph.hpp) and must not call relax_covariance again.
 /// Frames: `cov` in the same tangent as the H given to analyze() (l for scan matching,
 ///   before the pipeline transforms it to b). Units: m^2 / rad^2 blocks.
 /// Preconditions: `cfg.relax_factor >= 1` (validated by load_config).
