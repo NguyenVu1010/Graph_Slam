@@ -51,6 +51,33 @@ Lla enu_to_lla(const common::Vec3& p_e, const Lla& origin);
 /// Tests: G-02 (rejects bad fixes before the chi-square stage), gnss unit tests.
 common::Status gate_fix(const common::GnssMeasurement& m, double max_cov_m2);
 
+/// Chi-square quantile, 3 DoF, q = 0.95 (docs/derivations/gnss.md section 3): the default of
+/// GnssConfig::chi2_gate (YAML gnss.chi2_gate).
+constexpr double kChi2Gate3Dof95 = 7.814727903251178;
+
+/// GNSS position residual and its Jacobian (docs/derivations/gnss.md section 2).
+///   Residual: r = p_e_g - T_e_w * (T_w_b * p_b_g)   (3x1, m, expressed in e).
+///   Variable: T_w_b, right perturbation T_w_b <- T_w_b * Exp(xi), xi = [rho, phi].
+///   J_r_xi = [ -R_e_w R_w_b ,  R_e_w R_w_b skew(p_b_g) ]   (3x6).
+/// Frames: p_e_g antenna in e; T_e_w maps w to e; T_w_b body in w; p_b_g lever arm in b.
+/// `J_r_xi` may be nullptr. Errors: none. Hot path: no (per fix); no allocation.
+/// Tests: G-02 (test_gnss_gate, Jacobian vs numerical differentiation).
+common::Vec3 gnss_residual(const common::Vec3& p_e_g,
+                           const common::Pose& T_e_w,
+                           const common::Pose& T_w_b,
+                           const common::Vec3& p_b_g,
+                           Eigen::Matrix<double, 3, 6>* J_r_xi);
+
+/// Normalised innovation squared r^T S^-1 r (S in m^2, r in m, both in e).
+/// Errors: "non-finite innovation" (r or S non-finite), "innovation covariance not
+/// positive definite" (LLT fails). No allocation. Tests: G-02.
+common::Result<double> innovation_nis(const common::Vec3& r_e, const common::Mat3& s_e);
+
+/// Chi-square gate (G-02): ok when NIS <= threshold (the pipeline passes
+/// GnssConfig::chi2_gate). Errors: those of innovation_nis, then "chi-square gate
+/// exceeded". No allocation, no logging. Tests: G-02.
+common::Status chi_square_gate(const common::Vec3& r_e, const common::Mat3& s_e, double threshold);
+
 /// Estimates `T_e_w`, the transform from the SLAM world frame w to the ENU frame e, from
 /// pairs of GNSS antenna positions (in e) and estimated antenna positions (in w).
 ///
@@ -66,17 +93,16 @@ class GnssAligner {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  /// Minimum number of accepted pairs before update() returns a transform. Moving it to
-  /// GnssConfig (YAML `gnss.align_min_pairs`) is pending (gnss plan Contract issue 2,
-  /// owned by the pipeline).
+  /// Default of GnssConfig::align_min_pairs: minimum number of accepted pairs before
+  /// update() returns a transform. The aligner uses the configured value.
   static constexpr int kMinPairsForAlignment = 10;
-  /// Minimum RMS horizontal distance (m) of the antenna positions from their centroid,
-  /// required on both the w side and the e side; below it yaw is unobservable. Moving it
-  /// to GnssConfig (YAML `gnss.align_min_spread_m`) is pending (gnss plan Contract
-  /// issue 2, owned by the pipeline).
+  /// Default of GnssConfig::align_min_spread_m: minimum RMS horizontal distance (m) of the
+  /// antenna positions from their centroid, required on both the w side and the e side;
+  /// below it yaw is unobservable. The aligner uses the configured value.
   static constexpr double kMinHorizontalSpreadM = 1.0;
 
-  /// Errors: none (GnssConfig needs no validation here). Hot path: no.
+  /// Stores `cfg.align_min_pairs` and `cfg.align_min_spread_m` (validated by load_config).
+  /// Errors: none. Hot path: no.
   /// Tests: G-03, G-04 construct it.
   explicit GnssAligner(const GnssConfig& cfg);
 
@@ -91,10 +117,10 @@ class GnssAligner {
   /// Errors (Result::error). Checks run in the listed order; the first failure is
   ///   returned:
   ///   1. "non-finite input" (pair NOT added);
-  ///   2. "not enough pairs" while fewer than kMinPairsForAlignment pairs were added,
-  ///      counting this one (the pair IS added);
+  ///   2. "not enough pairs" while fewer than GnssConfig::align_min_pairs pairs were
+  ///      added, counting this one (the pair IS added);
   ///   3. "insufficient horizontal spread" while the w-side or the e-side spread is
-  ///      < kMinHorizontalSpreadM (the pair IS added).
+  ///      < GnssConfig::align_min_spread_m (the pair IS added).
   /// Hot path: no (per fix); no allocation on the success path and on error paths that
   /// use string literals, no logging.
   /// Tests: G-03 (yaw error < 0.5 deg after 30 m), G-04 (lever arm).
@@ -105,6 +131,8 @@ class GnssAligner {
  private:
   // Running sums over all accepted pairs, shifted by the first pair for conditioning
   // (docs/derivations/gnss.md section 4). a = p_w_g - ref_w_, b = p_e_g - ref_e_.
+  int min_pairs_ = kMinPairsForAlignment;        // pairs, from GnssConfig
+  double min_spread_m_ = kMinHorizontalSpreadM;  // m, from GnssConfig
   int n_pairs_ = 0;
   common::Vec3 ref_w_ = common::Vec3::Zero();         // m, first p_w_g
   common::Vec3 ref_e_ = common::Vec3::Zero();         // m, first p_e_g

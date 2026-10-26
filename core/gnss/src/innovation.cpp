@@ -1,10 +1,12 @@
-#include "innovation.hpp"
+#include "mss/gnss/gnss.hpp"  // own header first (CLAUDE.md)
+// The file name differs from the header name, so clang-format cannot detect the main
+// include; this comment keeps it in its own block.
 
 #include <Eigen/Cholesky>
 
 #include "mss/common/lie.hpp"
 
-namespace mss::gnss::detail {
+namespace mss::gnss {
 
 namespace {
 
@@ -61,4 +63,4 @@ common::Status chi_square_gate(const common::Vec3& r_e, const common::Mat3& s_e,
   return common::Status::ok();
 }
 
-}  // namespace mss::gnss::detail
+}  // namespace mss::gnss

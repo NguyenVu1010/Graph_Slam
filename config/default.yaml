@@ -41,6 +41,9 @@ mss_node:
       sigma_h_m: 1.5  # horizontal fix sigma, m
       sigma_v_m: 3.0  # vertical fix sigma, m
       max_cov_m2: 25.0  # gate: reject fixes whose per-axis variance exceeds this, m^2
+      align_min_pairs: 10      # accepted fixes needed before the w->e alignment is used
+      align_min_spread_m: 1.0  # min RMS horizontal spread of the fixes for alignment, m
+      chi2_gate: 7.814727903251178  # chi-square 3 DoF at q = 0.95 (G-02 band 90-99 %), NIS
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

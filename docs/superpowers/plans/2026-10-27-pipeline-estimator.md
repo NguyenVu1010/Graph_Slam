@@ -120,7 +120,7 @@ git commit -m "docs(pipeline): derivation and ADR-017 for the single-thread esti
 **Interfaces:**
 - Produces: `GnssConfig::align_min_pairs` (int, pairs), `align_min_spread_m` (m), `chi2_gate` (NIS threshold, 3 DoF); YAML `gnss.align_min_pairs: 10`, `gnss.align_min_spread_m: 1.0`, `gnss.chi2_gate: 7.814727903251178  # chi-square 3 DoF at q = 0.95 (G-02 band 90-99 %)`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 ```cpp
 // test_config.cpp
 TEST(Config, GnssGateAndAlignmentKeysLoaded) {
@@ -141,10 +141,10 @@ TEST(GnssAligner, UsesConfiguredSpread) {
   // cfg.align_min_spread_m = 10.0, 12 pairs on a 5 m circle -> "insufficient horizontal spread"
 }
 ```
-- [ ] **Step 2: Run to verify they fail** — no-GTSAM command, `--target test_config`, then `--target test_gnss`. Expected: compile errors (no such member).
-- [ ] **Step 3: Implement.** Fields per Contract issue 1 (defaults 10 / 1.0 / 7.814727903251178, unit comments). Parser lines: `r.field("gnss.align_min_pairs", c.gnss.align_min_pairs, Range::kAtLeastOne); r.field("gnss.align_min_spread_m", c.gnss.align_min_spread_m, Range::kPositive); r.field("gnss.chi2_gate", c.gnss.chi2_gate, Range::kPositive);`. `GnssAligner`: private `int min_pairs_; double min_spread_m_;` from cfg; `aligner.cpp` uses them; update the two constant comments ("default of GnssConfig::..."). YAML keys after `max_cov_m2` with unit comments. If Contract issue 1 is refused: only `chi2_gate` (+ its tests), drop the aligner tests.
-- [ ] **Step 4: Run** — `--target test_config`, `--target test_gnss`, `--target test_interfaces_compile`, then `python -m pytest tests/python/test_sim03_consistency.py -q` on Windows from the worktree (overlay keys still valid). Expected: all PASS.
-- [ ] **Step 5: Format check, commit**
+- [x] **Step 2: Run to verify they fail** — no-GTSAM command, `--target test_config`, then `--target test_gnss`. Expected: compile errors (no such member).
+- [x] **Step 3: Implement.** Fields per Contract issue 1 (defaults 10 / 1.0 / 7.814727903251178, unit comments). Parser lines: `r.field("gnss.align_min_pairs", c.gnss.align_min_pairs, Range::kAtLeastOne); r.field("gnss.align_min_spread_m", c.gnss.align_min_spread_m, Range::kPositive); r.field("gnss.chi2_gate", c.gnss.chi2_gate, Range::kPositive);`. `GnssAligner`: private `int min_pairs_; double min_spread_m_;` from cfg; `aligner.cpp` uses them; update the two constant comments ("default of GnssConfig::..."). YAML keys after `max_cov_m2` with unit comments. If Contract issue 1 is refused: only `chi2_gate` (+ its tests), drop the aligner tests.
+- [x] **Step 4: Run** — `--target test_config`, `--target test_gnss`, `--target test_interfaces_compile`, then `python -m pytest tests/python/test_sim03_consistency.py -q` on Windows from the worktree (overlay keys still valid). Expected: all PASS.
+- [x] **Step 5: Format check, commit**
 ```bash
 git add core/gnss config/default.yaml core/pipeline/src/config.cpp tests/unit/test_config.cpp tests/unit/test_gnss_aligner.cpp
 git commit -m "feat(gnss): alignment thresholds and chi-square gate level from GnssConfig"
