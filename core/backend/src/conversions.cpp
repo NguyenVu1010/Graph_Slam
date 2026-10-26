@@ -5,7 +5,7 @@
 namespace mss::backend::detail {
 
 gtsam::Pose3 to_gtsam(const common::Pose& T) {
-  return gtsam::Pose3(gtsam::Rot3(T.R), gtsam::Point3(T.p));
+  return {gtsam::Rot3(T.R), gtsam::Point3(T.p)};
 }
 
 common::Pose from_gtsam(const gtsam::Pose3& T) {
@@ -16,7 +16,7 @@ common::Pose from_gtsam(const gtsam::Pose3& T) {
 }
 
 gtsam::imuBias::ConstantBias to_gtsam(const common::ImuBias& b) {
-  return gtsam::imuBias::ConstantBias(b.ba, b.bg);  // order: accelerometer, gyroscope
+  return {b.ba, b.bg};  // ConstantBias(accelerometer, gyroscope)
 }
 
 common::ImuBias from_gtsam(const gtsam::imuBias::ConstantBias& b) {

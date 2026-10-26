@@ -38,18 +38,19 @@ class ImuPreintFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3,
                   const common::PreintegratedDelta& delta,
                   const common::Vec3& g_w);
 
-  gtsam::Vector evaluateError(const gtsam::Pose3& X_i,
-                              const gtsam::Vector3& v_i,
-                              const gtsam::Pose3& X_j,
-                              const gtsam::Vector3& v_j,
-                              const gtsam::imuBias::ConstantBias& b_i,
-                              boost::optional<gtsam::Matrix&> H_x_i = boost::none,
-                              boost::optional<gtsam::Matrix&> H_v_i = boost::none,
-                              boost::optional<gtsam::Matrix&> H_x_j = boost::none,
-                              boost::optional<gtsam::Matrix&> H_v_j = boost::none,
-                              boost::optional<gtsam::Matrix&> H_b_i = boost::none) const override;
+  [[nodiscard]] gtsam::Vector evaluateError(
+      const gtsam::Pose3& X_i,
+      const gtsam::Vector3& v_i,
+      const gtsam::Pose3& X_j,
+      const gtsam::Vector3& v_j,
+      const gtsam::imuBias::ConstantBias& b_i,
+      boost::optional<gtsam::Matrix&> H_x_i = boost::none,
+      boost::optional<gtsam::Matrix&> H_v_i = boost::none,
+      boost::optional<gtsam::Matrix&> H_x_j = boost::none,
+      boost::optional<gtsam::Matrix&> H_v_j = boost::none,
+      boost::optional<gtsam::Matrix&> H_b_i = boost::none) const override;
 
-  gtsam::NonlinearFactor::shared_ptr clone() const override;
+  [[nodiscard]] gtsam::NonlinearFactor::shared_ptr clone() const override;
 
  private:
   common::PreintegratedDelta delta_;

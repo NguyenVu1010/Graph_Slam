@@ -6,6 +6,7 @@
 #error "backend assumes Pose3::retract = T * Expmap (docs/derivations/backend_factors.md section 1)"
 #endif
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -15,7 +16,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include <Eigen/Cholesky>
@@ -41,11 +41,9 @@ namespace mss::backend {
 namespace {
 
 using common::KeyId;
-using common::Mat3;
 using common::Mat6;
 using common::NavState;
 using common::Vec3;
-using Mat9 = Eigen::Matrix<double, 9, 9>;
 using Vec6 = Eigen::Matrix<double, 6, 1>;
 
 // Robust kernel width for loop factors (backend_factors.md section 5, ADR-015):
@@ -53,6 +51,7 @@ using Vec6 = Eigen::Matrix<double, 6, 1>;
 // backend.loop_cauchy_k YAML key comes with the loop module.
 constexpr double kLoopCauchyK = 3.5485;
 constexpr double kNsPerS = 1e9;
+constexpr double kMsPerNs = 1e-6;
 // IMU duration tolerance in sample periods (graph.hpp, add_imu_factor).
 constexpr double kImuTolSamples = 1.5;
 
@@ -134,9 +133,9 @@ struct Graph::Impl {
   gtsam::Values last_estimate;  // as of the last successful optimize()
   std::size_t degenerate_keyframes = 0;
 
-  bool known(KeyId k) const { return k < guesses.size(); }
+  [[nodiscard]] bool known(KeyId k) const { return k < guesses.size(); }
 
-  bool imu_ends_at(KeyId k) const {
+  [[nodiscard]] bool imu_ends_at(KeyId k) const {
     if (imu_end_committed[k]) {
       return true;
     }
@@ -190,7 +189,7 @@ struct Graph::Impl {
   }
 
   // State of keyframe k from `values` where present, else from its guess.
-  NavState state_of(KeyId k, const gtsam::Values& values) const {
+  [[nodiscard]] NavState state_of(KeyId k, const gtsam::Values& values) const {
     NavState x = guesses[k];
     if (values.exists(detail::pose_key(k))) {
       x.T_w_b = detail::from_gtsam(values.at<gtsam::Pose3>(detail::pose_key(k)));
@@ -290,10 +289,13 @@ void Graph::add_imu_factor(common::KeyId i,
   const double mismatch_ns = std::fabs(static_cast<double>(delta_ns - span_ns));
   const double tol_ns = kImuTolSamples * kNsPerS / m.imu_cfg.rate_hz;
   if (mismatch_ns > tol_ns) {
-    char why[96];
-    std::snprintf(
-        why, sizeof(why), "duration mismatch %.3f ms > %.3f ms", mismatch_ns * 1e-6, tol_ns * 1e-6);
-    reject(call, why);
+    std::array<char, 96> why{};
+    std::snprintf(why.data(),
+                  why.size(),
+                  "duration mismatch %.3f ms > %.3f ms",
+                  mismatch_ns * kMsPerNs,
+                  tol_ns * kMsPerNs);
+    reject(call, why.data());
     return;
   }
 
@@ -472,7 +474,7 @@ common::Result<common::Estimate> Graph::optimize() {
     m.imu_end_committed[e] = true;
   }
   m.imu_end_pending.clear();
-  m.last_estimate = std::move(estimate);
+  m.last_estimate = estimate;
 
   const KeyId latest = m.guesses.size() - 1;
   common::Estimate est;
@@ -484,7 +486,7 @@ common::Result<common::Estimate> Graph::optimize() {
 
 common::PoseCovariance Graph::marginal_cov(common::KeyId k) const {
   const Impl& m = *impl_;
-  const common::PoseCovariance nan =
+  common::PoseCovariance nan =
       common::PoseCovariance::Constant(std::numeric_limits<double>::quiet_NaN());
   if (!m.known(k) || !m.last_estimate.exists(detail::pose_key(k))) {
     return nan;

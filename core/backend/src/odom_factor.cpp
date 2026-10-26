@@ -25,8 +25,8 @@ std::optional<OdomBetweenFactor> OdomBetweenFactor::create(gtsam::Key x_i,
   if (es.info() != Eigen::Success) {
     return std::nullopt;
   }
-  const Vec6 lambda = es.eigenvalues();  // ascending
-  const Mat6 U = es.eigenvectors();
+  const Vec6& lambda = es.eigenvalues();  // ascending
+  const Mat6& U = es.eigenvectors();
   const double lambda_max = lambda(5);
   if (!(lambda_max > 0.0) || lambda(0) < -kOdomRankRelTol * lambda_max) {
     return std::nullopt;  // zero or not positive semi-definite

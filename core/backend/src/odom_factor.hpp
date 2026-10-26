@@ -32,14 +32,15 @@ class OdomBetweenFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3, gtsam::P
                                                  const common::OdomDelta& odom);
 
   /// Number of whitened rows (constrained directions), 1..6.
-  int rank() const { return rank_; }
+  [[nodiscard]] int rank() const { return rank_; }
 
-  gtsam::Vector evaluateError(const gtsam::Pose3& T_w_bi,
-                              const gtsam::Pose3& T_w_bj,
-                              boost::optional<gtsam::Matrix&> H_x_i = boost::none,
-                              boost::optional<gtsam::Matrix&> H_x_j = boost::none) const override;
+  [[nodiscard]] gtsam::Vector evaluateError(
+      const gtsam::Pose3& T_w_bi,
+      const gtsam::Pose3& T_w_bj,
+      boost::optional<gtsam::Matrix&> H_x_i = boost::none,
+      boost::optional<gtsam::Matrix&> H_x_j = boost::none) const override;
 
-  gtsam::NonlinearFactor::shared_ptr clone() const override;
+  [[nodiscard]] gtsam::NonlinearFactor::shared_ptr clone() const override;
 
  private:
   OdomBetweenFactor(

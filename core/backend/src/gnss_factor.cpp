@@ -25,7 +25,7 @@ GnssPositionFactor::GnssPositionFactor(gtsam::Key x,
 gtsam::Vector GnssPositionFactor::evaluateError(const gtsam::Pose3& T_w_b,
                                                 boost::optional<gtsam::Matrix&> H_x) const {
   const Mat3 R_w_b = T_w_b.rotation().matrix();
-  const Vec3 p_w_b = T_w_b.translation();
+  const Vec3& p_w_b = T_w_b.translation();
   const Vec3 r = T_e_w_.R * (R_w_b * p_b_g_ + p_w_b) + T_e_w_.p - p_e_g_;
   if (H_x) {
     const Mat3 R_e_b = T_e_w_.R * R_w_b;

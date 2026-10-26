@@ -37,8 +37,8 @@ gtsam::Vector ImuPreintFactor::evaluateError(const gtsam::Pose3& X_i,
                                              boost::optional<gtsam::Matrix&> H_b_i) const {
   const Mat3 R_i = X_i.rotation().matrix();
   const Mat3 R_j = X_j.rotation().matrix();
-  const Vec3 p_i = X_i.translation();
-  const Vec3 p_j = X_j.translation();
+  const Vec3& p_i = X_i.translation();
+  const Vec3& p_j = X_j.translation();
   const double T = delta_.dt_s;
 
   // First-order bias correction (imu_preintegration.md section 5).

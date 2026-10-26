@@ -24,10 +24,10 @@ class GnssPositionFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3> {
                      const common::Pose& T_e_w,
                      const common::Vec3& p_b_g);
 
-  gtsam::Vector evaluateError(const gtsam::Pose3& T_w_b,
-                              boost::optional<gtsam::Matrix&> H_x = boost::none) const override;
+  [[nodiscard]] gtsam::Vector evaluateError(
+      const gtsam::Pose3& T_w_b, boost::optional<gtsam::Matrix&> H_x = boost::none) const override;
 
-  gtsam::NonlinearFactor::shared_ptr clone() const override;
+  [[nodiscard]] gtsam::NonlinearFactor::shared_ptr clone() const override;
 
  private:
   common::Vec3 p_e_g_;
