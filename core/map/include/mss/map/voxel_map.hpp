@@ -88,6 +88,14 @@ class VoxelMap {
   /// Tests: M-02 (voxels outside the radius are removed).
   void prune(const common::Vec3& p_w_b);
 
+  /// Empties the map: hash table, voxel pool and counters return to the state right after
+  /// the constructor; capacity and memory are kept, nothing is freed or allocated. The
+  /// pipeline calls it before re-inserting the keyframe window with corrected poses after
+  /// a loop closure (ADR-016).
+  /// Errors: none. Does not allocate. Hot path: no (runs between scans).
+  /// Tests: ClearResetsToConstructedState, ClearDoesNotAllocate.
+  void clear();
+
   /// Number of occupied voxels, in [0, max_voxels]. O(1). Hot path safe.
   /// Tests: M-02.
   std::size_t num_voxels() const;

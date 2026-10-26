@@ -225,6 +225,53 @@ TEST(VoxelMap, InsertMatchesReferenceCounts) {
   EXPECT_GT(m.num_dropped(), 0u);
 }
 
+TEST(VoxelMap, ClearResetsToConstructedState) {
+  std::mt19937 rng(7);
+  const ScanFrame scan = make_scan(uniform_points(rng, 5000, -20.0, 20.0));
+  MapConfig small = default_map_config();
+  small.max_voxels = 64;  // forces drops, so dropped_ and the free stack are exercised
+  VoxelMap m(small);
+  m.insert(scan, Pose{});
+  ASSERT_GT(m.num_voxels(), 0u);
+  ASSERT_GT(m.num_dropped(), 0u);
+
+  m.clear();
+  EXPECT_EQ(m.num_voxels(), 0u);
+  EXPECT_EQ(m.num_points(), 0u);
+  EXPECT_EQ(m.num_dropped(), 0u);
+  NeighborBuffer nb;
+  EXPECT_EQ(m.knn(Vec3(0.0, 0.0, 0.0), 5, nb), 0);
+
+  // A fresh map and a cleared map give identical counts after the same insert.
+  VoxelMap fresh(small);
+  fresh.insert(scan, Pose{});
+  m.insert(scan, Pose{});
+  EXPECT_EQ(m.num_voxels(), fresh.num_voxels());
+  EXPECT_EQ(m.num_points(), fresh.num_points());
+  EXPECT_EQ(m.num_dropped(), fresh.num_dropped());
+  NeighborBuffer a;
+  NeighborBuffer b;
+  const Vec3 q(1.0, -2.0, 0.5);
+  ASSERT_EQ(m.knn(q, 5, a), fresh.knn(q, 5, b));
+  for (int i = 0; i < a.size; ++i) {
+    EXPECT_EQ(a.dist2[i], b.dist2[i]);
+  }
+}
+
+TEST(VoxelMap, ClearDoesNotAllocate) {
+  std::mt19937 rng(8);
+  const ScanFrame scan = make_scan(uniform_points(rng, 2000, -10.0, 10.0));
+  VoxelMap m(default_map_config());
+  m.insert(scan, Pose{});
+  AllocCounter::reset();
+  {
+    EigenMallocGuard g;
+    m.clear();
+    m.insert(scan, Pose{});
+  }
+  EXPECT_EQ(AllocCounter::count(), 0u);
+}
+
 TEST(VoxelMap, InsertDoesNotAllocate) {
   std::mt19937 rng(4);
   const ScanFrame scan = make_scan(uniform_points(rng, 10000, -20.0, 20.0));

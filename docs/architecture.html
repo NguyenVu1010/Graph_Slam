@@ -481,7 +481,7 @@ const DATA = {
     { f: "in_gnss", t: "gnss", l: "lat/lon/alt" }, { f: "in_odom", t: "odom", l: "v, ω" },
     { f: "preprocess", t: "scan_match", l: "ScanFrame" }, { f: "imu", t: "scan_match", l: "T_w_b dự đoán" },
     { f: "scan_match", t: "map", l: "insert / knn", both: true }, { f: "scan_match", t: "degeneracy", l: "H, T_w_l" },
-    { f: "map", t: "loop", l: "keyframes" },
+    { f: "map", t: "loop", l: "keyframes" }, { f: "backend", t: "map", l: "pose keyframe đã tối ưu → dựng lại cache (ADR-016)" },
     { f: "degeneracy", t: "backend", l: "pose, cov, mask" }, { f: "loop", t: "backend", l: "loop factor" },
     { f: "imu", t: "backend", l: "Δ preint", via: 254, lx: 440, ty: 150 },
     { f: "gnss", t: "backend", l: "p_e_g", via: 262, lx: 560, ty: 172 },

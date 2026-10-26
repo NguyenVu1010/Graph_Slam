@@ -23,5 +23,6 @@ Bắt buộc có ADR trước khi: thêm phụ thuộc, đổi build system, đ�
 | [013](013-build-layout.md) | Bố cục build cụ thể: target theo module, GTSAM chỉ trong backend, option CMake | Chấp nhận |
 | [014](014-bench-dataset-format.md) | Định dạng dữ liệu cho bench: nhị phân phẳng `mssdata` chuyển từ bag MCAP | Chấp nhận |
 | [015](015-imu-factor-custom-preintegration.md) | IMU vào graph bằng factor preintegration 9x9 tự viết (thay câu `CombinedImuFactor` của ADR-004), loop dùng kernel Cauchy | Chấp nhận |
+| [016](016-map-correction-after-loop-closure.md) | Sửa bản đồ sau loop closure: kho keyframe là nguồn sự thật, `VoxelMap` là cache dựng lại được (`clear()`, khoá `map.window_keyframes`…) | Chấp nhận |
 
 Trạng thái: Đề xuất → Chấp nhận → Thay thế. ADR-013 ghi lại bố cục đã scaffold và đang chạy trong CI, nên ở trạng thái chấp nhận; ADR-001 đến 004 cần duyệt lại để chuyển sang chấp nhận (việc còn mở trong `docs/spec.md`).
