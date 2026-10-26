@@ -62,7 +62,7 @@ MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_sla
 **Interfaces:**
 - Produces: `Preprocessor` private members `PreprocessConfig cfg_; common::Pose T_b_l_; std::size_t max_points_;` (Tasks 2-4 add `detail::DeskewTable deskew_;` and `detail::VoxelSet voxels_;`). Test target `test_preprocess`.
 
-- [ ] **Step 1: Write `docs/derivations/preprocess.md`**
+- [x] **Step 1: Write `docs/derivations/preprocess.md`**
 
 Sections (content fixed here, wording free):
 1. *Deskew.* Point `p_l(t)` measured at `t = in.t_start + t_offset_ns`. `p_l0 = T_l0_l(t) * p_l(t)`, `T_l0_l(t) = T_b_l^-1 * T_b0_b(t) * T_b_l` (preprocessor.hpp). Skew model it inverts: ADR-011 section 3, `p_i <- T_l(t_i)^-1 * T_l(t_start) * p_i`.
@@ -71,7 +71,7 @@ Sections (content fixed here, wording free):
 4. *Exactness rule (planner's call).* `A_k` is set to the exact identity when `samples[k].T_b0_b` is bitwise identity (`R == I`, `p == 0`), and when `xi^l_k` is exactly zero or `t == t_k` the result is `A_k` without calling `Exp`. This makes static scans and `t_offset_ns == 0` points bit-exact.
 5. *Voxel key.* `key = floor(p / downsample_voxel_m)` per axis as `int64`, computed from the float coordinates written to `out` (so a kept point is always inside its own voxel); the first point in input order wins. No residual and no Jacobian in this module, so there is no numerical-difference test; correctness is checked by P-01 against an analytic plane.
 
-- [ ] **Step 2: Write the failing constructor tests in `tests/unit/test_preprocessor.cpp`**
+- [x] **Step 2: Write the failing constructor tests in `tests/unit/test_preprocessor.cpp`**
 
 ```cpp
 // make(cfg, max_points) constructs a Preprocessor with T_b_l = identity.
@@ -88,20 +88,20 @@ TEST(Preprocessor, RejectsInvalidConfig) {
 TEST(Preprocessor, RejectsNonFiniteConfig)  // NaN and +inf in each of the three doubles -> std::invalid_argument
 ```
 
-- [ ] **Step 3: Register the test and run it to verify it fails**
+- [x] **Step 3: Register the test and run it to verify it fails**
 
 `tests/unit/CMakeLists.txt`: `mss_add_test(test_preprocess test_preprocessor.cpp alloc_counter_impl.cpp)` (Tasks 2-3 append their test files to this same line).
 Run: build command with `--target test_preprocess`. Expected: link error (undefined `Preprocessor::Preprocessor`).
 
-- [ ] **Step 4: Implement the constructor in `core/preprocess/src/preprocessor.cpp`**
+- [x] **Step 4: Implement the constructor in `core/preprocess/src/preprocessor.cpp`**
 
 CMake: `add_library(mss_preprocess STATIC src/preprocessor.cpp)`, `mss_set_target_defaults(mss_preprocess)`, `PUBLIC` include dir, `target_link_libraries(mss_preprocess PUBLIC mss::common mss::imu)`; keep the `mss::preprocess` alias. The constructor throws `std::invalid_argument` with a message naming the YAML key (e.g. `"preprocess.max_range_m must be > preprocess.min_range_m"`) for the header's four conditions plus non-finite values. `process()` returns `common::Status::error("not implemented")` for now.
 
-- [ ] **Step 5: Run to verify pass**
+- [x] **Step 5: Run to verify pass**
 
 Run: build command with `--target test_preprocess`, then without `--target` (full build + ctest; confirms pipeline still links). Expected: all PASS.
 
-- [ ] **Step 6: Format check and commit**
+- [x] **Step 6: Format check and commit**
 
 ```bash
 git add docs/derivations/preprocess.md core/preprocess tests/unit/test_preprocessor.cpp tests/unit/CMakeLists.txt

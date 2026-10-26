@@ -1,7 +1,8 @@
-# preprocess: switch to STATIC and add sources when the first .cpp lands.
-add_library(mss_preprocess INTERFACE)
+# preprocess: range filter, IMU deskew and voxel downsampling of one LiDAR scan.
+add_library(mss_preprocess STATIC src/preprocessor.cpp)
 add_library(mss::preprocess ALIAS mss_preprocess)
-target_include_directories(mss_preprocess INTERFACE
+mss_set_target_defaults(mss_preprocess)
+target_include_directories(mss_preprocess PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(mss_preprocess INTERFACE mss::common mss::imu)  # ImuTrajectory
+target_link_libraries(mss_preprocess PUBLIC mss::common mss::imu)  # ImuTrajectory

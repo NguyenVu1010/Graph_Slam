@@ -65,6 +65,10 @@ class Preprocessor {
   common::Status process(const common::ScanFrame& in,
                          const imu::ImuTrajectory& traj,
                          common::ScanFrame& out);
+
+ private:
+  PreprocessConfig cfg_;
+  common::Pose T_b_l_;
 };
 
 }  // namespace mss::preprocess
