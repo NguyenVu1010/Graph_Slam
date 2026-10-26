@@ -54,7 +54,7 @@ None. Every public signature in `degeneracy.hpp` is implementable as declared.
 - Consumes: `common::Mat6`, `common::Vec6`, `common::PoseCovariance`, `common::DegeneracyReport` (`mss/common/types.hpp`); `degeneracy::DegeneracyConfig` (`mss/degeneracy/config.hpp`).
 - Produces: `common::DegeneracyReport analyze(const common::Mat6& H, const DegeneracyConfig& cfg)` defined; target `mss::degeneracy` is STATIC; test binary `test_degeneracy` (links `alloc_counter_impl.cpp`; Task 2 extends it); helper in the test's anonymous namespace `common::Mat6 random_spd(std::uint32_t seed)`: B with entries `N(0, 1)` from `std::mt19937(seed)`, returns `B * B^T + 1e-3 * I`.
 
-- [ ] **Step 1: Write `docs/derivations/degeneracy.md`**
+- [x] **Step 1: Write `docs/derivations/degeneracy.md`**
 
 Sections (formulas, no code):
 1. Source of H: per point `r = n_w . (T_w_l p_l - q_w)`, `J_r_xi = [ (R_w_l^T n_w)^T, -(R_w_l^T n_w)^T skew(p_l) ]` (scan_matcher.hpp), `H = sum w J^T J`. At `R_w_l = I` the row is `[n ; p x n]`. Variable: `xi = [rho, phi]`, right perturbation of `T_w_l`.
@@ -64,7 +64,7 @@ Sections (formulas, no code):
 5. Frames: everything is in the tangent of the pose H was built for (l). The pipeline converts afterwards (`transform_covariance(cov, T_b_l)`, `se3_adj(T_b_l) * v_k`).
 6. Non-finite fallback (eigvals 0, eigvecs I, all flagged when enabled) and its effect: zero update, `cov' = f cov`.
 
-- [ ] **Step 2: Write the failing tests** in `tests/unit/test_degeneracy.cpp` (cfg is `degeneracy::DegeneracyConfig{true, 100.0, 10.0}` unless stated)
+- [x] **Step 2: Write the failing tests** in `tests/unit/test_degeneracy.cpp` (cfg is `degeneracy::DegeneracyConfig{true, 100.0, 10.0}` unless stated)
 
 ```cpp
 TEST(Analyze, DiagonalSortedAscendingUnitNorm) {
@@ -100,22 +100,22 @@ TEST(Analyze, UpperTriangleIsIgnored) {
 }
 ```
 
-- [ ] **Step 3: Register the test and run it to verify it fails**
+- [x] **Step 3: Register the test and run it to verify it fails**
 
 Append `mss_add_test(test_degeneracy test_degeneracy.cpp alloc_counter_impl.cpp)` to `tests/unit/CMakeLists.txt`. Run the build command with `--target test_degeneracy`.
 Expected: link error `undefined reference to ... mss::degeneracy::analyze`.
 
-- [ ] **Step 4: CMake + implement `analyze` in `core/degeneracy/src/degeneracy.cpp`**
+- [x] **Step 4: CMake + implement `analyze` in `core/degeneracy/src/degeneracy.cpp`**
 
 `core/degeneracy/CMakeLists.txt` follows `core/io/CMakeLists.txt`: `add_library(mss_degeneracy STATIC src/degeneracy.cpp)`, alias `mss::degeneracy`, `mss_set_target_defaults(mss_degeneracy)`, PUBLIC include dir (same generator expressions as now), `target_link_libraries(mss_degeneracy PUBLIC mss::common)`.
 
 `analyze`: check finiteness of the lower triangle only (`i >= j`, `std::isfinite`); then `Eigen::SelfAdjointEigenSolver<common::Mat6> solver(H, Eigen::ComputeEigenvectors)` (reads the lower triangle; ascending eigenvalues; unit eigenvectors). If H is non-finite or `solver.info() != Eigen::Success`, return the default `DegeneracyReport` (eigvals 0, eigvecs I) with `degenerate[k] = cfg.enabled` for all k (planner's call: solver failure is handled like non-finite input). Otherwise copy eigvals and eigvecs and set `degenerate[k] = cfg.enabled && eigvals(k) < cfg.eig_threshold`. The decomposition also runs when disabled (planner's call: the report stays informative; the scan matcher calls it only when enabled).
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run the build command with `--target test_degeneracy`. Expected: `[  PASSED  ] 7 tests.` and `BUILD OK`.
 
-- [ ] **Step 6: Format check, then commit**
+- [x] **Step 6: Format check, then commit**
 
 ```bash
 git add docs/derivations/degeneracy.md core/degeneracy tests/unit/test_degeneracy.cpp tests/unit/CMakeLists.txt
