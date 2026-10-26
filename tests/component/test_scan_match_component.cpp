@@ -53,6 +53,7 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kDegToRad = kPi / 180.0;
 constexpr double kMapSpacingM = 0.125;
 constexpr double kRoomScanSpacingM = 0.5;
+constexpr double kDenseRoomScanSpacingM = 0.25;
 const Pose kTruthRoom{common::so3_exp(Vec3(0.02, -0.03, 0.2)), Vec3(0.4, -0.3, 0.2)};
 
 // Points per map voxel for the synthetic scenes: a 0.5 m voxel on a box edge or corner holds
@@ -369,6 +370,134 @@ TEST(ScanMatchComponent, S05_OutliersRobustKernel) {
                 e.rot_rad / kDegToRad,
                 r.value().inliers);
     EXPECT_LT(e.trans_m, 0.05) << "trial " << trial;
+  }
+}
+
+// Corridor along x (map 0.125 m, scan 0.25 m), truth = (0, 0.1, 0), init 0.3 m along the
+// unobservable axis plus 3 deg of yaw.
+struct CorridorFixture {
+  pipeline::Config cfg = default_config();
+  map::VoxelMap map{cfg.map};
+  Pose truth{Mat3::Identity(), Vec3(0.0, 0.1, 0.0)};
+  Pose init{common::so3_exp(Vec3(0.0, 0.0, 3.0 * kDegToRad)), Vec3(0.3, 0.2, 0.0)};
+  std::vector<Vec3> scan_w = corridor_points_w(0.25, 6.0);
+  ScanFrame scan{scan_w.size()};
+  CorridorFixture() {
+    insert_points(map, corridor_points_w(kMapSpacingM, 10.0));
+    make_scan(scan, scan_w, truth);
+    cfg.degeneracy.enabled = true;
+  }
+};
+
+// Test_CI_CD D-03 inside the matcher: an exactly degenerate corridor (lambda = 0 along x) is
+// solved (not "singular Hessian"), the observable DoF are recovered, the estimate does not
+// move along the axis and the covariance there is cov_scale * sigma_r^2 / eig_threshold.
+TEST(ScanMatchComponent, D03_CorridorProjectedNotSingular) {
+  CorridorFixture f;
+  ScanMatcher matcher(f.cfg.scan_match, f.cfg.degeneracy, f.cfg.realtime.max_points_per_scan);
+  const common::Result<MatchResult> r = matcher.align(f.scan, f.map, f.init);
+  ASSERT_TRUE(r.is_ok()) << r.reason();
+  const MatchResult& m = r.value();
+  const PoseError e = pose_error(m.T_w_l, f.truth);
+  std::printf("D-03 corridor: iters=%d inliers=%d p=(%.4f, %.4f, %.4f) rot_err_deg=%.2e\n",
+              m.iterations,
+              m.inliers,
+              m.T_w_l.p.x(),
+              m.T_w_l.p.y(),
+              m.T_w_l.p.z(),
+              e.rot_rad / kDegToRad);
+  EXPECT_LT(std::abs(m.T_w_l.p.y() - f.truth.p.y()), 0.01);
+  EXPECT_LT(std::abs(m.T_w_l.p.z() - f.truth.p.z()), 0.01);
+  EXPECT_LT(e.rot_rad, 0.1 * kDegToRad);
+  EXPECT_LT(std::abs(m.T_w_l.p.x() - f.init.p.x()), 0.01);
+
+  const common::DegeneracyReport report = degeneracy::analyze(m.H, f.cfg.degeneracy);
+  ASSERT_TRUE(report.degenerate[0]);
+  const Vec6 v0 = report.eigvecs.col(0);
+  const Vec3 axis_l = m.T_w_l.R.transpose() * Vec3::UnitX();
+  EXPECT_GT(std::abs(v0.head<3>().dot(axis_l)), std::cos(5.0 * kDegToRad));
+
+  // cov = c * H_reg^-1 with c = cov_scale * sigma_r^2 > 0, so cov * H_reg = c * I.
+  Mat6 H_reg = m.H;
+  for (int k = 0; k < 6; ++k) {
+    if (report.degenerate[static_cast<std::size_t>(k)]) {
+      const Vec6 v_k = report.eigvecs.col(k);
+      H_reg.noalias() +=
+          (f.cfg.degeneracy.eig_threshold - report.eigvals(k)) * (v_k * v_k.transpose());
+    }
+  }
+  const Mat6 cov_H = m.cov * H_reg;
+  const double c = cov_H.trace() / 6.0;
+  ASSERT_GT(c, 0.0);
+  EXPECT_LT((cov_H - c * Mat6::Identity()).norm(), 1e-6 * c * 6.0);
+  const double var_axis = v0.dot(m.cov * v0);
+  EXPECT_NEAR(var_axis * f.cfg.degeneracy.eig_threshold / c, 1.0, 1e-6);
+}
+
+// Enabled with nothing flagged (6-sided room): bitwise equal to disabled. The scan is the
+// 0.25 m room grid: with the 0.5 m grid (720 points) the smallest eigenvalue of H in the
+// first iteration is 77 < eig_threshold = 100 (141 at convergence), so a direction is
+// legitimately flagged and the paths differ.
+TEST(ScanMatchComponent, DegeneracyEnabledRoomEqualsDisabled) {
+  RoomFixture f;
+  const std::size_t max_points = f.cfg.realtime.max_points_per_scan;
+  degeneracy::DegeneracyConfig enabled = f.cfg.degeneracy;
+  enabled.enabled = true;
+  degeneracy::DegeneracyConfig disabled = f.cfg.degeneracy;
+  disabled.enabled = false;
+  ScanMatcher a(f.cfg.scan_match, enabled, max_points);
+  ScanMatcher b(f.cfg.scan_match, disabled, max_points);
+  const std::vector<Vec3> scan_w = room_points_w(kDenseRoomScanSpacingM);
+  ScanFrame scan(scan_w.size());
+  make_scan(scan, scan_w, kTruthRoom);
+  std::mt19937 rng(2);
+  const Pose init = perturb(kTruthRoom, 0.5, 10.0 * kDegToRad, rng);
+  const common::Result<MatchResult> ra = a.align(scan, f.map, init);
+  const common::Result<MatchResult> rb = b.align(scan, f.map, init);
+  ASSERT_TRUE(ra.is_ok() && rb.is_ok());
+  EXPECT_TRUE(bitwise_equal(ra.value(), rb.value()));
+}
+
+TEST(ScanMatchComponent, NoAllocationWithDegeneracy) {
+  CorridorFixture f;
+  ScanMatcher matcher(f.cfg.scan_match, f.cfg.degeneracy, f.cfg.realtime.max_points_per_scan);
+  ASSERT_TRUE(matcher.align(f.scan, f.map, f.init).is_ok());  // warm-up
+  bool ok = false;
+  AllocCounter::reset();
+  {
+    const EigenMallocGuard guard;
+    const common::Result<MatchResult> r = matcher.align(f.scan, f.map, f.init);
+    ok = r.is_ok();
+  }
+  EXPECT_EQ(AllocCounter::count(), 0U);
+  EXPECT_TRUE(ok);
+}
+
+// Map is a single line: plane-fit RMS 0 and an arbitrary normal. Never NaN: either an error
+// or ok with finite pose, H and cov.
+TEST(ScanMatchComponent, CollinearMapNeverNaN) {
+  for (const bool deg_enabled : {false, true}) {
+    pipeline::Config cfg = default_config();
+    cfg.degeneracy.enabled = deg_enabled;
+    map::VoxelMap m(cfg.map);
+    insert_points(m, line_points_w(0.05, 10.0));
+    std::vector<Vec3> scan_w = line_points_w(0.1, 5.0);
+    for (Vec3& p : scan_w) {
+      p += Vec3(0.0, 0.02, 0.02);
+    }
+    ScanFrame scan(scan_w.size());
+    make_scan(scan, scan_w, Pose{});
+    ScanMatcher matcher(cfg.scan_match, cfg.degeneracy, cfg.realtime.max_points_per_scan);
+    const common::Result<MatchResult> r = matcher.align(scan, m, Pose{});
+    std::printf("collinear (degeneracy %s): %s\n",
+                deg_enabled ? "on" : "off",
+                r.is_ok() ? "ok" : r.reason().c_str());
+    if (r.is_ok()) {
+      const MatchResult& res = r.value();
+      EXPECT_TRUE(res.T_w_l.R.allFinite() && res.T_w_l.p.allFinite());
+      EXPECT_TRUE(res.H.allFinite());
+      EXPECT_TRUE(res.cov.allFinite());
+    }
   }
 }
 

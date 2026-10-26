@@ -8,6 +8,7 @@
 #include <Eigen/Cholesky>
 
 #include "mss/common/lie.hpp"
+#include "mss/degeneracy/degeneracy.hpp"
 
 #include "plane_fit.hpp"
 
@@ -135,11 +136,31 @@ common::Result<common::MatchResult> ScanMatcher::align(const common::ScanFrame& 
     if (inliers < cfg_.min_inliers) {
       return R::error("too few inliers");
     }
-    llt.compute(H);
-    if (llt.info() != Eigen::Success) {
-      return R::error("singular Hessian");
+    common::Vec6 xi = common::Vec6::Zero();
+    if (deg_cfg_.enabled) {
+      // Raise flagged eigenvalues to eig_threshold, solve, then project (derivation
+      // section 5). With nothing flagged H_reg == H bit for bit.
+      const common::DegeneracyReport report = degeneracy::analyze(H, deg_cfg_);
+      common::Mat6 H_reg = H;
+      for (int k = 0; k < kPoseDof; ++k) {
+        if (report.degenerate[static_cast<std::size_t>(k)]) {
+          const common::Vec6 v_k = report.eigvecs.col(k);
+          H_reg.noalias() += (deg_cfg_.eig_threshold - report.eigvals(k)) * (v_k * v_k.transpose());
+        }
+      }
+      llt.compute(H_reg);
+      if (llt.info() != Eigen::Success) {
+        return R::error("singular Hessian");
+      }
+      const common::Vec6 xi_full = llt.solve(-g);
+      xi = degeneracy::project_update(xi_full, report);
+    } else {
+      llt.compute(H);
+      if (llt.info() != Eigen::Success) {
+        return R::error("singular Hessian");
+      }
+      xi = llt.solve(-g);
     }
-    const common::Vec6 xi = llt.solve(-g);
     if (!xi.allFinite()) {
       return R::error("singular Hessian");
     }

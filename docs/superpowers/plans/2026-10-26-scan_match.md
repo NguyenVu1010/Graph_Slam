@@ -283,7 +283,7 @@ git commit -m "test(scan_match): S-03 convergence basin CSV, S-04 noise, S-05 ou
 
 Corridor fixture (planner's calls): map `corridor_points_w(0.125, 10.0)`; scan `corridor_points_w(0.25, 6.0)` (~1700 points) seen from `truth = Pose{I, (0, 0.1, 0)}`; init = `Pose{so3_exp((0, 0, 3 deg)), truth.p + (0.3, 0.1, 0)}` (0.3 m along the unobservable axis).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```cpp
 TEST(ScanMatchComponent, D03_CorridorProjectedNotSingular) {
@@ -305,13 +305,13 @@ TEST(ScanMatchComponent, CollinearMapNeverNaN) {
 }
 ```
 
-- [ ] **Step 2: Run to verify D03 fails.** Build command with `--target test_scan_match_component`. Expected: `D03_CorridorProjectedNotSingular` FAILS ("singular Hessian", or x drifts / non-finite); the others may pass.
+- [x] **Step 2: Run to verify D03 fails.** Build command with `--target test_scan_match_component`. Expected: `D03_CorridorProjectedNotSingular` FAILS ("singular Hessian", or x drifts / non-finite); the others may pass.
 
-- [ ] **Step 3: Implement the enabled branch** at the Task 2 marks: when `deg_cfg_.enabled`, `report = degeneracy::analyze(H, deg_cfg_)`; `H_reg = H`; for each flagged k, `const common::Vec6 v_k = report.eigvecs.col(k); H_reg.noalias() += (deg_cfg_.eig_threshold - report.eigvals(k)) * (v_k * v_k.transpose());`; factorise `H_reg`; after the solve `xi = degeneracy::project_update(xi, report)`. The final cov uses that factorisation (`cov_scale * H_reg^-1`); `result.H` stays the raw H. Disabled: unchanged, `analyze` not called.
+- [x] **Step 3: Implement the enabled branch** at the Task 2 marks: when `deg_cfg_.enabled`, `report = degeneracy::analyze(H, deg_cfg_)`; `H_reg = H`; for each flagged k, `const common::Vec6 v_k = report.eigvecs.col(k); H_reg.noalias() += (deg_cfg_.eig_threshold - report.eigvals(k)) * (v_k * v_k.transpose());`; factorise `H_reg`; after the solve `xi = degeneracy::project_update(xi, report)`. The final cov uses that factorisation (`cov_scale * H_reg^-1`); `result.H` stays the raw H. Disabled: unchanged, `analyze` not called.
 
-- [ ] **Step 4: Run to verify all pass.** Build command with `--target test_scan_match_component`. Expected: `[  PASSED  ] 12 tests.`
+- [x] **Step 4: Run to verify all pass.** Build command with `--target test_scan_match_component`. Expected: `[  PASSED  ] 12 tests.`
 
-- [ ] **Step 5: Format check, then commit**
+- [x] **Step 5: Format check, then commit**
 ```bash
 git add core/scan_match/src/scan_matcher.cpp tests/component/test_scan_match_component.cpp
 git commit -m "feat(scan_match): project degenerate directions before the Gauss-Newton solve"
