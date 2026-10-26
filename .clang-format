@@ -15,8 +15,8 @@ BinPackParameters: false
 BreakBeforeBraces: Attach
 IncludeBlocks: Regroup
 IncludeCategories:
-  # C and C++ standard headers
-  - Regex: '^<[a-z_]+(\.h)?>$'
+  # C and C++ standard headers, POSIX system headers (sys/...)
+  - Regex: '^<(sys/)?[a-z_]+(\.h)?>$'
     Priority: 1
   # Third-party libraries
   - Regex: '^<(Eigen|sophus|gtsam|pcl|yaml-cpp|gtest|rclcpp|sensor_msgs|nav_msgs|geometry_msgs)/'

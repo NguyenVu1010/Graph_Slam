@@ -16,27 +16,89 @@ mss_node:
       T_b_l:
         translation_m: [0.0, 0.0, 0.0]
         quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
+      # T_b_o: wheel-odometry frame o in body (rig: base_link == imu_link). Hamilton (w, x, y, z).
+      T_b_o:
+        translation_m: [0.0, 0.0, 0.0]
+        quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
       # p_b_g: GNSS antenna lever arm expressed in body, metres.
       p_b_g_m: [0.0, 0.0, 0.0]
 
     imu:
       rate_hz: 200.0
-      acc_noise_density: 0.0  # m/s^2/sqrt(Hz)  TODO from datasheet
-      gyro_noise_density: 0.0  # rad/s/sqrt(Hz)  TODO from datasheet
-      acc_random_walk: 0.0     # m/s^3/sqrt(Hz)
-      gyro_random_walk: 0.0    # rad/s^2/sqrt(Hz)
+      # IMU noise: placeholder, replace from the datasheet of the real MPU; must stay >=
+      # sim/noise values, see SIM-03 (tests/python/test_sim03_consistency.py). All > 0.
+      acc_noise_density: 5.8e-3   # m/s^2/sqrt(Hz)
+      gyro_noise_density: 3.5e-4  # rad/s/sqrt(Hz)
+      acc_random_walk: 2.0e-4     # m/s^3/sqrt(Hz)
+      gyro_random_walk: 2.0e-5    # rad/s^2/sqrt(Hz)
       gravity_mps2: 9.80665
+      init_window_s: 2.0               # static window used for gravity/bias initialisation, s
+      init_max_acc_std_mps2: 0.05      # max accel std in the window to accept "static", m/s^2
+      init_max_gyro_std_radps: 0.01    # max gyro std in the window to accept "static", rad/s
 
     gnss:
       enabled: false
       sigma_h_m: 1.5  # horizontal fix sigma, m
       sigma_v_m: 3.0  # vertical fix sigma, m
+      max_cov_m2: 25.0  # gate: reject fixes whose per-axis variance exceeds this, m^2
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m
       track_m: 0.40            # wheel separation, m
       speed_sigma_mps: 0.02    # wheel speed sigma, m/s
+      yaw_rate_sigma_radps: 0.02  # per-sample yaw-rate sigma, rad/s
     lidar:
       range_sigma_m: 0.03  # range noise sigma, m
+
+    preprocess:
+      min_range_m: 0.5           # drop returns closer than this (robot body), m
+      max_range_m: 100.0         # drop returns farther than this, m
+      downsample_voxel_m: 0.5    # voxel-grid edge for scan downsampling, m
+      deskew_enabled: true       # undistort points to t_start with the IMU trajectory
+
+    map:
+      voxel_m: 0.5               # map voxel edge, m (ADR-007)
+      max_points_per_voxel: 20   # points kept per voxel
+      knn_k: 5                   # neighbours used to fit a plane
+      prune_radius_m: 100.0      # voxels farther than this from the body are removed, m
+      prune_period_s: 5.0        # how often pruning runs, s
+      max_voxels: 500000         # hard cap on voxel count (memory bound on Pi5, ADR-007)
+
+    scan_match:
+      max_iterations: 10         # Gauss-Newton iterations per scan
+      rot_tol_rad: 1.0e-4        # convergence: rotation update norm, rad
+      trans_tol_m: 1.0e-3        # convergence: translation update norm, m
+      max_corr_dist_m: 1.0       # reject correspondences farther than this, m
+      plane_rms_max_m: 0.05      # reject neighbourhoods whose plane fit RMS exceeds this, m
+      robust_huber_delta_m: 0.1  # Huber kernel threshold on point-to-plane residual, m
+      min_inliers: 100           # fewer inliers than this -> match fails
+      cov_scale: 1.0             # multiplier on the inverse-Hessian covariance (dimensionless)
+
+    degeneracy:
+      enabled: false             # flag: off until evaluated (D-03)
+      eig_threshold: 100.0       # absolute eigenvalue of H below which a direction is degenerate
+      relax_factor: 10.0         # covariance inflation along degenerate directions (>= 1)
+
     loop_closure:
       enabled: false
+      search_radius_m: 10.0      # candidate keyframes within this distance, m
+      min_time_gap_s: 30.0       # candidates must be at least this much older, s
+
+    backend:
+      keyframe_dist_m: 1.0           # new keyframe after this translation, m (ADR-004)
+      keyframe_rot_deg: 10.0         # new keyframe after this rotation, deg (radians in code)
+      relinearize_threshold: 0.1     # iSAM2 relinearisation threshold (tangent norm)
+      relinearize_skip: 1            # iSAM2 relinearises every N updates
+      prior_pos_sigma_m: 0.1               # first-keyframe prior on position, m
+      prior_rot_sigma_deg: 1.0             # first-keyframe prior on rotation, deg (radians in code)
+      prior_vel_sigma_mps: 0.1             # first-keyframe prior on velocity, m/s
+      prior_bias_acc_sigma_mps2: 0.1       # first-keyframe prior on accelerometer bias, m/s^2
+      prior_bias_gyro_sigma_radps: 0.01    # first-keyframe prior on gyroscope bias, rad/s
+
+    realtime:
+      scan_queue_depth: 2            # bounded scan queue; full -> drop oldest (ADR-005)
+      imu_queue_depth: 400           # bounded IMU queue, samples
+      aux_queue_depth: 32            # bounded GNSS / wheel queues, messages
+      max_points_per_scan: 65536     # ScanFrame capacity reserved once, points
+      pin_cores: false               # pin estimator threads to cores (Pi5)
+      priority: 0                    # SCHED_FIFO priority, 0 = default scheduler

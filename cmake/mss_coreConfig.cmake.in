@@ -1,6 +1,8 @@
 @PACKAGE_INIT@
 include(CMakeFindDependencyMacro)
 find_dependency(Eigen3 3.4 REQUIRED)
+find_dependency(Sophus REQUIRED)
+find_dependency(yaml-cpp REQUIRED)
 if(@MSS_WITH_GTSAM@)
   find_dependency(GTSAM REQUIRED)
 endif()
