@@ -116,14 +116,15 @@ class ScanMatcher {
                                             const common::Pose& T_w_l_init);
 
  private:
-  // One Gauss-Newton accumulation at `T_w_l` over `p_l_[0, n)`: fills H, g (zeroed first),
+  // One Gauss-Newton accumulation at `T_w_l` over `p_l_[0, n)`: fills `hessian` = H and
+  // `gradient` = g (both zeroed first),
   // `sum_w_r2_m2` = sum w r^2 (m^2) and `sum_w` = sum w; returns the inlier count.
   // Hot path: no allocation, logging or exceptions.
   int build_system(const map::VoxelMap& map,
                    std::size_t n,
                    const common::Pose& T_w_l,
-                   common::Mat6& H,
-                   common::Vec6& g,
+                   common::Mat6& hessian,
+                   common::Vec6& gradient,
                    double& sum_w_r2_m2,
                    double& sum_w);
 

@@ -328,7 +328,7 @@ git commit -m "feat(scan_match): project degenerate directions before the Gauss-
 - Consumes: everything above.
 - Produces: recorded `align` latency p50/p95 for the PR description (CLAUDE.md hot-path rule; `mss_bench` does not call this module yet).
 
-- [ ] **Step 1: Write the timing test** (recorded, never fails on time; same pattern and local `percentile` helper as `VoxelMapComponent.M03_InsertAndKnnTimingRecorded`)
+- [x] **Step 1: Write the timing test** (recorded, never fails on time; same pattern and local `percentile` helper as `VoxelMapComponent.M03_InsertAndKnnTimingRecorded`)
 
 ```cpp
 // Room map room_points_w(0.125); scan room_points_w(0.125) (~11.5k points, ADR-007 scan size);
@@ -340,13 +340,13 @@ TEST(ScanMatchComponent, AlignTimingRecorded) {
 }
 ```
 
-- [ ] **Step 2: Run it.** Build command with `--target test_scan_match_component`. Expected: `[  PASSED  ] 13 tests.` and the timing line. PR description: before = "n/a, new module", after = this line (desktop); Pi5: "pending pi5-bench (manual)".
+- [x] **Step 2: Run it.** Build command with `--target test_scan_match_component`. Expected: `[  PASSED  ] 13 tests.` and the timing line. PR description: before = "n/a, new module", after = this line (desktop); Pi5: "pending pi5-bench (manual)".
 
-- [ ] **Step 3: Full build + ctest.** Build command without `--target`. Expected: all tests pass, `BUILD OK`.
+- [x] **Step 3: Full build + ctest.** Build command without `--target`. Expected: all tests pass, `BUILD OK`.
 
-- [ ] **Step 4: clang-tidy on the new sources.** Run: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-scan_match && cmake -B ~/mss-build/feat-scan_match-nogtsam -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > /dev/null && clang-tidy-18 -p ~/mss-build/feat-scan_match-nogtsam core/scan_match/src/*.cpp"`. Expected: no warnings from `core/scan_match`; fix any and re-run Step 3.
+- [x] **Step 4: clang-tidy on the new sources.** Run: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-scan_match && cmake -B ~/mss-build/feat-scan_match-nogtsam -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > /dev/null && clang-tidy-18 -p ~/mss-build/feat-scan_match-nogtsam core/scan_match/src/*.cpp"`. Expected: no warnings from `core/scan_match`; fix any and re-run Step 3.
 
-- [ ] **Step 5: Format check, then commit**
+- [x] **Step 5: Format check, then commit**
 ```bash
 git add tests/component/test_scan_match_component.cpp core/scan_match
 git commit -m "test(scan_match): record align latency p50/p95 on the synthetic room"

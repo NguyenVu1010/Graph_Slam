@@ -501,5 +501,47 @@ TEST(ScanMatchComponent, CollinearMapNeverNaN) {
   }
 }
 
+// Nearest-rank percentile, p in [0, 100]. Sorts `v`, which must not be empty.
+double percentile(std::vector<double>& v, double p) {
+  std::sort(v.begin(), v.end());
+  const double rank = std::ceil(p / 100.0 * static_cast<double>(v.size()));
+  const std::size_t idx = rank < 1.0 ? 0 : static_cast<std::size_t>(rank) - 1;
+  return v[std::min(v.size() - 1, idx)];
+}
+
+// align() latency on the synthetic room with an ADR-007-sized scan (~11.5k points).
+// Recorded for the PR (hot-path rule); never fails on time, only on correctness.
+TEST(ScanMatchComponent, AlignTimingRecorded) {
+  using Clock = std::chrono::steady_clock;
+  RoomFixture f;
+  ScanMatcher matcher(f.cfg.scan_match, f.cfg.degeneracy, f.cfg.realtime.max_points_per_scan);
+  const std::vector<Vec3> scan_w = room_points_w(kMapSpacingM);
+  ScanFrame scan(scan_w.size());
+  make_scan(scan, scan_w, kTruthRoom);
+  constexpr int kRuns = 50;
+  std::mt19937 rng(6);
+  std::vector<double> align_ms;
+  align_ms.reserve(kRuns);
+  int iterations = 0;
+  for (int run = 0; run < kRuns; ++run) {
+    const Pose init = perturb(kTruthRoom, 0.2, 2.0 * kDegToRad, rng);
+    const Clock::time_point t0 = Clock::now();
+    const common::Result<MatchResult> r = matcher.align(scan, f.map, init);
+    const Clock::time_point t1 = Clock::now();
+    ASSERT_TRUE(r.is_ok()) << "run " << run << ": " << r.reason();
+    iterations += r.value().iterations;
+    align_ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+  }
+  const double p50 = percentile(align_ms, 50.0);
+  const double p95 = percentile(align_ms, 95.0);
+  std::printf("scan_match align_ms p50=%.2f p95=%.2f points=%zu iters_mean=%.1f\n",
+              p50,
+              p95,
+              scan.size(),
+              static_cast<double>(iterations) / kRuns);
+  RecordProperty("align_p50_us", static_cast<int>(std::lround(p50 * 1000.0)));
+  RecordProperty("align_p95_us", static_cast<int>(std::lround(p95 * 1000.0)));
+}
+
 }  // namespace
 }  // namespace mss::scan_match

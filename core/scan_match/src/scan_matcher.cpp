@@ -22,8 +22,8 @@ namespace {
 constexpr int kPoseDof = 6;  // SE(3) degrees of freedom (geometry, not a tunable)
 constexpr int kMinPlanePoints = 3;
 
-bool pose_finite(const common::Pose& T) {
-  return T.R.allFinite() && T.p.allFinite();
+bool pose_finite(const common::Pose& pose) {
+  return pose.R.allFinite() && pose.p.allFinite();
 }
 
 }  // namespace
@@ -66,18 +66,18 @@ ScanMatcher::ScanMatcher(const ScanMatchConfig& cfg,
 int ScanMatcher::build_system(const map::VoxelMap& map,
                               std::size_t n,
                               const common::Pose& T_w_l,
-                              common::Mat6& H,
-                              common::Vec6& g,
+                              common::Mat6& hessian,
+                              common::Vec6& gradient,
                               double& sum_w_r2_m2,
                               double& sum_w) {
-  H.setZero();
-  g.setZero();
+  hessian.setZero();
+  gradient.setZero();
   sum_w_r2_m2 = 0.0;
   sum_w = 0.0;
   const double max_corr_dist2_m2 = cfg_.max_corr_dist_m * cfg_.max_corr_dist_m;
   const double delta_m = cfg_.robust_huber_delta_m;
   int inliers = 0;
-  common::Vec6 J = common::Vec6::Zero();
+  common::Vec6 J_r_xi = common::Vec6::Zero();
   for (std::size_t j = 0; j < n; ++j) {
     const common::Vec3& p_l = p_l_[j];
     const common::Vec3 p_w = T_w_l * p_l;
@@ -89,11 +89,11 @@ int ScanMatcher::build_system(const map::VoxelMap& map,
     if (!fit.has_value() || !(fit->rms_m <= cfg_.plane_rms_max_m) || !fit->n_w.allFinite()) {
       continue;
     }
-    const double r = point_to_plane_residual(p_l, fit->q_w, fit->n_w, T_w_l, &J);
+    const double r = point_to_plane_residual(p_l, fit->q_w, fit->n_w, T_w_l, &J_r_xi);
     const double abs_r = std::abs(r);
     const double w = abs_r <= delta_m ? 1.0 : delta_m / abs_r;
-    H.noalias() += w * (J * J.transpose());
-    g.noalias() += (w * r) * J;
+    hessian.noalias() += w * (J_r_xi * J_r_xi.transpose());
+    gradient.noalias() += (w * r) * J_r_xi;
     sum_w_r2_m2 += w * r * r;
     sum_w += w;
     ++inliers;
@@ -125,37 +125,38 @@ common::Result<common::MatchResult> ScanMatcher::align(const common::ScanFrame& 
   }
 
   common::MatchResult result;
-  common::Pose T = T_w_l_init;
-  common::Mat6 H = common::Mat6::Zero();
+  common::Pose T_w_l = T_w_l_init;
+  common::Mat6 hessian = common::Mat6::Zero();
   common::Vec6 g = common::Vec6::Zero();
   Eigen::LLT<common::Mat6> llt;
   double sum_w_r2_m2 = 0.0;
   double sum_w = 0.0;
   for (int it = 1; it <= cfg_.max_iterations; ++it) {
-    const int inliers = build_system(map, n, T, H, g, sum_w_r2_m2, sum_w);
+    const int inliers = build_system(map, n, T_w_l, hessian, g, sum_w_r2_m2, sum_w);
     if (inliers < cfg_.min_inliers) {
       return R::error("too few inliers");
     }
     common::Vec6 xi = common::Vec6::Zero();
     if (deg_cfg_.enabled) {
       // Raise flagged eigenvalues to eig_threshold, solve, then project (derivation
-      // section 5). With nothing flagged H_reg == H bit for bit.
-      const common::DegeneracyReport report = degeneracy::analyze(H, deg_cfg_);
-      common::Mat6 H_reg = H;
+      // section 5). With nothing flagged hessian_reg == hessian bit for bit.
+      const common::DegeneracyReport report = degeneracy::analyze(hessian, deg_cfg_);
+      common::Mat6 hessian_reg = hessian;
       for (int k = 0; k < kPoseDof; ++k) {
         if (report.degenerate[static_cast<std::size_t>(k)]) {
           const common::Vec6 v_k = report.eigvecs.col(k);
-          H_reg.noalias() += (deg_cfg_.eig_threshold - report.eigvals(k)) * (v_k * v_k.transpose());
+          hessian_reg.noalias() +=
+              (deg_cfg_.eig_threshold - report.eigvals(k)) * (v_k * v_k.transpose());
         }
       }
-      llt.compute(H_reg);
+      llt.compute(hessian_reg);
       if (llt.info() != Eigen::Success) {
         return R::error("singular Hessian");
       }
       const common::Vec6 xi_full = llt.solve(-g);
       xi = degeneracy::project_update(xi_full, report);
     } else {
-      llt.compute(H);
+      llt.compute(hessian);
       if (llt.info() != Eigen::Success) {
         return R::error("singular Hessian");
       }
@@ -164,8 +165,8 @@ common::Result<common::MatchResult> ScanMatcher::align(const common::ScanFrame& 
     if (!xi.allFinite()) {
       return R::error("singular Hessian");
     }
-    T = common::boxplus(T, xi);
-    result.H = H;
+    T_w_l = common::boxplus(T_w_l, xi);
+    result.H = hessian;
     result.inliers = inliers;
     result.iterations = it;
     if (xi.head<3>().norm() < cfg_.trans_tol_m && xi.tail<3>().norm() < cfg_.rot_tol_rad) {
@@ -173,13 +174,14 @@ common::Result<common::MatchResult> ScanMatcher::align(const common::ScanFrame& 
       break;
     }
   }
-  // cov = cov_scale * sigma_r^2 * A^-1 from the last factorisation (derivation section 6).
+  // cov = cov_scale * sigma_r^2 * A^-1 (A = H or H_reg) from the last factorisation (derivation
+  // section 6).
   const double sigma_r2_m2 = sum_w_r2_m2 / sum_w;
-  const common::Mat6 A_inv = llt.solve(common::Mat6::Identity());
-  const common::Mat6 cov = (cfg_.cov_scale * sigma_r2_m2) * A_inv;
+  const common::Mat6 a_inv = llt.solve(common::Mat6::Identity());
+  const common::Mat6 cov = (cfg_.cov_scale * sigma_r2_m2) * a_inv;
   result.cov = 0.5 * (cov + cov.transpose());
-  result.T_w_l = T;
-  if (!pose_finite(T) || !result.cov.allFinite()) {
+  result.T_w_l = T_w_l;
+  if (!pose_finite(T_w_l) || !result.cov.allFinite()) {
     return R::error("singular Hessian");
   }
   return R::ok(result);
