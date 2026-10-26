@@ -53,7 +53,11 @@ so `J_xib_xil = Ad(T_b_l)` and
 
 Degeneracy report: eigenvectors `V_b = Ad(T_b_l) V_l` (column by column); eigenvalues and
 flags are copied unchanged and the columns are not re-normalised (`Ad` is not orthogonal
-when `p_b_l != 0`; the report is diagnostic only, `graph.hpp`).
+when `p_b_l != 0`; the report is diagnostic only, `graph.hpp`). After the transform only the
+flagged (degenerate) directions are meaningful, as directions in the b tangent: the columns
+are neither unit-length nor mutually orthogonal and are not eigenvectors of the Hessian
+expressed in b, so they must not be used as an orthonormal basis (for example for an
+information projection) without re-orthonormalising.
 Test: `Frames.LidarCovInBodyMatchesNumericalJacobian` compares `Ad(T_b_l)` with central
 differences of `boxminus(T_w_l Exp(+-h e_k) T_l_b, T_w_b)`, `h = 1e-6`, relative error
 < 1e-6.
@@ -71,7 +75,17 @@ LIO-SAM. ADR-004 notes that this is optimistic (the map itself is not error-free
 
 ## 5. GNSS
 
-Each fix first passes `gnss::gate_fix(m, max_cov_m2)`. Once the aligner has a transform
+Pose at the fix time. GNSS is merged by `m.t`, so the IMU sample at or after `m.t` usually
+sorts after the fix. The core therefore defers each fix in a fixed ring
+(`kMaxDeferredGnss` = 32; full: oldest dropped and counted) until an IMU sample with
+`t >= m.t` is buffered; then `T_w_b(m.t)` is predicted from the front-end state at the last
+scan start `t_s` through the buffered samples in `(t_s, m.t)` and the sample interpolated
+at `m.t` (section 1). A fix with `m.t < t_s` (pushed late, after a scan with a later start
+was processed) can no longer be predicted from the front-end state and is rejected
+(`Stats::n_gnss_late`, one log line per streak). Deferred fixes are processed before the next
+scan changes the state.
+
+Each fix then passes `gnss::gate_fix(m, max_cov_m2)`. Once the aligner has a transform
 `T_e_w`, the innovation is tested before the aligner sees the fix:
 
     r = p_e_g - T_e_w (T_w_b p_b_g),   J_r_xi = [-R_e_w R_w_b, R_e_w R_w_b skew(p_b_g)]

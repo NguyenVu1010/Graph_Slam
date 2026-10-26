@@ -16,7 +16,7 @@ Sau các PR module của giai đoạn 1, mọi module (`imu`, `preprocess`, `sca
 5. **Chưa khởi tạo IMU thì không có ước lượng**: `latest_state().state.t == Timestamp{}`. Scan khớp thất bại thì đi theo dự đoán IMU, không tạo keyframe, không chèn bản đồ.
 6. **Chỉ đám mây keyframe vào `VoxelMap`**, chèn tại pose đã tối ưu (nếu `optimize()` thành công), khớp với cơ chế dựng lại của ADR-016.
 7. **Đo LiDAR vào factor**: `T_bi_bj = (T_w_bi^ref)^-1 * T_w_bj^match`, hiệp phương sai là `cov_b` của scan j (như LIO-SAM; ADR-004 ghi nhận là lạc quan) (`pipeline.md` §4).
-8. **GNSS gắn vào keyframe kế tiếp**, dời về thời điểm keyframe theo `pipeline.md` §5; mỗi factor dùng ước lượng `T_e_w` mới nhất của aligner. Cổng chi-square chạy trước aligner, nên bước nhảy bị loại không làm lệch `T_e_w`.
+8. **GNSS gắn vào keyframe kế tiếp**, dời về thời điểm keyframe theo `pipeline.md` §5; mỗi factor dùng ước lượng `T_e_w` mới nhất của aligner. Cổng chi-square chạy trước aligner, nên bước nhảy bị loại không làm lệch `T_e_w`. Pose tại thời điểm fix được nội suy đúng tại `m.t`: fix được giữ trong một vòng đệm cố định (32 phần tử) cho đến khi có mẫu IMU `t >= m.t`, rồi dự đoán từ trạng thái front-end ở đầu scan trước qua các mẫu IMU và mẫu nội suy tại `m.t`. Fix cũ hơn đầu scan đã xử lý gần nhất bị loại và đếm (`n_gnss_late`).
 9. **Backend stub (`MSS_WITH_GTSAM=OFF`)**: lỗi `optimize()` thì dùng trạng thái front-end, chỉ ghi log ở lần lỗi đầu của một chuỗi.
 
 ## Phương án đã cân nhắc
@@ -36,3 +36,19 @@ Sau các PR module của giai đoạn 1, mọi module (`imu`, `preprocess`, `sca
 - GTSAM cài trong môi trường dev có TBB: iSAM2 dùng luồng worker (khoảng 125 % CPU trong bench) dù estimator đơn luồng. E-02 vẫn tái lập bit-cho-bit trong các lần chạy đã thử; nếu cần đơn luồng thật hoặc ngân sách Pi5, giới hạn TBB trong `backend` là quyết định riêng.
 - Bản build không GTSAM không có hiệu chỉnh vận tốc: vận tốc chỉ từ tích phân IMU giữa các scan. Đủ cho box world (ATE khoảng 1 cm), chưa kiểm trên quãng dài.
 - Đo trên desktop (box world, 199 scan, GTSAM): `push_scan` p50 khoảng 10 us, p95 15 đến 19 us, khoảng 3,7 ms mỗi scan từ đầu đến cuối.
+- Bật GNSS làm kết quả box world kém đi rõ rệt (mss_bench trên cùng bộ dữ liệu, GTSAM, ATE so với quỹ đạo giải tích):
+
+  | Biến thể | ATE | Sai số yaw lớn nhất | Ghi chú |
+  | --- | --- | --- | --- |
+  | LiDAR + IMU | 0,0088 m | 0,027° | |
+  | + wheel | 0,0079 m | 0,024° | |
+  | + GNSS | 0,0322 m | 0,304° | 42 factor, 4 lần dựng lại bản đồ |
+  | + cả hai | 0,0329 m | 0,298° | |
+
+  Nguyên nhân có lẽ là quyết định 8: `T_e_w` được khớp theo chính quỹ đạo front-end rồi cố định trong mỗi factor, nên fix (sigma 0,5 m) chủ yếu thêm nhiễu và ghép yaw, và kích hoạt dựng lại bản đồ. Chấp nhận được vì `gnss.enabled` mặc định tắt; test thành phần giữ ngưỡng tuyệt đối 0,05 m và thêm điều kiện tương đối ATE có GNSS <= 5 lần ATE chỉ LiDAR trên cùng dữ liệu.
+- Mẫu IMU không hữu hạn bị core bỏ và đếm (`n_nonfinite_imu`); cổng phủ IMU của `Estimator` chỉ tính mẫu hữu hạn, nên một mẫu hỏng không làm mất scan.
+
+## Việc còn mở
+
+- Đề xuất giữ lại factor GNSS cho đến khi độ trải ngang của các cặp trong aligner lớn hơn nhiều lần `sigma_h_m` (cần khoá cấu hình hoặc ADR riêng), để fix không làm xấu quỹ đạo khi `T_e_w` còn kém xác định.
+- Theo sau cho `backend` (cần ADR): khi `deterministic: true`, tạo `tbb::global_control(tbb::global_control::max_allowed_parallelism, 1)`, hoặc build GTSAM không có TBB cho cấu hình deterministic và Pi5, để chế độ đơn luồng tái lập bit-cho-bit đúng như CLAUDE.md yêu cầu.
