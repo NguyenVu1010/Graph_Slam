@@ -8,9 +8,10 @@
 // Tangent convention for every function here: the [rho, phi] right perturbation of the
 // pose the Hessian was built for. For the scan matcher that is T_w_l, i.e. LiDAR frame l
 // (MatchResult::H). Callers: scan_match::ScanMatcher::align calls analyze +
-// project_update on every Gauss-Newton iteration (when enabled); the pipeline calls
-// analyze + relax_covariance on the final MatchResult::H / cov in l, THEN converts to
-// body frame b: covariance with
+// project_update on every Gauss-Newton iteration (when enabled) and relax_covariance on
+// the final MatchResult::cov; the pipeline may call analyze on MatchResult::H for the
+// report but must NOT relax the covariance again. The pipeline then converts to body
+// frame b: covariance with
 // transform_covariance(cov, T_b_l), eigenvectors with se3_adj(T_b_l) * eigvecs.col(k)
 // (lie.hpp). Mixing frames between H, delta, cov and report is a caller bug.
 //
@@ -45,6 +46,9 @@ common::Vec6 project_update(const common::Vec6& delta, const common::DegeneracyR
 /// `report.degenerate[k]` else 1. Hence `v_k^T cov' v_k = relax_factor * v_k^T cov v_k`
 /// for every degenerate eigenvector `v_k`, and cov' is symmetric (symmetrised exactly).
 /// With no flags the result equals `cov` exactly.
+/// Caller: scan_match::ScanMatcher::align applies it to MatchResult::cov (when enabled),
+///   so that cov is final; the pipeline must not apply it again. The backend additionally
+///   masks flagged directions through the DegeneracyReport (ADR-004).
 /// Frames: `cov` in the same tangent as the H given to analyze() (l for scan matching,
 ///   before the pipeline transforms it to b). Units: m^2 / rad^2 blocks.
 /// Preconditions: `cfg.relax_factor >= 1` (validated by load_config).

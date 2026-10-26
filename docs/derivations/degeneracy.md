@@ -77,6 +77,11 @@ i.e. `f v_k^T cov v_k` for flagged directions and `v_k^T cov v_k` for the others
 symmetrisation removes rounding asymmetry only (it does not change `v^T cov' v`). With
 `f = 1`, `A = I` up to rounding. `cov'` stays positive definite because `A` is invertible.
 
+Caller: `scan_match::ScanMatcher::align` applies `relax_covariance` to `MatchResult::cov`
+(when enabled, with the final iteration's report), so that covariance is final and the
+pipeline must not apply it again. The backend additionally masks flagged directions through
+the DegeneracyReport (ADR-004).
+
 ## 5. Frames
 
 Everything here lives in the tangent of the pose the Hessian was built for: l for scan
