@@ -7,6 +7,8 @@
 #include "mss/common/types.hpp"
 #include "mss/imu/trajectory.hpp"
 #include "mss/preprocess/config.hpp"
+#include "mss/preprocess/detail/deskew_table.hpp"
+#include "mss/preprocess/detail/voxel_set.hpp"
 
 namespace mss::preprocess {
 
@@ -69,6 +71,8 @@ class Preprocessor {
  private:
   PreprocessConfig cfg_;
   common::Pose T_b_l_;
+  detail::DeskewTable deskew_;  // rebuilt per scan from traj
+  detail::VoxelSet voxels_;     // cleared per scan; sized for max_points keys
 };
 
 }  // namespace mss::preprocess

@@ -258,7 +258,7 @@ git commit -m "feat(preprocess): reserve-once voxel key set"
 - Consumes: Task 2 `DeskewTable::build/T_l0_l`; Task 3 `voxel_key`, `VoxelSet::clear/insert`.
 - Produces: `common::Status Preprocessor::process(const common::ScanFrame& in, const imu::ImuTrajectory& traj, common::ScanFrame& out)` per preprocessor.hpp.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Helpers: `random_scan(n, seed)` fills a `ScanFrame` with points uniform in `[-20, 20]^3` m, intensity `i`, `t_offset_ns` uniform in [0, 100 ms], ring `i % 16`; `static_traj(t_start)` = 21 identity samples 5 ms apart; `moving_traj(t_start)` = same times with `se3_exp(t * [v; w])`, `v = [1, 0, 0]` m/s, `w = [0, 0, 1]` rad/s.
 
@@ -299,11 +299,11 @@ TEST(Preprocessor, ProcessDoesNotAllocate)  // max_points 65536 (realtime.max_po
                                             // moving_traj; AllocCounter::reset(); under EigenMallocGuard call process twice; both ok, count() == 0
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: build command with `--target test_preprocess`. Expected: FAIL (`process` returns "not implemented").
 
-- [ ] **Step 3: Implement `process`**
+- [x] **Step 3: Implement `process`**
 
 The constructor now also constructs `voxels_(max_points)`. Body, in this order (reads through `in.xyz()` etc. spans, writes through `out.*_mut()`):
 ```
@@ -321,11 +321,11 @@ for each input point i:
 out.set_size(n); return ok;
 ```
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: build command with `--target test_preprocess`, then without `--target` (full build + ctest). Expected: all PASS.
 
-- [ ] **Step 5: Format check and commit**
+- [x] **Step 5: Format check and commit**
 
 ```bash
 git add core/preprocess tests/unit/test_preprocessor.cpp
