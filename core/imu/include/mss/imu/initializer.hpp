@@ -52,6 +52,9 @@ class ImuInitializer {
   /// Tests: I-01 (static gravity-only input yields R_w_b * mean(acc_b) along +z), imu
   ///   module unit tests.
   common::Result<InitState> try_init(common::Span<const common::ImuSample> samples);
+
+ private:
+  ImuConfig cfg_;
 };
 
 }  // namespace mss::imu
