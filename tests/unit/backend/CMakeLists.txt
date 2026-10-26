@@ -3,3 +3,5 @@
 find_package(GTSAM REQUIRED)
 mss_add_test(test_lie_gtsam test_lie_gtsam.cpp)
 target_link_libraries(test_lie_gtsam PRIVATE gtsam)
+mss_add_test(test_imu_preint_gtsam test_imu_preint_gtsam.cpp)
+target_link_libraries(test_imu_preint_gtsam PRIVATE gtsam)
