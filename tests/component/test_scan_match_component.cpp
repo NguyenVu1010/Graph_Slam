@@ -253,5 +253,124 @@ TEST(ScanMatchComponent, NonFinitePointsSkipped) {
   EXPECT_TRUE(bitwise_equal(rc.value(), rd.value()));
 }
 
+// Test_CI_CD S-03: convergence basin over initial offsets 0..1 m x 0..30 deg; >= 95 % at
+// 0.3 m and 5 deg; CSV for the plot under <build-dir>/test_output/scan_match/.
+TEST(ScanMatchComponent, S03_ConvergenceBasin) {
+  RoomFixture f;
+  ScanMatcher matcher(f.cfg.scan_match, f.cfg.degeneracy, f.cfg.realtime.max_points_per_scan);
+  const std::vector<Vec3> scan_w = room_points_w(kRoomScanSpacingM);
+  ScanFrame scan(scan_w.size());
+  make_scan(scan, scan_w, kTruthRoom);
+  const std::vector<double> trans_offsets_m = {0.0, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0};
+  const std::vector<double> rot_offsets_deg = {0.0, 5.0, 10.0, 15.0, 20.0, 30.0};
+  constexpr int kTrials = 20;
+  const std::filesystem::path csv_path =
+      std::filesystem::path{MSS_TEST_OUTPUT_DIR} / "scan_match" / "s03_convergence_basin.csv";
+  std::filesystem::create_directories(csv_path.parent_path());
+  std::ofstream csv(csv_path);
+  ASSERT_TRUE(csv.is_open()) << csv_path;
+  csv << "trans_offset_m,rot_offset_deg,trials,successes,success_rate,mean_iterations\n";
+  std::mt19937 rng(3);
+  double rate_at_03m_5deg = -1.0;
+  for (std::size_t ti = 0; ti < trans_offsets_m.size(); ++ti) {
+    for (std::size_t ri = 0; ri < rot_offsets_deg.size(); ++ri) {
+      const double t_m = trans_offsets_m[ti];
+      const double r_deg = rot_offsets_deg[ri];
+      int successes = 0;
+      int iterations = 0;
+      for (int trial = 0; trial < kTrials; ++trial) {
+        const Pose init = perturb(kTruthRoom, t_m, r_deg * kDegToRad, rng);
+        const common::Result<MatchResult> r = matcher.align(scan, f.map, init);
+        if (!r.is_ok()) {
+          continue;
+        }
+        iterations += r.value().iterations;
+        const PoseError e = pose_error(r.value().T_w_l, kTruthRoom);
+        if (e.trans_m < 0.01 && e.rot_rad < 0.1 * kDegToRad) {
+          ++successes;
+        }
+      }
+      const double rate = static_cast<double>(successes) / kTrials;
+      csv << t_m << ',' << r_deg << ',' << kTrials << ',' << successes << ',' << rate << ','
+          << static_cast<double>(iterations) / kTrials << '\n';
+      if (ti == 3 && ri == 1) {  // 0.3 m, 5 deg
+        rate_at_03m_5deg = rate;
+      }
+    }
+  }
+  csv.close();
+  std::printf("S-03 CSV: %s (success rate at 0.3 m, 5 deg: %.2f)\n",
+              csv_path.string().c_str(),
+              rate_at_03m_5deg);
+  RecordProperty("s03_csv", csv_path.string());
+  EXPECT_GE(rate_at_03m_5deg, 0.95);
+}
+
+// Test_CI_CD S-04: scan noise N(0, 2 cm) per axis -> position error < 3 cm.
+TEST(ScanMatchComponent, S04_GaussianNoise) {
+  RoomFixture f;
+  ScanMatcher matcher(f.cfg.scan_match, f.cfg.degeneracy, f.cfg.realtime.max_points_per_scan);
+  const std::vector<Vec3> clean_w = room_points_w(kRoomScanSpacingM);
+  ScanFrame scan(clean_w.size());
+  std::mt19937 rng(4);
+  std::normal_distribution<double> noise(0.0, 0.02);
+  for (int trial = 0; trial < 10; ++trial) {
+    std::vector<Vec3> noisy_w = clean_w;
+    for (Vec3& p : noisy_w) {
+      const double dx = noise(rng);
+      const double dy = noise(rng);
+      const double dz = noise(rng);
+      p += Vec3(dx, dy, dz);
+    }
+    make_scan(scan, noisy_w, kTruthRoom);
+    const Pose init = perturb(kTruthRoom, 0.3, 5.0 * kDegToRad, rng);
+    const common::Result<MatchResult> r = matcher.align(scan, f.map, init);
+    ASSERT_TRUE(r.is_ok()) << "trial " << trial << ": " << r.reason();
+    const PoseError e = pose_error(r.value().T_w_l, kTruthRoom);
+    std::printf(
+        "S-04 trial %d: err_m=%.2e err_deg=%.2e\n", trial, e.trans_m, e.rot_rad / kDegToRad);
+    EXPECT_LT(e.trans_m, 0.03) << "trial " << trial;
+  }
+}
+
+// Test_CI_CD S-05: 20 % of the scan replaced by uniform outliers in the room box -> the
+// Huber kernel keeps the position error < 5 cm.
+TEST(ScanMatchComponent, S05_OutliersRobustKernel) {
+  RoomFixture f;
+  ScanMatcher matcher(f.cfg.scan_match, f.cfg.degeneracy, f.cfg.realtime.max_points_per_scan);
+  const std::vector<Vec3> clean_w = room_points_w(kRoomScanSpacingM);
+  ScanFrame scan(clean_w.size());
+  std::mt19937 rng(5);
+  std::uniform_real_distribution<double> ux(-4.0, 4.0);
+  std::uniform_real_distribution<double> uy(-3.0, 3.0);
+  std::uniform_real_distribution<double> uz(-1.0, 2.0);
+  const std::size_t n_outliers = clean_w.size() / 5;
+  for (int trial = 0; trial < 10; ++trial) {
+    std::vector<Vec3> dirty_w = clean_w;
+    std::vector<std::size_t> idx(dirty_w.size());
+    for (std::size_t i = 0; i < idx.size(); ++i) {
+      idx[i] = i;
+    }
+    std::shuffle(idx.begin(), idx.end(), rng);
+    for (std::size_t k = 0; k < n_outliers; ++k) {
+      const double x = ux(rng);
+      const double y = uy(rng);
+      const double z = uz(rng);
+      dirty_w[idx[k]] = Vec3(x, y, z);
+    }
+    make_scan(scan, dirty_w, kTruthRoom);
+    const Pose init = perturb(kTruthRoom, 0.3, 5.0 * kDegToRad, rng);
+    const common::Result<MatchResult> r = matcher.align(scan, f.map, init);
+    ASSERT_TRUE(r.is_ok()) << "trial " << trial << ": " << r.reason();
+    const PoseError e = pose_error(r.value().T_w_l, kTruthRoom);
+    std::printf("S-05 trial %d: err_m=%.2e err_deg=%.2e inliers=%d\n",
+                trial,
+                e.trans_m,
+                e.rot_rad / kDegToRad,
+                r.value().inliers);
+    EXPECT_LT(e.trans_m, 0.05) << "trial " << trial;
+  }
+}
+
 }  // namespace
 }  // namespace mss::scan_match

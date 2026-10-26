@@ -237,7 +237,7 @@ git commit -m "feat(scan_match): Huber IRLS Gauss-Newton scan-to-map alignment"
 - Consumes: Task 2 scene helpers and `ScanMatcher`.
 - Produces: CSV `${MSS_TEST_OUTPUT_DIR}/scan_match/s03_convergence_basin.csv`, i.e. `<build-dir>/test_output/scan_match/s03_convergence_basin.csv`; on the dev machine `~/mss-build/feat-scan_match-nogtsam/test_output/scan_match/s03_convergence_basin.csv`. Never written into the source tree (`MSS_REPO_DIR` is only read, for the YAML). Header row and columns: `trans_offset_m,rot_offset_deg,trials,successes,success_rate,mean_iterations`. A later `eval/` script plots it (out of scope here).
 
-- [ ] **Step 1: Write the tests**
+- [x] **Step 1: Write the tests**
 
 ```cpp
 // S-03: grid trans_offset_m {0, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0} x rot_offset_deg {0, 5, 10, 15, 20, 30}
@@ -261,9 +261,9 @@ TEST(ScanMatchComponent, S05_OutliersRobustKernel) {
 }
 ```
 
-- [ ] **Step 2: Run.** Build command with `--target test_scan_match_component`. Expected: `[  PASSED  ] 8 tests.`, the S-03 line printing the CSV path, and `MSYS_NO_PATHCONV=1 wsl -- bash -lc "wc -l ~/mss-build/feat-scan_match-nogtsam/test_output/scan_match/s03_convergence_basin.csv"` -> `43`. A failure here is an algorithm bug (use superpowers:systematic-debugging), not a reason to change thresholds.
+- [x] **Step 2: Run.** Build command with `--target test_scan_match_component`. Expected: `[  PASSED  ] 8 tests.`, the S-03 line printing the CSV path, and `MSYS_NO_PATHCONV=1 wsl -- bash -lc "wc -l ~/mss-build/feat-scan_match-nogtsam/test_output/scan_match/s03_convergence_basin.csv"` -> `43`. A failure here is an algorithm bug (use superpowers:systematic-debugging), not a reason to change thresholds.
 
-- [ ] **Step 3: Format check, then commit**
+- [x] **Step 3: Format check, then commit**
 ```bash
 git add tests/component/test_scan_match_component.cpp
 git commit -m "test(scan_match): S-03 convergence basin CSV, S-04 noise, S-05 outliers"
