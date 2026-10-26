@@ -13,6 +13,16 @@
 
 namespace mss::pipeline::detail {
 
+/// What GnssFusion::on_fix did with a fix, so callers can branch without building the
+/// Status reason string (Status::reason() may allocate).
+enum class FixOutcome : std::uint8_t {
+  kAccepted,      ///< queued for the next keyframe
+  kNotAligned,    ///< fed to the aligner, no T_e_w yet
+  kGateFix,       ///< rejected by gnss::gate_fix
+  kChiSquare,     ///< rejected by the chi-square gate (or a degenerate innovation)
+  kNonFinitePose  ///< T_w_b_fix not finite
+};
+
 /// GNSS fusion front: pre-gate, chi-square innovation gate (G-02), w->e alignment and the
 /// fixes waiting for the next keyframe (docs/derivations/pipeline.md section 5).
 /// Internal to the pipeline. Single-threaded: owned by EstimatorCore. No allocation after
@@ -32,9 +42,12 @@ class GnssFusion {
   /// that the fix is queued for collect() (full queue: oldest dropped and counted) and ok
   /// is returned, else Status::error("gnss not aligned yet").
   /// Other errors: "non-finite pose" (T_w_b_fix not finite).
+  /// `outcome` (optional) receives the same decision as an enum. All reasons are
+  /// literals: no allocation unless the caller calls Status::reason().
   common::Status on_fix(const common::GnssMeasurement& m,
                         const common::Pose& T_w_b_fix,
-                        const common::PoseCovariance& P_w_b);
+                        const common::PoseCovariance& P_w_b,
+                        FixOutcome* outcome = nullptr);
 
   /// Moves every queued fix with `t <= t_k` into `out[0, n)`, shifted to the keyframe
   /// pose `T_w_bk` (pipeline.md section 5), and returns n. Later fixes stay queued.

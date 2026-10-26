@@ -54,6 +54,7 @@ struct BoxWorldParams {
   double imu_rate_hz = 200.0;
   double wheel_rate_hz = 50.0;
   double gnss_rate_hz = 5.0;
+  std::int64_t gnss_offset_ns = 0;  // ns, GNSS stamps at t0 + offset + k / gnss_rate_hz
   common::Pose T_b_l = box_default_T_b_l();
   common::Vec3 p_b_g{-0.20, 0.10, 0.60};  // m, antenna lever arm in b
   // IMU white noise densities, equal to config/default.yaml.
@@ -255,7 +256,7 @@ inline common::Status write_box_dataset(const std::filesystem::path& dir, const 
   std::normal_distribution<double> n01(0.0, 1.0);
   const common::Pose T_e_w = box_T_e_w(p);
   const std::int64_t gnss_period = box_ns(1.0 / p.gnss_rate_hz);
-  for (std::int64_t t = p.t0_ns; t <= t_end.ns; t += gnss_period) {
+  for (std::int64_t t = p.t0_ns + p.gnss_offset_ns; t <= t_end.ns; t += gnss_period) {
     const common::NavState x = box_truth(p, common::Timestamp{t});
     common::GnssMeasurement m;
     m.t = common::Timestamp{t};

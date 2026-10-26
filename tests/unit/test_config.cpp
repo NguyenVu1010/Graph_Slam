@@ -192,6 +192,18 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   EXPECT_DOUBLE_EQ(cfg.value().gnss.chi2_gate, 7.814727903251178);
 }
 
+// Ruling on the static-init threshold: it must exceed the per-sample accelerometer noise
+// acc_noise_density * sqrt(rate_hz) by about 3x, or a still sensor never initialises.
+TEST(Config, ImuInitAccThresholdAboveSampleNoise) {
+  const auto cfg = load_config(kDefault);
+  ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+  const auto& imu = cfg.value().imu;
+  const double sample_std_mps2 = imu.acc_noise_density * std::sqrt(imu.rate_hz);
+  EXPECT_GE(imu.init_max_acc_std_mps2, 3.0 * sample_std_mps2);
+  const double gyro_std_radps = imu.gyro_noise_density * std::sqrt(imu.rate_hz);
+  EXPECT_GE(imu.init_max_gyro_std_radps, gyro_std_radps);
+}
+
 TEST(Config, GnssGateKeysValidated) {
   const std::string base = read_file(kDefault);
   const auto pairs = parse_config(base, overlay("    gnss:\n      align_min_pairs: 0\n"));

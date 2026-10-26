@@ -11,7 +11,9 @@ common::PoseCovariance lidar_cov_in_body(const common::PoseCovariance& cov_l,
                                          const common::Pose& T_b_l);
 
 /// Degeneracy report from the l tangent to the b tangent: eigvecs `Ad(T_b_l) V_l`,
-/// eigenvalues and flags unchanged (pipeline.md section 3). No allocation.
+/// eigenvalues and flags unchanged (pipeline.md section 3). Only the flagged directions are
+/// meaningful afterwards: the columns are not unit-length, not orthogonal and not
+/// eigenvectors of the Hessian in b (diagnostics only, graph.hpp). No allocation.
 common::DegeneracyReport degeneracy_in_body(const common::DegeneracyReport& r_l,
                                             const common::Pose& T_b_l);
 

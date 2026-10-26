@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -247,6 +248,28 @@ TEST(Estimator, LatestStateTimestampFollowsScans) {
     EXPECT_LT(e.state.T_w_b.p.norm(), 1e-6);
     EXPECT_LT(e.state.v_w_b.norm(), 1e-6);
   }
+}
+
+// A non-finite IMU sample is dropped by the core, so it cannot cover a scan: the scan
+// waits for the next finite sample and is then processed normally.
+TEST(Estimator, NonFiniteImuDoesNotCoverScan) {
+  Estimator est(make_config());
+  ASSERT_NO_FATAL_FAILURE(feed_static_imu(est, 0, kStillEndNs));
+  ScanFrame scan;
+  fill_scan(scan, kStillEndNs + 1000);
+  ASSERT_TRUE(est.push_scan(scan).is_ok());
+  ImuSample bad = static_imu_at(scan.t_start.ns + kScanSpanNs);
+  bad.gyro_b.z() = std::numeric_limits<double>::quiet_NaN();
+  ASSERT_TRUE(est.push_imu(bad).is_ok());
+  est.run_once();
+  EXPECT_EQ(est.stats().n_scans, 0U);  // still waiting for a finite covering sample
+  ASSERT_TRUE(est.push_imu(static_imu_at(scan.t_start.ns + kScanSpanNs + kImuPeriodNs)).is_ok());
+  est.run_once();
+  const Estimator::Stats st = est.stats();
+  EXPECT_EQ(st.n_scans, 1U);
+  EXPECT_EQ(st.n_skipped_scans, 0U);
+  EXPECT_EQ(st.n_nonfinite_imu, 1U);
+  EXPECT_EQ(est.latest_state().state.t, scan.t_start);
 }
 
 TEST(Estimator, LatestStateEmptyUntilImuInitialised) {

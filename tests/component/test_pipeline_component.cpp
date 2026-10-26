@@ -9,10 +9,13 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -72,8 +75,11 @@ struct ReplayResult {
 };
 
 // Replays an mssdata directory in time order, run_once() after every pushed record
-// (so before and after every scan push), flush() at the end.
-ReplayResult replay(const fs::path& data, const Config& cfg) {
+// (so before and after every scan push), flush() at the end. `after_scan(est, k)` (if set)
+// runs after the k-th scan record (k from 1) has been pushed and drained.
+ReplayResult replay(const fs::path& data,
+                    const Config& cfg,
+                    const std::function<void(Estimator&, int)>& after_scan = {}) {
   ReplayResult out;
   auto opened = io::DatasetReader::open(data, cfg.realtime.max_points_per_scan);
   EXPECT_TRUE(opened.is_ok()) << opened.reason();
@@ -85,6 +91,7 @@ ReplayResult replay(const fs::path& data, const Config& cfg) {
   ScanFrame scan(cfg.realtime.max_points_per_scan);
   io::Record rec;
   Timestamp last{};
+  int n_scan_records = 0;
   const auto collect = [&]() {
     const Estimate e = est.latest_state();
     if (e.state.t != Timestamp{} && e.state.t != last) {
@@ -112,12 +119,18 @@ ReplayResult replay(const fs::path& data, const Config& cfg) {
         est.run_once();
         collect();
         (void)est.push_scan(scan);
+        ++n_scan_records;
         break;
       case io::RecordKind::kGt:
         break;
     }
     est.run_once();
     collect();
+    if (rec.kind == io::RecordKind::kLidar && after_scan) {
+      after_scan(est, n_scan_records);
+      est.run_once();
+      collect();
+    }
   }
   est.flush();
   collect();
@@ -155,13 +168,17 @@ std::size_t expected_estimates(const BoxWorldParams& p, const Config& cfg) {
   return n;
 }
 
-void run_box_world(bool gnss_and_wheel) {
-  const BoxWorldParams p;
+// Replays the box world; with `gnss_and_wheel` also replays the same dataset LiDAR-only
+// and checks GNSS-on ATE <= 5 x LiDAR-only ATE (catches a GNSS-path regression that stays
+// under the absolute bound). `after_scan` as in replay().
+ReplayResult run_box_world(bool gnss_and_wheel,
+                           const BoxWorldParams& p = BoxWorldParams{},
+                           const std::function<void(Estimator&, int)>& after_scan = {}) {
   const fs::path dir = test_dir();
   const Config cfg = box_config(p, gnss_and_wheel, dir);
   const auto written = test::write_box_dataset(dir / "data", p);
-  ASSERT_TRUE(written.is_ok()) << written.reason();
-  const ReplayResult r = replay(dir / "data", cfg);
+  EXPECT_TRUE(written.is_ok()) << written.reason();
+  const ReplayResult r = replay(dir / "data", cfg, after_scan);
   EXPECT_EQ(r.estimates.size(), expected_estimates(p, cfg));
   EXPECT_EQ(r.stats.n_scans, static_cast<std::uint64_t>(test::box_num_scans(p)));
   EXPECT_EQ(r.stats.n_uncovered_scans, 0U);
@@ -187,10 +204,15 @@ void run_box_world(bool gnss_and_wheel) {
       static_cast<unsigned long long>(r.stats.n_map_rebuilds));
   if (gnss_and_wheel) {
     EXPECT_GT(r.stats.n_odom_factors, 0U);
-    if (kWithGtsam) {
-      EXPECT_GT(r.stats.n_gnss_factors, 0U);
-    }
+    EXPECT_GT(r.stats.n_gnss_factors, 0U);
+    const Config lidar_only = box_config(p, false, dir / "lidar_only");
+    const Errors base = trajectory_errors(p, replay(dir / "data", lidar_only).estimates);
+    std::printf("[ box world ] LiDAR-only ATE on the same data %.4f m (ratio %.2f)\n",
+                base.ate_m,
+                e.ate_m / base.ate_m);
+    EXPECT_LE(e.ate_m, 5.0 * base.ate_m);
   }
+  return r;
 }
 
 TEST(PipelineComponent, BoxWorldAteWithinTolerance) {
@@ -199,6 +221,26 @@ TEST(PipelineComponent, BoxWorldAteWithinTolerance) {
 
 TEST(PipelineComponent, BoxWorldWithGnssAndWheelWithinTolerance) {
   run_box_world(true);
+}
+
+// I-1: GNSS stamps 2.5 ms off the 5 ms IMU grid are deferred until the IMU covers them and
+// fused at the interpolated pose; a fix older than the last processed scan is rejected.
+TEST(PipelineComponent, GnssOffGridFusedAndLateFixRejected) {
+  BoxWorldParams p;
+  p.gnss_offset_ns = 2'500'000;
+  int late_pushed = 0;
+  const ReplayResult r = run_box_world(true, p, [&](Estimator& est, int k) {
+    if (k == 120) {  // well after alignment: a fix stamped 1 s in the past
+      common::GnssMeasurement m;
+      m.t = Timestamp{test::box_scan_time(p, k).ns - 1'000'000'000};
+      m.p_e_g = test::box_T_e_w(p) * (test::box_truth(p, m.t).T_w_b * p.p_b_g);
+      m.cov = common::Mat3::Identity() * (p.gnss_sigma_m * p.gnss_sigma_m);
+      (void)est.push_gnss(m);
+      ++late_pushed;
+    }
+  });
+  EXPECT_EQ(late_pushed, 1);
+  EXPECT_EQ(r.stats.n_gnss_late, 1U);
 }
 
 TEST(PipelineComponent, NoEstimateBeforeImuInit) {
@@ -220,31 +262,60 @@ TEST(PipelineComponent, NoEstimateBeforeImuInit) {
 // Drives EstimatorCore directly in a static box world (noise-free IMU).
 class StaticCore {
  public:
-  StaticCore() : cfg_(make_cfg()), core_(std::make_unique<detail::EstimatorCore>(cfg_)) {
+  // `aux`: gnss.enabled and wheel_odom.enabled, with GNSS (5 Hz, 1.234 ms off the IMU grid)
+  // and wheel (50 Hz) messages merged into the stream by time.
+  explicit StaticCore(bool aux = false)
+      : aux_(aux), cfg_(make_cfg(aux)), core_(std::make_unique<detail::EstimatorCore>(cfg_)) {
     scan_.reserve(static_cast<std::size_t>(p_.rings * p_.columns));
     test::box_scan(p_, Timestamp{p_.t0_ns}, scan_);  // static: identical at every time
     empty_.reserve(1);
   }
 
-  static Config make_cfg() {
+  static Config make_cfg(bool aux = false) {
     const auto loaded = load_config(kDefault);
     EXPECT_TRUE(loaded.is_ok()) << loaded.reason();
     Config c = loaded.value();
     c.frames.T_b_l = test::box_default_T_b_l();
+    c.frames.p_b_g = BoxWorldParams{}.p_b_g;
+    c.gnss.enabled = aux;
+    c.wheel_odom.enabled = aux;
     return c;
   }
 
-  // IMU samples (static, exact) up to and including t.
+  // IMU samples (static, exact) up to and including t; a sample whose time is in `nan_`
+  // has NaN acc. With `aux`, wheel and GNSS messages earlier than each IMU sample first.
   void imu_until(std::int64_t t) {
     for (; next_imu_ <= t; next_imu_ += period_) {
-      core_->on_imu(test::box_imu(p_, Timestamp{next_imu_}, nullptr));
+      if (aux_) {
+        for (; next_wheel_ < next_imu_; next_wheel_ += 20'000'000) {
+          core_->on_wheel(test::box_wheel(p_, Timestamp{next_wheel_}));
+        }
+        for (; next_gnss_ < next_imu_; next_gnss_ += 200'000'000) {
+          common::GnssMeasurement m;
+          m.t = Timestamp{next_gnss_};
+          m.p_e_g = test::box_T_e_w(p_) * (test::box_truth(p_, m.t).T_w_b * p_.p_b_g);
+          m.cov = common::Mat3::Identity() * 0.25;
+          core_->on_gnss(m);
+        }
+      }
+      ImuSample s = test::box_imu(p_, Timestamp{next_imu_}, nullptr);
+      for (const std::int64_t bad : nan_) {
+        if (bad == next_imu_) {
+          s.acc_b.x() = std::numeric_limits<double>::quiet_NaN();
+        }
+      }
+      core_->on_imu(s);
     }
   }
+
+  void set_nan_times(std::vector<std::int64_t> times) { nan_ = std::move(times); }
 
   // Scan at t (covered by IMU first).
   void scan_at(std::int64_t t) {
     scan_.t_start = Timestamp{t};
-    imu_until(common::scan_end_time(scan_).ns + period_);
+    // Two periods: a dropped (non-finite) sample right after the end cannot cover it,
+    // as in Estimator's coverage gate, which counts finite samples only.
+    imu_until(common::scan_end_time(scan_).ns + 2 * period_);
     core_->on_scan(scan_);
   }
 
@@ -261,16 +332,21 @@ class StaticCore {
 
  private:
   BoxWorldParams p_;
+  bool aux_ = false;
   Config cfg_;
   std::unique_ptr<detail::EstimatorCore> core_;
   ScanFrame scan_;
   ScanFrame empty_;
   std::int64_t period_ = 5'000'000;
   std::int64_t next_imu_ = 1'000'000'000;
+  std::int64_t next_wheel_ = 1'000'000'000;
+  std::int64_t next_gnss_ = 1'001'234'000;
+  std::vector<std::int64_t> nan_;
 };
 
+// I-3: also with gnss.enabled and wheel_odom.enabled and their messages on the path.
 TEST(PipelineComponent, NonKeyframeScanDoesNotAllocate) {
-  StaticCore s;
+  StaticCore s(true);
   s.scan_at(s.t_scan(0));  // initialisation + keyframe 0
   ASSERT_TRUE(s.core().has_estimate());
   for (int k = 1; k <= 5; ++k) {
@@ -291,6 +367,25 @@ TEST(PipelineComponent, NonKeyframeScanDoesNotAllocate) {
   EXPECT_EQ(s.core().counters().n_match_failures, 0U);
   EXPECT_EQ(s.core().latest().state.t, Timestamp{s.t_scan(15)});
   EXPECT_LT(s.core().latest().state.T_w_b.p.norm(), 0.02);  // static: matched near origin
+}
+
+// I-2: a NaN IMU sample inside a scan span and one exactly at a scan start are dropped;
+// the neighbours bridge them and no scan is skipped.
+TEST(PipelineComponent, NonFiniteImuSamplesDropped) {
+  StaticCore s;
+  s.set_nan_times({s.t_scan(1) + 50'000'000, s.t_scan(2)});
+  s.scan_at(s.t_scan(0));
+  ASSERT_TRUE(s.core().has_estimate());
+  const std::uint64_t skipped = s.core().counters().n_skipped_scans;
+  for (int k = 1; k <= 3; ++k) {
+    s.scan_at(s.t_scan(k));
+    EXPECT_EQ(s.core().latest().state.t, Timestamp{s.t_scan(k)}) << k;
+  }
+  EXPECT_EQ(s.core().counters().n_skipped_scans, skipped);
+  EXPECT_EQ(s.core().counters().n_nonfinite_imu, 2U);
+  EXPECT_EQ(s.core().counters().n_match_failures, 0U);
+  EXPECT_TRUE(s.core().latest().state.T_w_b.p.allFinite());
+  EXPECT_LT(s.core().latest().state.T_w_b.p.norm(), 0.02);
 }
 
 TEST(PipelineComponent, ScanMatchFailureFallsBackToImuPrediction) {  // Review Focus 1

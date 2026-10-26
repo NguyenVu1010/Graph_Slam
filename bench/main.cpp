@@ -106,7 +106,8 @@ struct Counts {
   std::uint64_t gt = 0;
 };
 
-// One TUM line: "t x y z qx qy qz qw" with t in seconds printed from integer ns (9 decimals).
+// One TUM line: "t x y z qx qy qz qw" with t in seconds printed from integer ns (9 decimals)
+// and the pose with 17 significant digits, so equal files mean bit-identical doubles (E-02).
 void write_tum_line(std::FILE* f, const mss::common::NavState& s) {
   const std::int64_t ns = s.t.ns;
   const bool neg = ns < 0;
@@ -117,7 +118,7 @@ void write_tum_line(std::FILE* f, const mss::common::NavState& s) {
   // Hamilton quaternion of R_w_b; Eigen stores (x, y, z, w), TUM writes (qx qy qz qw).
   const Eigen::Quaterniond q(s.T_w_b.R);
   std::fprintf(f,
-               "%s%" PRIu64 ".%09" PRIu64 " %.12g %.12g %.12g %.12g %.12g %.12g %.12g\n",
+               "%s%" PRIu64 ".%09" PRIu64 " %.17g %.17g %.17g %.17g %.17g %.17g %.17g\n",
                neg ? "-" : "",
                sec,
                nsec,
@@ -170,6 +171,10 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"n_odom_factors\": %" PRIu64
                ",\n"
+               "  \"n_gnss_late\": %" PRIu64
+               ",\n"
+               "  \"n_nonfinite_imu\": %" PRIu64
+               ",\n"
                "  \"push_scan_us_p50\": %.3f,\n"
                "  \"push_scan_us_p95\": %.3f,\n"
                "  \"replay_wall_s\": %.6f,\n"
@@ -201,6 +206,8 @@ bool write_json(const fs::path& path,
                st.n_map_rebuilds,
                st.n_gnss_factors,
                st.n_odom_factors,
+               st.n_gnss_late,
+               st.n_nonfinite_imu,
                st.push_scan_us_p50,
                st.push_scan_us_p95,
                replay_wall_s,

@@ -58,10 +58,13 @@ class Estimator {
     std::uint64_t n_keyframes = 0;        ///< keyframes added to the backend graph
     std::uint64_t n_match_failures = 0;   ///< scans whose scan matching failed (IMU fallback)
     std::uint64_t n_skipped_scans = 0;    ///< processed scans that produced no estimate
-    std::uint64_t n_uncovered_scans = 0;  ///< of those: no IMU up to the scan end (flush, EOF)
+    std::uint64_t n_uncovered_scans = 0;  ///< of those: IMU does not span the scan (EOF,
+                                          ///< or IMU starting after the LiDAR)
     std::uint64_t n_map_rebuilds = 0;     ///< VoxelMap rebuilds after a keyframe correction
     std::uint64_t n_gnss_factors = 0;     ///< GNSS factors added to the graph
     std::uint64_t n_odom_factors = 0;     ///< wheel-odometry factors added to the graph
+    std::uint64_t n_gnss_late = 0;        ///< GNSS fixes older than the last processed scan
+    std::uint64_t n_nonfinite_imu = 0;    ///< IMU samples dropped (non-finite acc or gyro)
     double push_scan_us_p50 = 0.0;        ///< us, median wall time of push_scan()
     double push_scan_us_p95 = 0.0;        ///< us, 95th percentile wall time of push_scan()
   };
@@ -143,8 +146,9 @@ class Estimator {
   /// Afterwards: state.t = `t_start` of the last scan that produced an estimate; T_w_b,
   /// v_w_b and bias from the front-end state (optimised keyframe state on keyframe scans,
   /// scan-matched pose plus IMU-predicted velocity otherwise, IMU prediction when scan
-  /// matching fails); cov = marginal of the keyframe or the scan-match covariance in b;
-  /// keyframe_id = last keyframe.
+  /// matching fails); cov = marginal of the keyframe or the scan-match covariance in b
+  /// (unchanged from the previous estimate when scan matching fails); keyframe_id = last
+  /// keyframe.
   /// Frames: state.T_w_b, v_w_b in w; cov [rho, phi] of T_w_b. Hot path: no allocation.
   /// Tests: Task 8 test_estimator (LatestStateTimestampFollowsScans), E-01.
   common::Estimate latest_state() const;

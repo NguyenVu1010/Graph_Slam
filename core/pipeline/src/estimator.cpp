@@ -88,7 +88,10 @@ struct Estimator::Impl {
 
   // A scan with ordering key `key` is covered once an accepted IMU sample has t >= key
   // (push_imu keeps last_imu_t strictly increasing, so the latest accepted t decides).
-  bool imu_covers(common::Timestamp key) const { return have_imu && key <= last_imu_t; }
+  // Only finite samples count: the core drops non-finite ones, so they cannot cover a scan.
+  bool imu_covers(common::Timestamp key) const {
+    return have_finite_imu && key <= last_finite_imu_t;
+  }
 
   // k-way merge of the queue heads by key (see Estimator::run_once()). With
   // `require_imu_coverage`, stops at the first scan in key order that no IMU sample covers
@@ -97,8 +100,10 @@ struct Estimator::Impl {
 
   void feed_imu(const common::ImuSample& s) {
     core->on_imu(s);
-    core_has_imu = true;
-    core_last_imu_t = s.t;  // push_imu keeps the queue strictly increasing
+    if (s.acc_b.allFinite() && s.gyro_b.allFinite()) {  // the core drops the others
+      core_has_imu = true;
+      core_last_imu_t = s.t;  // push_imu keeps the queue strictly increasing
+    }
   }
 
   void record_push_latency(double us) {
@@ -125,6 +130,9 @@ struct Estimator::Impl {
 
   bool have_imu = false;
   common::Timestamp last_imu_t{};
+  // Latest accepted IMU sample with finite acc and gyro (coverage gate).
+  bool have_finite_imu = false;
+  common::Timestamp last_finite_imu_t{};
   // Latest IMU sample handed to the core (drain).
   bool core_has_imu = false;
   common::Timestamp core_last_imu_t{};
@@ -249,6 +257,10 @@ common::Status Estimator::push_imu(const common::ImuSample& sample) {
   }
   s.have_imu = true;
   s.last_imu_t = sample.t;
+  if (sample.acc_b.allFinite() && sample.gyro_b.allFinite()) {
+    s.have_finite_imu = true;
+    s.last_finite_imu_t = sample.t;
+  }
   if (s.imu.size() >= s.imu_depth) {
     common::ImuSample dropped;
     s.imu.pop(dropped);
@@ -326,6 +338,8 @@ Estimator::Stats Estimator::stats() const {
   out.n_map_rebuilds = c.n_map_rebuilds;
   out.n_gnss_factors = c.n_gnss_factors;
   out.n_odom_factors = c.n_odom_factors;
+  out.n_gnss_late = c.n_gnss_late;
+  out.n_nonfinite_imu = c.n_nonfinite_imu;
   const std::size_t n = s.latency_count;
   if (n > 0) {
     // Off the hot path: sort a copy of the stored samples.

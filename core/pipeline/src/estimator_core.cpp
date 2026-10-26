@@ -100,6 +100,16 @@ void EstimatorCore::feed_preintegrators(const common::ImuSample& s) {
 }
 
 void EstimatorCore::on_imu(const common::ImuSample& s) {
+  if (!s.acc_b.allFinite() || !s.gyro_b.allFinite()) {
+    // Bad sensor data: drop it; the neighbours bridge the gap (longer dt).
+    ++counters_.n_nonfinite_imu;
+    if (!imu_nonfinite_streak_) {
+      common::log_warn("non-finite imu sample dropped");
+    }
+    imu_nonfinite_streak_ = true;
+    return;
+  }
+  imu_nonfinite_streak_ = false;
   if (!imu_.empty() && s.t <= imu_.back().t) {
     return;
   }
@@ -108,6 +118,7 @@ void EstimatorCore::on_imu(const common::ImuSample& s) {
     feed_preintegrators(imu_.front());
   }
   (void)imu_.push(s);
+  process_deferred_gnss();
 }
 
 void EstimatorCore::on_wheel(const common::WheelSample& s) {
@@ -158,28 +169,70 @@ void EstimatorCore::on_gnss(const common::GnssMeasurement& m) {
   if (!cfg_.gnss.enabled || !has_estimate_) {
     return;
   }
-  // Body pose at m.t: the prediction advanced through the buffered samples up to m.t.
-  scratch_ = pred_;
-  common::Timestamp last = pred_last_t_;
-  for (std::size_t i = imu_.first_after(last); i < imu_.size() && imu_.at(i).t <= m.t; ++i) {
-    (void)scratch_.integrate(imu_.at(i));
-    last = imu_.at(i).t;
+  if (m.t < front_.t) {
+    // Older than the last processed scan start: the front-end no longer has that pose.
+    ++counters_.n_gnss_late;
+    if (!gnss_late_streak_) {
+      common::log_warn("gnss fix older than the last processed scan, rejected");
+    }
+    gnss_late_streak_ = true;
+    return;
   }
-  if (last < m.t) {
+  gnss_late_streak_ = false;
+  if (!gnss_deferred_.push(m)) {
+    ++counters_.n_gnss_rejected;  // the oldest deferred fix was overwritten
+  }
+  process_deferred_gnss();
+}
+
+void EstimatorCore::process_deferred_gnss() {
+  while (!gnss_deferred_.empty() && !imu_.empty() && imu_.back().t >= gnss_deferred_.front().t) {
+    common::GnssMeasurement m;
+    gnss_deferred_.pop(m);
+    if (m.t < front_.t) {
+      ++counters_.n_gnss_late;  // overtaken by a scan while waiting (cannot happen in drain order)
+      continue;
+    }
+    fuse_gnss(m);
+  }
+}
+
+void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
+  // Body pose at m.t (pipeline.md section 5): the prediction advanced through the buffered
+  // samples before m.t, then the sample interpolated at m.t.
+  scratch_ = pred_;
+  for (std::size_t i = imu_.first_after(pred_last_t_); i < imu_.size() && imu_.at(i).t < m.t; ++i) {
+    (void)scratch_.integrate(imu_.at(i));
+  }
+  if (m.t > pred_last_t_) {
     const std::optional<common::ImuSample> s = imu_.interpolate(m.t);
     if (s) {
       (void)scratch_.integrate(*s);
     }
   }
   const common::NavState x = scratch_.predict(front_, g_w_);
-  const common::Status st = fusion_.on_fix(m, x.T_w_b, latest_.cov);
-  if (!st.is_ok()) {
-    const std::string reason = st.reason();
-    if (reason != "gnss not aligned yet") {
-      ++counters_.n_gnss_rejected;
-      common::log_info("gnss fix rejected: " + reason);
+  FixOutcome outcome = FixOutcome::kAccepted;
+  (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome);
+  if (outcome == FixOutcome::kAccepted || outcome == FixOutcome::kNotAligned) {
+    gnss_reject_streak_ = false;
+    return;
+  }
+  ++counters_.n_gnss_rejected;
+  if (!gnss_reject_streak_) {
+    // Literal per outcome: no allocation (once per streak of rejections).
+    switch (outcome) {
+      case FixOutcome::kGateFix:
+        common::log_info("gnss fix rejected by gate_fix (status or covariance)");
+        break;
+      case FixOutcome::kChiSquare:
+        common::log_info("gnss fix rejected: chi-square gate exceeded");
+        break;
+      default:
+        common::log_info("gnss fix rejected: non-finite pose");
+        break;
     }
   }
+  gnss_reject_streak_ = true;
 }
 
 void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
@@ -192,15 +245,22 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
     common::log_warn("scan not newer than the previous one, skipped");
     return;
   }
-  // No IMU up to the scan end: only possible at flush() (Review Focus 4). Nothing is
-  // integrated, so the state stays at the previous scan.
+  // The buffered IMU does not span [t, t_end]: no IMU up to the scan end (flush() at the
+  // end of data, Review Focus 4) or none before the scan start (IMU started after the
+  // LiDAR). Nothing is integrated, so the state stays at the previous scan.
   const std::optional<common::ImuSample> s_t = imu_.interpolate(t);
   if (!s_t || imu_.back().t < t_end) {
     ++counters_.n_skipped_scans;
     ++counters_.n_uncovered_scans;
-    common::log_warn("scan not covered by imu samples, skipped");
+    if (!uncovered_streak_) {
+      common::log_warn("scan not covered by imu samples, skipped");
+    }
+    uncovered_streak_ = true;
     return;
   }
+  uncovered_streak_ = false;
+  // Fixes up to the IMU now buffered are fused against the previous scan's state first.
+  process_deferred_gnss();
   has_last_scan_ = true;
   last_scan_t_ = t;
 

@@ -116,9 +116,11 @@ TEST(GnssFusion, JumpRejectedAfterAlignment) {  // Review Focus 5
   std::array<GnssMeasurement, kMaxAuxQueue> out{};
   (void)f.collect(Timestamp{20 * kSec}, body_at(20), out);
   const Pose before = f.T_e_w();
+  FixOutcome outcome = FixOutcome::kAccepted;
   const common::Status st =
-      f.on_fix(fix_for(21, body_at(21), Vec3(5.0, 0.0, 0.0)), body_at(21), kZeroP);
+      f.on_fix(fix_for(21, body_at(21), Vec3(5.0, 0.0, 0.0)), body_at(21), kZeroP, &outcome);
   EXPECT_EQ(st.reason(), "chi-square gate exceeded");
+  EXPECT_EQ(outcome, FixOutcome::kChiSquare);
   EXPECT_TRUE(f.T_e_w().R == before.R);
   EXPECT_TRUE(f.T_e_w().p == before.p);
   EXPECT_EQ(f.collect(Timestamp{100 * kSec}, body_at(21), out), 0U);
@@ -138,7 +140,12 @@ TEST(GnssFusion, GateFixReasonReturned) {
   GnssFusion f(fusion_cfg(), kPbg);
   GnssMeasurement m = fix_for(1, body_at(1));
   m.status = -1;
-  EXPECT_EQ(f.on_fix(m, body_at(1), kZeroP).reason(), "no fix");
+  FixOutcome outcome = FixOutcome::kAccepted;
+  EXPECT_EQ(f.on_fix(m, body_at(1), kZeroP, &outcome).reason(), "no fix");
+  EXPECT_EQ(outcome, FixOutcome::kGateFix);
+  m.status = 0;
+  EXPECT_EQ(f.on_fix(m, body_at(1), kZeroP, &outcome).reason(), "gnss not aligned yet");
+  EXPECT_EQ(outcome, FixOutcome::kNotAligned);
   m.status = 0;
   m.cov = Mat3::Identity() * 100.0;
   EXPECT_EQ(f.on_fix(m, body_at(1), kZeroP).reason(), "fix covariance too large");

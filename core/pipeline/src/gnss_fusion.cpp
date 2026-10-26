@@ -9,12 +9,17 @@ GnssFusion::GnssFusion(const gnss::GnssConfig& cfg, const common::Vec3& p_b_g)
 
 common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
                                   const common::Pose& T_w_b_fix,
-                                  const common::PoseCovariance& P_w_b) {
+                                  const common::PoseCovariance& P_w_b,
+                                  FixOutcome* outcome) {
+  FixOutcome dummy = FixOutcome::kAccepted;
+  FixOutcome& out = outcome != nullptr ? *outcome : dummy;
   common::Status gate = gnss::gate_fix(m, max_cov_m2_);
   if (!gate.is_ok()) {
+    out = FixOutcome::kGateFix;
     return gate;
   }
   if (!T_w_b_fix.R.allFinite() || !T_w_b_fix.p.allFinite()) {
+    out = FixOutcome::kNonFinitePose;
     return common::Status::error("non-finite pose");
   }
   if (aligned_) {
@@ -27,6 +32,7 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
     }
     common::Status chi2 = gnss::chi_square_gate(r, s_e, chi2_gate_);
     if (!chi2.is_ok()) {
+      out = FixOutcome::kChiSquare;
       return chi2;
     }
   }
@@ -36,11 +42,13 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
     aligned_ = true;
   }
   if (!aligned_) {
+    out = FixOutcome::kNotAligned;
     return common::Status::error("gnss not aligned yet");
   }
   if (!pending_.push(PendingFix{m, T_w_b_fix})) {
     ++n_pending_dropped_;  // the oldest pending fix was overwritten
   }
+  out = FixOutcome::kAccepted;
   return common::Status::ok();
 }
 

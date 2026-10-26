@@ -27,15 +27,22 @@
 
 namespace mss::pipeline::detail {
 
+/// GNSS fixes waiting for the IMU sample at or after their time (pipeline.md section 5).
+/// At 5-10 Hz GNSS and >= 100 Hz IMU at most one or two wait; when full, the oldest is
+/// dropped and counted in n_gnss_rejected.
+constexpr std::size_t kMaxDeferredGnss = 32;
+
 /// Diagnostic counters of EstimatorCore, all since construction.
 struct CoreCounters {
   std::uint64_t n_keyframes = 0;         ///< keyframes added to the graph
   std::uint64_t n_match_failures = 0;    ///< scans whose scan matching failed
   std::uint64_t n_skipped_scans = 0;     ///< scans that produced no estimate
-  std::uint64_t n_uncovered_scans = 0;   ///< of those: no IMU up to the scan end
+  std::uint64_t n_uncovered_scans = 0;   ///< of those: IMU does not span the scan
   std::uint64_t n_map_rebuilds = 0;      ///< VoxelMap rebuilds (ADR-016)
   std::uint64_t n_gnss_factors = 0;      ///< GNSS factors added
   std::uint64_t n_gnss_rejected = 0;     ///< fixes rejected (gate_fix, chi-square, pose)
+  std::uint64_t n_gnss_late = 0;         ///< fixes older than the last processed scan start
+  std::uint64_t n_nonfinite_imu = 0;     ///< IMU samples dropped (non-finite acc or gyro)
   std::uint64_t n_odom_factors = 0;      ///< wheel factors added
   std::uint64_t n_odom_rejected = 0;     ///< wheel deltas dropped by the time check
   std::uint64_t n_backend_failures = 0;  ///< optimize() errors (stub build: every keyframe)
@@ -60,7 +67,10 @@ class EstimatorCore {
   void on_imu(const common::ImuSample& s);
   /// Buffers one wheel sample and records the observed wheel period. No allocation.
   void on_wheel(const common::WheelSample& s);
-  /// Gates, aligns and queues one GNSS fix (gnss.enabled and an estimate needed).
+  /// Defers one GNSS fix until an IMU sample at or after m.t is buffered, then gates,
+  /// aligns and queues it at the body pose interpolated to m.t (gnss.enabled and an
+  /// estimate needed). Fixes older than the last processed scan start are rejected
+  /// (n_gnss_late). No allocation.
   void on_gnss(const common::GnssMeasurement& m);
   /// Processes one raw scan (frame l). Non-keyframe scans do not allocate.
   void on_scan(const common::ScanFrame& raw_l);
@@ -71,6 +81,10 @@ class EstimatorCore {
   [[nodiscard]] const CoreCounters& counters() const { return counters_; }
 
  private:
+  // Processes deferred GNSS fixes whose time the buffered IMU now covers.
+  void process_deferred_gnss();
+  // One fix at the body pose predicted from front_ to m.t (m.t >= front_.t, IMU covers it).
+  void fuse_gnss(const common::GnssMeasurement& m);
   // Feeds `s` to both preintegrators when it is newer than the last fed sample.
   void feed_preintegrators(const common::ImuSample& s);
   // Drops buffered samples older than the last one at or before `t`.
@@ -117,6 +131,7 @@ class EstimatorCore {
   std::unique_ptr<imu::ImuTrajectory> traj_;
   std::unique_ptr<std::array<common::GnssMeasurement, kMaxAuxQueue>> gnss_out_;
   BoundedQueue<common::WheelSample, kMaxAuxQueue> wheel_queue_;
+  BoundedQueue<common::GnssMeasurement, kMaxDeferredGnss> gnss_deferred_;
   common::ScanFrame pre_out_;
   common::ScanFrame kf_cloud_;
 
@@ -138,6 +153,10 @@ class EstimatorCore {
   bool init_failure_logged_ = false;
   bool match_failure_streak_ = false;
   bool backend_failure_streak_ = false;
+  bool imu_nonfinite_streak_ = false;
+  bool gnss_reject_streak_ = false;
+  bool gnss_late_streak_ = false;
+  bool uncovered_streak_ = false;
 
   common::Estimate latest_;
   CoreCounters counters_;
