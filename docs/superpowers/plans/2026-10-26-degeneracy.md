@@ -136,7 +136,7 @@ git commit -m "feat(degeneracy): eigen-analysis of the scan-matching Hessian"
 
 Fixtures: `report_flags02` = `analyze(random_spd(13), {false, 0.0, 10.0})` with `degenerate[0]` and `degenerate[2]` then set to true by hand; `delta` with entries `N(0, 1)` from `std::mt19937(21)`; `cov = random_spd(11)`; `all_flagged` = default-constructed `DegeneracyReport` with every flag true.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```cpp
 TEST(ProjectUpdate, NoFlagsIsExactIdentity) {
@@ -174,27 +174,27 @@ TEST(DegeneracyHotPath, NoAllocation) {
 }
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run the build command with `--target test_degeneracy`. Expected: link errors `undefined reference to ... project_update` / `relax_covariance`.
 
-- [ ] **Step 3: Implement both functions in `core/degeneracy/src/degeneracy.cpp`**
+- [x] **Step 3: Implement both functions in `core/degeneracy/src/degeneracy.cpp`**
 
 Private helper `bool any_flagged(const common::DegeneracyReport& report)`. Both functions return a copy of their input when nothing is flagged (bit-for-bit identity).
 `project_update`: `delta - sum_{k flagged} v_k (v_k . delta)` (equal to the header's `V diag(m) V^T delta`, cheaper with few flags; planner's call).
 `relax_covariance`: `A = I + sum_{k flagged} (std::sqrt(cfg.relax_factor) - 1) v_k v_k^T` as `common::Mat6`; `common::Mat6 inflated = A * cov * A.transpose()`; return `0.5 * (inflated + inflated.transpose())` evaluated into a `common::PoseCovariance`. No runtime check of `relax_factor >= 1` (precondition validated by `load_config`; no exceptions on the hot path).
 
-- [ ] **Step 4: Run to verify they pass**
+- [x] **Step 4: Run to verify they pass**
 
 Run the build command with `--target test_degeneracy`. Expected: `[  PASSED  ] 15 tests.`
 
-- [ ] **Step 5: Fixed-size-only check**
+- [x] **Step 5: Fixed-size-only check**
 
 `EigenMallocGuard` sees only Eigen code instantiated in the test TU (the library is compiled without `EIGEN_RUNTIME_NO_MALLOC`), and `AllocCounter` does not see `std::malloc`. So the source is also checked mechanically:
 Run: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "grep -nE 'Dynamic|MatrixXd|VectorXd|std::vector|new |cout|throw' /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-degeneracy/core/degeneracy/src/degeneracy.cpp || echo CLEAN"`
 Expected: `CLEAN`.
 
-- [ ] **Step 6: Format check, then commit**
+- [x] **Step 6: Format check, then commit**
 
 ```bash
 git add core/degeneracy/src/degeneracy.cpp tests/unit/test_degeneracy.cpp

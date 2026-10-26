@@ -4,6 +4,7 @@
 #include <limits>
 #include <random>
 
+#include <Eigen/Cholesky>
 #include <Eigen/Core>
 #include <gtest/gtest.h>
 
@@ -44,6 +45,34 @@ bool bitwise_equal(const common::DegeneracyReport& a, const common::DegeneracyRe
 }
 
 constexpr DegeneracyConfig kCfg{true, 100.0, 10.0};
+
+// Report of random_spd(13) with directions 0 and 2 flagged by hand.
+common::DegeneracyReport report_flags02() {
+  common::DegeneracyReport r = analyze(random_spd(13), DegeneracyConfig{false, 0.0, 10.0});
+  r.degenerate[0] = true;
+  r.degenerate[2] = true;
+  return r;
+}
+
+common::Vec6 random_delta() {
+  std::mt19937 rng(21);
+  std::normal_distribution<double> dist(0.0, 1.0);
+  common::Vec6 d;
+  for (int i = 0; i < 6; ++i) {
+    d(i) = dist(rng);
+  }
+  return d;
+}
+
+common::DegeneracyReport all_flagged() {
+  common::DegeneracyReport r;
+  r.degenerate.fill(true);
+  return r;
+}
+
+bool is_flagged_index(int k) {
+  return k == 0 || k == 2;
+}
 
 }  // namespace
 
@@ -124,6 +153,98 @@ TEST(Analyze, UpperTriangleIsIgnored) {
   hu(1, 3) = std::numeric_limits<double>::quiet_NaN();
   hu(0, 5) = 1e300;
   EXPECT_TRUE(bitwise_equal(analyze(hu, kCfg), analyze(H, kCfg)));
+}
+
+TEST(ProjectUpdate, NoFlagsIsExactIdentity) {
+  const common::DegeneracyReport r = analyze(random_spd(13), DegeneracyConfig{false, 0.0, 10.0});
+  const common::Vec6 delta = random_delta();
+  const common::Vec6 out = project_update(delta, r);
+  EXPECT_TRUE((out.array() == delta.array()).all());
+}
+
+TEST(ProjectUpdate, RemovesFlaggedKeepsOthers) {
+  const common::DegeneracyReport r = report_flags02();
+  const common::Vec6 delta = random_delta();
+  const common::Vec6 out = project_update(delta, r);
+  const common::Vec6 diff = out - delta;
+  for (int k = 0; k < 6; ++k) {
+    const common::Vec6 v = r.eigvecs.col(k);
+    if (is_flagged_index(k)) {
+      EXPECT_LT(std::abs(v.dot(out)), 1e-12 * delta.norm()) << "k=" << k;
+    } else {
+      EXPECT_LT(std::abs(v.dot(diff)), 1e-12 * delta.norm()) << "k=" << k;
+    }
+  }
+}
+
+TEST(ProjectUpdate, AllFlaggedIdentityGivesZero) {
+  const common::Vec6 out = project_update(random_delta(), all_flagged());
+  EXPECT_TRUE((out.array() == 0.0).all());
+}
+
+TEST(RelaxCovariance, NoFlagsIsExactIdentity) {
+  const common::DegeneracyReport r = analyze(random_spd(13), DegeneracyConfig{false, 0.0, 10.0});
+  const common::PoseCovariance cov = random_spd(11);
+  const common::PoseCovariance out = relax_covariance(cov, r, kCfg);
+  EXPECT_TRUE((out.array() == cov.array()).all());
+}
+
+TEST(RelaxCovariance, InflatesFlaggedDirectionsByFactor) {
+  const common::DegeneracyReport r = report_flags02();
+  const common::PoseCovariance cov = random_spd(11);
+  const common::PoseCovariance out = relax_covariance(cov, r, kCfg);
+  for (int k = 0; k < 6; ++k) {
+    const common::Vec6 v = r.eigvecs.col(k);
+    const double ratio = v.dot(out * v) / v.dot(cov * v);
+    if (is_flagged_index(k)) {
+      EXPECT_NEAR(ratio, 10.0, 1e-10 * 10.0) << "k=" << k;
+      EXPECT_GE(ratio, 10.0 * (1.0 - 1e-12)) << "k=" << k;
+    } else {
+      EXPECT_NEAR(ratio, 1.0, 1e-10) << "k=" << k;
+    }
+  }
+  for (int i = 0; i < 6; ++i) {
+    for (int j = 0; j < 6; ++j) {
+      EXPECT_EQ(out(i, j), out(j, i));
+    }
+  }
+  EXPECT_EQ(Eigen::LLT<common::Mat6>(out).info(), Eigen::Success);
+}
+
+TEST(RelaxCovariance, FactorOneKeepsCov) {
+  const common::PoseCovariance cov = random_spd(11);
+  const common::PoseCovariance out =
+      relax_covariance(cov, report_flags02(), DegeneracyConfig{true, 100.0, 1.0});
+  EXPECT_LT((out - cov).norm(), 1e-12 * cov.norm());
+  EXPECT_TRUE((out.array() == out.transpose().array()).all());
+}
+
+TEST(RelaxCovariance, AllFlaggedIdentityScalesCov) {
+  const common::PoseCovariance cov = random_spd(11);
+  const common::PoseCovariance out = relax_covariance(cov, all_flagged(), kCfg);
+  const common::PoseCovariance expected = 10.0 * cov;
+  EXPECT_LT((out - expected).norm(), 1e-12 * 10.0 * cov.norm());
+  EXPECT_TRUE(out.allFinite());
+}
+
+TEST(DegeneracyHotPath, NoAllocation) {
+  const common::Mat6 H = random_spd(17);
+  const DegeneracyConfig cfg{true, 1e9, 10.0};  // everything flagged: every branch runs
+  const common::Vec6 delta = random_delta();
+  const common::PoseCovariance cov = random_spd(11);
+  double sink = 0.0;
+  AllocCounter::reset();
+  {
+    const EigenMallocGuard guard;
+    for (int i = 0; i < 100; ++i) {
+      const common::DegeneracyReport r = analyze(H, cfg);
+      const common::Vec6 d = project_update(delta, r);
+      const common::PoseCovariance c = relax_covariance(cov, r, cfg);
+      sink += d.sum() + c.trace();
+    }
+  }
+  EXPECT_EQ(AllocCounter::count(), 0U);
+  EXPECT_TRUE(std::isfinite(sink));
 }
 
 }  // namespace mss::degeneracy

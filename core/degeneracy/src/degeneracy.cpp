@@ -25,6 +25,15 @@ bool lower_triangle_finite(const common::Mat6& H) {
   return true;
 }
 
+bool any_flagged(const common::DegeneracyReport& report) {
+  for (const bool flag : report.degenerate) {
+    if (flag) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 common::DegeneracyReport analyze(const common::Mat6& H, const DegeneracyConfig& cfg) {
@@ -47,6 +56,43 @@ common::DegeneracyReport analyze(const common::Mat6& H, const DegeneracyConfig& 
     flag = cfg.enabled;
   }
   return report;
+}
+
+common::Vec6 project_update(const common::Vec6& delta, const common::DegeneracyReport& report) {
+  if (!any_flagged(report)) {
+    return delta;  // exact identity (feature disabled or well-constrained)
+  }
+  // delta' = V diag(m) V^T delta = delta - sum_{k flagged} v_k (v_k^T delta).
+  common::Vec6 out = delta;
+  for (std::size_t k = 0; k < report.degenerate.size(); ++k) {
+    if (report.degenerate[k]) {
+      const common::Vec6 v = report.eigvecs.col(static_cast<int>(k));
+      out -= v.dot(delta) * v;
+    }
+  }
+  return out;
+}
+
+common::PoseCovariance relax_covariance(const common::PoseCovariance& cov,
+                                        const common::DegeneracyReport& report,
+                                        const DegeneracyConfig& cfg) {
+  if (!any_flagged(report)) {
+    return cov;  // exact identity (feature disabled or well-constrained)
+  }
+  // A = V diag(s) V^T = I + sum_{k flagged} (sqrt(f) - 1) v_k v_k^T, cov' = A cov A^T.
+  // Precondition relax_factor >= 1 is validated by load_config (no checks on the hot path).
+  const double scale_minus_one = std::sqrt(cfg.relax_factor) - 1.0;
+  common::Mat6 A = common::Mat6::Identity();
+  for (std::size_t k = 0; k < report.degenerate.size(); ++k) {
+    if (report.degenerate[k]) {
+      const common::Vec6 v = report.eigvecs.col(static_cast<int>(k));
+      A.noalias() += scale_minus_one * v * v.transpose();
+    }
+  }
+  const common::Mat6 inflated = A * cov * A.transpose();
+  // Exact symmetry: (i, j) and (j, i) are the same floating-point sum.
+  const common::PoseCovariance out = 0.5 * (inflated + inflated.transpose());
+  return out;
 }
 
 }  // namespace mss::degeneracy
