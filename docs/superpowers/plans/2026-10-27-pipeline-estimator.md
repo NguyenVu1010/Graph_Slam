@@ -230,7 +230,7 @@ git commit -m "feat(pipeline): IMU ring buffer, deskew trajectory builder and Li
   - `class GnssFusion { GnssFusion(const gnss::GnssConfig& cfg, const common::Vec3& p_b_g); common::Status on_fix(const common::GnssMeasurement& m, const common::Pose& T_w_b_fix, const common::PoseCovariance& P_w_b); std::size_t collect(common::Timestamp t_k, const common::Pose& T_w_bk, std::array<common::GnssMeasurement, kMaxAuxQueue>& out); bool aligned() const; const common::Pose& T_e_w() const; std::uint64_t n_pending_dropped() const; };`
     `on_fix` order (pipeline.md §5): `gate_fix` (its reason returned); if aligned: chi-square (`"chi-square gate exceeded"` and other reasons returned; the aligner is not fed); `aligner.update` (refreshes `T_e_w` on success); if aligned after that, queue `{m, T_w_b_fix}` in a fixed ring of `kMaxAuxQueue` (full: drop oldest, count) and return ok, else return `Status::error("gnss not aligned yet")`. `collect` moves every queued fix with `t <= t_k` into `out` shifted per §5, returns the count.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 ```cpp
 // test_pipeline_internals.cpp
 TEST(KeyframeStore, AddKeepsInsertionOrder)          // ids 0,1,2 -> at(i).id == i, find(1)->t correct
@@ -259,10 +259,10 @@ TEST(GnssFusion, GateFixReasonReturned)              // status -1 -> "no fix"
 TEST(GnssFusion, PendingBoundedDropsOldest)          // kMaxAuxQueue + 5 accepted fixes, no collect:
                                                      // collect returns kMaxAuxQueue newest, n_pending_dropped 5
 ```
-- [ ] **Step 2: Run to verify they fail** — no-GTSAM command, `--target test_pipeline_internals`. Expected: compile errors.
-- [ ] **Step 3: Implement** per Interfaces and pipeline.md §5-§6.
-- [ ] **Step 4: Run** — same target. Expected: PASS.
-- [ ] **Step 5: Format check, commit**
+- [x] **Step 2: Run to verify they fail** — no-GTSAM command, `--target test_pipeline_internals`. Expected: compile errors.
+- [x] **Step 3: Implement** per Interfaces and pipeline.md §5-§6.
+- [x] **Step 4: Run** — same target. Expected: PASS.
+- [x] **Step 5: Format check, commit**
 ```bash
 git add core/pipeline/src/keyframe_store.* core/pipeline/src/keyframe_policy.* core/pipeline/src/gnss_fusion.* core/pipeline/CMakeLists.txt tests/unit/test_pipeline_internals.cpp tests/unit/test_pipeline_gnss_fusion.cpp tests/unit/CMakeLists.txt
 git commit -m "feat(pipeline): ADR-016 keyframe store, keyframe and rebuild policy, GNSS fusion"

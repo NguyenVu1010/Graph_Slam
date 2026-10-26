@@ -6,11 +6,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "mss/backend/config.hpp"
 #include "mss/common/lie.hpp"
+#include "mss/common/scan_frame.hpp"
 #include "mss/common/timestamp.hpp"
 #include "mss/common/types.hpp"
 #include "mss/imu/config.hpp"
@@ -22,6 +25,8 @@
 #include "frames.hpp"
 #include "imu_buffer.hpp"
 #include "imu_trajectory_builder.hpp"
+#include "keyframe_policy.hpp"
+#include "keyframe_store.hpp"
 
 namespace mss::pipeline::detail {
 namespace {
@@ -348,6 +353,164 @@ TEST(Frames, DegeneracyEigvecsRotatedToBody) {
   EXPECT_LT((r_b.eigvecs - expected).cwiseAbs().maxCoeff(), 1e-12);
   EXPECT_TRUE(r_b.eigvals == r_l.eigvals);
   EXPECT_EQ(r_b.degenerate, r_l.degenerate);
+}
+
+// ---------------------------------------------------------------- KeyframeStore
+
+void make_cloud(common::ScanFrame& cloud, std::size_t n, float base) {
+  cloud.reserve(n);
+  cloud.clear();
+  for (std::size_t i = 0; i < n; ++i) {
+    const float f = base + static_cast<float>(i);
+    ASSERT_TRUE(cloud.push(f, 2.0F * f, 3.0F, 1.0F, static_cast<std::uint32_t>(i), 0));
+  }
+}
+
+TEST(KeyframeStore, AddKeepsInsertionOrder) {
+  KeyframeStore store(5);
+  common::ScanFrame cloud;
+  ASSERT_NO_FATAL_FAILURE(make_cloud(cloud, 10, 0.0F));
+  for (common::KeyId id = 0; id < 3; ++id) {
+    ASSERT_TRUE(store.add(id, Timestamp{static_cast<std::int64_t>(100 + id)}, cloud).is_ok());
+  }
+  ASSERT_EQ(store.size(), 3U);
+  EXPECT_EQ(store.capacity(), 5U);
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(store.at(i).id, i);
+  }
+  const KeyframeEntry* e = store.find(1);
+  ASSERT_NE(e, nullptr);
+  EXPECT_EQ(e->t, Timestamp{101});
+  EXPECT_EQ(e->cloud_l.size(), 10U);
+  EXPECT_EQ(store.find(7), nullptr);
+}
+
+TEST(KeyframeStore, EvictsOldestBeyondMaxKeyframes) {
+  KeyframeStore store(3);
+  common::ScanFrame cloud;
+  ASSERT_NO_FATAL_FAILURE(make_cloud(cloud, 4, 0.0F));
+  for (common::KeyId id = 0; id < 5; ++id) {
+    ASSERT_TRUE(store.add(id, Timestamp{static_cast<std::int64_t>(id)}, cloud).is_ok());
+  }
+  ASSERT_EQ(store.size(), 3U);
+  EXPECT_EQ(store.at(0).id, 2U);
+  EXPECT_EQ(store.at(1).id, 3U);
+  EXPECT_EQ(store.at(2).id, 4U);
+  EXPECT_EQ(store.n_evicted(), 2U);
+  EXPECT_EQ(store.find(0), nullptr);
+  ASSERT_NE(store.find(4), nullptr);
+  EXPECT_EQ(store.find(4)->id, 4U);
+}
+
+TEST(KeyframeStore, RejectsNonIncreasingId) {
+  KeyframeStore store(3);
+  common::ScanFrame cloud;
+  ASSERT_NO_FATAL_FAILURE(make_cloud(cloud, 4, 0.0F));
+  ASSERT_TRUE(store.add(1, Timestamp{1}, cloud).is_ok());
+  EXPECT_EQ(store.add(1, Timestamp{2}, cloud).reason(), "keyframe id not increasing");
+  EXPECT_EQ(store.add(0, Timestamp{3}, cloud).reason(), "keyframe id not increasing");
+  EXPECT_EQ(store.size(), 1U);
+  EXPECT_THROW(KeyframeStore{0}, std::invalid_argument);
+}
+
+TEST(KeyframeStore, CloudIsCopied) {
+  KeyframeStore store(2);
+  common::ScanFrame cloud;
+  ASSERT_NO_FATAL_FAILURE(make_cloud(cloud, 4, 1.0F));
+  ASSERT_TRUE(store.add(0, Timestamp{1}, cloud).is_ok());
+  cloud.xyz_mut()[0] = -100.0F;
+  EXPECT_EQ(store.at(0).cloud_l.xyz()[0], 1.0F);
+}
+
+TEST(KeyframeStore, ReusedSlotDoesNotAllocate) {
+  KeyframeStore store(2);
+  common::ScanFrame cloud;
+  ASSERT_NO_FATAL_FAILURE(make_cloud(cloud, 50, 0.0F));
+  ASSERT_TRUE(store.add(0, Timestamp{0}, cloud).is_ok());
+  ASSERT_TRUE(store.add(1, Timestamp{1}, cloud).is_ok());
+  bool ok = true;
+  AllocCounter::reset();
+  for (common::KeyId id = 2; id < 6; ++id) {
+    ok = ok && store.add(id, Timestamp{static_cast<std::int64_t>(id)}, cloud).is_ok();
+  }
+  const std::size_t allocs = AllocCounter::count();
+  EXPECT_TRUE(ok);
+  EXPECT_EQ(allocs, 0U);
+}
+
+// ---------------------------------------------------------------- KeyframePolicy
+
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+
+backend::BackendConfig keyframe_cfg() {
+  backend::BackendConfig c;
+  c.keyframe_dist_m = 1.0;
+  c.keyframe_rot_rad = 10.0 * kDegToRad;
+  return c;
+}
+
+Pose moved(const Vec3& dp, double yaw_deg) {
+  Pose T;
+  T.R = common::so3_exp(Vec3(0.0, 0.0, yaw_deg * kDegToRad));
+  T.p = dp;
+  return T;
+}
+
+TEST(KeyframePolicy, ByDistance) {
+  const backend::BackendConfig c = keyframe_cfg();
+  EXPECT_FALSE(is_new_keyframe(Pose{}, moved(Vec3(0.999, 0.0, 0.0), 0.0), c));
+  EXPECT_TRUE(is_new_keyframe(Pose{}, moved(Vec3(1.0, 0.0, 0.0), 0.0), c));
+  EXPECT_TRUE(is_new_keyframe(moved(Vec3(1.0, 1.0, 0.0), 0.0), moved(Vec3(1.0, 2.5, 0.0), 0.0), c));
+}
+
+TEST(KeyframePolicy, ByRotation) {
+  const backend::BackendConfig c = keyframe_cfg();
+  EXPECT_FALSE(is_new_keyframe(Pose{}, moved(Vec3::Zero(), 9.99), c));
+  // 10 deg up to the rounding of so3_exp/so3_log: just above it.
+  EXPECT_TRUE(is_new_keyframe(Pose{}, moved(Vec3::Zero(), 10.0 + 1e-9), c));
+  EXPECT_TRUE(is_new_keyframe(moved(Vec3::Zero(), 30.0), moved(Vec3::Zero(), 15.0), c));
+}
+
+TEST(KeyframePolicy, PoseMovedIsStrict) {
+  const double trans_m = 0.05;
+  const double rot_rad = 0.5 * kDegToRad;
+  EXPECT_FALSE(pose_moved(Pose{}, moved(Vec3(0.05, 0.0, 0.0), 0.0), trans_m, rot_rad));
+  EXPECT_TRUE(pose_moved(Pose{}, moved(Vec3(0.0501, 0.0, 0.0), 0.0), trans_m, rot_rad));
+  EXPECT_FALSE(pose_moved(Pose{}, moved(Vec3::Zero(), 0.49), trans_m, rot_rad));
+  EXPECT_TRUE(pose_moved(Pose{}, moved(Vec3::Zero(), 0.51), trans_m, rot_rad));
+}
+
+TEST(KeyframePolicy, MapWindowKeepsLastN) {
+  MapWindow window(3);
+  for (common::KeyId id = 0; id < 5; ++id) {
+    window.push(id, moved(Vec3(static_cast<double>(id), 0.0, 0.0), 0.0));
+  }
+  ASSERT_EQ(window.size(), 3U);
+  EXPECT_EQ(window.at(0).id, 2U);
+  EXPECT_EQ(window.at(2).id, 4U);
+  EXPECT_EQ(window.at(0).T_w_b_inserted.p.x(), 2.0);
+  window.set_pose(0, moved(Vec3(7.0, 0.0, 0.0), 0.0));
+  EXPECT_EQ(window.at(0).T_w_b_inserted.p.x(), 7.0);
+  EXPECT_EQ(window.at(1).T_w_b_inserted.p.x(), 3.0);
+  EXPECT_THROW(MapWindow{0}, std::invalid_argument);
+}
+
+TEST(KeyframePolicy, OdomDeltaTimeCheck) {
+  const std::int64_t period = 20 * kMs;
+  const Timestamp t_i{1000 * kMs};
+  const Timestamp t_j{2000 * kMs};
+  common::OdomDelta d;
+  d.t0 = Timestamp{t_i.ns - 30 * kMs};
+  d.t1 = Timestamp{t_j.ns + 30 * kMs};
+  EXPECT_TRUE(odom_delta_in_time(d, t_i, t_j, period));
+  d.t0 = Timestamp{t_i.ns - 30 * kMs - 1};
+  EXPECT_FALSE(odom_delta_in_time(d, t_i, t_j, period));
+  d.t0 = t_i;
+  d.t1 = Timestamp{t_j.ns - 30 * kMs - 1};
+  EXPECT_FALSE(odom_delta_in_time(d, t_i, t_j, period));
+  d.t1 = t_j;
+  EXPECT_TRUE(odom_delta_in_time(d, t_i, t_j, period));
+  EXPECT_FALSE(odom_delta_in_time(d, t_i, t_j, 0));
 }
 
 }  // namespace
