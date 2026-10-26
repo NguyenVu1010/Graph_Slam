@@ -212,7 +212,7 @@ class VoxelSet {
 ```
 Slot count = smallest power of two >= `2 * max_keys` (load factor <= 0.5, `kSlotsPerKey = 2`, planner's call). Hash: `(x * 73856093) ^ (y * 19349669) ^ (z * 83492791)` on `uint64` (Teschner et al. 2003, the iVox/Faster-LIO hash ADR-007 follows; named constants), then `& mask_`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```cpp
 TEST(VoxelKey, FloorsNegativeCoordinates) {
@@ -226,19 +226,19 @@ TEST(VoxelSet, ZeroCapacityThrows)               // VoxelSet(0) -> std::invalid_
 TEST(VoxelSet, InsertAndClearDoNotAllocate)      // AllocCounter::count() == 0 for clear + 1000 inserts
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: build command with `--target test_preprocess`. Expected: compile error (`voxel_set.hpp` not found).
 
-- [ ] **Step 3: Implement `voxel_key` and `VoxelSet`**
+- [x] **Step 3: Implement `voxel_key` and `VoxelSet`**
 
 `voxel_key` uses `std::floor(static_cast<double>(x) / voxel_m)` cast to `std::int64_t`.
 
-- [ ] **Step 4: Run to verify pass**
+- [x] **Step 4: Run to verify pass**
 
 Run: build command with `--target test_preprocess`. Expected: PASS.
 
-- [ ] **Step 5: Format check and commit**
+- [x] **Step 5: Format check and commit**
 
 ```bash
 git add core/preprocess tests/unit/test_preprocess_voxel_set.cpp tests/unit/CMakeLists.txt
