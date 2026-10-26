@@ -32,9 +32,10 @@ namespace mss::backend {
 /// Ownership/threading: single-threaded; owned by pipeline::Estimator and used only on
 /// the backend thread (ADR-005). Move-only (owns the iSAM2 instance through `impl_`).
 ///
-/// Build without GTSAM (MSS_WITH_GTSAM=OFF): `graph.cpp` built without GTSAM compiles the
-/// same API; `optimize()` returns `Result::error("built without GTSAM")`, other calls are
-/// no-ops (marginal_cov returns the NaN matrix). Contract only: graph.cpp is not written yet.
+/// Build without GTSAM (MSS_WITH_GTSAM=OFF): `src/graph_stub.cpp` replaces `graph.cpp` and
+/// compiles the same API; `optimize()` and `keyframe_state()` return
+/// `Result::error("built without GTSAM")`, other calls are no-ops (marginal_cov returns the
+/// NaN matrix). Derivations: docs/derivations/backend_factors.md; ADR-015.
 class Graph {
  public:
   /// Inputs:
@@ -49,7 +50,8 @@ class Graph {
   /// Errors: throws std::invalid_argument when `imu_cfg.rate_hz <= 0`,
   ///   `imu_cfg.gravity_mps2 <= 0`, `keyframe_dist_m <= 0`,
   ///   `keyframe_rot_rad <= 0`, `relinearize_threshold <= 0`, `relinearize_skip <= 0`,
-  ///   any prior sigma `<= 0`, a random walk `< 0`, or `p_b_g` non-finite.
+  ///   any prior sigma `<= 0`, a random walk `<= 0` (a zero sigma cannot enter the bias
+  ///   factor; pipeline::load_config also requires > 0), or `p_b_g` non-finite.
   ///   (The keyframe thresholds are applied by the pipeline; Graph validates the whole
   ///   struct it receives.)
   /// Hot path: no. Tests: B-01..B-04 construct it.
@@ -69,6 +71,8 @@ class Graph {
   /// Frames: x0.T_w_b, x0.v_w_b in w; x0.bias in b. Units: SI.
   /// Preconditions: `x0.t == t`; `t` strictly greater than the previous keyframe's t.
   ///   A violation is logged; the keyframe is still added (KeyIds stay dense).
+  ///   A non-finite x0 pose, velocity or bias is logged and replaced by the previous
+  ///   keyframe's guess (identity / zero for the first keyframe); it never reaches GTSAM.
   /// Errors: none returned. Hot path: no (per keyframe, about 1 Hz). Tests: B-02, B-04.
   common::KeyId add_keyframe(common::Timestamp t, const common::NavState& x0);
 
@@ -91,9 +95,11 @@ class Graph {
 
   /// Adds a relative-pose (between) factor from LiDAR scan matching:
   /// residual `Log(T_bi_bj^-1 * (T_w_bi^-1 * T_w_bj))` in [rho, phi].
-  /// `cov`: 6x6 [rho, phi], right perturbation of T_bi_bj (frame b_j); the pipeline has
-  ///   already converted it from l to b and applied degeneracy::relax_covariance when
-  ///   degeneracy is enabled. Used as-is (permuted to GTSAM order inside).
+  /// `cov`: 6x6 [rho, phi], right perturbation of T_bi_bj (frame b_j);
+  ///   `scan_match::ScanMatcher::align` has already applied `degeneracy::relax_covariance`
+  ///   to it when degeneracy is enabled; the pipeline only converts it from l to b
+  ///   (adjoint of T_b_l) and must not relax it again. Used as-is (permuted to GTSAM order
+  ///   inside).
   /// `degeneracy`: may be nullptr. When non-null it must be in the same b_j tangent
   ///   (eigvecs rotated with se3_adj(T_b_l) by the pipeline). In this contract it does
   ///   NOT change the factor: it is recorded for diagnostics only (number of degenerate
@@ -157,6 +163,11 @@ class Graph {
   ///     system). The exception is caught inside. Pending keyframes are kept (with their
   ///     priors and initial values); only the pending factors added since the last
   ///     successful optimize() are dropped. KeyIds remain valid and dense.
+  ///     Keyframes whose linking factors were dropped this way are re-anchored later: a
+  ///     group of new variables that connects neither to the optimised graph nor to
+  ///     keyframe 0 and contains such a keyframe gets a pose prior (first-keyframe sigmas,
+  ///     centred on the guess) on its oldest keyframe, with one log line
+  ///     (docs/derivations/backend_factors.md section 9).
   /// Hot path: no (per keyframe; may take tens of ms on the backend thread).
   /// Tests: B-02, B-03, B-04 (iSAM2 vs batch Levenberg-Marquardt < 1e-6).
   common::Result<common::Estimate> optimize();
@@ -168,6 +179,18 @@ class Graph {
   ///   NaN (never zero, which would claim certainty).
   /// Hot path: no. Tests: B-02, B-04.
   common::PoseCovariance marginal_cov(common::KeyId k) const;
+
+  /// State of keyframe `k` as of the last successful optimize(): T_w_b from the iSAM2
+  /// estimate; v_w_b and bias from the estimate when those variables are in the graph
+  /// (a keyframe with no IMU factor has none), else from the keyframe's initial guess
+  /// x0; t = the keyframe time passed to add_keyframe. Used by the pipeline to correct the
+  /// map with the optimised keyframe poses (ADR-005).
+  /// Frames: T_w_b, v_w_b in w; bias in b. Units: SI.
+  /// Errors (Result::error): "unknown keyframe" when `k` was never added;
+  ///   "keyframe not optimised" when its pose is not in the graph yet (no successful
+  ///   optimize() since a factor on it was added); "built without GTSAM" in the stub.
+  /// Hot path: no. Tests: B-02, B-03, B-04.
+  common::Result<common::NavState> keyframe_state(common::KeyId k) const;
 
  private:
   struct Impl;
