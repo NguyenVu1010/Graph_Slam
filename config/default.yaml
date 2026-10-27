@@ -41,10 +41,10 @@ mss_node:
     gnss:
       # Off until multipath (E-06) and outage (E-05) are evaluated end to end (CLAUDE.md DoD 3);
       # the sim scenarios enable it by overlay (config/sim/*.yaml). PR 4a evaluation with
-      # backend.gnss_frame_variable (docs/derivations/gnss_fusion_study.md, ADR-019), ATE,
-      # GTSAM: box world 0.0088 m LiDAR only, 0.0089 m with GNSS 0.5 m (fixed T_e_w: 0.0322 m);
-      # E-01 0.0028 m off, 0.0027 m on (fixed T_e_w: 0.0709 m); degenerate corridor 26.1 m
-      # LiDAR only, 1.93 m with GNSS.
+      # backend.gnss_frame_variable and scan_match.cov_scale 4.7 (docs/derivations/
+      # gnss_fusion_study.md section 11, ADR-019), ATE, GTSAM: box world 0.0090 m LiDAR only,
+      # 0.0090 m with GNSS 0.5 m (fixed T_e_w: 0.0326 m); E-01 with GNSS 0.0022 m (fixed T_e_w
+      # at cov_scale 1: 0.0709 m); degenerate corridor 15.4 m LiDAR only, 1.82 m with GNSS.
       enabled: false
       sigma_h_m: 1.5  # horizontal fix sigma, m
       sigma_v_m: 3.0  # vertical fix sigma, m
@@ -91,7 +91,10 @@ mss_node:
       plane_rms_max_m: 0.05      # reject neighbourhoods whose plane fit RMS exceeds this, m
       robust_huber_delta_m: 0.1  # Huber kernel threshold on point-to-plane residual, m
       min_inliers: 100           # fewer inliers than this -> match fails
-      cov_scale: 1.0             # multiplier on the inverse-Hessian covariance (dimensionless)
+      # Multiplier on the inverse-Hessian covariance (dimensionless). 4.7: with 1.0 the LiDAR
+      # factor NEES on the box world was 28 for an expected 6 (docs/derivations/
+      # gnss_fusion_study.md section 3); test LidarFactorCovarianceConsistent keeps it in [3, 12].
+      cov_scale: 4.7
       min_residual_sigma_m: 0.005  # floor on the residual sigma used for the covariance, m
 
     degeneracy:

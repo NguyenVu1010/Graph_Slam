@@ -245,19 +245,26 @@ struct CorridorRun {
   std::uint64_t gnss_factors_after_outage = 0;
 };
 
+// Scenario degeneracy overlay: the LiDAR covariance along the unobservable corridor axis
+// must be really large for GNSS to correct it (study section 8). PR 4b replaces this with
+// its scan_match.unobserved_var_m2 / unobserved_var_rad2 keys when it rebases on this PR.
+const char* const kCorridorRelaxYaml =
+    "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n";
+
 // Replays `data` with GNSS (no wheel: wheel speed would observe the corridor axis) on or off;
-// `gnss_keys`: more lines in the gnss section.
+// `gnss_keys`: more lines in the gnss section; `degeneracy_yaml`: the degeneracy section
+// ("" = shipped defaults).
 CorridorRun run_corridor(const BoxWorldParams& p,
                          const fs::path& data,
                          const fs::path& dir,
                          bool gnss,
-                         const std::string& gnss_keys = "") {
+                         const std::string& gnss_keys = "",
+                         const std::string& degeneracy_yaml = kCorridorRelaxYaml) {
   const Config cfg = box_config(p,
                                 gnss,
                                 false,
                                 dir,
-                                "    preprocess:\n      max_range_m: 10.0\n"
-                                "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n",
+                                "    preprocess:\n      max_range_m: 10.0\n" + degeneracy_yaml,
                                 gnss_keys);
   CorridorRun out;
   std::uint64_t at_outage_end = 0;
@@ -295,26 +302,58 @@ TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
   EXPECT_GE(lidar_only.ate_m, 0.3);
   if (kWithGtsam) {  // the stub backend adds no factor: nothing to correct with
     EXPECT_LE(with_gnss.ate_m, 0.5 * lidar_only.ate_m);
+    // About 300 fixes after the first estimate; a chi-square lock-out shows up here.
+    EXPECT_GT(with_gnss.stats.n_gnss_factors, 200U);
   }
 }
 
-// Review B-1: a 20 s fix outage while the corridor drifts. Afterwards the front end is
-// metres away from the aligner's T_e_w and the chi-square gate rejects every fix; after
-// gnss.max_consecutive_rejects the aligner restarts and factors flow again.
+// Degeneracy at its shipped relax_factor. With the shipped degeneracy.enabled false this
+// geometry gives a singular Hessian at every scan (no keyframe, nothing to fuse), so the
+// run turns degeneracy on as PR 4b does by default.
+const char* const kCorridorDefaultDegeneracyYaml = "    degeneracy:\n      enabled: true\n";
+
+// Review I-1: the corridor with the shipped degeneracy covariance. The LiDAR factor claims
+// millimetres along the unobservable axis, so GNSS cannot correct it (study section 8), but
+// it must not make it worse: GNSS-on ATE <= 1.2 x LiDAR-only.
+TEST(PipelineComponent, CorridorDefaultDegeneracyGnssDoesNotDegrade) {
+  const BoxWorldParams p = corridor_params();
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const CorridorRun lidar_only =
+      run_corridor(p, dir / "data", dir / "lidar_only", false, "", kCorridorDefaultDegeneracyYaml);
+  const CorridorRun with_gnss =
+      run_corridor(p, dir / "data", dir / "gnss", true, "", kCorridorDefaultDegeneracyYaml);
+  EXPECT_GT(with_gnss.stats.n_gnss_factors, 0U);
+  EXPECT_LE(with_gnss.ate_m, 1.2 * lidar_only.ate_m);
+}
+
+// Review B-1: a 20 s fix outage in the corridor with the shipped degeneracy covariance. The
+// front end drifts along the axis and the chi-square gate rejects every fix after the
+// outage; without the guard no factor is added again (lock-out), with it the aligner
+// restarts after gnss.max_consecutive_rejects and factors flow again. The ATE gain is small
+// because the IMU-only chain of this corridor drifts by metres (about 25 m in 20 s with the
+// relax_factor 1e8 overlay), far beyond its own noise model (about 0.3 m): a pre-existing
+// defect recorded as a follow-up, which a few fixes cannot bend back.
 TEST(PipelineComponent, CorridorOutageRealignsAfterRejects) {
   BoxWorldParams p = corridor_params();
   p.gnss_outage_start_s = 25.0;
   p.gnss_outage_s = 20.0;
   const fs::path dir = test_dir();
   ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
-  const CorridorRun reset = run_corridor(p, dir / "data", dir / "reset", true);
-  const CorridorRun no_reset = run_corridor(
-      p, dir / "data", dir / "no_reset", true, "      max_consecutive_rejects: 1000000000\n");
+  const CorridorRun reset =
+      run_corridor(p, dir / "data", dir / "reset", true, "", kCorridorDefaultDegeneracyYaml);
+  const CorridorRun no_reset = run_corridor(p,
+                                            dir / "data",
+                                            dir / "no_reset",
+                                            true,
+                                            "      max_consecutive_rejects: 1000000000\n",
+                                            kCorridorDefaultDegeneracyYaml);
   if (kWithGtsam) {
     EXPECT_GE(reset.stats.n_gnss_realign, 1U);
     EXPECT_GT(reset.gnss_factors_after_outage, 0U);
     EXPECT_EQ(no_reset.stats.n_gnss_realign, 0U);
-    EXPECT_LT(reset.ate_m, no_reset.ate_m);
+    EXPECT_EQ(no_reset.gnss_factors_after_outage, 0U);  // locked out for good
+    EXPECT_LE(reset.ate_m, no_reset.ate_m);
   }
 }
 
@@ -1043,6 +1082,26 @@ TEST(PipelineComponent, GnssFusionStudyLongRun) {
                   ms.back());
     rep.line(buf);
   }
+}
+
+// Review I-5: with scan_match.cov_scale 4.7 (study section 3) the LiDAR factor covariance
+// is consistent on the box world: mean NEES of the LiDAR between factors against the truth
+// within [0.5, 2] x 6 (it was 28 with cov_scale 1).
+TEST(PipelineComponent, LidarFactorCovarianceConsistent) {
+  const BoxWorldParams p;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  StudyObserver obs(p);
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  detail::set_core_test_hooks(&hooks);
+  const ReplayResult r = replay(dir / "data", box_config(p, false, dir / "cfg"));
+  detail::set_core_test_hooks(nullptr);
+  std::printf("[ box world ] LiDAR factor NEES %.2f over %llu keyframes\n",
+              obs.lidar_nees(),
+              static_cast<unsigned long long>(r.stats.n_keyframes));
+  EXPECT_GE(obs.lidar_nees(), 3.0);
+  EXPECT_LE(obs.lidar_nees(), 12.0);
 }
 
 }  // namespace
