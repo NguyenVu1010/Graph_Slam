@@ -10,13 +10,13 @@ WORKDIR /ws
 # bench at /ws/install/multi_sensor_slam/bin/mss_bench), mss_core (core/) and mss_ros2
 # (ros2_node/, finds mss_core through colcon's prefix path). colcon stops descending at the
 # root CMakeLists.txt, so every package path is listed with --paths; colcon list prints them.
-# MAKEFLAGS=-j2 x 2 workers keeps about four compilers on the 4-core, 16 GB CI runner.
+# One package at a time (--parallel-workers 1), each with colcon's default make -j<nproc>.
 # The superbuild's ctest suite (GTSAM-linked tests included) runs here, and colcon
 # test-result exits non-zero on any failure, which fails the image build.
 RUN . /opt/ros/jazzy/setup.sh \
     && pkgs="src/multi-sensor-slam src/multi-sensor-slam/core src/multi-sensor-slam/ros2_node" \
     && colcon list --paths $pkgs \
-    && MAKEFLAGS=-j2 colcon build --paths $pkgs --parallel-workers 2 \
+    && colcon build --paths $pkgs --parallel-workers 1 \
          --cmake-args -DCMAKE_BUILD_TYPE=Release -DMSS_WERROR=ON \
     && colcon test --paths $pkgs --packages-select multi_sensor_slam --event-handlers console_direct+ \
     && colcon test-result --verbose --all
