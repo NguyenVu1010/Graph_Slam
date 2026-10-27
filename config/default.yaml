@@ -39,18 +39,22 @@ mss_node:
       init_max_gyro_std_radps: 0.01    # max gyro std in the window to accept "static", rad/s
 
     gnss:
-      # On since PR 4a (docs/derivations/gnss_fusion_study.md, ADR-019, needs
-      # backend.gnss_frame_variable). ATE, GTSAM, same data: box world 0.0088 m LiDAR only,
-      # 0.0089 m with GNSS 0.5 m (was 0.0322 m); E-01 0.0028 m off, 0.0027 m on (was
-      # 0.0709 m); degenerate corridor 26.1 m LiDAR only, 1.93 m with GNSS. Evaluated with
-      # nominal fixes only (no multipath or outage zones yet).
-      enabled: true
+      # Off until multipath (E-06) and outage (E-05) are evaluated end to end (CLAUDE.md DoD 3);
+      # the sim scenarios enable it by overlay (config/sim/*.yaml). PR 4a evaluation with
+      # backend.gnss_frame_variable (docs/derivations/gnss_fusion_study.md, ADR-019), ATE,
+      # GTSAM: box world 0.0088 m LiDAR only, 0.0089 m with GNSS 0.5 m (fixed T_e_w: 0.0322 m);
+      # E-01 0.0028 m off, 0.0027 m on (fixed T_e_w: 0.0709 m); degenerate corridor 26.1 m
+      # LiDAR only, 1.93 m with GNSS.
+      enabled: false
       sigma_h_m: 1.5  # horizontal fix sigma, m
       sigma_v_m: 3.0  # vertical fix sigma, m
       max_cov_m2: 25.0  # gate: reject fixes whose per-axis variance exceeds this, m^2
       align_min_pairs: 10      # accepted fixes needed before the w->e alignment is used
       align_min_spread_m: 1.0  # min RMS horizontal spread of the fixes for alignment, m
       chi2_gate: 7.814727903251178  # chi-square 3 DoF at q = 0.95 (G-02 band 90-99 %), NIS
+      # Lock-out guard: after this many chi-square rejections in a row (fixes; 25 = 5 s at
+      # 5 Hz) the aligner restarts on the current front end (pipeline.md section 5). >= 1.
+      max_consecutive_rejects: 25
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

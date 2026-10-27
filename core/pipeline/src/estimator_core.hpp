@@ -44,6 +44,7 @@ struct CoreCounters {
   std::uint64_t n_gnss_late = 0;           ///< fixes older than the last processed scan start
   std::uint64_t n_gnss_ring_overflow = 0;  ///< deferred fixes overwritten (ring full)
   std::uint64_t n_gnss_unfused_eof = 0;    ///< deferred fixes left at end of data (no IMU after)
+  std::uint64_t n_gnss_realign = 0;        ///< aligner restarts (gnss.max_consecutive_rejects)
   std::uint64_t n_nonfinite_imu = 0;       ///< IMU samples dropped (non-finite acc or gyro)
   std::uint64_t n_odom_factors = 0;        ///< wheel factors added
   std::uint64_t n_odom_rejected = 0;       ///< wheel deltas dropped by the time check

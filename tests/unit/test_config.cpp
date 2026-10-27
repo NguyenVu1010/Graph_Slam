@@ -203,6 +203,12 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   EXPECT_EQ(cfg.value().gnss.align_min_pairs, 10);
   EXPECT_DOUBLE_EQ(cfg.value().gnss.align_min_spread_m, 1.0);
   EXPECT_DOUBLE_EQ(cfg.value().gnss.chi2_gate, 7.814727903251178);
+  EXPECT_EQ(cfg.value().gnss.max_consecutive_rejects, 25);
+  const auto bad =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      max_consecutive_rejects: 0\n"));
+  ASSERT_FALSE(bad.is_ok());
+  EXPECT_TRUE(mentions(bad.reason(), "gnss.max_consecutive_rejects: must be >= 1 (got 0)"))
+      << bad.reason();
 }
 
 // Ruling on the static-init threshold: it must exceed the per-sample accelerometer noise
@@ -238,7 +244,6 @@ TEST(Config, GnssFrameVariableKeys) {
   ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
   const auto& b = cfg.value().backend;
   EXPECT_TRUE(b.gnss_frame_variable);
-  constexpr double kRadPerDeg = 3.14159265358979323846 / 180.0;
   EXPECT_DOUBLE_EQ(b.gnss_frame_tilt_sigma_rad, 0.01 * kRadPerDeg);
   EXPECT_DOUBLE_EQ(b.gnss_frame_yaw_sigma_rad, 30.0 * kRadPerDeg);
   EXPECT_DOUBLE_EQ(b.gnss_frame_pos_sigma_m, 10.0);

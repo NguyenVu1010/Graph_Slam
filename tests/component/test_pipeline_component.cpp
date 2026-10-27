@@ -56,17 +56,27 @@ fs::path test_dir() {
   return fs::path{MSS_TEST_OUTPUT_DIR} / ("pipeline_" + name);
 }
 
-// config/default.yaml + the box-world overlay (written next to the dataset).
-Config box_config(const BoxWorldParams& p, bool gnss_and_wheel, const fs::path& dir) {
+// config/default.yaml + the box-world overlay (written next to the dataset); `extra_yaml`:
+// more sections under mss_node.ros__parameters; `gnss_keys`: more lines in the gnss section.
+Config box_config(const BoxWorldParams& p,
+                  bool gnss,
+                  bool wheel,
+                  const fs::path& dir,
+                  const std::string& extra_yaml = "",
+                  const std::string& gnss_keys = "") {
   fs::create_directories(dir);
   const fs::path overlay = dir / "overlay.yaml";
   {
     std::ofstream f(overlay);
-    f << test::box_overlay_yaml(p, gnss_and_wheel);
+    f << test::box_overlay_yaml(p, gnss, wheel, gnss_keys) << extra_yaml;
   }
   const auto cfg = load_config(kDefault, overlay);
   EXPECT_TRUE(cfg.is_ok()) << cfg.reason();
   return cfg.value();
+}
+
+Config box_config(const BoxWorldParams& p, bool gnss_and_wheel, const fs::path& dir) {
+  return box_config(p, gnss_and_wheel, gnss_and_wheel, dir);
 }
 
 struct ReplayResult {
@@ -168,10 +178,11 @@ std::size_t expected_estimates(const BoxWorldParams& p, const Config& cfg) {
   return n;
 }
 
-// Replays the box world; with `gnss_and_wheel` also replays the same dataset LiDAR-only
-// and checks GNSS-on ATE <= 1.2 x LiDAR-only ATE: on a 2 m circle GNSS at 0.5 m cannot
-// improve on the LiDAR chain, so it must not degrade it (gnss_fusion_study.md section 5;
-// before ADR-019 the ratio was 3.7). `after_scan` as in replay().
+// Replays the box world; with `gnss_and_wheel` also replays the same dataset with the wheel
+// only (GNSS off) and checks GNSS + wheel ATE <= 1.2 x wheel-only ATE: on a 2 m circle GNSS
+// at 0.5 m cannot improve on the LiDAR chain, so it must not degrade it
+// (gnss_fusion_study.md section 5; before ADR-019 the ratio was 4.2). `after_scan` as in
+// replay().
 ReplayResult run_box_world(bool gnss_and_wheel,
                            const BoxWorldParams& p = BoxWorldParams{},
                            const std::function<void(Estimator&, int)>& after_scan = {}) {
@@ -206,9 +217,9 @@ ReplayResult run_box_world(bool gnss_and_wheel,
   if (gnss_and_wheel) {
     EXPECT_GT(r.stats.n_odom_factors, 0U);
     EXPECT_GT(r.stats.n_gnss_factors, 0U);
-    const Config lidar_only = box_config(p, false, dir / "lidar_only");
-    const Errors base = trajectory_errors(p, replay(dir / "data", lidar_only).estimates);
-    std::printf("[ box world ] LiDAR-only ATE on the same data %.4f m (ratio %.2f)\n",
+    const Config wheel_only = box_config(p, false, true, dir / "wheel_only");
+    const Errors base = trajectory_errors(p, replay(dir / "data", wheel_only).estimates);
+    std::printf("[ box world ] LiDAR + wheel (GNSS off) on the same data %.4f m (ratio %.2f)\n",
                 base.ate_m,
                 e.ate_m / base.ate_m);
     EXPECT_LE(e.ate_m, 1.2 * base.ate_m);
@@ -216,48 +227,93 @@ ReplayResult run_box_world(bool gnss_and_wheel,
   return r;
 }
 
-// GNSS must help where the LiDAR drifts (gnss_fusion_study.md section 8): an almost
-// straight 30 m drive in a 120 m corridor whose end walls are out of range, so the LiDAR
-// has no information along it and degeneracy relaxes that direction (relax_factor 1e8,
-// scenario value). LiDAR + IMU drifts by metres; GNSS (0.5 m, 5 Hz) must halve the ATE.
-TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
+// Corridor drift scenario (gnss_fusion_study.md section 8): an almost straight 30 m drive
+// in a 120 m corridor whose end walls are out of range, so the LiDAR has no information
+// along it and degeneracy relaxes that direction (relax_factor 1e8, scenario value).
+BoxWorldParams corridor_params() {
   BoxWorldParams p;
   p.box_half_m = Vec3(60.0, 2.5, 1.5);
   p.yaw_rate_radps = 0.0005;  // rad/s: 0.45 m lateral offset over the drive
   p.motion_s = 60.0;
+  return p;
+}
+
+struct CorridorRun {
+  double ate_m = 0.0;
+  Estimator::Stats stats;
+  std::uint64_t gnss_factors_after_outage = 0;
+};
+
+// Replays `data` with GNSS (no wheel: wheel speed would observe the corridor axis) on or off;
+// `gnss_keys`: more lines in the gnss section.
+CorridorRun run_corridor(const BoxWorldParams& p,
+                         const fs::path& data,
+                         const fs::path& dir,
+                         bool gnss,
+                         const std::string& gnss_keys = "") {
+  const Config cfg = box_config(p,
+                                gnss,
+                                false,
+                                dir,
+                                "    preprocess:\n      max_range_m: 10.0\n"
+                                "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n",
+                                gnss_keys);
+  CorridorRun out;
+  std::uint64_t at_outage_end = 0;
+  const std::int64_t outage_end_ns =
+      p.t0_ns + test::box_ns(p.gnss_outage_start_s + p.gnss_outage_s);
+  const ReplayResult r = replay(data, cfg, [&](Estimator& est, int k) {
+    if (test::box_scan_time(p, k).ns <= outage_end_ns) {
+      at_outage_end = est.stats().n_gnss_factors;
+    }
+  });
+  out.ate_m = trajectory_errors(p, r.estimates).ate_m;
+  out.stats = r.stats;
+  out.gnss_factors_after_outage = r.stats.n_gnss_factors - at_outage_end;
+  std::printf(
+      "[ corridor ] %s gnss %d: ATE %.3f m, %llu keyframes, %llu gnss factors (%llu after "
+      "the outage), %llu realign\n",
+      dir.filename().string().c_str(),
+      gnss ? 1 : 0,
+      out.ate_m,
+      static_cast<unsigned long long>(r.stats.n_keyframes),
+      static_cast<unsigned long long>(r.stats.n_gnss_factors),
+      static_cast<unsigned long long>(out.gnss_factors_after_outage),
+      static_cast<unsigned long long>(r.stats.n_gnss_realign));
+  return out;
+}
+
+// GNSS must help where the LiDAR drifts: LiDAR + IMU drifts by metres; GNSS (0.5 m, 5 Hz)
+// must halve the ATE.
+TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
+  const BoxWorldParams p = corridor_params();
   const fs::path dir = test_dir();
   ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
-  const auto run = [&](bool gnss) {
-    const fs::path sub = dir / (gnss ? "gnss" : "lidar_only");
-    fs::create_directories(sub);
-    {
-      // GNSS alone (no wheel: wheel speed would observe the corridor axis).
-      std::string yaml = test::box_overlay_yaml(p, false);
-      if (gnss) {
-        const std::string off = "    gnss:\n      enabled: false\n";
-        yaml.replace(yaml.find(off), off.size(), "    gnss:\n      enabled: true\n");
-      }
-      std::ofstream f(sub / "overlay.yaml");
-      f << yaml
-        << "    preprocess:\n      max_range_m: 10.0\n"
-           "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n";
-    }
-    const auto cfg = load_config(kDefault, sub / "overlay.yaml");
-    EXPECT_TRUE(cfg.is_ok()) << cfg.reason();
-    const ReplayResult r = replay(dir / "data", cfg.value());
-    const Errors e = trajectory_errors(p, r.estimates);
-    std::printf("[ corridor ] gnss %d: ATE %.3f m, %llu keyframes, %llu gnss factors\n",
-                gnss ? 1 : 0,
-                e.ate_m,
-                static_cast<unsigned long long>(r.stats.n_keyframes),
-                static_cast<unsigned long long>(r.stats.n_gnss_factors));
-    return e.ate_m;
-  };
-  const double lidar_only_m = run(false);
-  const double with_gnss_m = run(true);
-  EXPECT_GE(lidar_only_m, 0.3);
+  const CorridorRun lidar_only = run_corridor(p, dir / "data", dir / "lidar_only", false);
+  const CorridorRun with_gnss = run_corridor(p, dir / "data", dir / "gnss", true);
+  EXPECT_GE(lidar_only.ate_m, 0.3);
   if (kWithGtsam) {  // the stub backend adds no factor: nothing to correct with
-    EXPECT_LE(with_gnss_m, 0.5 * lidar_only_m);
+    EXPECT_LE(with_gnss.ate_m, 0.5 * lidar_only.ate_m);
+  }
+}
+
+// Review B-1: a 20 s fix outage while the corridor drifts. Afterwards the front end is
+// metres away from the aligner's T_e_w and the chi-square gate rejects every fix; after
+// gnss.max_consecutive_rejects the aligner restarts and factors flow again.
+TEST(PipelineComponent, CorridorOutageRealignsAfterRejects) {
+  BoxWorldParams p = corridor_params();
+  p.gnss_outage_start_s = 25.0;
+  p.gnss_outage_s = 20.0;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const CorridorRun reset = run_corridor(p, dir / "data", dir / "reset", true);
+  const CorridorRun no_reset = run_corridor(
+      p, dir / "data", dir / "no_reset", true, "      max_consecutive_rejects: 1000000000\n");
+  if (kWithGtsam) {
+    EXPECT_GE(reset.stats.n_gnss_realign, 1U);
+    EXPECT_GT(reset.gnss_factors_after_outage, 0U);
+    EXPECT_EQ(no_reset.stats.n_gnss_realign, 0U);
+    EXPECT_LT(reset.ate_m, no_reset.ate_m);
   }
 }
 

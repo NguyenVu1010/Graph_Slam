@@ -97,6 +97,18 @@ with `T_w_b` the front-end pose predicted to the fix time and `P` the latest pos
 "reject everything" nor "accept everything"). Only accepted fixes update the aligner (a
 rejected jump never moves `T_e_w`).
 
+Lock-out guard. A rejected fix feeds neither the aligner nor the graph, so a front end that
+drifted past the gate (for example during a fix outage while the LiDAR drifts) could never
+be pulled back: every later fix would be rejected too. After `gnss.max_consecutive_rejects`
+chi-square rejections in a row (an accepted fix resets the count) the aligner is rebuilt
+empty (fixed-size sums: no allocation), `T_e_w` is unaligned again and the rejected fix is
+the first pair of the new alignment. Once the new alignment is available, fixes are gated
+against the current front end and flow again as factors; with
+`backend.gnss_frame_variable` they share the graph's `E` with the factors from before the
+outage. Counted in `Stats::n_gnss_realign` (bench.json `n_gnss_realign`), one warning per
+restart. Test: `GnssFusion.RealignsAfterMaxConsecutiveRejects`,
+`PipelineComponent.CorridorOutageRealignsAfterRejects`.
+
 Accepted fixes wait for the next keyframe k (`t_k >= m.t`) and are shifted to its time with
 the front-end poses:
 

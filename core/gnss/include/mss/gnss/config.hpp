@@ -14,6 +14,11 @@ struct GnssConfig {
   int align_min_pairs = 10;              // pairs needed before the aligner returns T_e_w (>= 1)
   double align_min_spread_m = 1.0;       // m, min RMS horizontal spread of the pairs (> 0)
   double chi2_gate = 7.814727903251178;  // NIS threshold, 3 DoF (chi-square q = 0.95) (> 0)
+  // Consecutive chi-square rejections (fixes) after which the pipeline restarts the aligner
+  // so a front end that drifted during an outage can be re-aligned (docs/derivations/
+  // pipeline.md section 5). The struct default never restarts (previous behaviour);
+  // load_config overwrites it from YAML (>= 1).
+  int max_consecutive_rejects = 2147483647;
 };
 
 }  // namespace mss::gnss

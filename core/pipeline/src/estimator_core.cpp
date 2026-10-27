@@ -210,6 +210,12 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
       predict_state_at(imu_, pred_, pred_last_t_, front_, m.t, g_w_, scratch_);
   FixOutcome outcome = FixOutcome::kAccepted;
   (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome);
+  if (fusion_.n_realign() != counters_.n_gnss_realign) {
+    counters_.n_gnss_realign = fusion_.n_realign();
+    common::log_warn(
+        "gnss: chi-square rejected gnss.max_consecutive_rejects fixes in a row, "
+        "aligner restarted");
+  }
   if (outcome == FixOutcome::kAccepted || outcome == FixOutcome::kNotAligned) {
     gnss_reject_streak_ = false;
     return;

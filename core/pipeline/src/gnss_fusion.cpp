@@ -5,7 +5,11 @@
 namespace mss::pipeline::detail {
 
 GnssFusion::GnssFusion(const gnss::GnssConfig& cfg, const common::Vec3& p_b_g)
-    : max_cov_m2_(cfg.max_cov_m2), chi2_gate_(cfg.chi2_gate), p_b_g_(p_b_g), aligner_(cfg) {}
+    : cfg_(cfg),
+      max_cov_m2_(cfg.max_cov_m2),
+      chi2_gate_(cfg.chi2_gate),
+      p_b_g_(p_b_g),
+      aligner_(cfg) {}
 
 common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
                                   const common::Pose& T_w_b_fix,
@@ -32,8 +36,19 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
     }
     common::Status chi2 = gnss::chi_square_gate(r, s_e, chi2_gate_);
     if (!chi2.is_ok()) {
-      out = FixOutcome::kChiSquare;
-      return chi2;
+      if (++consecutive_rejects_ < cfg_.max_consecutive_rejects) {
+        out = FixOutcome::kChiSquare;
+        return chi2;
+      }
+      // Lock-out guard: the front end drifted past the gate (e.g. during an outage) and no
+      // fix can pull it back. Restart the alignment on the current front end; the new
+      // factors share the graph's T_e_w with the old ones (ADR-019) and pull the chain back.
+      aligner_ = gnss::GnssAligner(cfg_);
+      aligned_ = false;
+      consecutive_rejects_ = 0;
+      ++n_realign_;
+    } else {
+      consecutive_rejects_ = 0;
     }
   }
   const common::Result<common::Pose> T = aligner_.update(m.p_e_g, T_w_b_fix, p_b_g_);
