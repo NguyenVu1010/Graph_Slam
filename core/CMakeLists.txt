@@ -19,9 +19,11 @@ foreach(module IN LISTS MSS_MODULES)
   add_subdirectory(${module})
 endforeach()
 
-# Export so ros2_node and external builds can find_package(mss_core).
+# Export so ros2_node and external builds can find_package(mss_core) and link mss::<module>
+# (EXPORT_NAME drops the mss_ prefix, so imported names match the in-tree ALIAS targets).
 set(MSS_TARGETS)
 foreach(module IN LISTS MSS_MODULES)
+  set_target_properties(mss_${module} PROPERTIES EXPORT_NAME ${module})
   list(APPEND MSS_TARGETS mss_${module})
 endforeach()
 install(TARGETS ${MSS_TARGETS} EXPORT mss_coreTargets

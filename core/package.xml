@@ -4,7 +4,7 @@
   <name>mss_core</name>
   <version>0.0.1</version>
   <description>multi-sensor-slam core library (no ROS). LiDAR-inertial factor-graph SLAM with GNSS and wheel odometry.</description>
-  <maintainer email="nquyenvd.mk.fpt@gmail.com">Nguyen VD</maintainer>
+  <maintainer email="maintainers@multi-sensor-slam.invalid">multi-sensor-slam maintainers</maintainer>
   <license>TODO</license>
   <buildtool_depend>cmake</buildtool_depend>
   <depend>eigen</depend>

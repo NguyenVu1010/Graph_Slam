@@ -32,11 +32,11 @@ None. Everything below is implementable with the frozen public signatures. Chang
 
 Build/test command (the only way to compile; `<T>` = target):
 ```
-MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-preprocess && tools/wsl/build.sh --no-gtsam --build-dir ~/mss-build/feat-preprocess-nogtsam --target <T>"
+MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && tools/wsl/build.sh --no-gtsam --build-dir ~/mss-build/feat-preprocess-nogtsam --target <T>"
 ```
 Format/tidy check (`<FILES>` = the task's C++ files; tidy only on `.cpp` under `core/`):
 ```
-MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-preprocess && clang-format-18 --dry-run --Werror <FILES> && clang-tidy-18 -p ~/mss-build/feat-preprocess-nogtsam --quiet <CORE_CPP_FILES>"
+MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && clang-format-18 --dry-run --Werror <FILES> && clang-tidy-18 -p ~/mss-build/feat-preprocess-nogtsam --quiet <CORE_CPP_FILES>"
 ```
 
 ## Review Focus
