@@ -42,3 +42,43 @@ gtsam::NonlinearFactor::shared_ptr GnssPositionFactor::clone() const {
 }
 
 }  // namespace mss::backend::detail
+
+namespace mss::backend::detail {
+
+GnssFrameFactor::GnssFrameFactor(gtsam::Key x,
+                                 gtsam::Key e,
+                                 const common::Vec3& p_e_g,
+                                 const common::Mat3& cov_m2,
+                                 const common::Vec3& p_b_g)
+    : Base(gtsam::noiseModel::Gaussian::Covariance(cov_m2), x, e), p_e_g_(p_e_g), p_b_g_(p_b_g) {}
+
+// Section 6b: r = R_e_w q + p_e_w - p_e_g with q = R_w_b p_b_g + p_w_b (m, in w).
+gtsam::Vector GnssFrameFactor::evaluateError(const gtsam::Pose3& T_w_b,
+                                             const gtsam::Pose3& T_e_w,
+                                             boost::optional<gtsam::Matrix&> H_x,
+                                             boost::optional<gtsam::Matrix&> H_e) const {
+  const Mat3 R_w_b = T_w_b.rotation().matrix();
+  const Mat3 R_e_w = T_e_w.rotation().matrix();
+  const Vec3 q = R_w_b * p_b_g_ + T_w_b.translation();
+  const Vec3 r = R_e_w * q + T_e_w.translation() - p_e_g_;
+  if (H_x) {
+    const Mat3 R_e_b = R_e_w * R_w_b;
+    Eigen::Matrix<double, 3, 6> J;
+    J.leftCols<3>() = -R_e_b * common::skew(p_b_g_);
+    J.rightCols<3>() = R_e_b;
+    *H_x = J;
+  }
+  if (H_e) {
+    Eigen::Matrix<double, 3, 6> J;
+    J.leftCols<3>() = -R_e_w * common::skew(q);
+    J.rightCols<3>() = R_e_w;
+    *H_e = J;
+  }
+  return r;
+}
+
+gtsam::NonlinearFactor::shared_ptr GnssFrameFactor::clone() const {
+  return gtsam::NonlinearFactor::shared_ptr(new GnssFrameFactor(*this));
+}
+
+}  // namespace mss::backend::detail

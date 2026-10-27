@@ -102,8 +102,13 @@ the front-end poses:
 
     p_e_g' = p_e_g + R_e_w (T_w_bk p_b_g - T_w_b(t_fix) p_b_g),     cov unchanged
 
-so the factor residual at the keyframe pose equals the residual at the fix time. The factor
-uses the latest aligner estimate of `T_e_w` when it is added.
+so the factor residual at the keyframe pose equals the residual at the fix time. With
+`backend.gnss_frame_variable` (default, ADR-019) every factor shares the graph variable
+`E = T_e_w`, initialised with the aligner's estimate when the first factor is added
+(`backend_factors.md` section 6b); the aligner's latest `T_e_w` is still the one used by the
+chi-square gate and the shift above. With it false, each factor keeps the aligner estimate
+of the moment it was added, which pulls the gauge of w and made the box world 3.7x worse
+(`gnss_fusion_study.md`).
 
 ## 6. Metrics
 

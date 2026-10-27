@@ -232,6 +232,28 @@ TEST(Config, GnssGateKeysValidated) {
   EXPECT_TRUE(mentions(gate.reason(), "gnss.chi2_gate: must be > 0 (got -1)")) << gate.reason();
 }
 
+// ADR-019: the GNSS frame variable and its prior sigmas (degrees in YAML, radians in code).
+TEST(Config, GnssFrameVariableKeys) {
+  const auto cfg = load_config(kDefault);
+  ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+  const auto& b = cfg.value().backend;
+  EXPECT_TRUE(b.gnss_frame_variable);
+  constexpr double kRadPerDeg = 3.14159265358979323846 / 180.0;
+  EXPECT_DOUBLE_EQ(b.gnss_frame_tilt_sigma_rad, 0.01 * kRadPerDeg);
+  EXPECT_DOUBLE_EQ(b.gnss_frame_yaw_sigma_rad, 30.0 * kRadPerDeg);
+  EXPECT_DOUBLE_EQ(b.gnss_frame_pos_sigma_m, 10.0);
+  const std::string base = read_file(kDefault);
+  const auto tilt =
+      parse_config(base, overlay("    backend:\n      gnss_frame_tilt_sigma_deg: 0\n"));
+  ASSERT_FALSE(tilt.is_ok());
+  EXPECT_TRUE(mentions(tilt.reason(), "backend.gnss_frame_tilt_sigma_deg: must be > 0"))
+      << tilt.reason();
+  const auto pos = parse_config(base, overlay("    backend:\n      gnss_frame_pos_sigma_m: -1\n"));
+  ASSERT_FALSE(pos.is_ok());
+  EXPECT_TRUE(mentions(pos.reason(), "backend.gnss_frame_pos_sigma_m: must be > 0"))
+      << pos.reason();
+}
+
 TEST(Config, AllErrorsReported) {
   std::string text = replace_once(read_file(kDefault), "      rate_hz: 200.0\n", "");
   text = replace_once(text, "sigma_h_m: 1.5", "sigma_h_m: -1.5");

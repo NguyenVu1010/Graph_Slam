@@ -98,7 +98,7 @@ void reject(const std::string& call, const std::string& why) {
 bool values_finite(const gtsam::Values& values) {
   for (const gtsam::Key key : values.keys()) {
     const gtsam::Symbol s(key);
-    if (s.chr() == 'x') {
+    if (s.chr() == 'x' || key == detail::frame_key()) {
       if (!values.at<gtsam::Pose3>(key).matrix().allFinite()) {
         return false;
       }
@@ -169,6 +169,10 @@ struct Graph::Impl {
   gtsam::NonlinearFactorGraph pending_factors;
   gtsam::NonlinearFactorGraph committed_factors;
   gtsam::Values last_estimate;  // as of the last successful optimize()
+  // ADR-019 frame variable E = T_e_w (cfg.gnss_frame_variable): created with its prior by
+  // the first add_gnss_factor, initial value T_e_w_guess.
+  bool have_frame = false;
+  common::Pose T_e_w_guess;
   std::size_t degenerate_keyframes = 0;
 
   [[nodiscard]] bool known(KeyId k) const { return k < guesses.size(); }
@@ -225,8 +229,12 @@ struct Graph::Impl {
     push_velocity_bias_priors(0, pending_priors);
   }
 
-  // Initial value of `key` from the keyframe guesses.
+  // Initial value of `key` from the keyframe guesses (the frame variable: T_e_w_guess).
   void insert_guess(gtsam::Key key, gtsam::Values& values) const {
+    if (key == detail::frame_key()) {
+      values.insert(key, detail::to_gtsam(T_e_w_guess));
+      return;
+    }
     const gtsam::Symbol s(key);
     const NavState& x = guesses[static_cast<std::size_t>(s.index())];
     if (s.chr() == 'x') {
@@ -530,6 +538,24 @@ void Graph::add_gnss_factor(common::KeyId k,
   }
   if (!is_spd<3>(gm.cov)) {
     reject(call, "covariance not positive definite");
+    return;
+  }
+  if (m.cfg.gnss_frame_variable) {
+    if (!m.have_frame) {
+      // One prior on E (ADR-019, backend_factors.md section 6b), GTSAM order [phi, rho]:
+      // roll/pitch tight (E is 4-DoF), yaw and translation loose around the first guess.
+      Vec6 sigmas;
+      sigmas << m.cfg.gnss_frame_tilt_sigma_rad, m.cfg.gnss_frame_tilt_sigma_rad,
+          m.cfg.gnss_frame_yaw_sigma_rad, Vec3::Constant(m.cfg.gnss_frame_pos_sigma_m);
+      m.pending_priors.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(
+          detail::frame_key(),
+          detail::to_gtsam(T_e_w),
+          gtsam::noiseModel::Diagonal::Sigmas(sigmas));
+      m.T_e_w_guess = T_e_w;
+      m.have_frame = true;
+    }
+    m.pending_factors.emplace_shared<detail::GnssFrameFactor>(
+        detail::pose_key(k), detail::frame_key(), gm.p_e_g, symmetrised<3>(gm.cov), m.p_b_g);
     return;
   }
   m.pending_factors.emplace_shared<detail::GnssPositionFactor>(

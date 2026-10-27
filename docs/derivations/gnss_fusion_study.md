@@ -1,7 +1,8 @@
 # GNSS fusion study: why GNSS made the box world worse
 
-Diagnosis for PR 4a (ADR-017 "Việc còn mở", first item), on main `906f57b`.
-The fix that follows from it is in `gnss.md` section 5 and `pipeline.md` section 5.
+Diagnosis for PR 4a (ADR-017 "Việc còn mở", first item), on main `906f57b`. Sections 1 to 6
+are the diagnosis; section 7 evaluates the candidate fixes; section 9 gives the result of the
+fix adopted (ADR-019, `backend_factors.md` section 6b).
 
 ## Setup
 
@@ -57,7 +58,7 @@ Each GNSS factor, however, keeps the `T_e_w` of the moment it was added.
 | 0.5 | -0.549, 0.137 | 1.361, 0.129 | 1.338 |
 | 2.0 | -2.359, 0.529 | 6.468, 0.517 | 6.238 |
 
-The expected 1-sigma yaw error (`gnss.md` section 5) is `sigma_yaw = sigma_h / (sqrt(n) spread)`.
+The expected 1-sigma yaw error (`gnss.md` section 4, "Observability") is `sigma_yaw = sigma_h / (sqrt(n) spread)`.
 At 0.5 m, with about 40 pairs and the 1.4 m RMS spread of the 2 m circle, this is
 `0.5 / (6.3 * 1.4) = 0.056 rad = 3.2 deg`, so the measured 0.5 to 1.4 deg are typical.
 Between the first and the last estimate the yaw moves by 1.9 deg.
@@ -133,24 +134,46 @@ LiDAR chain drifts by more than the fixes can resolve, roughly `sigma_h / sqrt(n
    (4.7x optimistic, but making it consistent changes nothing), and the keyframe-time
    shift.
 
-## 7. Consequence for the fix
+## 7. Candidate fixes and their evaluation
 
-- Withhold GNSS factors until `T_e_w` is well determined: the RMS horizontal spread must
-  be at least `align_min_spread_sigma * sigma_h_m`, and the predicted yaw 1-sigma
-  `sigma_h / sqrt(sum |a_c,h|^2)` at most `align_max_yaw_sigma_deg` (`gnss.md` section 5).
-  The `T_e_w` frozen in each factor then differs from the final one by much less than the
-  fix noise. GNSS is fused only where the trajectory is large compared with `sigma_h`,
-  which is where it can help; a 2 m circle at 0.5 m is not such a case.
-- The aligner keeps adding pairs while it withholds and re-estimates `T_e_w` at every fix.
-  It already did; this is now tested.
-- Out of scope, recorded as open items: the LiDAR covariance optimism (NEES 28), the
-  map/graph mismatch after a correction below the ADR-016 rebuild thresholds, and
-  estimating `T_e_w` in the graph (one shared variable instead of one frozen copy per
-  factor).
+Two fixes follow from section 6. Both were implemented and measured (scratch build, same
+seeds). "Corridor" is the drift scenario of section 8 (60 s, `relax_factor` 1e8).
+
+**A. Alignment gate.** Withhold GNSS factors until `T_e_w` is well determined: an RMS
+horizontal spread of at least `k * sigma_h_m` and a predicted yaw 1-sigma
+`sigma_h / sqrt(sum |a_c,h|^2)` (2-D Procrustes, noise on the e side) of at most `y`. The
+frozen `T_e_w` then differs little from the final one.
+
+| Gate (k, y) | box 0.1 m | box 0.5 m | box 2.0 m | corridor (LiDAR only 26.1 m) |
+| --- | --- | --- | --- | --- |
+| none (main) | 0.0256 | 0.0322 | 0.0101 | 0.74 |
+| (3, 0.5 deg) | - | - | - | 25.8 |
+| (3, 3 deg) | - | - | - | 8.7 |
+| (5, 1 deg) | - | - | - | 24.8 |
+| (10, 1 deg) | 0.0256 | 0.0088 | 0.0088 | 25.3 |
+
+ATE in m. The gate removes the damage only when it never opens (box world at 0.5 and 2 m);
+at 0.1 m it opens and the damage stays (2.9x). In the corridor it delays the alignment until
+the LiDAR + IMU chain has drifted by metres; the aligner then fits `T_e_w` to the drifted
+trajectory, the chi-square gate rejects the later fixes, and GNSS no longer corrects
+anything. Rejected.
+
+**B. `T_e_w` as one graph variable (ADR-019).** Every GNSS factor shares the variable
+`E = T_e_w`, initialised with the aligner's estimate, 4-DoF through a tight tilt prior. The
+GNSS factor set can then no longer pull the gauge of w (a rigid offset is absorbed by `E`,
+as the tight prior did in section 4) and no factor keeps a stale `T_e_w`. GNSS keeps only
+the information it really has: the shape of the trajectory. Results in section 9. Adopted.
+
+Also checked: the aligner keeps adding pairs while it has no transform, and re-estimates
+`T_e_w` from all pairs at every fix (it is not frozen; now tested).
+
+Out of scope, recorded as open items: the LiDAR covariance optimism (NEES 28), the
+map/graph mismatch after a correction below the ADR-016 rebuild thresholds, and the
+degeneracy covariance along an unobservable direction (section 8).
 
 ## 8. Where GNSS must help: a degenerate corridor
 
-The gate must not hide a GNSS path that cannot help at all, so the same box world was also
+A fix must not simply switch GNSS off where it is needed, so the same box world was also
 run as a corridor: half extents (60, 2.5, 1.5) m, yaw rate 0.0005 rad/s (almost straight),
 60 s cruise (30 m), `preprocess.max_range_m` 10 (the end walls are out of range), and
 `degeneracy.enabled` true. Along the corridor the LiDAR has no information, so the estimate
@@ -167,3 +190,28 @@ unobservable axis (`sqrt(tr cov_p)` 0.012 m against an error of 3 m, NEES 5e5), 
 can move it. Only when the covariance along the degenerate direction is really large (1e8)
 does GNSS work as intended: 35x better. The degeneracy covariance belongs to its own
 module (ADR-004, `degeneracy.md`). The corridor test of Task 3 uses 1e8 in its overlay.
+
+## 9. Result of fix B (ADR-019)
+
+Same scenarios and seeds, GTSAM build, `backend.gnss_frame_variable: true` (default).
+
+| Scenario | LiDAR + IMU | + GNSS, fixed `T_e_w` (main) | + GNSS, frame variable |
+| --- | --- | --- | --- |
+| box, GNSS 0.1 m | 0.0088 | 0.0256 (2.9x) | 0.0088 (1.00x) |
+| box, GNSS 0.5 m | 0.0088 | 0.0322 (3.7x) | 0.0089 (1.01x) |
+| box, GNSS 2.0 m | 0.0088 | 0.0101 (1.15x) | 0.0089 (1.01x) |
+| box, GNSS 0.5 m + wheel | 0.0079 (wheel) | 0.0329 | 0.0079 |
+| corridor 20 s cruise | 3.04 | - | 2.01 (1.5x better) |
+| corridor 30 s cruise | 7.27 | - | 2.53 (2.9x better) |
+| corridor 60 s cruise | 26.1 | 0.74 (35x better) | 1.93 (13.5x better) |
+
+ATE in m. On the box world GNSS no longer degrades the estimate at any sigma (no map rebuild
+either), which is the optimum of section 5. In the corridor GNSS still corrects the drift
+13.5x, but less than with the fixed `T_e_w` (0.74 m): there the fixed frame, fitted early
+while the drift was still small, acted as an absolute anchor that the free frame does not
+have; with the frame variable the absolute position along the corridor comes only from
+keyframe 0 and the IMU chain before the first factor. The corridor numbers are sensitive to
+the scenario (LiDAR only: 3 to 50 m depending on duration and
+`backend.relinearize_threshold`), because the IMU-only axis there is itself poorly behaved;
+the component test asserts only the 2x bound at 60 s. Without GTSAM (stub backend) GNSS adds
+no factor and both scenarios equal LiDAR only.

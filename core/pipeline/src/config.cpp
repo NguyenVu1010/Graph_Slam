@@ -452,6 +452,12 @@ Config read_config(Reader& r) {
   r.field("backend.prior_bias_gyro_sigma_radps",
           c.backend.prior_bias_gyro_sigma_radps,
           Range::kPositive);
+  r.field("backend.gnss_frame_variable", c.backend.gnss_frame_variable);
+  r.angle_deg(
+      "backend.gnss_frame_tilt_sigma_deg", c.backend.gnss_frame_tilt_sigma_rad, Range::kPositive);
+  r.angle_deg(
+      "backend.gnss_frame_yaw_sigma_deg", c.backend.gnss_frame_yaw_sigma_rad, Range::kPositive);
+  r.field("backend.gnss_frame_pos_sigma_m", c.backend.gnss_frame_pos_sigma_m, Range::kPositive);
   // ADR-018: one source of truth (ADR-008), deterministic mode also pins TBB to one thread.
   c.backend.single_thread = c.deterministic;
 
