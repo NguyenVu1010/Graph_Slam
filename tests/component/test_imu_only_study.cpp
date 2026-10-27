@@ -1253,7 +1253,7 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
     const FullResidualScope full(v.full);
     const PosteriorStatisticScope posterior(v.posterior);
     for (const std::uint32_t seed : seeds) {
-      score_seed(rep, v.yaml, seed, "v" + std::to_string(vi), vi == 0, sc);
+      ASSERT_NO_FATAL_FAILURE(score_seed(rep, v.yaml, seed, "v" + std::to_string(vi), vi == 0, sc));
     }
   }
   const SeedScores& m = scores[0];
@@ -1598,8 +1598,8 @@ TEST(PipelineComponent, RelativeFactorSeeds) {
   std::vector<SeedScores> scores(variants.size());
   for (std::size_t vi = 0; vi < variants.size(); ++vi) {
     for (const std::uint32_t seed : seeds) {
-      score_seed(
-          rep, yaml_of(variants[vi], ""), seed, "rf" + std::to_string(vi), vi == 0, scores[vi]);
+      ASSERT_NO_FATAL_FAILURE(score_seed(
+          rep, yaml_of(variants[vi], ""), seed, "rf" + std::to_string(vi), vi == 0, scores[vi]));
     }
   }
   const SeedScores& ref = scores[0];

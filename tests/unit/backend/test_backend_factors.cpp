@@ -497,6 +497,58 @@ TEST(BackendFactors, B01_Se3RelativePoseFactorMatchesGtsamExactChain) {
   }
 }
 
+// The default form (backend.relative_factor: between), not a custom factor: checks the
+// permuted noise path and the Cauchy wrap used for loops.
+TEST(BackendFactors, B01_BetweenAndRobustLoopJacobians) {
+  std::mt19937 rng(kSeed);
+  Mat6 S_m = Mat6::Zero();
+  S_m.diagonal() << 0.04, 0.09, 0.01, 0.0025, 0.0004, 0.0009;  // [rho, phi]
+  const Mat6 L = S_m.llt().matrixL();
+  const Pose T_i = random_pose(rng);
+  const Pose Z = random_pose(rng);
+  const auto gaussian = gtsam::noiseModel::Gaussian::Covariance(permute_cov(S_m));
+  const auto robust = gtsam::noiseModel::Robust::Create(
+      gtsam::noiseModel::mEstimator::Cauchy::Create(kLoopCauchyK), gaussian);
+
+  // T_j such that the mss residual is L * u with |u| = the whitened norm.
+  const auto values_at = [&](double whitened_norm) {
+    const Vec6 u = whitened_norm * random_vec6(rng, 1.0).normalized();
+    const Vec6 r_m = L * u;
+    const Pose T_j = T_i * Z * common::se3_exp(r_m);
+    gtsam::Values v;
+    v.insert(pose_key(0), to_gtsam(T_i));
+    v.insert(pose_key(1), to_gtsam(T_j));
+    return v;
+  };
+
+  const gtsam::BetweenFactor<gtsam::Pose3> f_gauss(pose_key(0), pose_key(1), to_gtsam(Z), gaussian);
+  const gtsam::BetweenFactor<gtsam::Pose3> f_robust(pose_key(0), pose_key(1), to_gtsam(Z), robust);
+
+  // gtsam::BetweenFactor differentiates only Between(), not the Logmap of the error, so its
+  // Jacobians are exact at zero error only (GTSAM factorTesting.h note). The permuted
+  // noise and the Cauchy wrap are therefore checked at zero error, where the numerical
+  // Jacobians of the whitened (and reweighted) error are exact.
+  const gtsam::Values v0 = values_at(0.0);
+  EXPECT_LT(f_gauss.whitenedError(v0).norm(), 1e-12);
+  MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f_gauss, v0);
+  EXPECT_LT(max_relative_jacobian_error(f_gauss, v0), kRelJacTol);
+  MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f_robust, v0);
+  EXPECT_LT(max_relative_jacobian_error(f_robust, v0), kRelJacTol);
+
+  const gtsam::Values v01 = values_at(0.1);
+  EXPECT_NEAR(f_gauss.whitenedError(v01).norm(), 0.1, 1e-9);
+  // At |e| = 0.1 the robust linearisation is the Gaussian one scaled by sqrt(w).
+  const double w = 1.0 / (1.0 + (0.1 / kLoopCauchyK) * (0.1 / kLoopCauchyK));
+  const auto lin_g = boost::dynamic_pointer_cast<gtsam::JacobianFactor>(f_gauss.linearize(v01));
+  const auto lin_r = boost::dynamic_pointer_cast<gtsam::JacobianFactor>(f_robust.linearize(v01));
+  ASSERT_TRUE(lin_g && lin_r);
+  for (int k = 0; k < 2; ++k) {
+    const gtsam::Matrix A_g = lin_g->getA(lin_g->begin() + k);
+    const gtsam::Matrix A_r = lin_r->getA(lin_r->begin() + k);
+    EXPECT_LT((A_r - std::sqrt(w) * A_g).norm(), 1e-9 * A_g.norm());
+  }
+}
+
 // Control (why the exact forms exist): gtsam::BetweenFactor<Pose3>, the default form, fails
 // the numerical Jacobian check at 30 deg / 5 m (its Jacobian omits Jr^-1 of the Logmap) and
 // passes it at zero error.
