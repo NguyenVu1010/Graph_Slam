@@ -325,6 +325,32 @@ TEST(PipelineComponent, BoxWorldWithGnssAndWheelWithinTolerance) {
   run_box_world(true);
 }
 
+// Review I-3: GNSS alone (no wheel) at sigma 0.1 / 0.5 / 2.0 m must not degrade the LiDAR
+// chain on the box world: GNSS-on ATE <= 1.2 x LiDAR-only ATE on the same data (study
+// section 9: 1.00 to 1.01; with the fixed T_e_w 1.15 to 3.7).
+TEST(PipelineComponent, BoxWorldGnssOnlyDoesNotDegrade) {
+  for (const double sigma_m : {0.1, 0.5, 2.0}) {
+    BoxWorldParams p;
+    p.gnss_sigma_m = sigma_m;
+    const fs::path dir = test_dir() / ("sigma_" + std::to_string(sigma_m));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const ReplayResult on = replay(dir / "data", box_config(p, true, false, dir / "gnss"));
+    const ReplayResult off = replay(dir / "data", box_config(p, false, false, dir / "lidar"));
+    const double ate_on_m = trajectory_errors(p, on.estimates).ate_m;
+    const double ate_off_m = trajectory_errors(p, off.estimates).ate_m;
+    std::printf(
+        "[ box world ] GNSS only sigma %.1f m: ATE %.4f m, LiDAR only %.4f m (ratio "
+        "%.2f), %llu gnss factors\n",
+        sigma_m,
+        ate_on_m,
+        ate_off_m,
+        ate_on_m / ate_off_m,
+        static_cast<unsigned long long>(on.stats.n_gnss_factors));
+    EXPECT_GT(on.stats.n_gnss_factors, 0U) << sigma_m;
+    EXPECT_LE(ate_on_m, 1.2 * ate_off_m) << sigma_m;
+  }
+}
+
 // I-1: GNSS stamps 2.5 ms off the 5 ms IMU grid are deferred until the IMU covers them and
 // fused at the interpolated pose; a fix older than the last processed scan is rejected.
 TEST(PipelineComponent, GnssOffGridFusedAndLateFixRejected) {
