@@ -169,8 +169,9 @@ std::size_t expected_estimates(const BoxWorldParams& p, const Config& cfg) {
 }
 
 // Replays the box world; with `gnss_and_wheel` also replays the same dataset LiDAR-only
-// and checks GNSS-on ATE <= 5 x LiDAR-only ATE (catches a GNSS-path regression that stays
-// under the absolute bound). `after_scan` as in replay().
+// and checks GNSS-on ATE <= 1.2 x LiDAR-only ATE: on a 2 m circle GNSS at 0.5 m cannot
+// improve on the LiDAR chain, so it must not degrade it (gnss_fusion_study.md section 5;
+// before ADR-019 the ratio was 3.7). `after_scan` as in replay().
 ReplayResult run_box_world(bool gnss_and_wheel,
                            const BoxWorldParams& p = BoxWorldParams{},
                            const std::function<void(Estimator&, int)>& after_scan = {}) {
@@ -210,9 +211,50 @@ ReplayResult run_box_world(bool gnss_and_wheel,
     std::printf("[ box world ] LiDAR-only ATE on the same data %.4f m (ratio %.2f)\n",
                 base.ate_m,
                 e.ate_m / base.ate_m);
-    EXPECT_LE(e.ate_m, 5.0 * base.ate_m);
+    EXPECT_LE(e.ate_m, 1.2 * base.ate_m);
   }
   return r;
+}
+
+// GNSS must help where the LiDAR drifts (gnss_fusion_study.md section 8): an almost
+// straight 30 m drive in a 120 m corridor whose end walls are out of range, so the LiDAR
+// has no information along it and degeneracy relaxes that direction (relax_factor 1e8,
+// scenario value). LiDAR + IMU drifts by metres; GNSS (0.5 m, 5 Hz) must halve the ATE.
+TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
+  BoxWorldParams p;
+  p.box_half_m = Vec3(60.0, 2.5, 1.5);
+  p.yaw_rate_radps = 0.0005;  // rad/s: 0.45 m lateral offset over the drive
+  p.motion_s = 60.0;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const auto run = [&](bool gnss) {
+    const fs::path sub = dir / (gnss ? "gnss" : "lidar_only");
+    fs::create_directories(sub);
+    {
+      std::ofstream f(sub / "overlay.yaml");
+      f << test::box_overlay_yaml(p, false)
+        << "    preprocess:\n      max_range_m: 10.0\n"
+           "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n"
+           "    gnss:\n      enabled: "
+        << (gnss ? "true" : "false") << "\n";
+    }
+    const auto cfg = load_config(kDefault, sub / "overlay.yaml");
+    EXPECT_TRUE(cfg.is_ok()) << cfg.reason();
+    const ReplayResult r = replay(dir / "data", cfg.value());
+    const Errors e = trajectory_errors(p, r.estimates);
+    std::printf("[ corridor ] gnss %d: ATE %.3f m, %llu keyframes, %llu gnss factors\n",
+                gnss ? 1 : 0,
+                e.ate_m,
+                static_cast<unsigned long long>(r.stats.n_keyframes),
+                static_cast<unsigned long long>(r.stats.n_gnss_factors));
+    return e.ate_m;
+  };
+  const double lidar_only_m = run(false);
+  const double with_gnss_m = run(true);
+  EXPECT_GE(lidar_only_m, 0.3);
+  if (kWithGtsam) {  // the stub backend adds no factor: nothing to correct with
+    EXPECT_LE(with_gnss_m, 0.5 * lidar_only_m);
+  }
 }
 
 TEST(PipelineComponent, BoxWorldAteWithinTolerance) {
