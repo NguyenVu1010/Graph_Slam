@@ -155,6 +155,33 @@ All runs: bench exit 0, 0 match failures, 22 (E-03: 21) skipped and 2 (1) uncove
 1), `n_gravity_factor_gated` / `_removed` / `_unchecked` 0. These are not baselines:
 `eval/baselines.json` changes only in a `baseline-update` PR.
 
+Sensor ablation on the same E-01 Gazebo bag and bench binary, one overlay change each from
+`config/sim/warehouse.yaml` (ATE after SE(3) alignment, 642 pairs; horizontal = RMS of the xy
+error, vertical = RMS of z; `n_gnss_rejected` = 0 in every row, it is the bridge's counter and
+the bag is the same; the bench has no odom rejection counter: `n_odom` = 66366 records):
+
+| Overlay | ATE RMSE [m] | horiz. / vert. RMS [m] | max horiz. / max abs z [m] | keyframes | p95 [ms] | GNSS factors | odom factors |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| (a) LiDAR + IMU | 0.090 | 0.015 / 0.088 | 0.043 / 0.240 | 42 | 7.77 | 0 | 0 |
+| (b) + wheel (GNSS off) | 0.169 | 0.139 / 0.097 | 0.301 / 0.215 | 42 | 16.43 | 0 | 41 |
+| (c) + GNSS (wheel off) | 0.092 | 0.015 / 0.090 | 0.044 / 0.225 | 42 | 8.37 | 204 | 0 |
+| (d) shipped (both) | 0.170 | 0.140 / 0.097 | 0.302 / 0.216 | 42 | 16.36 | 203 | 41 |
+
+The wheel-odometry factor accounts for the gap: switching it on (b, d) raises the horizontal
+RMS error from 0.015 m to 0.14 m (max 0.30 m) and the p95 scan time from about 8 to 16 ms,
+whatever GNSS does. GNSS changes nothing measurable (a vs c, b vs d within 2 mm). That fits
+the odometry measured on this bag (12.5 % of distance, 31 deg per revolution, coming from the
+turns) being trusted as if it met the 1-3 % model, but this table alone does not separate
+wheel slip at the turns from the believed-kinematics error or from the odom factor's sigma.
+The remaining ~0.09 m is vertical and present in every row, so it comes from the LiDAR + IMU
+part (z is the weakly constrained axis on this flat lap with the ceiling out of range for most
+beams); the table does not show which of the two. The 0.0022 m synthetic box has no cluttered
+geometry, no Gazebo render error and no wheel joints, so it is no reference for this gap.
+
+`n_gravity_factor_gated` / `_removed` / `_unchecked` are 0 in every row: with
+`static_gravity_check_keyframes: 0` (shipped) `check_gravity_factor` returns before the check,
+so no counter moves (the factor itself is added; gating applies only to a moving start).
+
 ## Mutating a bag (E-03)
 
 `tools/mutate_bag.py` derives the robustness bag from a bridged one (packet loss and reordering
