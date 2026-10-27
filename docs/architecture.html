@@ -223,7 +223,7 @@
 // cycles[].stages[].refs: "module.fn" phải trỏ tới một fn có trong modules
 // ============================================================================
 const DATA = {
-  repo: { commit: "f64b186", date: "2026-10-27", branch: "main" },
+  repo: { commit: "f64b186", date: "2026-10-27", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
   ci: { run: 40496168491, jobs: [
     { name: "lint", ok: true, note: "clang-format 18 + ruff" },
     { name: "core-no-gtsam", ok: true, note: "CMake + GTest, -Werror, MSS_WITH_GTSAM=OFF" },
@@ -973,7 +973,8 @@ let selected = null;
 function renderHeader() {
   const r = DATA.repo;
   document.getElementById("repo-line").innerHTML =
-    `Trạng thái tại commit <code>${r.commit}</code> (${r.branch}, ${r.date})`;
+    `Trạng thái tại commit <code>${r.commit}</code> (${r.branch}, ${r.date})` +
+    (r.url ? ` · <a href="${r.url}">${r.url.replace("https://", "")}</a>` : "");
   const strip = document.getElementById("ci-strip");
   strip.innerHTML = `<span class="chip">CI run ${DATA.ci.run}</span>` + DATA.ci.jobs.map(j =>
     `<span class="chip ${j.ok ? "ok" : "fail"}" title="${esc(j.note)}"><span class="dot"></span>${j.name}: ${j.ok ? "pass" : "fail"}</span>`).join("");
