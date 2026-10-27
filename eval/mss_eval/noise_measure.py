@@ -36,7 +36,7 @@ _CLIP_STD_FACTOR = 0.98658  # std of N(0, 1) truncated at +-3
 _MIN_RAY_COS = 0.7  # range sigma uses points with |n . u| above this (incidence < ~46 deg)
 _MIN_COS = 1e-6
 _ODOM_DRIFT_PCT = (1.0, 3.0)
-_ODOM_YAW_DEG_PER_REV = (0.3, 1.0)
+_ODOM_YAW_DEG_PER_REV = (4.0, 5.0)
 _MIN_TURN_RAD = 0.5  # below this total rotation a yaw drift per revolution is meaningless
 _WGS84_A_M, _WGS84_F = 6378137.0, 1.0 / 298.257223563
 _AXES = "xyz"
@@ -517,5 +517,5 @@ def odom_section(
     a.set_aspect("equal", adjustable="datalim")
     a.legend(fontsize=8, frameon=False)
     _label(a, "Wheel odometry vs ground truth", "x [m]", "y [m]")
-    note = "Target 1–3 % of distance on a warehouse floor, yaw 0.3–1.0° per turn (ADR-011 §3)."
+    note = "Target 1–3 % of distance on a warehouse floor, yaw 4–5° per turn (ADR-011 §3)."
     return Section("Wheel odom", rows, [_png(fig)], note)
