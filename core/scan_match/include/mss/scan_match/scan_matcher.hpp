@@ -45,6 +45,7 @@ class ScanMatcher {
   /// Units: `max_points` in points (normally realtime.max_points_per_scan).
   /// Errors: throws std::invalid_argument when `max_iterations <= 0`, `rot_tol_rad <= 0`,
   ///   `trans_tol_m <= 0`, `max_corr_dist_m <= 0`, `plane_rms_max_m <= 0`,
+  ///   `plane_min_eig_ratio` or `min_mid_eig_ratio` outside [0, 1),
   ///   `robust_huber_delta_m <= 0`, `min_inliers < 6`, `cov_scale <= 0`,
   ///   `min_residual_sigma_m <= 0` or `max_points == 0`. (6 = number of pose DoF, not a tunable.)
   /// Hot path: no (allocates).
@@ -59,12 +60,16 @@ class ScanMatcher {
   /// `map.knn(p_w, 0, buf)` (k = MapConfig::knn_k); keep the correspondence only if at
   /// least 3 neighbours were found, the nearest is within `max_corr_dist_m`, and the
   /// least-squares plane through the neighbours has RMS point-to-plane distance
-  /// <= `plane_rms_max_m`. Then `q_w` = neighbour centroid, `n_w` = unit plane normal,
-  /// residual and Jacobian from point_to_plane_residual(), IRLS Huber weight
-  /// `w = 1 if |r| <= delta else delta / |r|` (delta = `robust_huber_delta_m`), applied to
-  /// both `J^T J` and `J^T r`. Solve `H xi = -g` (H = sum w J^T J, g = sum w J^T r).
-  /// If `deg_cfg.enabled`, on EVERY iteration: `report = degeneracy::analyze(H, deg_cfg)`;
-  /// the flagged eigenvalues of H are raised to `eig_threshold`
+  /// <= `plane_rms_max_m` and, when `plane_min_eig_ratio > 0`, the eigenvalues of the
+  /// neighbours' scatter matrix satisfy `lambda_min <= plane_min_eig_ratio * lambda_mid`
+  /// (planarity gate, rejects edges and corners) and, when `min_mid_eig_ratio > 0`,
+  /// `lambda_mid > min_mid_eig_ratio * lambda_max` (collinearity gate, rejects points on
+  /// one line). Then `q_w` = neighbour centroid, `n_w` = unit
+  /// plane normal, residual and Jacobian from point_to_plane_residual(), IRLS Huber weight `w = 1
+  /// if |r| <= delta else delta / |r|` (delta = `robust_huber_delta_m`), applied to both `J^T J`
+  /// and `J^T r`. Solve `H xi = -g` (H = sum w J^T J, g = sum w J^T r). If `deg_cfg.enabled`, on
+  /// EVERY iteration: `report = degeneracy::analyze(H, deg_cfg)`; the flagged eigenvalues of H are
+  /// raised to `eig_threshold`
   /// (`H_reg = H + sum_{k flagged} (eig_threshold - lambda_k) v_k v_k^T`); solve
   /// `H_reg xi = -g`; then `xi = degeneracy::project_update(xi, report)`. For an
   /// invertible H this equals projecting `-H^-1 g`, and it stays defined when H is

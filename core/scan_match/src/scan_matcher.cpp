@@ -48,6 +48,12 @@ ScanMatcher::ScanMatcher(const ScanMatchConfig& cfg,
   if (!(cfg.plane_rms_max_m > 0.0)) {
     throw std::invalid_argument("scan_match.plane_rms_max_m must be > 0");
   }
+  if (!(cfg.plane_min_eig_ratio >= 0.0 && cfg.plane_min_eig_ratio < 1.0)) {
+    throw std::invalid_argument("scan_match.plane_min_eig_ratio must be in [0, 1)");
+  }
+  if (!(cfg.min_mid_eig_ratio >= 0.0 && cfg.min_mid_eig_ratio < 1.0)) {
+    throw std::invalid_argument("scan_match.min_mid_eig_ratio must be in [0, 1)");
+  }
   if (!(cfg.robust_huber_delta_m > 0.0)) {
     throw std::invalid_argument("scan_match.robust_huber_delta_m must be > 0");
   }
@@ -89,7 +95,9 @@ int ScanMatcher::build_system(const map::VoxelMap& map,
       continue;
     }
     const std::optional<detail::PlaneFit> fit = detail::fit_plane(nbr_);
-    if (!fit.has_value() || !(fit->rms_m <= cfg_.plane_rms_max_m) || !fit->n_w.allFinite()) {
+    if (!fit.has_value() || !(fit->rms_m <= cfg_.plane_rms_max_m) || !fit->n_w.allFinite() ||
+        !detail::passes_planarity(*fit, cfg_.plane_min_eig_ratio) ||
+        !detail::passes_collinearity(*fit, cfg_.min_mid_eig_ratio)) {
       continue;
     }
     const double r = point_to_plane_residual(p_l, fit->q_w, fit->n_w, T_w_l, &J_r_xi);

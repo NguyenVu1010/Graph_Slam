@@ -68,8 +68,12 @@ class Estimator {
     std::uint64_t n_gnss_unfused_eof = 0;    ///< GNSS fixes after the last IMU sample at flush()
     std::uint64_t n_gnss_realign = 0;  ///< GNSS aligner restarts after gnss.max_consecutive_rejects
     std::uint64_t n_nonfinite_imu = 0;  ///< IMU samples dropped (non-finite acc or gyro)
-    double push_scan_us_p50 = 0.0;      ///< us, median wall time of push_scan()
-    double push_scan_us_p95 = 0.0;      ///< us, 95th percentile wall time of push_scan()
+    std::uint64_t n_map_points = 0;     ///< points in the VoxelMap cache now (ADR-007)
+    /// map points refreshed in place by map.min_point_dist_m since construction (summed
+    /// over map rebuilds; ADR-007 amendment)
+    std::uint64_t n_map_spacing_replaced = 0;
+    double push_scan_us_p50 = 0.0;  ///< us, median wall time of push_scan()
+    double push_scan_us_p95 = 0.0;  ///< us, 95th percentile wall time of push_scan()
   };
 
   /// Builds every module and reserves every buffer: a pool of

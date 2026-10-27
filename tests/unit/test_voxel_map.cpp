@@ -129,6 +129,11 @@ TEST(VoxelMap, ConstructorRejectsBadConfig) {
     c.prune_radius_m = r;
     EXPECT_THROW(construct(c), std::invalid_argument) << "prune_radius_m " << r;
   }
+  for (const double d : {-0.1, nan, inf}) {
+    MapConfig c = default_map_config();
+    c.min_point_dist_m = d;
+    EXPECT_THROW(construct(c), std::invalid_argument) << "min_point_dist_m " << d;
+  }
   EXPECT_NO_THROW(construct(default_map_config()));
   MapConfig c32 = default_map_config();
   c32.knn_k = NeighborBuffer::kMaxNeighbors;
@@ -143,6 +148,7 @@ TEST(VoxelMap, DefaultYamlConfigConstructs) {
   EXPECT_EQ(m.num_voxels(), 0u);
   EXPECT_EQ(m.num_points(), 0u);
   EXPECT_EQ(m.num_dropped(), 0u);
+  EXPECT_EQ(m.num_spacing_replaced(), 0u);
 }
 
 TEST(VoxelMap, InsertCountsVoxelsAndPoints) {
@@ -278,7 +284,9 @@ TEST(VoxelMap, InsertDoesNotAllocate) {
   const Pose T = yaw_pose(0.3, Vec3(1.0, 2.0, 0.5));
   MapConfig small = default_map_config();
   small.max_voxels = 4;
-  for (const MapConfig& c : {default_map_config(), small}) {
+  MapConfig spaced = default_map_config();
+  spaced.min_point_dist_m = 0.1;
+  for (const MapConfig& c : {default_map_config(), small, spaced}) {
     VoxelMap m(c);
     m.insert(scan, T);
     AllocCounter::reset();
@@ -288,7 +296,8 @@ TEST(VoxelMap, InsertDoesNotAllocate) {
         m.insert(scan, T);
       }
     }
-    EXPECT_EQ(AllocCounter::count(), 0u) << "max_voxels " << c.max_voxels;
+    EXPECT_EQ(AllocCounter::count(), 0u)
+        << "max_voxels " << c.max_voxels << " min_point_dist_m " << c.min_point_dist_m;
   }
 }
 
@@ -368,6 +377,128 @@ TEST(VoxelMap, M02_RingKeepsLastNPoints) {
   for (int i = 30; i < 50; ++i) {
     EXPECT_TRUE(contains(buf, n, pts[static_cast<std::size_t>(i)])) << "point " << i;
   }
+}
+
+// Spacing (ADR-007 amendment, docs/derivations/map.md "Spacing"): a new point within d of a
+// stored point of its voxel replaces the NEAREST such point in place; count and ring head
+// do not change and num_spacing_replaced counts it.
+TEST(VoxelMap, SpacingReplacesNearest) {
+  MapConfig c = default_map_config();
+  c.min_point_dist_m = 0.1;
+  VoxelMap m(c);
+  // Two points 0.15 m apart (both kept) and a third far away.
+  const Vec3 a(0.25, 0.05, 0.05);
+  const Vec3 b(0.25, 0.20, 0.05);
+  const Vec3 far(0.05, 0.45, 0.45);
+  m.insert(make_scan({a, b, far}), Pose{});
+  ASSERT_EQ(m.num_points(), 3u);
+  ASSERT_EQ(m.num_spacing_replaced(), 0u);
+  // p is 0.06 m from a and 0.09 m from b: a (the nearest) is replaced.
+  const Vec3 p(0.25, 0.11, 0.05);
+  m.insert(make_scan({p}), Pose{});
+  EXPECT_EQ(m.num_points(), 3u);
+  EXPECT_EQ(m.num_spacing_replaced(), 1u);
+  NeighborBuffer buf;
+  const int n = m.knn(Vec3(0.25, 0.25, 0.25), NeighborBuffer::kMaxNeighbors, buf);
+  ASSERT_EQ(n, 3);
+  EXPECT_TRUE(contains(buf, n, p));
+  EXPECT_FALSE(contains(buf, n, a));
+  EXPECT_TRUE(contains(buf, n, b));
+  EXPECT_TRUE(contains(buf, n, far));
+  m.clear();
+  EXPECT_EQ(m.num_spacing_replaced(), 0u);
+}
+
+// Repeated observations of one place (consecutive keyframes) keep one slot and refresh it:
+// a scan seen twice with 2 mm of pose change stores each point once and holds the newer copy.
+TEST(VoxelMap, SpacingRefreshesRepeatedObservations) {
+  MapConfig c = default_map_config();
+  c.min_point_dist_m = 0.1;
+  VoxelMap m(c);
+  const std::vector<Vec3> pts = {Vec3(0.05, 0.05, 0.05),
+                                 Vec3(0.25, 0.05, 0.05),
+                                 Vec3(0.45, 0.05, 0.05),
+                                 Vec3(0.05, 0.25, 0.05),
+                                 Vec3(0.25, 0.25, 0.05)};
+  const ScanFrame scan = make_scan(pts);
+  m.insert(scan, Pose{});
+  const Pose shifted = yaw_pose(0.0, Vec3(0.002, 0.0, 0.0));
+  m.insert(scan, shifted);
+  EXPECT_EQ(m.num_points(), pts.size());
+  EXPECT_EQ(m.num_spacing_replaced(), pts.size());
+  NeighborBuffer buf;
+  const int n = m.knn(Vec3(0.25, 0.25, 0.25), NeighborBuffer::kMaxNeighbors, buf);
+  ASSERT_EQ(static_cast<std::size_t>(n), pts.size());
+  for (const Vec3& q : pts) {
+    EXPECT_TRUE(contains(buf, n, shifted * q)) << q.transpose();
+  }
+}
+
+// Points closer than d replace each other one after another: 50 points 1 cm apart along a
+// line inside one voxel leave a single stored point, the last one (the slot follows the
+// newest observation; see map.md "Spacing" for this drift).
+TEST(VoxelMap, SpacingSweepKeepsNewest) {
+  MapConfig c = default_map_config();
+  c.min_point_dist_m = 0.1;
+  VoxelMap m(c);
+  std::vector<Vec3> pts;
+  for (int i = 0; i < 50; ++i) {
+    pts.emplace_back(0.005 + 0.01 * i, 0.25, 0.25);
+  }
+  m.insert(make_scan(pts), Pose{});
+  EXPECT_EQ(m.num_points(), 1u);
+  EXPECT_EQ(m.num_spacing_replaced(), 49u);
+  NeighborBuffer buf;
+  ASSERT_EQ(m.knn(Vec3(0.25, 0.25, 0.25), NeighborBuffer::kMaxNeighbors, buf), 1);
+  EXPECT_TRUE(contains(buf, 1, pts.back()));
+}
+
+// The spacing test runs against the voxel's own points only: a point 1 cm away but across
+// a voxel boundary is stored.
+TEST(VoxelMap, SpacingIsPerVoxel) {
+  MapConfig c = default_map_config();
+  c.min_point_dist_m = 0.1;
+  VoxelMap m(c);
+  m.insert(make_scan({Vec3(0.495, 0.25, 0.25), Vec3(0.505, 0.25, 0.25)}), Pose{});
+  EXPECT_EQ(m.num_voxels(), 2u);
+  EXPECT_EQ(m.num_points(), 2u);
+  EXPECT_EQ(m.num_spacing_replaced(), 0u);
+}
+
+// A full voxel still overwrites its oldest point with a point that is not within d of any
+// stored point; a point within d refreshes its neighbour instead.
+TEST(VoxelMap, SpacingFullVoxelOverwritesOldest) {
+  MapConfig c = default_map_config();
+  c.max_points_per_voxel = 3;
+  c.min_point_dist_m = 0.1;
+  VoxelMap m(c);
+  const std::vector<Vec3> pts = {
+      Vec3(0.05, 0.05, 0.05), Vec3(0.25, 0.05, 0.05), Vec3(0.45, 0.05, 0.05)};
+  m.insert(make_scan(pts), Pose{});
+  ASSERT_EQ(m.num_points(), 3u);
+  const Vec3 near_second(0.27, 0.05, 0.05);  // 2 cm from pts[1]: replaces it
+  const Vec3 fresh(0.05, 0.45, 0.05);        // far from all: overwrites the oldest, pts[0]
+  m.insert(make_scan({near_second, fresh}), Pose{});
+  EXPECT_EQ(m.num_points(), 3u);
+  EXPECT_EQ(m.num_spacing_replaced(), 1u);
+  NeighborBuffer buf;
+  const int n = m.knn(Vec3(0.25, 0.25, 0.25), NeighborBuffer::kMaxNeighbors, buf);
+  ASSERT_EQ(n, 3);
+  EXPECT_FALSE(contains(buf, n, pts[0]));
+  EXPECT_FALSE(contains(buf, n, pts[1]));
+  EXPECT_TRUE(contains(buf, n, near_second));
+  EXPECT_TRUE(contains(buf, n, pts[2]));
+  EXPECT_TRUE(contains(buf, n, fresh));
+}
+
+// min_point_dist_m = 0 is the ring of M02_RingKeepsLastNPoints: duplicates are stored.
+TEST(VoxelMap, SpacingOffStoresDuplicates) {
+  const MapConfig c = default_map_config();
+  ASSERT_EQ(c.min_point_dist_m, 0.0);
+  VoxelMap m(c);
+  m.insert(make_scan({Vec3(0.1, 0.1, 0.1), Vec3(0.1, 0.1, 0.1)}), Pose{});
+  EXPECT_EQ(m.num_points(), 2u);
+  EXPECT_EQ(m.num_spacing_replaced(), 0u);
 }
 
 TEST(VoxelMap, KnnNonFiniteOrOutOfRangeQueryReturnsZero) {

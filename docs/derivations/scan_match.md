@@ -47,13 +47,139 @@ From the k nearest map neighbours `x_i` (`k = map.knn_k`, at most `kMaxNeighbors
 
 `lambda_min / n` is the mean squared distance of the neighbours to the best plane, so `rms` is
 the RMS point-to-plane distance. A correspondence is kept iff `n >= 3`, the nearest neighbour
-is within `max_corr_dist_m` (`dist2[0] <= max_corr_dist_m^2`) and `rms <= plane_rms_max_m`.
+is within `max_corr_dist_m` (`dist2[0] <= max_corr_dist_m^2`), `rms <= plane_rms_max_m` and
+the two plane-fit gates below pass.
 
 A collinear neighbourhood has two zero eigenvalues: `rms = 0` and the normal is any unit vector
-orthogonal to the line. It is accepted. Rejecting it would need a new tunable (a minimum ratio
-of the middle eigenvalue), which is an open question outside this module's contract; the
-matcher only guarantees that such data never produces NaN (it either fails with an error or
-returns finite values, test `CollinearMapNeverNaN`).
+orthogonal to the line. Without the collinearity gate it is accepted; the matcher guarantees
+that such data never produces NaN (it either fails with an error or returns finite values,
+test `CollinearMapNeverNaN`).
+
+### Plane-fit gates (ADR-007 amendment 2026-10-27)
+
+With the scatter eigenvalues `lambda_min <= lambda_mid <= lambda_max` (already computed for the
+normal), both ratios dimensionless in `[0, 1)`, `0` = off:
+
+    planarity     (rho = plane_min_eig_ratio):  reject iff  lambda_min >  rho * lambda_mid
+    collinearity  (mu  = min_mid_eig_ratio):    reject iff  lambda_mid <= mu * lambda_max
+
+A plane patch has `lambda_min << lambda_mid ~ lambda_max`. Two faces meeting at an edge, or a
+corner, give `lambda_min` of the order of `lambda_mid` (planarity rejects them). Points on one
+line, or a long thin strip such as two parallel point columns, give `lambda_mid << lambda_max`
+and an ill-defined in-plane direction (collinearity rejects them). Both tests are written
+without a division; identical points (all eigenvalues 0) fail the collinearity test.
+Unit tests: `PlaneFit.PlanarityGateRejectsEdgeAcceptsPlane` (two faces at 90 deg with 5 points:
+`rms = 0.038 m`, ratio 0.46; a plane with 3 mm noise: 3e-4) and
+`PlaneFit.CollinearityGateRejectsLineAcceptsPatch` (a line: `lambda_mid = 0`; two rings 1 cm
+apart over 0.5 m: 8e-4; a square patch: > 0.5).
+
+Evaluation (map spacing off; S-02 room at N = 20, 10 trials, `S02_GateSweep`; corridor axis
+share and inliers from `CorridorAxisLeak`; box from `PipelineComponent.BoxWorld*`; E-01 fused
+from `tools/run_integration.py`, E-01 LiDAR-only = the same replay with GNSS and wheel off; base
+9ec6919):
+
+| gates | S-02 worst error / min inliers | corridor axis share / inliers | box ATE LiDAR / GNSS+wheel | E-01 fused / LiDAR-only |
+| --- | --- | --- | --- | --- |
+| off | 9.50 mm / 0.083° / 720 | 1.15 % / 1838 | 8.8 / 32.9 mm | 0.07086 m / 3.0 mm |
+| planarity 0.01 | 7.19 mm / 0.092° / 707 | 0.10 % / 1771 | - | - |
+| planarity 0.05 | 9.76 mm / 0.085° / 720 | 0.037 % / 1785 | 9.1 / 33.3 mm | 0.07094 m / 1.9 mm |
+| planarity 0.1 | 9.72 mm / 0.083° / 720 | 0.47 % / 1811 | - | 0.07110 m / - |
+| planarity 0.2 | 9.46 mm / 0.080° / 720 | - | - | 0.07089 m / - |
+| collinearity 0.05 | 9.50 mm / 0.083° / 720 | 0.88 % / 1400 | 6.5 / 31.8 mm | 0.07102 m / 2.8 mm |
+| collinearity 0.1 | 4.96 mm / 0.053° / 705 | 0.67 % / 1111 | 6.2 / 32.0 mm | 0.07130 m / - |
+| collinearity 0.2 | 0.28 mm / 0.017° / 688 | 0.59 % / 740 | 5.9 / 32.3 mm | 0.07136 m / 2.4 mm |
+| planarity 0.05 + collinearity 0.2 (9ec6919 choice) | 0.28 mm / 0.017° / 688 | 0.040 % / 720 | 6.1 / 32.1 mm | 0.07110 m / 1.8 mm |
+| default + map spacing 0.1 m | 0.27 mm / 0.016° / 714 | 0.040 % / 720 | 6.3 / 32.1 mm | 0.0735 m / - |
+
+Findings:
+
+- S-02 edge bias: the biasing neighbourhoods are two parallel point columns on two faces,
+  exactly coplanar (`lambda_min = 0`), so planarity cannot see them; they are long and thin,
+  and collinearity at 0.2 removes them (9.5 -> 0.28 mm) without any map change.
+- Corridor axis leak: the spurious x information comes from neighbourhoods across the
+  wall-floor and wall-ceiling edges, not from single-ring lines. Planarity at 0.05 cuts it
+  30x (1.15 % -> 0.037 %); collinearity alone only halves it while dropping 60 % of the
+  inliers. (PR 4b attributed it to collinear single-ring neighbourhoods; this sweep does not
+  support that.)
+- Together (0.05 / 0.2) on 9ec6919: box ATE improves for LiDAR-only (8.8 -> 6.1 mm) and
+  GNSS+wheel (32.9 -> 32.1 mm), E-01 LiDAR-only improves 3.0 -> 1.8 mm, E-01 fused moves
+  0.07086 -> 0.07110 m (+0.33 %, 96 % of that ATE is GNSS noise, `docs/derivations/map.md`
+  "Đánh giá").
+
+On base 9ec6919 this table selected planarity 0.05 + collinearity 0.2; the re-measurement after
+#19 below replaced that choice.
+
+#### Re-measured after the rebase on 0d1df78 (#19: T_e_w graph variable, `cov_scale` 4.7)
+
+E-01..E-03 now use the scenario overlay of `tools/run_integration.py` (about 2 mm ATE). Box
+from `PipelineComponent.BoxWorld*`, NEES from `LidarFactorCovarianceConsistent` (bound [3, 12]),
+corridor tests from #19 (`CorridorDriftCorrectedByGnss`: GNSS ATE <= 0.5 x LiDAR-only and
+> 200 GNSS factors; `CorridorDefaultDegeneracyGnssDoesNotDegrade`; `CorridorOutageRealignsAfterRejects`):
+
+| gates (spacing off) | E-01 / E-03 ATE | box ATE LiDAR / GNSS+wheel | GNSS-only ratio (0.1 / 0.5 / 2 m) | NEES GTSAM / no-GTSAM | corridor drift: LiDAR-only -> GNSS ATE | corridor default degeneracy, LiDAR-only ATE |
+| --- | --- | --- | --- | --- | --- | --- |
+| off (main, shipped) | 2.20 / 2.11 mm | 9.0 / 5.4 mm | 1.00 / 1.00 / 1.00 | 7.78 / 3.83 | 15.4 -> 1.8 m (pass) | 11.5 m |
+| planarity 0.05 | 1.37 / 1.29 mm | 9.1 / 5.1 mm | 1.00 / 1.00 / 1.01 | 9.85 / 4.09 | 44.1 -> 12.8 m, 144 factors (**fails** > 200) | 5.4 m |
+| collinearity 0.2 | 2.59 / 2.57 mm | 5.7 / 5.0 mm | 1.00 / 1.00 / 1.00 | 6.39 / 3.30 | 36.4 -> 4.5 m (pass) | 216.6 m |
+| 0.05 + 0.2 | 1.65 / 1.59 mm | 6.0 / 4.7 mm | 1.00 / 1.00 / 1.01 | 8.48 / **2.83 (fails >= 3)** | 42.8 -> 36.9 m (**fails** 0.5x) | 241.5 m |
+| planarity 0.01 | 0.95 / 0.97 mm | 7.2 / 4.1 mm | 1.00 / 1.00 / 1.02 | 6.48 / 3.51 | 96.9 -> 5.2 m (passes 0.5x; fails the absolute guard added in fix round 1) | 13.0 m |
+
+S-02 and the corridor axis leak are scan-matching tests and did not change with #19 (planarity
+0.01: S-02 7.19 mm / 0.092 deg, axis share 0.10 %). In the #19 corridor (5 m wide, 120 m
+long) the collinearity gate removes most wall neighbourhoods (they are thin strips at that
+range) and the LiDAR-only drift grows 20x; the corridor outcomes are not monotone in either
+ratio. At 0.05 + 0.2 two post-#19 bounds fail (marked); they were not loosened.
+
+#### Defaults: both gates off (evaluated tunables)
+
+Three candidates were compared on base 0d1df78 with the noise-free synthetic data:
+
+| candidate | result |
+| --- | --- |
+| planarity 0.05 + collinearity 0.2 | best S-02 (0.28 mm) and axis share (0.04 %); fails `CorridorDriftCorrectedByGnss` and the no-GTSAM NEES bound, narrow-corridor LiDAR-only drift x20 |
+| planarity 0.05 | E-01 1.37 mm; fails `CorridorDriftCorrectedByGnss` (144 GNSS factors, bound > 200), S-02 9.8 mm |
+| planarity 0.01 | passes every bound, E-01 2.20 -> 0.95 mm, box LiDAR 9.0 -> 7.2 mm, GNSS+wheel 5.4 -> 4.1 mm, axis share 0.10 %, S-02 7.2 mm |
+
+None is shipped: `plane_min_eig_ratio` and `min_mid_eig_ratio` default to **0** and the
+shipped behaviour is bit-identical to main (E-01 `est.tum` md5 equal on the scenario data and
+on the ov_plain replay). Reasons:
+
+- **Noise.** For a planar patch `lambda_min / n ~ sigma_perp^2` and `lambda_mid / n ~ s^2` (`s`
+  the in-plane spread), so the planarity ratio compares range noise with patch size, and map
+  points carry the full range noise (the preprocessor keeps the first point per voxel,
+  unaveraged). A Monte Carlo of 5 points in a disk of radius 0.19 m (the measured mean
+  5th-neighbour distance) rejects 14 / 49 / 81 / 90 % of planar patches at 0.01 for
+  sigma 0.5 / 1 / 2 / 3 cm (2 / 11 / 40 / 60 % at 0.05). Every dataset above is noise-free in
+  range (E-01 bridge without `range_sigma_apply`, exact ray cast), so the E-01 gain at 0.01 is
+  a noise-free result.
+- **Non-ideal replay.** The ov_plain replay (old E-01 data with the default extrinsics, which
+  do not match the data, so the map is not ideal) is the one imperfect-data run:
+
+  | `plane_min_eig_ratio` | ATE | scan p95 | inlier fraction per scan (mean / p5) | GN iterations (mean / scans at 10) |
+  | --- | --- | --- | --- | --- |
+  | 0 (main, shipped) | 14.8 mm | 6.1 ms | 0.992 / 0.916 | 2.75 / 30 |
+  | 0.01 | 24.0 mm | 11.5 ms | 0.727 / 0.539 | 3.24 / 47 |
+  | 0.05 | 14.5 mm | 5.5 ms | 0.923 / 0.879 | 2.43 / 14 |
+
+  Mechanism, as far as measured (temporary per-scan instrumentation, 578 scans): at 0.01 the
+  gate rejects 27 % of the correspondences on average and almost half on the worst 5 % of
+  scans (mean inliers 832 against 1137), the remaining residuals are smaller (mean |r| 3.2
+  against 4.5 mm) and Gauss-Newton needs more iterations (47 scans hit the 10-iteration cap
+  instead of 30). The latency and the ATE regression come from those starved scans; 0.05
+  rejects 7 % and does not regress on this replay.
+- **Conditioning is not accuracy.** The axis-leak reduction (1.15 % -> 0.10 % at 0.01) removes
+  edge neighbourhoods whose spurious x information happened to anchor the unobservable
+  corridor axis; in the pipeline corridor the fused GNSS ATE gets worse (1.8 -> 5.2 m at 0.01,
+  LiDAR-only 15.4 -> 96.9 m). `CorridorDriftCorrectedByGnss` now also has an absolute guard
+  (fused ATE <= 1.2 x the 1.820 m of main).
+
+To make the planarity gate usable on real data it would need a noise-aware form, for example
+`lambda_min > rho * lambda_mid + n * (k * sigma_range)^2`; that is a design change for a later
+ADR. The collinearity gate at 0.2 removes the S-02 edge bias but rejects the thin wall strips
+of a 5 m wide corridor (LiDAR-only drift 11.5 -> 241 m with planarity 0.05).
+`S02_StrongerSettingsRemoveEdgeBias` keeps the demonstration that collinearity 0.2 or map
+spacing 0.1 m removes the bias. S-02 at the shipped config: 9.50 mm / 0.083 deg (bounds 1 cm /
+0.1 deg), identical under GCC 13 and Clang 18.
 
 ## 4. Huber IRLS Gauss-Newton
 
