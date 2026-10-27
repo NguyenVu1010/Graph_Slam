@@ -184,13 +184,36 @@ Noise `Gaussian::Covariance(P C P^T)` (`P` constant: built from the measurement)
 factor constrains the combination `g dtheta_h - dba_h` (tilt and horizontal accelerometer
 bias); it does not split tilt from bias, which a static window cannot. It goes with the
 keyframe-0 priors (kept when an `optimize()` fails). The pipeline adds it when
-`backend.static_gravity_factor` is true and keyframe 0 is the scan at which the
-initialisation passed (otherwise the window no longer describes keyframe 0; logged). A
-zero or non-finite `f_b` or a covariance that is not SPD is rejected. Tests:
-`BackendFactors.B01_StaticGravityFactorJacobians` (`EXPECT_CORRECT_FACTOR_JACOBIANS` and
-relative error < 1e-6 against central differences; residual equals `P e`, `P P^T = I`,
+`backend.static_gravity_factor` is true, keyframe 0 is the scan at which the
+initialisation passed (otherwise the window no longer describes keyframe 0) and the window
+passes the rest gate of `imu_only_observability.md` section 12 (`imu.init_max_mean_gyro_radps`,
+`imu.init_max_wheel_speed_mps`, `imu.init_gravity_check_sigma`; a failure is logged and
+counted in `Stats::n_gravity_factor_gated`). A zero or non-finite `f_b`, a covariance that is
+not SPD, or `static_gravity_sigma_scale <= 0` is rejected.
+
+The window is used twice: the keyframe-0 rotation prior is centred on the initializer's
+`R_w_b`, computed from the same `acc_mean`. The prior's tilt information (1 / (17.5
+mrad)^2) is about 0.2 % of the factor's at the shipped noise (1 / (0.84 mrad)^2), so the
+double count is negligible.
+
+Consistency check (ADR-020): after keyframe `backend.static_gravity_check_keyframes` is
+optimised, `Graph::static_gravity_chi2()` returns `2 * error = |r|^2_whitened` at the
+estimate (chi-square 2 when the window was at rest). Above `backend.static_gravity_chi2_gate`
+(5.991, 0.95) `Graph::remove_static_gravity_factor()` removes it from iSAM2
+(`ISAM2::update` with `removeFactorIndices`, the slot recorded from
+`ISAM2Result::newFactorsIndices` when it was committed or rebuilt) and from the factors kept
+for a rebuild, and the pipeline counts `Stats::n_gravity_factor_removed`. Study seam:
+`detail::set_static_gravity_full_residual` (`study_seams.hpp`) restores the round-1 3x1
+residual for `test_imu_only_study.cpp`; production never calls it.
+
+Tests: `BackendFactors.B01_StaticGravityFactorJacobians` (`EXPECT_CORRECT_FACTOR_JACOBIANS`
+and relative error < 1e-6 against central differences; residual equals `P e`, `P P^T = I`,
 `P f_b = 0`), `B01_StaticGravityFactorZeroAtRest`, `B01_StaticGravityFactorIgnoresMagnitude`,
-`BackendGraph.RejectsBadCovariances`, `ImuInitializer.WindowMeanAndCovarianceOfTheMean`.
+`BackendGraph.StaticGravityFactorKnownAnswer` (keyframe 0 guessed 10 mrad off: the optimised
+tilt and its marginal against the closed form), `StaticGravityFactorRemovedOnRequest`,
+`OptimizeFailureDropsPendingFactorsKeepsKeyframes` (kept after a failed optimize),
+`RejectsBadCovariances` (including `f_b = 0`), `BackendStub.*` (stub errors),
+`ImuInitializer.WindowMeanAndCovarianceOfTheMean`.
 
 ## 7. Wheel-odometry factor (`detail::OdomBetweenFactor`)
 
