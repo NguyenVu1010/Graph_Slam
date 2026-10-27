@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -49,14 +50,35 @@ class CoreObserver {
                               const common::Pose& /*T_e_w*/) {}
   /// A fix was accepted; `T_e_w` is the aligner estimate after it.
   virtual void on_fix_accepted(common::Timestamp /*t*/, const common::Pose& /*T_e_w*/) {}
+  /// Scan at `t` matched: the IMU-predicted body pose, the matched one and the match result
+  /// (Hessian, covariance in l) (IMU study).
+  virtual void on_scan_matched(common::Timestamp /*t*/,
+                               const common::Pose& /*T_w_b_pred*/,
+                               const common::Pose& /*T_w_b_match*/,
+                               const common::MatchResult& /*match*/) {}
+  /// Backend state of the newest keyframe after a successful optimize() (IMU study).
+  virtual void on_keyframe_optimized(common::Timestamp /*t*/,
+                                     const common::NavState& /*x*/,
+                                     const common::PoseCovariance& /*cov*/) {}
 };
 
-/// Test-only seam (study): `observer` receives the factor events; with `force_T_e_w` the
-/// GNSS fusion uses `T_e_w` from the first fix and never runs the aligner.
+/// Test-only seam (studies): `observer` receives the factor events; with `force_T_e_w` the
+/// GNSS fusion uses `T_e_w` from the first fix and never runs the aligner. IMU study
+/// (imu_only_observability.md): `keyframe_every_n_scans` > 0 replaces the distance /
+/// rotation keyframe rule by one keyframe every n matched scans; `frontend_keeps_own_state`
+/// keeps the front-end state (matched pose, IMU velocity and bias) at a keyframe instead of
+/// taking the backend estimate, so the LiDAR factors carry no backend feedback.
 struct CoreTestHooks {
   CoreObserver* observer = nullptr;
   bool force_T_e_w = false;
   common::Pose T_e_w;
+  int keyframe_every_n_scans = 0;
+  bool frontend_keeps_own_state = false;
+  /// Study oracle: when set, the LiDAR factor measurement T_bi_bj is oracle(t_i, t_j)
+  /// (the covariance stays the scan-matching one).
+  std::function<common::Pose(common::Timestamp, common::Timestamp)> lidar_oracle;
+  /// Study: when set, the LiDAR factor covariance is lidar_cov(t_j, cov_b).
+  std::function<common::PoseCovariance(common::Timestamp, const common::PoseCovariance&)> lidar_cov;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).
@@ -203,7 +225,13 @@ class EstimatorCore {
 
   common::Estimate latest_;
   CoreCounters counters_;
-  CoreObserver* observer_ = nullptr;  // test-only (CoreTestHooks)
+  CoreObserver* observer_ = nullptr;       // test-only (CoreTestHooks)
+  int keyframe_every_n_scans_ = 0;         // test-only (CoreTestHooks)
+  int scans_since_keyframe_ = 0;           // test-only: matched scans since the last keyframe
+  bool frontend_keeps_own_state_ = false;  // test-only (CoreTestHooks)
+  std::function<common::Pose(common::Timestamp, common::Timestamp)> lidar_oracle_;  // test-only
+  std::function<common::PoseCovariance(common::Timestamp, const common::PoseCovariance&)>
+      lidar_cov_;  // test-only
 };
 
 }  // namespace mss::pipeline::detail

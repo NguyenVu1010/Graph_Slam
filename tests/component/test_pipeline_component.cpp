@@ -8,23 +8,29 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <Eigen/Eigenvalues>
 #include <gtest/gtest.h>
 
 #include "mss/common/lie.hpp"
 #include "mss/common/scan_frame.hpp"
+#include "mss/common/span.hpp"
 #include "mss/common/timestamp.hpp"
 #include "mss/common/types.hpp"
+#include "mss/imu/initializer.hpp"
+#include "mss/imu/preintegrator.hpp"
 #include "mss/io/dataset_reader.hpp"
 #include "mss/pipeline/config.hpp"
 #include "mss/pipeline/estimator.hpp"
@@ -924,9 +930,11 @@ StudyResult study_run(const BoxWorldParams& p,
 
 class StudyReport {
  public:
-  explicit StudyReport(const std::string& file) {
-    const char* id = std::getenv("MSS_GNSS_STUDY_RUN_ID");
-    dir_ = fs::path{MSS_REPO_DIR} / "results" / (id != nullptr ? id : "gnss-study");
+  explicit StudyReport(const std::string& file,
+                       const char* run_id_env = "MSS_GNSS_STUDY_RUN_ID",
+                       const char* default_id = "gnss-study") {
+    const char* id = std::getenv(run_id_env);
+    dir_ = fs::path{MSS_REPO_DIR} / "results" / (id != nullptr ? id : default_id);
     fs::create_directories(dir_);
     out_.open(dir_ / file);
   }
@@ -1145,6 +1153,484 @@ TEST(PipelineComponent, LidarFactorCovarianceConsistent) {
               static_cast<unsigned long long>(r.stats.n_keyframes));
   EXPECT_GE(obs.lidar_nees(), 3.0);
   EXPECT_LE(obs.lidar_nees(), 12.0);
+}
+
+// ---------------------------------------------------------------------------------------
+// IMU-only observability study (docs/derivations/imu_only_observability.md), skipped unless
+// MSS_IMU_STUDY=1 (GTSAM build). Writes results/<run-id>/imu_study.md under the repository
+// (run id from MSS_IMU_STUDY_RUN_ID, default "imu-study"). Corridor: the box world with its
+// x walls beyond preprocess.max_range_m, LiDAR + IMU only (no wheel, no GNSS), so only the
+// IMU carries the world x axis. Uses the test-only CoreTestHooks seam (keyframe period,
+// front end without backend feedback, per-scan and per-keyframe observer).
+
+// The box-world circle (PR 4b's corridor scene) or an almost straight run, both 20 s.
+BoxWorldParams imu_corridor_params(bool straight) {
+  BoxWorldParams p;
+  p.box_half_m.x() = 1000.0;  // m, beyond preprocess.max_range_m (100 m): x walls never seen
+  if (straight) {
+    p.box_half_m.y() = 2.5;     // m, as corridor_params()
+    p.yaw_rate_radps = 0.0005;  // rad/s, as corridor_params()
+  }
+  return p;
+}
+
+// Analytic 1-sigma, per horizontal axis, of inertial dead reckoning from rest after `T_s`
+// (imu_only_observability.md section 1): velocity random walk q_a T^1.5 / sqrt(3), and the
+// static-initialisation tilt, a horizontal acceleration error q_a / sqrt(T_init) (mean of
+// the init window over gravity), giving 0.5 q_a / sqrt(T_init) T^2.
+double dr_sigma_vrw_m(double q_a, double T_s) {
+  return q_a * std::pow(T_s, 1.5) / std::sqrt(3.0);
+}
+double dr_sigma_tilt_m(double q_a, double T_init_s, double T_s) {
+  return 0.5 * q_a / std::sqrt(T_init_s) * T_s * T_s;
+}
+double dr_sigma_m(double q_a, double T_init_s, double T_s) {
+  return std::hypot(dr_sigma_vrw_m(q_a, T_s), dr_sigma_tilt_m(q_a, T_init_s, T_s));
+}
+// Free-inertial only (attitude from the gyro): the static-init gyro bias error
+// q_g / sqrt(T_init) tilts the attitude linearly, g (q_g / sqrt(T_init)) T^3 / 6, and the
+// angle random walk gives g q_g T^2.5 / sqrt(20).
+double dr_sigma_gyro_m(double q_g, double T_init_s, double T_s) {
+  return test::kBoxGravity * std::hypot(q_g / std::sqrt(T_init_s) * std::pow(T_s, 3) / 6.0,
+                                        q_g * std::pow(T_s, 2.5) / std::sqrt(20.0));
+}
+
+// Pure inertial dead reckoning of the box-world IMU stream of seed `seed`: the pipeline's
+// ImuInitializer on [t0, t0 + init_window_s], then integration from rest (p = 0, v = 0, bias
+// from the initializer) with one Preintegrator; world error (estimate - truth) at
+// `times_s` after t0 + init_window_s (multiples of the IMU period). With `true_attitude`
+// the attitude is the truth at every sample (what LiDAR aiding gives, section 1): Euler
+// integration of a_w = R_w_b(t_k) (acc_b - ba) + g_w held over [t_{k-1}, t_k].
+std::vector<Vec3> dead_reckoning_errors(BoxWorldParams p,
+                                        const Config& cfg,
+                                        std::uint32_t seed,
+                                        const std::vector<double>& times_s,
+                                        bool true_attitude = false) {
+  p.seed = seed;
+  std::mt19937 rng(p.seed);
+  const std::int64_t period_ns = test::box_ns(1.0 / p.imu_rate_hz);
+  const std::int64_t t_init_ns = p.t0_ns + test::box_ns(cfg.imu.init_window_s);
+  std::vector<ImuSample> window;
+  std::int64_t t = p.t0_ns;
+  for (; t <= t_init_ns; t += period_ns) {
+    window.push_back(test::box_imu(p, Timestamp{t}, &rng));
+  }
+  imu::ImuInitializer init(cfg.imu);
+  const auto st = init.try_init(common::Span<const ImuSample>(window.data(), window.size()));
+  EXPECT_TRUE(st.is_ok()) << st.reason();
+  common::NavState x0;
+  x0.t = window.back().t;
+  x0.T_w_b.R = st.value().R_w_b;
+  x0.bias = st.value().bias;
+  if (true_attitude) {
+    Vec3 v = Vec3::Zero();
+    Vec3 pos = Vec3::Zero();
+    const double dt = 1.0 / p.imu_rate_hz;
+    std::vector<Vec3> out;
+    for (const double ts : times_s) {
+      const std::int64_t target = x0.t.ns + test::box_ns(ts);
+      for (; t <= target; t += period_ns) {
+        const ImuSample s = test::box_imu(p, Timestamp{t}, &rng);
+        const Vec3 a_w = test::box_truth(p, s.t).T_w_b.R * (s.acc_b - x0.bias.ba) + st.value().g_w;
+        pos += v * dt + 0.5 * dt * dt * a_w;
+        v += a_w * dt;
+      }
+      out.push_back(pos - test::box_truth(p, Timestamp{t - period_ns}).T_w_b.p);
+    }
+    return out;
+  }
+  imu::Preintegrator pre(cfg.imu);
+  pre.reset(x0.bias);
+  (void)pre.integrate(window.back());
+  std::vector<Vec3> out;
+  for (const double ts : times_s) {
+    const std::int64_t target = x0.t.ns + test::box_ns(ts);
+    for (; t <= target; t += period_ns) {
+      (void)pre.integrate(test::box_imu(p, Timestamp{t}, &rng));
+    }
+    const common::NavState x = pre.predict(x0, st.value().g_w);
+    out.push_back(x.T_w_b.p - test::box_truth(p, x.t).T_w_b.p);
+  }
+  return out;
+}
+
+// Per scan: the matcher's correction along world x and the Hessian information along world
+// x. Per LiDAR factor: the error of its measured translation along world x against the
+// truth and the variance its covariance claims there. Per keyframe: the backend state
+// after optimize().
+class ImuStudyObserver final : public detail::CoreObserver {
+ public:
+  struct Keyframe {
+    Timestamp t;
+    common::NavState x;
+    common::PoseCovariance cov;
+  };
+  explicit ImuStudyObserver(const BoxWorldParams& p) : p_(p) {}
+
+  void on_scan_matched(Timestamp /*t*/,
+                       const common::Pose& T_w_b_pred,
+                       const common::Pose& T_w_b_match,
+                       const common::MatchResult& match) override {
+    const double dx = T_w_b_match.p.x() - T_w_b_pred.p.x();
+    corr_x2_ += dx * dx;
+    const Vec3 d_l = match.T_w_l.R.transpose() * Vec3::UnitX();
+    info_x_.push_back(d_l.dot(match.H.topLeftCorner<3, 3>() * d_l));  // 1/m^2 (H: sigma 1 m)
+    // Angle between the weakest translation eigenvector of H and world x (rad).
+    const Eigen::SelfAdjointEigenSolver<common::Mat3> es(match.H.topLeftCorner<3, 3>());
+    tilt_.push_back(std::acos(std::min(1.0, std::abs(es.eigenvectors().col(0).dot(d_l)))));
+  }
+
+  void on_lidar_factor(Timestamp t_i,
+                       Timestamp t_j,
+                       const common::Pose& T_bi_bj,
+                       const common::PoseCovariance& cov_b) override {
+    const common::NavState xi = test::box_truth(p_, t_i);
+    const common::NavState xj = test::box_truth(p_, t_j);
+    // Translation error of the measurement in w, and its covariance (rho of b_j, rotated
+    // into w with the true attitude: first order).
+    const Vec3 t_true = xi.T_w_b.R.transpose() * (xj.T_w_b.p - xi.T_w_b.p);
+    const double ex = (xi.T_w_b.R * (T_bi_bj.p - t_true)).x();
+    const common::Mat3 C_w = xj.T_w_b.R * cov_b.topLeftCorner<3, 3>() * xj.T_w_b.R.transpose();
+    const double var_x = C_w(0, 0);
+    nees_x_ += ex * ex / var_x;
+    const common::Vec6 e6 = common::boxminus(T_bi_bj, xi.T_w_b.inverse() * xj.T_w_b);
+    nees6_ += e6.dot(cov_b.ldlt().solve(e6));
+    err_x2_ += ex * ex;
+    sigma_x_.push_back(std::sqrt(var_x));
+  }
+
+  void on_keyframe_optimized(Timestamp t,
+                             const common::NavState& x,
+                             const common::PoseCovariance& cov) override {
+    keyframes_.push_back({t, x, cov});
+  }
+
+  [[nodiscard]] double corr_x_rms_m() const {
+    return info_x_.empty() ? 0.0 : std::sqrt(corr_x2_ / static_cast<double>(info_x_.size()));
+  }
+  // Median information along world x per scan, 1/m^2 (H as built, unit residual sigma).
+  [[nodiscard]] double median_info_x() const { return median(info_x_); }
+  // LiDAR factors: "NEES_x (exp. 1) | err RMS (m) | median claimed sigma (m)".
+  [[nodiscard]] std::string factor_x() const {
+    const double n = sigma_x_.empty() ? 1.0 : static_cast<double>(sigma_x_.size());
+    char buf[160];
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "%.3g | %.4f | %.3g | %.3g | %.3g",
+                  nees_x_ / n,
+                  std::sqrt(err_x2_ / n),
+                  median(sigma_x_),
+                  nees6_ / n,
+                  median(tilt_));
+    return buf;
+  }
+  [[nodiscard]] const std::vector<Keyframe>& keyframes() const { return keyframes_; }
+
+ private:
+  static double median(std::vector<double> v) {
+    if (v.empty()) {
+      return 0.0;
+    }
+    std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(v.size() / 2), v.end());
+    return v[v.size() / 2];
+  }
+
+  BoxWorldParams p_;
+  double corr_x2_ = 0.0;
+  std::vector<double> info_x_;
+  double nees_x_ = 0.0;
+  double err_x2_ = 0.0;
+  std::vector<double> sigma_x_;
+  double nees6_ = 0.0;
+  std::vector<double> tilt_;
+  std::vector<Keyframe> keyframes_;
+};
+
+struct ImuStudyCase {
+  std::string name;
+  std::string yaml;              // more sections (not gnss, wheel_odom)
+  int keyframe_every_n = 0;      // CoreTestHooks::keyframe_every_n_scans
+  bool own_state = false;        // CoreTestHooks::frontend_keeps_own_state
+  bool bias_trajectory = false;  // also print the backend bias / velocity per keyframe
+  bool oracle = false;           // CoreTestHooks::lidar_oracle = true relative pose
+  bool x_removed = false;        // CoreTestHooks::lidar_cov: no information along world x
+};
+
+// One corridor run; one table row (columns in ImuOnlyObservabilityStudy's header). With
+// `bias_rows`, appends the backend keyframe states about every 3 s.
+std::string imu_study_run(const BoxWorldParams& p,
+                          const fs::path& data,
+                          const fs::path& dir,
+                          const ImuStudyCase& c,
+                          std::string* bias_rows) {
+  const Config cfg = box_config(p, false, false, dir, c.yaml);
+  ImuStudyObserver obs(p);
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  hooks.keyframe_every_n_scans = c.keyframe_every_n;
+  hooks.frontend_keeps_own_state = c.own_state;
+  if (c.x_removed) {
+    hooks.lidar_cov = [&p](Timestamp t_j, const common::PoseCovariance& cov) {
+      // + (1 km)^2 along world x in b_j: the information along x vanishes, the rest stays.
+      const Vec3 d_b = test::box_truth(p, t_j).T_w_b.R.transpose() * Vec3::UnitX();
+      common::PoseCovariance out = cov;
+      out.topLeftCorner<3, 3>() += 1.0e6 * d_b * d_b.transpose();
+      return out;
+    };
+  }
+  if (c.oracle) {
+    hooks.lidar_oracle = [&p](Timestamp t_i, Timestamp t_j) {
+      return test::box_truth(p, t_i).T_w_b.inverse() * test::box_truth(p, t_j).T_w_b;
+    };
+  }
+  const HooksScope scope(&hooks);
+  const ReplayResult r = replay(data, cfg);
+  double sx = 0.0;
+  double sy = 0.0;
+  for (const Estimate& x : r.estimates) {
+    const Vec3 d = x.state.T_w_b.p - test::box_truth(p, x.state.t).T_w_b.p;
+    sx += d.x() * d.x();
+    sy += d.y() * d.y();
+  }
+  const double n = std::max(1.0, static_cast<double>(r.estimates.size()));
+  const double t_init_s = cfg.imu.init_window_s;
+  double end_x = 0.0;
+  double T_s = 0.0;
+  if (!r.estimates.empty()) {
+    const Estimate& e = r.estimates.back();
+    end_x = e.state.T_w_b.p.x() - test::box_truth(p, e.state.t).T_w_b.p.x();
+    T_s = static_cast<double>(e.state.t.ns - p.t0_ns) * 1e-9 - t_init_s;
+  }
+  const double sigma_dr = dr_sigma_m(p.acc_noise_density, t_init_s, T_s);
+  double kf_x = 0.0;
+  double kf_sx = 0.0;
+  double kf_vx = 0.0;
+  Vec3 kf_ba = Vec3::Zero();
+  if (!obs.keyframes().empty()) {
+    const ImuStudyObserver::Keyframe& k = obs.keyframes().back();
+    const common::NavState truth = test::box_truth(p, k.t);
+    kf_x = k.x.T_w_b.p.x() - truth.T_w_b.p.x();
+    const common::Mat3 cov_p_w =
+        k.x.T_w_b.R * k.cov.topLeftCorner<3, 3>() * k.x.T_w_b.R.transpose();
+    kf_sx = std::sqrt(std::max(0.0, cov_p_w(0, 0)));
+    kf_vx = k.x.v_w_b.x() - truth.v_w_b.x();
+    kf_ba = k.x.bias.ba;
+  }
+  if (bias_rows != nullptr) {
+    double next_s = 4.0;
+    for (std::size_t i = 0; i < obs.keyframes().size(); ++i) {
+      const ImuStudyObserver::Keyframe& k = obs.keyframes()[i];
+      const double ts = static_cast<double>(k.t.ns - p.t0_ns) * 1e-9;
+      if (ts < next_s && i + 1 != obs.keyframes().size()) {
+        continue;
+      }
+      next_s = ts + 3.0;
+      const common::NavState truth = test::box_truth(p, k.t);
+      const Vec3 ba_w = k.x.T_w_b.R * k.x.bias.ba;
+      // Attitude error in w (rad): x / y components are the tilt (roll / pitch in w).
+      const Vec3 dth_w = common::so3_log(k.x.T_w_b.R * truth.T_w_b.R.transpose());
+      char buf[256];
+      std::snprintf(buf,
+                    sizeof(buf),
+                    "| %s | %.1f | %+.4f | %+.4f | %+.5f / %+.5f / %+.5f | %+.5f / %+.5f | "
+                    "%+.2f / %+.2f |\n",
+                    c.name.c_str(),
+                    ts,
+                    k.x.T_w_b.p.x() - truth.T_w_b.p.x(),
+                    k.x.v_w_b.x() - truth.v_w_b.x(),
+                    k.x.bias.ba.x(),
+                    k.x.bias.ba.y(),
+                    k.x.bias.ba.z(),
+                    ba_w.x(),
+                    ba_w.y(),
+                    1e3 * dth_w.x(),
+                    1e3 * dth_w.y());
+      *bias_rows += buf;
+    }
+  }
+  char buf[512];
+  std::snprintf(
+      buf,
+      sizeof(buf),
+      "| %s | %.3f | %+.3f | %.1f | %.4f | %llu | %llu | %.4f | %.3g | %s | %+.3f (%.3f) | %+.4f | "
+      "%+.4f / %+.4f |",
+      c.name.c_str(),
+      std::sqrt(sx / n),
+      end_x,
+      std::abs(end_x) / sigma_dr,
+      std::sqrt(sy / n),
+      static_cast<unsigned long long>(r.stats.n_keyframes),
+      static_cast<unsigned long long>(r.stats.n_match_failures),
+      obs.corr_x_rms_m(),
+      obs.median_info_x(),
+      obs.factor_x().c_str(),
+      kf_x,
+      kf_sx,
+      kf_vx,
+      kf_ba.x(),
+      kf_ba.y());
+  return buf;
+}
+
+TEST(PipelineComponent, ImuOnlyObservabilityStudy) {
+  const char* on = std::getenv("MSS_IMU_STUDY");
+  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_IMU_STUDY=1 (GTSAM build)";
+  }
+  StudyReport rep("imu_study.md", "MSS_IMU_STUDY_RUN_ID", "imu-study");
+  rep.line(
+      "# IMU-only observability study (generated by "
+      "PipelineComponent.ImuOnlyObservabilityStudy)");
+
+  // 1. Dead reckoning reference: free inertial (attitude from the gyro) and attitude-aided
+  // (true attitude, the LiDAR-aided case), Monte Carlo over 200 seeds.
+  {
+    const BoxWorldParams p = imu_corridor_params(false);
+    const Config cfg = box_config(p, false, false, rep.dir() / "dr");
+    const std::vector<double> times = {5.0, 10.0, 15.0, 17.0};
+    const int n_seeds = 200;
+    std::vector<double> free2(times.size(), 0.0);
+    std::vector<double> aided2(times.size(), 0.0);
+    std::vector<Vec3> free42;
+    std::vector<Vec3> aided42;
+    for (int s = 0; s < n_seeds; ++s) {
+      const auto seed = static_cast<std::uint32_t>(42 + s);
+      const std::vector<Vec3> e = dead_reckoning_errors(p, cfg, seed, times);
+      const std::vector<Vec3> a = dead_reckoning_errors(p, cfg, seed, times, true);
+      if (s == 0) {
+        free42 = e;
+        aided42 = a;
+      }
+      for (std::size_t k = 0; k < times.size(); ++k) {
+        free2[k] += 0.5 * e[k].head<2>().squaredNorm();  // per horizontal axis
+        aided2[k] += 0.5 * a[k].head<2>().squaredNorm();
+      }
+    }
+    rep.line("");
+    rep.line("## 1. Dead reckoning (no LiDAR), circle scene, q_a = " +
+             std::to_string(p.acc_noise_density) +
+             " m/s^2/sqrt(Hz), q_g = " + std::to_string(p.gyro_noise_density) + " rad/s/sqrt(Hz)");
+    rep.line("");
+    rep.line(
+        "| T after init (s) | free: seed 42 err x (m) | free: MC RMS per axis (m) | aided: seed "
+        "42 err x (m) | aided: MC RMS per axis (m) | analytic VRW (m) | analytic acc tilt (m) "
+        "| analytic VRW + acc tilt (m) | analytic gyro (m) |");
+    rep.line("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    for (std::size_t k = 0; k < times.size(); ++k) {
+      char buf[256];
+      std::snprintf(buf,
+                    sizeof(buf),
+                    "| %.0f | %+.3f | %.3f | %+.3f | %.3f | %.3f | %.3f | %.3f | %.3f |",
+                    times[k],
+                    free42[k].x(),
+                    std::sqrt(free2[k] / n_seeds),
+                    aided42[k].x(),
+                    std::sqrt(aided2[k] / n_seeds),
+                    dr_sigma_vrw_m(p.acc_noise_density, times[k]),
+                    dr_sigma_tilt_m(p.acc_noise_density, cfg.imu.init_window_s, times[k]),
+                    dr_sigma_m(p.acc_noise_density, cfg.imu.init_window_s, times[k]),
+                    dr_sigma_gyro_m(p.gyro_noise_density, cfg.imu.init_window_s, times[k]));
+      rep.line(buf);
+    }
+  }
+
+  // 2 to 7. Pipeline runs. Settings: the matcher's degeneracy handling and the LiDAR factor's
+  // information along world x (shipped, relaxed by 1e8 along flagged directions, or exactly
+  // removed along the true world x by the study hook).
+  struct Setting {
+    std::string name;
+    std::string yaml;
+    bool x_removed;
+  };
+  const std::string deg_off = "    degeneracy:\n      enabled: false\n";
+  const std::string deg_on = "    degeneracy:\n      enabled: true\n";
+  const std::string free8 = "      relax_factor: 1.0e8\n";
+  const std::vector<Setting> settings = {
+      {"deg off", deg_off, false},
+      {"deg on", deg_on, false},
+      {"deg on, x free", deg_on + free8, false},
+      {"deg on, x removed", deg_on, true},
+  };
+  // The keyframe-0 priors tightened to what the static initialisation measured
+  // (section 5): roll / pitch 0.02 deg (0.35 mrad, init tilt sigma 0.42 mrad), acc bias
+  // 0.004 m/s^2 (q_a / sqrt(T_init)), velocity 0.01 m/s (static window).
+  const std::string tilt = "    backend:\n      prior_rot_sigma_deg: 0.02\n";
+  const std::string tight =
+      "    backend:\n      prior_rot_sigma_deg: 0.02\n      prior_bias_acc_sigma_mps2: 0.004\n"
+      "      prior_vel_sigma_mps: 0.01\n";
+  const std::string frozen_bias =
+      "    backend:\n      prior_bias_acc_sigma_mps2: 1.0e-4\n"
+      "    imu:\n      acc_random_walk: 1.0e-7\n";
+  const auto relin = [](const char* v) {
+    return std::string("    backend:\n      relinearize_threshold: ") + v + "\n";
+  };
+  std::string bias_rows;
+  for (const bool straight : {false, true}) {
+    const BoxWorldParams p = imu_corridor_params(straight);
+    const std::string scene = straight ? "straight" : "circle";
+    const fs::path dir = rep.dir() / scene;
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    rep.line("");
+    rep.line("## Corridor, " + scene + " (x walls out of range, LiDAR + IMU only)");
+    rep.line("");
+    rep.line(
+        "| case | along-x RMS (m) | end x err (m) | end / sigma_DR | lateral-y RMS (m) | "
+        "keyframes | match failures | matcher x corr RMS (m) | median H info x (1/m^2) | "
+        "LiDAR factor x: NEES (exp. 1) | err RMS (m) | median sigma (m) | LiDAR factor NEES "
+        "6-DoF (exp. 6) | median tilt of weakest H dir from x (rad) | last KF x err (sigma) "
+        "(m) | last KF v_x err (m/s) | last KF ba_b x / y (m/s^2) |");
+    rep.line(
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
+        "--- | --- | --- |");
+    int idx = 0;
+    for (const Setting& s : settings) {
+      std::vector<ImuStudyCase> cases = {
+          {"baseline", s.yaml, 0, false, true},
+          {"no backend feedback", s.yaml, 0, true, false},
+          {"bias frozen", s.yaml + frozen_bias, 0, false, true},
+          {"relin 0.01", s.yaml + relin("0.01"), 0, false, false},
+          {"relin 1.0", s.yaml + relin("1.0"), 0, false, false},
+          {"KF every 20 scans", s.yaml, 20, false, false},
+          {"KF every 5 scans", s.yaml, 5, false, false},
+          {"oracle measurement", s.yaml, 0, false, false, true},
+          {"tilt prior 0.02 deg", s.yaml + tilt, 0, false, false},
+          {"tight kf0 priors", s.yaml + tight, 0, false, true},
+      };
+      for (ImuStudyCase& c : cases) {
+        c.name = s.name + ", " + c.name;
+        c.x_removed = s.x_removed;
+        std::string* rows = (c.bias_trajectory && !straight) ? &bias_rows : nullptr;
+        rep.line(imu_study_run(p, dir / "data", dir / ("c" + std::to_string(idx++)), c, rows));
+      }
+    }
+    // Section 6: spurious x information of the plane fits (collinearity gate, flag threshold).
+    const std::vector<Setting> spurious = {
+        {"deg off, collinearity 0.1",
+         deg_off + "    scan_match:\n      min_mid_eig_ratio: 0.1\n",
+         false},
+        {"deg on, x free, thr 1e4", deg_on + free8 + "      eig_threshold: 1.0e4\n", false},
+    };
+    for (const Setting& s : spurious) {
+      for (ImuStudyCase c : {ImuStudyCase{"baseline", s.yaml, 0, false, false},
+                             ImuStudyCase{"no backend feedback", s.yaml, 0, true, false}}) {
+        c.name = s.name + ", " + c.name;
+        rep.line(imu_study_run(p, dir / "data", dir / ("c" + std::to_string(idx++)), c, nullptr));
+      }
+    }
+  }
+  rep.line("");
+  rep.line("## Backend keyframe states, circle (bias in b and rotated to w)");
+  rep.line("");
+  rep.line(
+      "| case | t (s) | x err (m) | v_x err (m/s) | ba_b x / y / z (m/s^2) | ba_w x / y "
+      "(m/s^2) | tilt err about w x / y (mrad) |");
+  rep.line("| --- | --- | --- | --- | --- | --- | --- |");
+  std::size_t start = 0;
+  while (start < bias_rows.size()) {
+    const std::size_t end = bias_rows.find('\n', start);
+    rep.line(bias_rows.substr(start, end - start));
+    start = end + 1;
+  }
 }
 
 }  // namespace

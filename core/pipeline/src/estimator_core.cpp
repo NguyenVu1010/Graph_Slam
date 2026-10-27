@@ -94,6 +94,10 @@ EstimatorCore::EstimatorCore(const Config& cfg)
       kf_cloud_(cfg.realtime.max_points_per_scan) {
   if (g_test_hooks != nullptr) {
     observer_ = g_test_hooks->observer;
+    keyframe_every_n_scans_ = g_test_hooks->keyframe_every_n_scans;
+    frontend_keeps_own_state_ = g_test_hooks->frontend_keeps_own_state;
+    lidar_oracle_ = g_test_hooks->lidar_oracle;
+    lidar_cov_ = g_test_hooks->lidar_cov;
     if (g_test_hooks->force_T_e_w) {
       fusion_.force_T_e_w(g_test_hooks->T_e_w);
     }
@@ -372,9 +376,19 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
   front_.v_w_b = predicted.v_w_b;
   front_.bias = predicted.bias;
   common::PoseCovariance cov_out = cov_b;
+  if (observer_ != nullptr) {
+    observer_->on_scan_matched(t, predicted.T_w_b, front_.T_w_b, m);
+  }
 
   // 8. Keyframe.
-  if (is_new_keyframe(ref_, front_.T_w_b, cfg_.backend)) {
+  bool keyframe = false;
+  if (keyframe_every_n_scans_ > 0) {  // test-only rule (CoreTestHooks)
+    keyframe = ++scans_since_keyframe_ >= keyframe_every_n_scans_;
+  } else {
+    keyframe = is_new_keyframe(ref_, front_.T_w_b, cfg_.backend);
+  }
+  if (keyframe) {
+    scans_since_keyframe_ = 0;
     add_keyframe(t, m, cov_b, cov_out);
   }
 
@@ -428,16 +442,18 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   const common::KeyId j = graph_.add_keyframe(t, front_);
   graph_.add_imu_factor(i, j, kf_.delta());
   // LiDAR factor measurement (pipeline.md section 4).
-  const common::Pose T_bi_bj = ref_.inverse() * front_.T_w_b;
+  const common::Pose T_bi_bj =
+      lidar_oracle_ ? lidar_oracle_(last_kf_t_, t) : ref_.inverse() * front_.T_w_b;
+  const common::PoseCovariance cov_f = lidar_cov_ ? lidar_cov_(t, cov_b) : cov_b;  // test-only
   if (observer_ != nullptr) {
-    observer_->on_lidar_factor(last_kf_t_, t, T_bi_bj, cov_b);
+    observer_->on_lidar_factor(last_kf_t_, t, T_bi_bj, cov_f);
   }
   if (cfg_.degeneracy.enabled) {
     const common::DegeneracyReport report_b =
         degeneracy_in_body(degeneracy::analyze(match.H, cfg_.degeneracy), T_b_l_);
-    graph_.add_lidar_factor(i, j, T_bi_bj, cov_b, &report_b);
+    graph_.add_lidar_factor(i, j, T_bi_bj, cov_f, &report_b);
   } else {
-    graph_.add_lidar_factor(i, j, T_bi_bj, cov_b, nullptr);
+    graph_.add_lidar_factor(i, j, T_bi_bj, cov_f, nullptr);
   }
   // Wheel odometry between the keyframes (graph.hpp time check).
   const common::OdomDelta d = wheel_.take_delta();
@@ -464,8 +480,13 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   const common::Result<common::Estimate> opt = graph_.optimize();
   const bool optimised = opt.is_ok();
   if (optimised) {
-    front_ = opt.value().state;
-    front_.t = t;
+    if (observer_ != nullptr) {
+      observer_->on_keyframe_optimized(t, opt.value().state, opt.value().cov);
+    }
+    if (!frontend_keeps_own_state_) {  // test-only (CoreTestHooks)
+      front_ = opt.value().state;
+      front_.t = t;
+    }
     cov_out = opt.value().cov;
     backend_failure_streak_ = false;
   } else {
