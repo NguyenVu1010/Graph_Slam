@@ -2,7 +2,7 @@
 
     python -m mss_eval.noise_report <bag_dir> <profile.yaml> --out <dir>
         [--planes planes.yaml] [--pipeline-config cfg.yaml] [--static-s 5]
-        [--allan-gate] [--odom-gate]
+        [--allan-gate] [--odom-gate] [--render-table sim/noise/render/<world>.yaml]
 
 Writes ``<out>/noise_report.html`` and ``<out>/noise_report.json``; exits 1 when a gated row
 fails, so a bag with the wrong noise is never packaged. Reads MCAP with ``rosbags`` directly and
@@ -270,10 +270,15 @@ def load_planes(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return normals / norms[:, None], d / norms
 
 
-def _sidecar_world(path: Path) -> str | None:
-    """World name of a planes sidecar (``world`` key), None for a bare list of planes."""
+def load_render_table(path: Path) -> list:
+    """``cells`` of a LiDAR render table (``sim/noise/render/<world>.yaml``, written by
+    ``tools/calibrate_lidar_render.py``)."""
     data = yaml.safe_load(Path(path).read_text())
-    return str(data["world"]) if isinstance(data, dict) and "world" in data else None
+    cells = data.get("cells") if isinstance(data, dict) else None
+    if not isinstance(cells, list) or not all(isinstance(c, list) and len(c) == 6 for c in cells):
+        msg = f"{path}: expected cells: [[r_lo, r_hi, cos_lo, cos_hi, n, sigma_m], ...]"
+        raise ValueError(msg)
+    return cells
 
 
 def _resolve(bag_dir: Path) -> tuple[Path, Path]:
@@ -301,8 +306,13 @@ def run(
     static_s: float = 5.0,
     allan_gate: bool = False,
     odom_gate: bool = False,
+    render_table: Path | None = None,
 ) -> Report:
-    """Measure, write ``noise_report.html`` and ``noise_report.json`` into ``out_dir``."""
+    """Measure, write ``noise_report.html`` and ``noise_report.json`` into ``out_dir``.
+
+    ``render_table``: the world's measured LiDAR render cells (``load_render_table``); without
+    it every range-sigma cell is shown but not gated.
+    """
     bag_path, side_dir = _resolve(Path(bag_dir))
     prof = yaml.safe_load(Path(profile).read_text())
     pipe = _pipeline_params(pipeline_config)
@@ -315,7 +325,7 @@ def run(
         t, p, q = zip(*bag.gt, strict=True)
         traj = Trajectory(np.array(t, dtype=np.int64), np.array(p), np.array(q))
     plane_arrays = load_planes(planes) if planes is not None else None
-    world = _sidecar_world(planes) if planes is not None else None
+    render_cells = load_render_table(render_table) if render_table is not None else None
     min_range = float(prof["lidar"].get("min_range_m", 0.0))
     lid = prof["lidar"]
     samples = _lidar_pass(
@@ -373,7 +383,7 @@ def run(
                     samples.incidence,
                     samples.range_m,
                     samples.edge,
-                    world,
+                    render_cells,
                 )
             )
         if len(bag.odom) > 1:
@@ -425,6 +435,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--static-s", type=float, default=5.0, help="initial static window, s")
     ap.add_argument("--allan-gate", action="store_true", help="gate on Allan deviation")
     ap.add_argument("--odom-gate", action="store_true", help="gate odom drift to 1-3 %%")
+    ap.add_argument(
+        "--render-table", type=Path, help="LiDAR render cells, sim/noise/render/<world>.yaml"
+    )
     args = ap.parse_args(argv)
     report = run(
         args.bag_dir,
@@ -435,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
         static_s=args.static_s,
         allan_gate=args.allan_gate,
         odom_gate=args.odom_gate,
+        render_table=args.render_table,
     )
     failed = [f"{s.name}: {r.name}" for s in report.sections for r in s.rows if r.ok is False]
     print("PASS" if report.passed else "FAIL\n  " + "\n  ".join(failed))

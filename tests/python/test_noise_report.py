@@ -122,8 +122,8 @@ def test_lidar_section_on_noise_free_synthetic_bag(report_dir: tuple[Report, Pat
     assert sigma.declared == pytest.approx(0.02)
     assert isinstance(sigma.measured, float) and sigma.measured < 0.005
     assert sigma.ok is None  # pooled row informational: the range sigma is gated per bin
-    bins = [r for r in _section(report, "LiDAR").rows if r.name.startswith("range_sigma_m |n.u|")]
-    assert bins and any(r.ok is False for r in bins)
+    cells = [r for r in _section(report, "LiDAR").rows if r.name.startswith("range_sigma_m r ")]
+    assert cells and any(r.ok is False for r in cells)  # no table: gated on declared sigma
     assert report.passed is False  # the LiDAR mismatch fails the report
 
 
@@ -334,53 +334,112 @@ def test_unknown_incidence_counts_as_non_grazing() -> None:
 
 
 _LIDAR_CFG = {"range_sigma_m": 0.02, "edge_jump_m": 0.10, "min_incidence_cos": 0.3}
-_INC_K = {"form": "inv_cos_minus_1", "k_m": 0.02}
+# Two cells with a known additive render error: r [10, 20) x |n.u| [0.9, 1] and [0.5, 0.7].
+_CELLS = [(15.0, 0.95, 0.008), (15.0, 0.6, 0.025), (3.0, 0.95, 0.001)]
 
 
-def _inc_rows(res: np.ndarray, cos: np.ndarray, model: dict | None, edge=None) -> dict:  # noqa: ANN001
+def _cell_rows(res: np.ndarray, cos: np.ndarray, ranges: np.ndarray, table: list | None) -> dict:
     from mss_eval.noise_measure import range_sigma_rows
 
-    cfg = {**_LIDAR_CFG, **({"render_model": model} if model is not None else {})}
-    edge = np.zeros(len(res), dtype=bool) if edge is None else edge
-    rows = range_sigma_rows(res, cos, np.full(len(res), 10.0), edge, cfg, "w")
-    return {r.name: r for r in rows}
+    edge = np.zeros(len(res), dtype=bool)
+    rows = range_sigma_rows(res, cos, ranges, edge, _LIDAR_CFG, table)
+    return {r.name: r for r in rows if r.name.startswith("range_sigma_m r ")}
 
 
-def _synthetic_incidence(rng: np.random.Generator, k_m: float) -> tuple[np.ndarray, np.ndarray]:
-    """Residuals with the declared 0.02 m plus k (1/cos - 1) at cos 0.4, 0.6, 0.8, 0.95."""
-    cos = np.repeat([0.4, 0.6, 0.8, 0.95], 20_000)
-    return rng.normal(0.0, np.hypot(0.02, k_m * (1 / cos - 1))), cos
+def _synthetic_cells(
+    rng: np.random.Generator, declared: float, n: int = 20_000
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Residuals: declared sigma plus a per-cell additive render error (``_CELLS``)."""
+    res, cos, ranges = [], [], []
+    for r, c, s_render in _CELLS:
+        res.append(rng.normal(0.0, np.hypot(declared, s_render), n))
+        cos.append(np.full(n, c))
+        ranges.append(np.full(n, r))
+    return np.concatenate(res), np.concatenate(cos), np.concatenate(ranges)
 
 
-def test_incidence_bins_declared_sigma_only_passes() -> None:
-    res, cos = _synthetic_incidence(np.random.default_rng(5), 0.0)
-    rows = _inc_rows(res, cos, None)
-    gated = [r for n, r in rows.items() if n.startswith("range_sigma_m |n.u|")]
-    assert len(gated) == 4 and all(r.ok is True for r in gated)
-    assert all(r.ok is None for n, r in rows.items() if n.startswith("range_sigma_m ["))
+def _table_from(cells: list[tuple[float, float, float]]) -> list:
+    from mss_eval.noise_measure import build_render_table
+
+    rng = np.random.default_rng(1)
+    res, cos, ranges = [], [], []
+    for r, c, s_render in cells:
+        res.append(rng.normal(0.0, s_render, 20_000))
+        cos.append(np.full(20_000, c))
+        ranges.append(np.full(20_000, r))
+    res_a, cos_a, rng_a = np.concatenate(res), np.concatenate(cos), np.concatenate(ranges)
+    return build_render_table(res_a, cos_a, rng_a, np.ones(len(res_a), dtype=bool))
 
 
-def test_incidence_error_passes_only_with_the_model() -> None:
-    res, cos = _synthetic_incidence(np.random.default_rng(6), 0.02)
-    without = _inc_rows(res, cos, None)
-    assert without["range_sigma_m |n.u| [0.3, 0.5]"].ok is False
-    with_model = _inc_rows(res, cos, _INC_K)
-    assert all(r.ok is True for n, r in with_model.items() if "|n.u|" in n)
-    wrong = _inc_rows(res, cos, {**_INC_K, "k_m": 0.006})
-    assert wrong["range_sigma_m |n.u| [0.3, 0.5]"].ok is False
-    table = {"form": "table", "sigma_by_incidence_m": {"w": [[0.3, 0.5, 0.03], [0.5, 1.0, 0.0]]}}
-    assert _inc_rows(res, cos, table)["range_sigma_m |n.u| [0.3, 0.5]"].ok is True
+def test_table_builder_recovers_a_known_additive_error() -> None:
+    table = _table_from(_CELLS)
+    by_cell = {(row[0], row[2]): row for row in table}
+    assert len(table) == 3
+    for r, c, s_render in _CELLS:
+        key = (10.0 if r == 15.0 else 2.0, 0.9 if c == 0.95 else 0.5)
+        row = by_cell[key]
+        assert row[4] == 20_000
+        assert row[5] == pytest.approx(s_render, rel=0.05)
 
 
-def test_small_incidence_bins_shown_not_gated_and_exclusions_reported() -> None:
+def test_cells_declared_sigma_only_passes_without_render_error() -> None:
+    res, cos, ranges = _synthetic_cells(np.random.default_rng(5), 0.02)
+    zero = [[*row[:5], 0.0] for row in _table_from(_CELLS)]  # calibrated, no render error
+    rng = np.random.default_rng(9)
+    res = rng.normal(0.0, 0.02, len(res))
+    rows = _cell_rows(res, cos, ranges, zero)
+    assert len(rows) == 3 and all(r.ok is True for r in rows.values())
+
+
+def test_cell_error_passes_only_with_the_matching_table() -> None:
+    res, cos, ranges = _synthetic_cells(np.random.default_rng(6), 0.02)
+    matching = _cell_rows(res, cos, ranges, _table_from(_CELLS))
+    assert all(r.ok is True for r in matching.values())
+    no_error = [[*row[:5], 0.0] for row in _table_from(_CELLS)]
+    assert (
+        _cell_rows(res, cos, ranges, no_error)["range_sigma_m r [10, 20) m |n.u| [0.5, 0.7]"].ok
+        is False
+    )
+    wrong = _table_from([(15.0, 0.95, 0.008), (15.0, 0.6, 0.004), (3.0, 0.95, 0.001)])
+    assert (
+        _cell_rows(res, cos, ranges, wrong)["range_sigma_m r [10, 20) m |n.u| [0.5, 0.7]"].ok
+        is False
+    )
+
+
+def test_uncalibrated_and_small_cells_shown_not_gated() -> None:
     rng = np.random.default_rng(7)
-    cos = np.concatenate([np.full(5000, 0.95), np.full(500, 0.4), np.full(300, 0.1)])
+    cos = np.concatenate([np.full(5000, 0.95), np.full(500, 0.6), np.full(300, 0.1)])
+    ranges = np.full(len(cos), 15.0)
     res = rng.normal(0, 0.02, len(cos))
-    rows = _inc_rows(res, cos, None)
-    small = rows["range_sigma_m |n.u| [0.3, 0.5]"]
+    no_table = _cell_rows(res, cos, ranges, None)  # render error taken as 0, gated
+    assert no_table["range_sigma_m r [10, 20) m |n.u| [0.9, 1]"].ok is True
+    only_head_on = [[10.0, 20.0, 0.9, 1.0, 5000, 0.0]]
+    rows = _cell_rows(res, cos, ranges, only_head_on)
+    assert "no calibrated" in rows["range_sigma_m r [10, 20) m |n.u| [0.5, 0.7]"].tol
+    table = [[10.0, 20.0, 0.9, 1.0, 5000, 0.0], [10.0, 20.0, 0.5, 0.7, 500, 0.0]]
+    rows = _cell_rows(res, cos, ranges, table)
+    assert rows["range_sigma_m r [10, 20) m |n.u| [0.9, 1]"].ok is True
+    small = rows["range_sigma_m r [10, 20) m |n.u| [0.5, 0.7]"]
     assert small.ok is None and "points" in small.tol
-    assert rows["range_sigma_m |n.u| [0.9, 1]"].ok is True
-    assert rows["low-incidence points excluded"].measured == pytest.approx(300 / 5800)
+    from mss_eval.noise_measure import range_sigma_rows
+
+    excl = {
+        r.name: r
+        for r in range_sigma_rows(res, cos, ranges, np.zeros(len(res), bool), _LIDAR_CFG, table)
+    }
+    assert excl["low-incidence points excluded"].measured == pytest.approx(300 / 5800)
+
+
+def test_load_render_table(tmp_path: Path) -> None:
+    from mss_eval.noise_report import load_render_table
+
+    f = tmp_path / "t.yaml"
+    f.write_text(yaml.safe_dump({"world": "w", "cells": [[10.0, 20.0, 0.9, 1.0, 5000, 0.01]]}))
+    assert load_render_table(f) == [[10.0, 20.0, 0.9, 1.0, 5000, 0.01]]
+    f.write_text(yaml.safe_dump({"cells": [[1, 2, 3]]}))
+    with pytest.raises(ValueError, match="cells"):
+        load_render_table(f)
 
 
 def test_edge_points_excluded_plane_sigma_recovered() -> None:

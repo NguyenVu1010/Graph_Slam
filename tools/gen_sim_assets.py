@@ -177,7 +177,7 @@ def imu_discrete_noise(profile: NoiseProfile) -> dict[str, float]:
 
 def gz_range_sigma(profile: NoiseProfile, override_m: float | None = None) -> float:
     """Gazebo LiDAR range stddev = the declared ``lidar.range_sigma_m``; the renderer's own error
-    is modelled in the noise report (``lidar.render_model``), not compensated here.
+    is measured per world (``sim/noise/render/<world>.yaml``), not compensated here.
     ``override_m`` (render calibration runs: 0) replaces it."""
     if override_m is not None:
         if not (math.isfinite(override_m) and override_m >= 0):

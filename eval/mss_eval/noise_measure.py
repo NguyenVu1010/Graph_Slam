@@ -502,53 +502,61 @@ _DEFAULT_EDGE_JUMP_M = 0.10
 _DEFAULT_MIN_INCIDENCE_COS = 0.3
 
 
-def render_sigma(lidar_cfg: dict, cos: np.ndarray, world: str | None = None) -> np.ndarray:
-    """Renderer range error per point from ``lidar.render_model`` (0 when absent).
-
-    Forms: ``none``; ``inv_cos_minus_1``: ``k_m (1 / |n.u| - 1)``; ``tan``: ``k_m tan(theta)``;
-    ``table``: ``sigma_by_incidence_m[world]`` rows ``[cos_lo, cos_hi, sigma_m]`` (0 for a world
-    without a table).
-    """
-    c = np.clip(np.asarray(cos, dtype=float), _MIN_COS, 1.0)
-    model = lidar_cfg.get("render_model") or {}
-    form = model.get("form", "none")
-    if form == "none":
-        return np.zeros_like(c)
-    if form == "inv_cos_minus_1":
-        return float(model["k_m"]) * (1.0 / c - 1.0)
-    if form == "tan":
-        return float(model["k_m"]) * np.sqrt(1.0 - c * c) / c
-    if form == "table":
-        out = np.zeros_like(c)
-        for lo, hi, sigma in model["sigma_by_incidence_m"].get(world, []):
-            out[(c >= lo) & ((c < hi) | (hi >= 1.0))] = float(sigma)
-        return out
-    raise ValueError(f"lidar.render_model.form: unknown {form!r}")
+def range_sigma_selection(
+    residuals: np.ndarray, cos: np.ndarray, edge: np.ndarray, lidar_cfg: dict
+) -> np.ndarray:
+    """Points used for the range sigma: not a silhouette point, ``|n.u| >= min_incidence_cos``,
+    ``|d| <= 5 sigma_declared``."""
+    s_decl = float(lidar_cfg["range_sigma_m"])
+    min_cos = float(lidar_cfg.get("min_incidence_cos", _DEFAULT_MIN_INCIDENCE_COS))
+    return ~edge & (cos >= min_cos) & (np.abs(residuals) <= _OUTLIER_SIGMAS * s_decl)
 
 
-def _sigma_rows(
-    name: str,
+def _cells() -> list[tuple[float, float, float, float]]:
+    """(range lo, range hi, |n.u| lo, |n.u| hi) of every cell; the last |n.u| bin includes 1."""
+    rb, cb = RANGE_BINS_M, INCIDENCE_BINS_COS
+    return [
+        (r_lo, r_hi, c_lo, c_hi)
+        for r_lo, r_hi in zip(rb[:-1], rb[1:], strict=True)
+        for c_lo, c_hi in zip(cb[:-1], cb[1:], strict=True)
+    ]
+
+
+def _in_cell(ranges_m: np.ndarray, cos: np.ndarray, cell: tuple) -> np.ndarray:
+    r_lo, r_hi, c_lo, c_hi = cell
+    in_cos = (cos >= c_lo) & ((cos < c_hi) | (c_hi >= 1.0))
+    return (ranges_m >= r_lo) & (ranges_m < r_hi) & in_cos
+
+
+def build_render_table(
     residuals: np.ndarray,
-    sel: np.ndarray,
-    expected_var: np.ndarray,
-    gate: bool,
-    note: str,
-) -> Row | None:
-    d = residuals[sel]
-    if len(d) < _MIN_BIN_POINTS:
-        return None
-    expected = float(np.sqrt(np.mean(expected_var[sel])))
-    sigma = float(np.std(d, ddof=1))
-    gated = gate and len(d) >= MIN_GATE_POINTS
-    tol = "±15 %" if gated else ("informational" if not gate else f"< {MIN_GATE_POINTS} points")
-    return Row(
-        name,
-        expected,
-        sigma,
-        tol,
-        _rel_ok(sigma, expected, _SIGMA_TOL) if gated else None,
-        f"{len(d)} points; {note}",
-    )
+    cos: np.ndarray,
+    ranges_m: np.ndarray,
+    keep: np.ndarray,
+    min_points: int = MIN_GATE_POINTS,
+) -> list[list[float]]:
+    """Renderer sigma per (range bin x incidence bin) cell from a recording with the Gazebo
+    noise at 0: rows ``[r_lo, r_hi, cos_lo, cos_hi, n_points, sigma_m]`` for the cells with at
+    least ``min_points`` selected points; other cells stay out of the table."""
+    table = []
+    for cell in _cells():
+        d = residuals[keep & _in_cell(ranges_m, cos, cell)]
+        if len(d) >= min_points:
+            table.append([*cell, int(len(d)), round(float(np.std(d, ddof=1)), 6)])
+    return table
+
+
+def render_sigma(
+    render_table: list | None, ranges_m: np.ndarray, cos: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per point: renderer sigma of its table cell, and whether that cell is calibrated."""
+    sigma = np.zeros(len(cos))
+    known = np.zeros(len(cos), dtype=bool)
+    for r_lo, r_hi, c_lo, c_hi, _n, s in render_table or []:
+        m = _in_cell(ranges_m, cos, (r_lo, r_hi, c_lo, c_hi))
+        sigma[m] = float(s)
+        known[m] = True
+    return sigma, known
 
 
 def range_sigma_rows(
@@ -557,50 +565,66 @@ def range_sigma_rows(
     ranges_m: np.ndarray,
     edge: np.ndarray,
     lidar_cfg: dict,
-    world: str | None = None,
+    render_table: list | None = None,
 ) -> list[Row]:
-    """Range sigma rows: edge/incidence exclusion shares, gated incidence bins, info range bins.
+    """Exclusion shares, then one row per (range x incidence) cell.
 
-    Selection: not an edge point, ``|n.u| >= min_incidence_cos``, ``|d| <= 5 sigma_declared``.
-    Expected per bin: ``sqrt(sigma_declared^2 + mean(sigma_render(|n.u|)^2))``.
+    Expected per cell: ``sqrt(sigma_declared^2 + sigma_render(cell)^2)`` from ``render_table``
+    (``build_render_table`` rows). A cell is gated +-15 % when it has at least
+    ``MIN_GATE_POINTS`` selected points and, if a table is given, a calibrated entry (a table
+    cell left empty at calibration is shown, not gated). Without any table the render error is
+    taken as 0 and every cell is gated against the declared sigma.
     """
     s_decl = float(lidar_cfg["range_sigma_m"])
     min_cos = float(lidar_cfg.get("min_incidence_cos", _DEFAULT_MIN_INCIDENCE_COS))
+    jump = lidar_cfg.get("edge_jump_m", _DEFAULT_EDGE_JUMP_M)
     n = max(len(residuals), 1)
-    low_inc = cos < min_cos
-    keep = ~edge & ~low_inc & (np.abs(residuals) <= _OUTLIER_SIGMAS * s_decl)
-    exp_var = s_decl**2 + render_sigma(lidar_cfg, cos, world) ** 2
-    model = (lidar_cfg.get("render_model") or {}).get("form", "none")
-    if model == "table":
-        tables = lidar_cfg["render_model"]["sigma_by_incidence_m"]
-        model = f"table[{world}]" if world in tables else f"table: no entry for {world!r}, 0"
+    keep = range_sigma_selection(residuals, cos, edge, lidar_cfg)
+    s_render, known = render_sigma(render_table, ranges_m, cos)
     rows = [
-        Row("edge points excluded", None, float(edge.sum() / n), "informational", None,
-            f"neighbour > {lidar_cfg.get('edge_jump_m', _DEFAULT_EDGE_JUMP_M)} m off the "
-            "point's plane, or no return"),
-        Row("low-incidence points excluded", None, float((low_inc & ~edge).sum() / n),
-            "informational", None, f"|n.u| < {min_cos:g}"),
-    ]  # fmt: skip
-    edges = INCIDENCE_BINS_COS
-    for lo, hi in zip(edges[:-1], edges[1:], strict=True):
-        in_bin = keep & (cos >= lo) & ((cos < hi) | (hi >= 1.0))
-        row = _sigma_rows(
-            f"range_sigma_m |n.u| [{lo:g}, {hi:g}]",
-            residuals,
-            in_bin,
-            exp_var,
-            True,
-            f"expected = sqrt(σ_declared² + σ_render²), render model {model}",
+        Row(
+            "edge points excluded",
+            None,
+            float(edge.sum() / n),
+            "informational",
+            None,
+            f"a neighbour > {jump} m off the plane of the point, or no return",
+        ),
+        Row(
+            "low-incidence points excluded",
+            None,
+            float(((cos < min_cos) & ~edge).sum() / n),
+            "informational",
+            None,
+            f"|n.u| < {min_cos:g}",
+        ),
+    ]
+    for cell in _cells():
+        sel = keep & _in_cell(ranges_m, cos, cell)
+        d = residuals[sel]
+        if len(d) < _MIN_BIN_POINTS:
+            continue
+        calibrated = render_table is None or bool(known[sel].all())
+        expected = float(np.hypot(s_decl, s_render[sel][0] if calibrated else 0.0))
+        sigma = float(np.std(d, ddof=1))
+        gated = calibrated and len(d) >= MIN_GATE_POINTS
+        if gated:
+            tol = "±15 %"
+        elif not calibrated:
+            tol = "not gated: no calibrated render cell"
+        else:
+            tol = f"not gated: < {MIN_GATE_POINTS} points"
+        r_lo, r_hi, c_lo, c_hi = cell
+        rows.append(
+            Row(
+                f"range_sigma_m r [{r_lo:g}, {r_hi:g}) m |n.u| [{c_lo:g}, {c_hi:g}]",
+                expected,
+                sigma,
+                tol,
+                _rel_ok(sigma, expected, _SIGMA_TOL) if gated else None,
+                f"{len(d)} points; expected = sqrt(σ_declared² + σ_render(cell)²)",
+            )
         )
-        if row is not None:
-            rows.append(row)
-    for lo, hi in zip(RANGE_BINS_M[:-1], RANGE_BINS_M[1:], strict=True):
-        in_bin = keep & (ranges_m >= lo) & (ranges_m < hi)
-        row = _sigma_rows(
-            f"range_sigma_m [{lo:g}, {hi:g}) m", residuals, in_bin, exp_var, False, "all incidences"
-        )
-        if row is not None:
-            rows.append(row)
     return rows
 
 
@@ -614,14 +638,15 @@ def lidar_section(
     incidence_cos: np.ndarray | None = None,
     ranges_m: np.ndarray | None = None,
     edge: np.ndarray | None = None,
-    world: str | None = None,
+    render_table: list | None = None,
 ) -> Section:
     """``cos``: plane incidence of each residual; ``incidence_cos``: neighbour-normal incidence of
     the surviving points (``neighbour_incidence_cos``) for the grazing share, else ``cos``; an
     unknown incidence (NaN: a neighbour without return) counts as non-grazing, as in the bridge.
-    With ``ranges_m`` the range sigma is gated per incidence bin after edge exclusion
-    (``range_sigma_rows``; ``edge`` from ``plane_edge_mask``, none if omitted) and the pooled and
-    range-bin rows are informational; without it the pooled row is gated."""
+    With ``ranges_m`` the range sigma is gated per (range x incidence) cell after edge
+    exclusion (``range_sigma_rows``; ``edge`` from ``plane_edge_mask``, none if omitted;
+    ``render_table`` the measured renderer cells) and the pooled row is informational;
+    without it the pooled row is gated."""
     s_decl = float(lidar_cfg["range_sigma_m"])
     use = residuals[cos > _MIN_RAY_COS]
     sigma = estimate_range_sigma(use, s_decl)
@@ -633,7 +658,7 @@ def lidar_section(
             "range_sigma_m",
             s_decl,
             sigma,
-            "±15 %" if ranges_m is None else "informational (gated per incidence bin)",
+            "±15 %" if ranges_m is None else "informational (gated per cell)",
             _rel_ok(sigma, s_decl, _SIGMA_TOL) if ranges_m is None else None,
             f"along-ray residual, |n·u| > {_MIN_RAY_COS:g}, |d| ≤ {_OUTLIER_SIGMAS:g} σ_declared;"
             f" {len(use)} points, edges not excluded",
@@ -652,7 +677,7 @@ def lidar_section(
     ]
     if ranges_m is not None:
         edge_mask = np.zeros(len(residuals), dtype=bool) if edge is None else edge
-        rows += range_sigma_rows(residuals, cos, ranges_m, edge_mask, lidar_cfg, world)
+        rows += range_sigma_rows(residuals, cos, ranges_m, edge_mask, lidar_cfg, render_table)
     fig, (a,) = _axes(1, width_in=6.5)
     lim = _OUTLIER_SIGMAS * s_decl
     _hist_vs_gauss(a, use, s_decl, lim, f"declared σ = {s_decl:g} m")

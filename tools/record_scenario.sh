@@ -203,9 +203,14 @@ summary = {"sim_s": sim_s, "wall_s": wall_s, "real_time_factor": round(sim_s / w
 print(json.dumps({k: v for k, v in summary.items() if k != "raw_bag_files"}))
 EOF
 
+# The world's measured LiDAR render table (tools/calibrate_lidar_render.sh), when there is one.
+render_table="$repo/sim/noise/render/$sc_world.yaml"
+render_args=()
+[ -f "$render_table" ] && render_args=(--render-table "$render_table")
 set +e
 "$PYTHON" -m mss_eval.noise_report "$out" "$sc_profile" --out "$out/noise_report" \
-  --planes "$planes" --pipeline-config "$sc_pipeline_config" > "$logs/noise_report.log" 2>&1
+  --planes "$planes" --pipeline-config "$sc_pipeline_config" "${render_args[@]}" \
+  > "$logs/noise_report.log" 2>&1
 report_status=$?
 set -e
 cat "$logs/noise_report.log"

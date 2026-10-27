@@ -23,7 +23,6 @@ _NOISE = LidarNoise(
     range_sigma_m=0.02,
     edge_jump_m=0.10,
     min_incidence_cos=0.3,
-    render_model={"form": "none"},
     dropout_p=0.02,
     dropout_p_grazing=0.3,
     grazing_deg=80.0,

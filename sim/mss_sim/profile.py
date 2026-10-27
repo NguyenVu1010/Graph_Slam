@@ -51,10 +51,6 @@ class LidarNoise:
     # points with |n.u| below min_incidence_cos are not used for the range sigma.
     edge_jump_m: float
     min_incidence_cos: float
-    # What the renderer adds on top of range_sigma_m, measured (sim/README.md "LiDAR render
-    # error"): {form: none | inv_cos_minus_1 | tan (k_m) | table (sigma_by_incidence_m:
-    # {world: [[cos_lo, cos_hi, sigma_m], ...]})}.
-    render_model: dict
     dropout_p: float
     dropout_p_grazing: float
     grazing_deg: float
@@ -100,7 +96,6 @@ _UNIT_INTERVAL = {
     "near_fraction",
     "min_incidence_cos",
 }
-_RENDER_FORMS = ("none", "inv_cos_minus_1", "tan", "table")
 # (min, max) field pairs that must satisfy min <= max.
 _ORDERED_PAIRS = (
     ("multipath_amp_min_m", "multipath_amp_max_m"),
@@ -135,36 +130,9 @@ def _build[T](cls: type[T], mapping: Any, prefix: str) -> T:
     return cls(**kwargs)
 
 
-def _render_model(value: Any, path: str) -> dict:
-    """Validate ``lidar.render_model`` (see ``LidarNoise``)."""
-    if not isinstance(value, dict) or value.get("form") not in _RENDER_FORMS:
-        raise ProfileError(f"{path}.form: must be one of {_RENDER_FORMS}")
-    form = value["form"]
-    keys = {"none": {"form"}, "table": {"form", "sigma_by_incidence_m"}}.get(form, {"form", "k_m"})
-    if set(value) != keys:
-        raise ProfileError(f"{path}: form {form!r} takes exactly the keys {sorted(keys)}")
-    if "k_m" in keys and not (_is_number(value["k_m"]) and value["k_m"] >= 0):
-        raise ProfileError(f"{path}.k_m: must be a number >= 0")
-    if form == "table":
-        tables = value["sigma_by_incidence_m"]
-        if not isinstance(tables, dict) or not tables:
-            raise ProfileError(f"{path}.sigma_by_incidence_m: expected {{world: rows}}")
-        for world, rows in tables.items():
-            where = f"{path}.sigma_by_incidence_m.{world}"
-            if not isinstance(rows, list) or not rows:
-                raise ProfileError(f"{where}: expected a list of [cos_lo, cos_hi, sigma_m]")
-            for i, row in enumerate(rows):
-                ok = isinstance(row, list) and len(row) == 3 and all(_is_number(v) for v in row)
-                if not ok or not (0 <= row[0] < row[1] <= 1 and row[2] >= 0):
-                    raise ProfileError(f"{where}[{i}]: need 0 <= cos_lo < cos_hi <= 1, sigma >= 0")
-    return value
-
-
 def _convert(name: str, hint: Any, value: Any, path: str) -> Any:
     if dataclasses.is_dataclass(hint):
         return _build(hint, value, path + ".")
-    if hint is dict and name == "render_model":
-        return _render_model(value, path)
     if hint is float:
         if not _is_number(value):
             raise ProfileError(f"{path}: expected a number, got {value!r}")
