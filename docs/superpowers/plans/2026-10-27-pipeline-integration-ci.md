@@ -136,11 +136,11 @@ git commit -m "feat(eval): ATE RMSE with SE(3) alignment from TUM files"
 **Interfaces:**
 - Produces: `bench.json` keys `"scan_process_ms_p50"` and `"scan_process_ms_p95"`: wall time (`std::chrono::steady_clock`) of each `run_once()`/`flush()` call that increased `Stats::n_scans`, divided by the number of scans it processed; nearest-rank percentiles as in `Estimator::stats()`; `0.0` when no scan was processed. Samples kept in a `std::vector<double>` reserved once from the dataset's lidar count (`index.json`), so the replay loop does not allocate (planner's call). Diagnostics only; the estimate is unaffected.
 
-- [ ] **Step 1: Write the failing test** — in `ReplaysSyntheticDataset`: `"scan_process_ms_p50"` and `"scan_process_ms_p95"` present, values parse to `>= 0` and `p95 >= p50`.
-- [ ] **Step 2: Run** `--target test_bench_replay` (GTSAM build command). Expected: FAIL (key missing).
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** the same target, then the no-GTSAM build of the same target. Expected: PASS. Format check (clang-format-18 dry run on the two files) prints nothing.
-- [ ] **Step 5: Commit**
+- [x] **Step 1: Write the failing test** — in `ReplaysSyntheticDataset`: `"scan_process_ms_p50"` and `"scan_process_ms_p95"` present, values parse to `>= 0` and `p95 >= p50`.
+- [x] **Step 2: Run** `--target test_bench_replay` (GTSAM build command). Expected: FAIL (key missing).
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** the same target, then the no-GTSAM build of the same target. Expected: PASS. Format check (clang-format-18 dry run on the two files) prints nothing.
+- [x] **Step 5: Commit**
 ```bash
 git add bench/main.cpp tests/component/test_bench_replay.cpp
 git commit -m "feat(bench): per-scan processing latency percentiles in bench.json (PF-01)"

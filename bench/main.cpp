@@ -9,12 +9,14 @@
 // only under DIR:
 //   DIR/est.tum     one line per scan that produced an estimate, from latest_state(); none
 //                   before the IMU static initialisation (imu.init_window_s of still data)
-//   DIR/bench.json  Estimator::Stats, replay wall time and record counts per stream
+//   DIR/bench.json  Estimator::Stats, replay wall time, record counts per stream and the
+//                   per-scan processing latency (scan_process_ms_p50/p95, PF-01)
 // and prints a summary table on stdout.
 // Exit codes: 0 success; 2 usage, config, dataset, estimator-init or output error (reason
 // on stderr); 3 the replay finished but some records were not processed (dropped or
 // rejected: records.* != n_*): one warning line on stderr, outputs still written.
 // --out is required so the tool never writes into the source tree by default.
+#include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <cstddef>
@@ -27,6 +29,7 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <Eigen/Geometry>
 
@@ -106,6 +109,19 @@ struct Counts {
   std::uint64_t gt = 0;
 };
 
+// Per-scan processing latency percentiles, ms (PF-01).
+struct ScanLatency {
+  double p50_ms = 0.0;
+  double p95_ms = 0.0;
+};
+
+// Nearest-rank percentile on a sorted, non-empty vector: sorted[ceil(q * n) - 1] with
+// q = num / den, computed in integers as in Estimator::stats().
+double nearest_rank(const std::vector<double>& sorted, std::size_t num, std::size_t den) {
+  const std::size_t rank = (num * sorted.size() + den - 1) / den;  // >= 1 for n >= 1
+  return sorted[rank - 1];
+}
+
 // One TUM line: "t x y z qx qy qz qw" with t in seconds printed from integer ns (9 decimals)
 // and the pose with 17 significant digits, so equal files mean bit-identical doubles (E-02).
 void write_tum_line(std::FILE* f, const mss::common::NavState& s) {
@@ -134,7 +150,8 @@ void write_tum_line(std::FILE* f, const mss::common::NavState& s) {
 bool write_json(const fs::path& path,
                 const mss::pipeline::Estimator::Stats& st,
                 double replay_wall_s,
-                const Counts& c) {
+                const Counts& c,
+                const ScanLatency& lat) {
   std::FILE* f = std::fopen(path.c_str(), "w");
   if (f == nullptr) {
     return false;
@@ -181,6 +198,8 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"push_scan_us_p50\": %.3f,\n"
                "  \"push_scan_us_p95\": %.3f,\n"
+               "  \"scan_process_ms_p50\": %.6f,\n"
+               "  \"scan_process_ms_p95\": %.6f,\n"
                "  \"replay_wall_s\": %.6f,\n"
                "  \"records\": {\n"
                "    \"imu\": %" PRIu64
@@ -216,6 +235,8 @@ bool write_json(const fs::path& path,
                st.n_nonfinite_imu,
                st.push_scan_us_p50,
                st.push_scan_us_p95,
+               lat.p50_ms,
+               lat.p95_ms,
                replay_wall_s,
                c.imu,
                c.gnss,
@@ -228,7 +249,8 @@ bool write_json(const fs::path& path,
 void print_table(const fs::path& dataset,
                  const mss::pipeline::Estimator::Stats& st,
                  double replay_wall_s,
-                 const Counts& c) {
+                 const Counts& c,
+                 const ScanLatency& lat) {
   std::printf("mss_bench: %s\n", dataset.c_str());
   std::printf("%-8s %10s %10s\n", "stream", "records", "processed");
   std::printf("%-8s %10" PRIu64 " %10" PRIu64 "\n", "imu", c.imu, st.n_imu);
@@ -243,6 +265,7 @@ void print_table(const fs::path& dataset,
               st.n_dropped_aux,
               st.n_rejected_imu);
   std::printf("push_scan p50 %.3f us, p95 %.3f us\n", st.push_scan_us_p50, st.push_scan_us_p95);
+  std::printf("scan processing p50 %.3f ms, p95 %.3f ms\n", lat.p50_ms, lat.p95_ms);
   std::printf("replay wall time %.3f s\n", replay_wall_s);
 }
 
@@ -265,13 +288,23 @@ void print_table(const fs::path& dataset,
 //     An uncovered scan only holds back messages with a key after its end time, i.e.
 //     at most about one IMU period of GNSS / wheel data while the IMU stream is live.
 // flush() at the end processes whatever is left, covered or not.
+//
+// PF-01 latency: every run_once()/flush() call is timed (steady_clock); a call that raised
+// Stats::n_scans adds one sample per processed scan, its wall time divided by the number of
+// scans. The sample buffer is reserved once for the dataset's scan count, so the replay
+// loop does not allocate. Diagnostics only: the estimate does not depend on it.
 class Replayer {
  public:
-  Replayer(mss::pipeline::Estimator& est, const mss::pipeline::RealtimeConfig& rt, std::FILE* tum)
+  Replayer(mss::pipeline::Estimator& est,
+           const mss::pipeline::RealtimeConfig& rt,
+           std::FILE* tum,
+           std::size_t n_scans_expected)
       : est_(est),
         tum_(tum),
         imu_limit_(static_cast<std::size_t>(rt.imu_queue_depth) - 1U),
-        aux_limit_(static_cast<std::size_t>(rt.aux_queue_depth) - 1U) {}
+        aux_limit_(static_cast<std::size_t>(rt.aux_queue_depth) - 1U) {
+    scan_ms_.reserve(n_scans_expected);
+  }
 
   void feed(const mss::io::Record& rec, const mss::common::ScanFrame& scan) {
     using mss::io::RecordKind;
@@ -309,22 +342,56 @@ class Replayer {
 
   // Processes what is left. Call once at the end of the dataset.
   void finish() {
-    est_.flush();
+    timed(true);
     write_latest();
   }
 
   const Counts& counts() const { return counts_; }
+
+  // Nearest-rank p50 / p95 of the per-scan samples; zeros when no scan was processed.
+  [[nodiscard]] ScanLatency latency() const {
+    ScanLatency out;
+    if (scan_ms_.empty()) {
+      return out;
+    }
+    std::vector<double> sorted = scan_ms_;  // after the replay: allocating here is fine
+    std::sort(sorted.begin(), sorted.end());
+    out.p50_ms = nearest_rank(sorted, 50, 100);
+    out.p95_ms = nearest_rank(sorted, 95, 100);
+    return out;
+  }
 
  private:
   void drain_if(bool pressure) {
     if (!pressure) {
       return;
     }
-    est_.run_once();
+    timed(false);
     n_imu_ = 0;
     n_gnss_ = 0;
     n_odom_ = 0;
     write_latest();
+  }
+
+  // run_once() (or flush() at the end of the dataset) with the PF-01 per-scan timing.
+  void timed(bool at_end) {
+    const std::uint64_t before = est_.stats().n_scans;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (at_end) {
+      est_.flush();
+    } else {
+      est_.run_once();
+    }
+    const std::chrono::duration<double, std::milli> dt = std::chrono::steady_clock::now() - t0;
+    const std::uint64_t after = est_.stats().n_scans;
+    if (after <= before) {
+      return;
+    }
+    const std::uint64_t n = after - before;
+    const double per_scan_ms = dt.count() / static_cast<double>(n);
+    for (std::uint64_t k = 0; k < n && scan_ms_.size() < scan_ms_.capacity(); ++k) {
+      scan_ms_.push_back(per_scan_ms);  // never grows past the reserved capacity
+    }
   }
 
   // One TUM line per newly processed scan (latest_state() changes only when one is).
@@ -345,6 +412,7 @@ class Replayer {
   std::size_t n_odom_ = 0;
   mss::common::Timestamp last_written_{};
   Counts counts_;
+  std::vector<double> scan_ms_;  // ms per processed scan (PF-01), reserved in the constructor
 };
 
 bool all_processed(const Counts& c, const mss::pipeline::Estimator::Stats& st) {
@@ -400,7 +468,7 @@ int main(int argc, char** argv) {
 
   mss::common::ScanFrame scan(max_points);
   mss::io::Record rec;
-  Replayer replayer(*est, cfg.value().realtime, tum);
+  Replayer replayer(*est, cfg.value().realtime, tum, reader.index().n_lidar);
   int status = 0;
   const auto t0 = std::chrono::steady_clock::now();
   for (;;) {
@@ -427,11 +495,12 @@ int main(int argc, char** argv) {
   }
   const mss::pipeline::Estimator::Stats st = est->stats();
   const Counts& counts = replayer.counts();
-  if (!write_json(json_path, st, wall.count(), counts)) {
+  const ScanLatency lat = replayer.latency();
+  if (!write_json(json_path, st, wall.count(), counts, lat)) {
     std::fprintf(stderr, "mss_bench: cannot write %s\n", json_path.c_str());
     return kExitError;
   }
-  print_table(args->dataset, st, wall.count(), counts);
+  print_table(args->dataset, st, wall.count(), counts, lat);
   if (!all_processed(counts, st)) {
     std::fprintf(stderr,
                  "mss_bench: WARNING not every record was processed (records != n_*; see the "
