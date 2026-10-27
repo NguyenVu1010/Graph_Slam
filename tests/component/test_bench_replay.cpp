@@ -125,6 +125,17 @@ std::string read_file(const fs::path& p) {
   return ss.str();
 }
 
+// Value of a numeric top-level key in bench.json; -1 (and a test failure) when it is missing.
+double json_number(const std::string& json, const std::string& key) {
+  const std::string tag = "\"" + key + "\": ";
+  const std::size_t pos = json.find(tag);
+  if (pos == std::string::npos) {
+    ADD_FAILURE() << key << " missing in " << json;
+    return -1.0;
+  }
+  return std::stod(json.substr(pos + tag.size()));
+}
+
 int run(const std::string& cmd) {
   const int status = std::system(cmd.c_str());
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
@@ -187,6 +198,14 @@ TEST(BenchReplay, ReplaysSyntheticDataset) {
   EXPECT_NE(json.find("\"lidar\": 10,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"n_dropped_imu\": 0,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"n_dropped_aux\": 0,"), std::string::npos) << json;
+  // PF-01: per-scan processing latency, ms.
+  const double p50 = json_number(json, "scan_process_ms_p50");
+  const double p95 = json_number(json, "scan_process_ms_p95");
+  EXPECT_GE(p50, 0.0) << json;
+  EXPECT_GE(p95, p50) << json;
+  // One sample per processed scan, all inside the buffer reserved from index.json.
+  EXPECT_NE(json.find("\"n_latency_samples\": 10,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_latency_dropped\": 0,"), std::string::npos) << json;
 }
 
 // 3 s of IMU / GNSS / wheel before the first scan: more than the IMU (400) and aux (32)

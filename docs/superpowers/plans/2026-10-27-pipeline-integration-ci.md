@@ -63,7 +63,7 @@ CI decision (dispatch question): E-01 needs the GTSAM backend, so the integratio
 **Interfaces:**
 - Produces: `write_synthetic_raw_bag(out_dir, *, duration_s=6.0, seed=0, organized=True, box_half_m=(10.0, 6.0, 3.0), omega_radps=0.3, speed_mps=0.5, max_range_m=100.0, origin_lla, static_s: float = 0.0, ramp_s: float = 0.0, t_b_l: tuple[tuple[float, float, float], tuple[float, float, float, float]] | None = None) -> SynthInfo` — `t_b_l = (translation_m, quaternion_wxyz)` Hamilton order; `None` = identity (today's behaviour). Motion per `docs/derivations/pipeline.md §7` with `V = speed_mps`, `W = omega_radps`; `/ground_truth` twist, IMU, joint states (wheel speeds `(v -+ omega * track / 2) / radius`, positions = integrals) and GNSS all from that profile; the LiDAR ray-casts from `T_w_b * T_b_l` and `/tf_static` carries `T_b_l`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 ```python
 # Defaults unchanged: the existing tests in test_synth.py (circle, IMU kinematics, tf identity)
 # and the bridge/SIM-05 tests keep passing without edits.
@@ -78,10 +78,10 @@ def test_t_b_l_written_and_used(tmp_path) -> None:
     # t_b_l = ((0.10, 0.0, 0.50), (0.99984770, 0.0, 0.01745241, 0.0)): /tf_static carries it;
     # every finite point p_l of the first scan lies on a box plane after T_w_b * T_b_l (1e-6 m)
 ```
-- [ ] **Step 2: Run** `python -m pytest tests/python/test_synth.py -v`. Expected: FAIL (unexpected keyword arguments).
-- [ ] **Step 3: Implement** the profile helper `_profile(t_s, static_s, ramp_s, speed, omega) -> (s, v, a_t)` and use it everywhere `_pose` was used.
-- [ ] **Step 4: Run** `python -m pytest tests/python -q` (all Python tests, incl. bridge/SIM-05 that use the defaults). Expected: PASS. `python -m ruff check . && python -m ruff format --check .` clean.
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run** `python -m pytest tests/python/test_synth.py -v`. Expected: FAIL (unexpected keyword arguments).
+- [x] **Step 3: Implement** the profile helper `_profile(t_s, static_s, ramp_s, speed, omega) -> (s, v, a_t)` and use it everywhere `_pose` was used.
+- [x] **Step 4: Run** `python -m pytest tests/python -q` (all Python tests, incl. bridge/SIM-05 that use the defaults). Expected: PASS. `python -m ruff check . && python -m ruff format --check .` clean.
+- [x] **Step 5: Commit**
 ```bash
 git add sim/mss_sim/synth.py tests/python/test_synth.py
 git commit -m "feat(sim): synthetic bag with static start, speed ramp and configurable T_b_l"
@@ -105,7 +105,7 @@ git commit -m "feat(sim): synthetic bag with static start, speed ramp and config
   - `plot_xy(est_path: Path, gt_path: Path, out_png: Path) -> None` (aligned est over gt, matplotlib Agg).
   - CLI `python -m mss_eval.ate <est.tum> <gt.tum> [--plot out.png]` prints `{"ate_rmse_m": ..., "n_pairs": ..., "n_unmatched": ...}` as one JSON line; exit 2 on error.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 ```python
 def test_ev01_self_is_zero(tmp_path) -> None             # EV-01: ate(x, x).rmse_m < 1e-12
 def test_rigid_offset_removed(tmp_path) -> None          # est = Rz(30 deg) gt + (5, -3, 1): rmse < 1e-9
@@ -117,10 +117,10 @@ def test_associate_nearest_within_tolerance() -> None    # Review Focus 1: est 1
 def test_too_few_pairs_raises(tmp_path) -> None          # 9 pairs, min_pairs 10 -> ValueError
 def test_cli_prints_json(tmp_path) -> None               # subprocess, exit 0, keys present
 ```
-- [ ] **Step 2: Run** `python -m pytest tests/python/test_ate.py -v`. Expected: FAIL (module missing).
-- [ ] **Step 3: Implement** per Interfaces (Umeyama via SVD of the cross-covariance with the reflection fix).
-- [ ] **Step 4: Run** the same command, then ruff. Expected: PASS, clean.
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run** `python -m pytest tests/python/test_ate.py -v`. Expected: FAIL (module missing).
+- [x] **Step 3: Implement** per Interfaces (Umeyama via SVD of the cross-covariance with the reflection fix).
+- [x] **Step 4: Run** the same command, then ruff. Expected: PASS, clean.
+- [x] **Step 5: Commit**
 ```bash
 git add eval/mss_eval/ate.py tests/python/test_ate.py eval/README.md
 git commit -m "feat(eval): ATE RMSE with SE(3) alignment from TUM files"
@@ -136,11 +136,11 @@ git commit -m "feat(eval): ATE RMSE with SE(3) alignment from TUM files"
 **Interfaces:**
 - Produces: `bench.json` keys `"scan_process_ms_p50"` and `"scan_process_ms_p95"`: wall time (`std::chrono::steady_clock`) of each `run_once()`/`flush()` call that increased `Stats::n_scans`, divided by the number of scans it processed; nearest-rank percentiles as in `Estimator::stats()`; `0.0` when no scan was processed. Samples kept in a `std::vector<double>` reserved once from the dataset's lidar count (`index.json`), so the replay loop does not allocate (planner's call). Diagnostics only; the estimate is unaffected.
 
-- [ ] **Step 1: Write the failing test** — in `ReplaysSyntheticDataset`: `"scan_process_ms_p50"` and `"scan_process_ms_p95"` present, values parse to `>= 0` and `p95 >= p50`.
-- [ ] **Step 2: Run** `--target test_bench_replay` (GTSAM build command). Expected: FAIL (key missing).
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run** the same target, then the no-GTSAM build of the same target. Expected: PASS. Format check (clang-format-18 dry run on the two files) prints nothing.
-- [ ] **Step 5: Commit**
+- [x] **Step 1: Write the failing test** — in `ReplaysSyntheticDataset`: `"scan_process_ms_p50"` and `"scan_process_ms_p95"` present, values parse to `>= 0` and `p95 >= p50`.
+- [x] **Step 2: Run** `--target test_bench_replay` (GTSAM build command). Expected: FAIL (key missing).
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run** the same target, then the no-GTSAM build of the same target. Expected: PASS. Format check (clang-format-18 dry run on the two files) prints nothing.
+- [x] **Step 5: Commit**
 ```bash
 git add bench/main.cpp tests/component/test_bench_replay.cpp
 git commit -m "feat(bench): per-scan processing latency percentiles in bench.json (PF-01)"
@@ -172,7 +172,7 @@ git commit -m "feat(bench): per-scan processing latency percentiles in bench.jso
   - Null baseline: pass with note `"no baseline: record ate_rmse_m=<x> in a baseline-update PR"`.
   - Outputs under `--out`: `E-01/`, `E-02/`, `E-03/` (bench outputs, `ate.json`, optional `traj_xy.png`), `integration.json` (`{test: {ate_rmse_m, n_pairs, bench_exit, baseline, passed, note}}`), `summary.md` (one table, also printed to stdout).
 
-- [ ] **Step 1: Write the failing tests** (fast; `--duration-s 8` and a fake bench)
+- [x] **Step 1: Write the failing tests** (fast; `--duration-s 8` and a fake bench)
 ```python
 # Fake bench: tests/python write a small Python script into tmp_path that reads the mssdata
 # gt.bin (GT_DTYPE from bag_to_mssdata) and writes it as <out>/est.tum plus a bench.json with
@@ -190,13 +190,13 @@ def test_missing_bench_is_setup_error(tmp_path) -> None   # Review Focus 5: none
 def test_wsl_path_style() -> None                         # "C:\\a\\b" -> "/mnt/c/a/b"
 def test_writes_only_under_out(tmp_path) -> None          # repo tree unchanged (git status --porcelain empty diff of files touched)
 ```
-- [ ] **Step 2: Run** `python -m pytest tests/python/test_run_integration.py -v`. Expected: FAIL (module missing).
-- [ ] **Step 3: Implement** per Interfaces and Decisions.
-- [ ] **Step 4: Run** the same command and ruff. Expected: PASS, clean.
-- [ ] **Step 5: Local run with the real bench** — build `mss_bench` with GTSAM (`--target mss_bench`), then on Windows:
+- [x] **Step 2: Run** `python -m pytest tests/python/test_run_integration.py -v`. Expected: FAIL (module missing).
+- [x] **Step 3: Implement** per Interfaces and Decisions.
+- [x] **Step 4: Run** the same command and ruff. Expected: PASS, clean.
+- [x] **Step 5: Local run with the real bench** — build `mss_bench` with GTSAM (`--target mss_bench`), then on Windows:
   `python tools/run_integration.py --bench-cmd "wsl -- /home/nguyenvd/mss-build/feat-pipeline-ci/bench/mss_bench" --path-style wsl --out results/local-<date> --plots`
   Expected: exit 0, three rows in `summary.md` with "no baseline" notes, finite ATE values, E-02 identical. Keep the numbers for the PR description; `results/` is not committed.
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 ```bash
 git add tools/run_integration.py tests/python/test_run_integration.py
 git commit -m "feat(tools): E-01..E-03 and PF-01 integration harness against eval/baselines.json"
@@ -212,8 +212,8 @@ git commit -m "feat(tools): E-01..E-03 and PF-01 integration harness against eva
 **Interfaces:**
 - Consumes: Task 4 CLI; image `mss` built by the job; installed bench path inside the image.
 
-- [ ] **Step 1: Find the installed bench path** — `docker build -f docker/deps.Dockerfile -t mss-deps . && docker build -f docker/Dockerfile --build-arg DEPS=mss-deps -t mss .` (in WSL if Docker is available, else read it from the first CI run's log), then `docker run --rm mss ls /ws/install/multi_sensor_slam/bin`. Expected: `mss_bench` listed (from `install(TARGETS mss_bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})`). Use the printed path below.
-- [ ] **Step 2: Add steps to `docker-full`** after the image build:
+- [x] **Step 1: Find the installed bench path** — `docker build -f docker/deps.Dockerfile -t mss-deps . && docker build -f docker/Dockerfile --build-arg DEPS=mss-deps -t mss .` (in WSL if Docker is available, else read it from the first CI run's log), then `docker run --rm mss ls /ws/install/multi_sensor_slam/bin`. Expected: `mss_bench` listed (from `install(TARGETS mss_bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})`). Use the printed path below.
+- [x] **Step 2: Add steps to `docker-full`** after the image build:
 ```yaml
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
@@ -230,9 +230,9 @@ git commit -m "feat(tools): E-01..E-03 and PF-01 integration harness against eva
         with: { name: integration-${{ github.run_id }}, path: results/ci-${{ github.run_id }} }
 ```
   Update the job comment: integration runs here because this job already has GTSAM; `integration.yml` follows once `deps-image.yml` publishes the deps image. Results go to the step summary and the artifact (no PR comment: needs a write token on fork PRs; planner's call).
-- [ ] **Step 3: Docs** — README: an "Integration tests" paragraph with the local command from Task 4 Step 5 and the exit codes; `eval/README.md`: ATE CLI, and the baseline policy: the first CI run prints the numbers; a separate PR labelled `baseline-update` copies `ate_rmse_m` (E-01, E-02, E-03) and `p95_latency_ms` from that run's `integration.json` into `eval/baselines.json`, attaching the `traj_xy.png` plots (before = none on the first update, else the previous artifact).
-- [ ] **Step 4: Verify** — `python -m pytest tests/python -q` and ruff clean; YAML parses (`python -c "import yaml,sys; yaml.safe_load(open('.github/workflows/ci.yml'))"`). Expected: PASS. The workflow itself is verified by the PR's CI run: `docker-full` green, step summary shows three rows.
-- [ ] **Step 5: Commit**
+- [x] **Step 3: Docs** — README: an "Integration tests" paragraph with the local command from Task 4 Step 5 and the exit codes; `eval/README.md`: ATE CLI, and the baseline policy: the first CI run prints the numbers; a separate PR labelled `baseline-update` copies `ate_rmse_m` (E-01, E-02, E-03) and `p95_latency_ms` from that run's `integration.json` into `eval/baselines.json`, attaching the `traj_xy.png` plots (before = none on the first update, else the previous artifact).
+- [x] **Step 4: Verify** — `python -m pytest tests/python -q` and ruff clean; YAML parses (`python -c "import yaml,sys; yaml.safe_load(open('.github/workflows/ci.yml'))"`). Expected: PASS. The workflow itself is verified by the PR's CI run: `docker-full` green, step summary shows three rows.
+- [x] **Step 5: Commit**
 ```bash
 git add .github/workflows/ci.yml README.md eval/README.md
 git commit -m "ci: run E-01..E-03 and PF-01 integration in the docker-full job"
