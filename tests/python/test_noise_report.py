@@ -307,3 +307,39 @@ def test_neighbour_incidence_cos_on_a_floor_survives_dropout() -> None:
     inf_scan = xyz.copy()
     inf_scan[0] = np.inf  # a no-return point stays unknown, and so do its neighbours' normals
     assert np.isnan(neighbour_incidence_cos(inf_scan, n_rings, width)[0])
+
+
+def test_unknown_incidence_counts_as_non_grazing() -> None:
+    """A NaN incidence (neighbour without return, e.g. sky) is non-grazing, as in the bridge."""
+    lidar_cfg = {
+        "range_sigma_m": 0.02,
+        "dropout_p": 0.02,
+        "dropout_p_grazing": 0.3,
+        "grazing_deg": 80.0,
+        "nan_fraction": 0.0,
+    }
+    res = np.zeros(100)
+    cos = np.ones(100)
+    inc = np.full(100, np.nan)
+    inc[:10] = 0.05  # grazing
+    sec = lidar_section(res, cos, 0, 100, lidar_cfg, None, inc)
+    dropout = next(r for r in sec.rows if r.name == "dropout_fraction")
+    known_only = lidar_section(res, cos, 0, 100, lidar_cfg, None, inc[:10])
+    p_known = next(r for r in known_only.rows if r.name == "dropout_fraction").declared
+    assert dropout.declared < p_known  # 90 unknown points dilute g instead of being dropped
+    p_exp, g = expected_dropout(np.nan_to_num(inc, nan=1.0), lidar_cfg)
+    assert dropout.declared == pytest.approx(p_exp) and 0.05 < g < 0.2
+
+
+def test_range_bin_rows() -> None:
+    from mss_eval.noise_measure import range_bin_rows
+
+    rng = np.random.default_rng(5)
+    ranges = np.concatenate([np.full(1000, 1.5), np.full(1000, 15.0), np.full(10, 50.0)])
+    res = np.concatenate([rng.normal(0, 0.005, 1000), rng.normal(0, 0.02, 1000), np.zeros(10)])
+    rows = range_bin_rows(res, np.ones(len(res)), ranges, 0.02)
+    by = {r.name: r.measured for r in rows}
+    assert by["range_sigma_m [0.5, 2) m"] == pytest.approx(0.005, rel=0.1)
+    assert by["range_sigma_m [10, 20) m"] == pytest.approx(0.02, rel=0.1)
+    assert not any("[40, 100)" in name for name in by)  # fewer than 100 points: no row
+    assert all(r.ok is None for r in rows)

@@ -448,6 +448,36 @@ def expected_dropout(cos: np.ndarray, lidar_cfg: dict) -> tuple[float, float]:
     return p + (p_g - p) * g + float(lidar_cfg.get("nan_fraction", 0.0)), g
 
 
+RANGE_BINS_M = (0.5, 2.0, 5.0, 10.0, 20.0, 40.0, 100.0)
+_MIN_BIN_POINTS = 100
+
+
+def range_bin_rows(
+    residuals: np.ndarray, cos: np.ndarray, ranges_m: np.ndarray, s_decl: float
+) -> list[Row]:
+    """Range sigma per sensor-range bin (informational): same selection as ``range_sigma_m``."""
+    rows = []
+    sel = cos > _MIN_RAY_COS
+    for lo, hi in zip(RANGE_BINS_M[:-1], RANGE_BINS_M[1:], strict=True):
+        in_bin = sel & (ranges_m >= lo) & (ranges_m < hi)
+        d = residuals[in_bin]
+        d = d[np.abs(d) <= _OUTLIER_SIGMAS * s_decl]
+        if len(d) < _MIN_BIN_POINTS:
+            continue
+        sigma = float(np.std(d, ddof=1))
+        rows.append(
+            Row(
+                f"range_sigma_m [{lo:g}, {hi:g}) m",
+                s_decl,
+                sigma,
+                "informational",
+                None,
+                f"{len(d)} points",
+            )  # fmt: skip
+        )
+    return rows
+
+
 def lidar_section(
     residuals: np.ndarray,
     cos: np.ndarray,
@@ -456,14 +486,17 @@ def lidar_section(
     lidar_cfg: dict,
     pipeline_lidar: dict | None,
     incidence_cos: np.ndarray | None = None,
+    ranges_m: np.ndarray | None = None,
 ) -> Section:
     """``cos``: plane incidence of each residual; ``incidence_cos``: neighbour-normal incidence of
-    the surviving points (``neighbour_incidence_cos``) for the grazing share, else ``cos``."""
+    the surviving points (``neighbour_incidence_cos``) for the grazing share, else ``cos``; an
+    unknown incidence (NaN: a neighbour without return) counts as non-grazing, as in the bridge.
+    ``ranges_m``: sensor range per residual; adds informational per-range-bin sigma rows."""
     s_decl = float(lidar_cfg["range_sigma_m"])
     use = residuals[cos > _MIN_RAY_COS]
     sigma = estimate_range_sigma(use, s_decl)
     frac = n_nan / n_not_inf if n_not_inf else float("nan")
-    inc = cos if incidence_cos is None else incidence_cos[np.isfinite(incidence_cos)]
+    inc = cos if incidence_cos is None else np.nan_to_num(incidence_cos, nan=1.0)
     p_exp, g = expected_dropout(inc, lidar_cfg)
     rows = [
         Row(
@@ -487,6 +520,8 @@ def lidar_section(
             + (" (neighbour normals, all surfaces)" if incidence_cos is not None else ""),
         ),
     ]
+    if ranges_m is not None:
+        rows += range_bin_rows(residuals, cos, ranges_m, s_decl)
     fig, (a,) = _axes(1, width_in=6.5)
     lim = _OUTLIER_SIGMAS * s_decl
     _hist_vs_gauss(a, use, s_decl, lim, f"declared σ = {s_decl:g} m")
