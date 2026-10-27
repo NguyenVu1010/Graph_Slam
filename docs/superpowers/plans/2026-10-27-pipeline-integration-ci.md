@@ -172,7 +172,7 @@ git commit -m "feat(bench): per-scan processing latency percentiles in bench.jso
   - Null baseline: pass with note `"no baseline: record ate_rmse_m=<x> in a baseline-update PR"`.
   - Outputs under `--out`: `E-01/`, `E-02/`, `E-03/` (bench outputs, `ate.json`, optional `traj_xy.png`), `integration.json` (`{test: {ate_rmse_m, n_pairs, bench_exit, baseline, passed, note}}`), `summary.md` (one table, also printed to stdout).
 
-- [ ] **Step 1: Write the failing tests** (fast; `--duration-s 8` and a fake bench)
+- [x] **Step 1: Write the failing tests** (fast; `--duration-s 8` and a fake bench)
 ```python
 # Fake bench: tests/python write a small Python script into tmp_path that reads the mssdata
 # gt.bin (GT_DTYPE from bag_to_mssdata) and writes it as <out>/est.tum plus a bench.json with
@@ -190,13 +190,13 @@ def test_missing_bench_is_setup_error(tmp_path) -> None   # Review Focus 5: none
 def test_wsl_path_style() -> None                         # "C:\\a\\b" -> "/mnt/c/a/b"
 def test_writes_only_under_out(tmp_path) -> None          # repo tree unchanged (git status --porcelain empty diff of files touched)
 ```
-- [ ] **Step 2: Run** `python -m pytest tests/python/test_run_integration.py -v`. Expected: FAIL (module missing).
-- [ ] **Step 3: Implement** per Interfaces and Decisions.
-- [ ] **Step 4: Run** the same command and ruff. Expected: PASS, clean.
-- [ ] **Step 5: Local run with the real bench** — build `mss_bench` with GTSAM (`--target mss_bench`), then on Windows:
+- [x] **Step 2: Run** `python -m pytest tests/python/test_run_integration.py -v`. Expected: FAIL (module missing).
+- [x] **Step 3: Implement** per Interfaces and Decisions.
+- [x] **Step 4: Run** the same command and ruff. Expected: PASS, clean.
+- [x] **Step 5: Local run with the real bench** — build `mss_bench` with GTSAM (`--target mss_bench`), then on Windows:
   `python tools/run_integration.py --bench-cmd "wsl -- /home/nguyenvd/mss-build/feat-pipeline-ci/bench/mss_bench" --path-style wsl --out results/local-<date> --plots`
   Expected: exit 0, three rows in `summary.md` with "no baseline" notes, finite ATE values, E-02 identical. Keep the numbers for the PR description; `results/` is not committed.
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 ```bash
 git add tools/run_integration.py tests/python/test_run_integration.py
 git commit -m "feat(tools): E-01..E-03 and PF-01 integration harness against eval/baselines.json"
