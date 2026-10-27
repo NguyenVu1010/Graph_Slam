@@ -13,8 +13,11 @@ the scenario's seed, duration, origin, noise profile and ``T_b_l`` (pipeline ove
 scenario's ``world`` and ``trajectory`` are not used. A scenario without ``prep`` is a setup
 error. ``--bridged <dir>`` replaces the synthetic data by a recorded bridge output (``bag/`` +
 ``gt.tum``, e.g. ``tools/record_scenario.sh``; ENU origin = scenario ``origin_lla``); ``prep``
-is then needed only for E-03. ``integration.json`` records these parameters under
-``data_source`` so a baseline is never compared across datasets.
+is then needed only for E-03, ``--duration-s`` is refused (the recording sets the duration), and
+when the directory holds ``assets/assets.yaml`` (a ``record_scenario.sh`` run) its profile and
+pipeline config must be the scenario's. ``integration.json`` records these parameters under
+``data_source``, so a reader can tell which dataset a result and a baseline came from (the gates
+do not compare them).
 
 Chain: synthetic bag -> noise bridge with the scenario -> ``bag_to_mssdata.py``; E-03 adds
 ``mutate_bag.py`` (``prep.mutate``; E-01: 5 % drops, 2 % reordering, seed 42) before the
@@ -59,6 +62,8 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from bag_to_mssdata import convert
 from mss_eval.ate import ate, plot_xy
@@ -139,6 +144,21 @@ def _mutate_e03(
     return data / "mssdata_e03"
 
 
+def _check_recording(bridged: Path, sc: Any) -> None:
+    """A ``record_scenario.sh`` directory must come from ``sc``: same profile and overlay."""
+    meta_path = bridged / "assets" / "assets.yaml"
+    if not meta_path.is_file():
+        return  # a bridge output without the recording's assets: nothing to cross-check
+    meta = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
+    for key, expected in (("profile", sc.profile), ("pipeline_config", sc.pipeline_config)):
+        if meta.get(key) != _repo_relative(expected):
+            msg = (
+                f"--bridged {bridged}: recorded with {key} {meta.get(key)!r}, but scenario "
+                f"{sc.id} uses {_repo_relative(expected)!r}"
+            )
+            raise SetupError(msg)
+
+
 def prepare(
     scenario: Path, out: Path, duration_s: float | None, bridged_dir: Path | None = None
 ) -> Prepared:
@@ -153,6 +173,7 @@ def prepare(
         bridged = Path(bridged_dir).resolve()
         if not (bridged / "bag").is_dir() or not (bridged / "gt.tum").is_file():
             raise SetupError(f"--bridged {bridged_dir}: needs bag/ and gt.tum")
+        _check_recording(bridged, sc)
         data = out / "data"
         data.mkdir(parents=True, exist_ok=True)
         lla, overlay = sc.origin_lla, sc.pipeline_config
@@ -534,6 +555,8 @@ def _setup(args: argparse.Namespace) -> tuple[list[str], list[str], dict]:
         raise SetupError(f"scenario {args.scenario}: {e}") from e
     if sc.prep is None and args.bridged is None:
         raise SetupError(f"scenario {sc.id}: missing prep block")
+    if args.bridged is not None and args.duration_s is not None:
+        raise SetupError("--duration-s cannot be used with --bridged (the recording sets it)")
     if "E-03" in tests and (sc.prep is None or sc.prep.mutate is None):
         raise SetupError(f"scenario {sc.id}: prep.mutate is required for E-03")
     try:

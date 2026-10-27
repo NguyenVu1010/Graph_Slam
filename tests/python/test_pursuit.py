@@ -131,3 +131,34 @@ def test_scenario_routes_start_at_spawn_inside_world_and_finish(scenario: str) -
     run = simulate(sc.route, seed=sc.seed, t_max_s=sc.duration_s)
     assert run["done"], f"{scenario}: route not finished within duration_s"
     assert run["t"][-1] > 0.8 * sc.duration_s  # uses most of the recording
+
+
+FOOTPRINT_HALF_M = 0.30  # sphere wheels at y = +-0.20 m, r 0.10 m; body x +-0.30 m (robot.yaml)
+MIN_CLEARANCE_M = 0.5
+ROBOT_HEIGHT_M = 0.75  # LiDAR top above the floor; boxes above this cannot be hit
+
+
+@pytest.mark.parametrize("scenario", ["E-01", "E-04"])
+def test_routes_keep_clearance(scenario: str) -> None:
+    """Every point of the route polyline keeps >= 0.5 m between the robot's collision footprint
+    (+-0.30 m) and every world box that reaches the robot's height."""
+    sc = load_scenario(REPO / f"sim/scenarios/{scenario}.yaml")
+    assert sc.route is not None
+    boxes = [
+        b
+        for b in gsa.world_boxes(REPO / f"sim/worlds/{sc.world}.sdf")
+        if b.hi[2] > 0.001 and b.lo[2] < ROBOT_HEIGHT_M  # not the floor, not the ceiling
+    ]
+    wp = np.asarray(sc.route.waypoints)
+    pts = np.concatenate(
+        [
+            np.linspace(a, b, int(np.ceil(np.linalg.norm(b - a) / 0.05)) + 1)
+            for a, b in zip(wp[:-1], wp[1:], strict=True)
+        ]
+    )
+    worst = np.inf
+    for b in boxes:
+        dx = np.maximum(np.maximum(b.lo[0] - pts[:, 0], pts[:, 0] - b.hi[0]), 0.0)
+        dy = np.maximum(np.maximum(b.lo[1] - pts[:, 1], pts[:, 1] - b.hi[1]), 0.0)
+        worst = min(worst, float(np.min(np.hypot(dx, dy))))
+    assert worst - FOOTPRINT_HALF_M >= MIN_CLEARANCE_M - 1e-9, worst

@@ -20,10 +20,12 @@ class WheelQuantizer:
     """Encoder model: wheel rates integrate into ticks, read every ``1 / noise.rate_hz`` seconds.
 
     The joint-state stream may be faster than the encoder read rate (Gazebo publishes every
-    physics step, 1 kHz): angles integrate between samples and a twist is produced only when a
-    read window of ``1 / rate_hz`` has elapsed since the previous read, from the tick difference
-    over that window. So ``/wheel/odom`` comes at ``rate_hz`` whatever the input rate, and the
-    tick quantisation of a read is one tick per window, as on a real controller. The twist uses
+    physics step, 1 kHz): angles integrate between samples, and the ticks are read at the first
+    sample at or after each point of a fixed ``1 / rate_hz`` grid (anchored at the first sample).
+    The twist is the tick difference over the actual time since the previous read. So
+    ``/wheel/odom`` comes at ``rate_hz`` on average whatever the input rate (exactly when the
+    input period divides the read period, as Gazebo's 1 ms does), and the tick quantisation of a
+    read is one tick per window, as on a real controller. The twist uses
     ``kinematics_believed`` (deliberately wrong), so integrated odometry is biased relative to
     the true motion that generated the wheel rates.
 
@@ -48,7 +50,8 @@ class WheelQuantizer:
         self._rad_per_tick = 2.0 * math.pi / noise.ticks_per_rev
         self._window_ns = int(round(1e9 / noise.rate_hz))
         self._last_t_ns: int | None = None
-        self._last_read_ns: int | None = None
+        self._next_read_ns: int | None = None  # next point of the read grid
+        self._last_read_ns: int | None = None  # stamp of the sample of the previous read
         self._angle = [0.0, 0.0]  # rad, left/right
         self._ticks = [0, 0]  # ticks at the last read
         self.errors = {"missing_joint": 0, "non_finite": 0, "stamp_not_increasing": 0}
@@ -69,8 +72,9 @@ class WheelQuantizer:
         if not (math.isfinite(rates[0]) and math.isfinite(rates[1])):
             self.errors["non_finite"] += 1
             return None
-        if self._last_t_ns is None or self._last_read_ns is None:
+        if self._last_t_ns is None or self._last_read_ns is None or self._next_read_ns is None:
             self._last_t_ns = self._last_read_ns = t_ns
+            self._next_read_ns = t_ns + self._window_ns
             return None
         if t_ns <= self._last_t_ns:
             self.errors["stamp_not_increasing"] += 1
@@ -80,10 +84,12 @@ class WheelQuantizer:
         self._last_t_ns = t_ns
         for i in range(2):
             self._angle[i] += rates[i] * dt
-        if t_ns - self._last_read_ns < self._window_ns:
+        if t_ns < self._next_read_ns:
             return None
-        window_s = (t_ns - self._last_read_ns) / 1e9
+        window_s = (t_ns - self._last_read_ns) / 1e9  # actual elapsed time since the last read
         self._last_read_ns = t_ns
+        missed = (t_ns - self._next_read_ns) // self._window_ns  # grid points skipped by a gap
+        self._next_read_ns += (missed + 1) * self._window_ns
         v_wheel = [0.0, 0.0]
         kin = self._noise.kinematics_believed
         for i in range(2):

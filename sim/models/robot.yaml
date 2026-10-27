@@ -14,6 +14,10 @@ wheel:
   # turns read an effective track of ~0.36 m: -36 deg/rev with true kinematics (odom calibration,
   # 2026-10-28, sim/README.md); a sphere of the wheel radius contacts in the mid-plane: -0.1 deg/rev.
   collision_shape: sphere          # cylinder | sphere
+  # The spheres (radius 0.10 m at y = +-0.20 m) widen the collision footprint to y = +-0.30 m
+  # (visual wheels: +-0.22 m) and touch obstacles up to 0.20 m high; with the body (x +-0.30 m)
+  # the footprint is +-0.30 m square. Every route keeps >= 0.5 m between this footprint and the
+  # world boxes (tests/python/test_pursuit.py::test_routes_keep_clearance).
   mu: 1.0                          # contact friction; DART takes min(wheel, floor) = floor mu
   joint_damping_nms_per_rad: 0.1   # rolling resistance, N.m.s/rad (section 4)
   joint_friction_nm: 0.2           # N.m (section 4)

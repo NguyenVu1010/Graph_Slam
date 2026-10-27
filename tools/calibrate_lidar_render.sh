@@ -38,7 +38,9 @@ export PYTHONPATH="$repo/sim:$repo/eval:$repo/tools${PYTHONPATH:+:$PYTHONPATH}"
 world="$("$PYTHON" -c "import sys; from pathlib import Path; from mss_sim.scenario import \
 load_scenario; print(load_scenario(Path(sys.argv[1])).world)" "$scenario")"
 gz_version="$(gz sim --version 2>/dev/null | head -1 || echo unknown)"
+render_engine=ogre2
+if [ "${1:-}" = "--render-engine" ] && [ -n "${2:-}" ]; then render_engine="$2"; fi
 "$PYTHON" "$repo/tools/calibrate_lidar_render.py" "$out/raw_bag" "$scenario" \
-  --out "$out/render_$world.yaml" --gazebo "$gz_version" \
+  --out "$out/render_$world.yaml" --gazebo "$gz_version" --render-engine "$render_engine" \
   || { echo "calibrate_lidar_render: measurement failed" >&2; exit 2; }
 echo "install: cp $out/render_$world.yaml $repo/sim/noise/render/$world.yaml"

@@ -26,6 +26,9 @@ from rosbags.typesys import Stores, get_typestore
 from scipy.spatial.transform import Rotation
 
 from mss_eval.noise_measure import (
+    DEFAULT_EDGE_JUMP_M,
+    INCIDENCE_BINS_COS,
+    RANGE_BINS_M,
     Report,
     Row,
     Section,
@@ -38,8 +41,12 @@ from mss_eval.noise_measure import (
     neighbour_incidence_cos,
     odom_section,
     plane_edge_mask,
+    plane_ranges,
     ray_residuals,
     scan_to_world,
+)
+from mss_eval.noise_measure import (
+    cells as cells_grid,
 )
 from mss_eval.pointcloud import cloud_to_arrays
 from mss_eval.report_html import render
@@ -93,8 +100,8 @@ def _t_b_l(tf_msg: Any) -> np.ndarray | None:
     return None
 
 
-def _read_bag(path: Path) -> _Bag:
-    """Everything except LiDAR clouds (those are streamed by ``_lidar_pass``)."""
+def read_bag(path: Path) -> _Bag:
+    """Everything except LiDAR clouds (those are streamed by ``lidar_pass``)."""
     with Reader(path) as reader:
         bag = _Bag({c.topic: c.msgtype for c in reader.connections})
         conns = [c for c in reader.connections if c.topic != _LIDAR]
@@ -127,14 +134,14 @@ class LidarSamples:
 
     residual: np.ndarray  # along-ray residual to the nearest plane, m
     cos: np.ndarray  # |n . u| to that plane
-    range_m: np.ndarray  # sensor range, m
+    range_m: np.ndarray  # noise-free range to the plane intersection (``plane_ranges``), m
     edge: np.ndarray  # bool, point at a silhouette (``plane_edge_mask``)
     n_nan: int
     n_not_inf: int
     incidence: np.ndarray | None  # neighbour-normal incidence of surviving points (dropout)
 
 
-def _lidar_pass(
+def lidar_pass(
     path: Path,
     bag: _Bag,
     traj: Trajectory | None,
@@ -171,7 +178,7 @@ def _lidar_pass(
                 edge = np.zeros(len(p_w), dtype=bool)
             cols["res"].append(res.astype(np.float32))
             cols["cos"].append(cos.astype(np.float32))
-            cols["rng"].append(np.linalg.norm(xyz[ok], axis=1).astype(np.float32))
+            cols["rng"].append(plane_ranges(p_w, o_w, *planes).astype(np.float32))
             cols["edge"].append(edge)
 
     def cat(key: str, dtype: type) -> np.ndarray:
@@ -270,14 +277,38 @@ def load_planes(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return normals / norms[:, None], d / norms
 
 
-def load_render_table(path: Path) -> list:
-    """``cells`` of a LiDAR render table (``sim/noise/render/<world>.yaml``, written by
-    ``tools/calibrate_lidar_render.py``)."""
+def sidecar_world(path: Path) -> str | None:
+    """World name of a planes sidecar (``world`` key), None for a bare list of planes."""
     data = yaml.safe_load(Path(path).read_text())
-    cells = data.get("cells") if isinstance(data, dict) else None
-    if not isinstance(cells, list) or not all(isinstance(c, list) and len(c) == 6 for c in cells):
-        msg = f"{path}: expected cells: [[r_lo, r_hi, cos_lo, cos_hi, n, sigma_m], ...]"
-        raise ValueError(msg)
+    return str(data["world"]) if isinstance(data, dict) and "world" in data else None
+
+
+def load_render_table(path: Path, world: str | None = None) -> list:
+    """``cells`` of a LiDAR render table (``sim/noise/render/<world>.yaml``, written by
+    ``tools/calibrate_lidar_render.py``), validated: non-empty, ``world`` equal to ``world``
+    (when given), bins equal to ``RANGE_BINS_M`` / ``INCIDENCE_BINS_COS``, every cell on that
+    grid, ``n > 0`` and a finite ``sigma >= 0``. Raises ``ValueError`` naming the problem."""
+    data = yaml.safe_load(Path(path).read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a mapping")
+    cells = data.get("cells")
+    if not isinstance(cells, list) or not cells:
+        raise ValueError(f"{path}: cells: expected a non-empty list")
+    if world is not None and data.get("world") != world:
+        raise ValueError(f"{path}: world {data.get('world')!r} != planes world {world!r}")
+    if [float(v) for v in data.get("range_bins_m", [])] != list(RANGE_BINS_M):
+        raise ValueError(f"{path}: range_bins_m != {list(RANGE_BINS_M)}")
+    if [float(v) for v in data.get("incidence_bins_cos", [])] != list(INCIDENCE_BINS_COS):
+        raise ValueError(f"{path}: incidence_bins_cos != {list(INCIDENCE_BINS_COS)}")
+    grid = {tuple(float(v) for v in c) for c in cells_grid()}
+    for i, c in enumerate(cells):
+        ok = isinstance(c, list) and len(c) == 6 and all(isinstance(v, (int, float)) for v in c)
+        if not ok:
+            raise ValueError(f"{path}: cells[{i}]: expected [r_lo, r_hi, cos_lo, cos_hi, n, sigma]")
+        if tuple(float(v) for v in c[:4]) not in grid:
+            raise ValueError(f"{path}: cells[{i}]: {c[:4]} is not a cell of the bin grid")
+        if not (c[4] > 0 and math.isfinite(c[5]) and c[5] >= 0):
+            raise ValueError(f"{path}: cells[{i}]: need n > 0 and a finite sigma >= 0")
     return cells
 
 
@@ -310,8 +341,9 @@ def run(
 ) -> Report:
     """Measure, write ``noise_report.html`` and ``noise_report.json`` into ``out_dir``.
 
-    ``render_table``: the world's measured LiDAR render cells (``load_render_table``); without
-    it every range-sigma cell is shown but not gated.
+    ``render_table``: the world's measured LiDAR render cells (``load_render_table``, checked
+    against the ``world`` of ``planes``); without it the render error is taken as 0 and every
+    range-sigma cell with enough points is gated against the declared sigma alone.
     """
     bag_path, side_dir = _resolve(Path(bag_dir))
     prof = yaml.safe_load(Path(profile).read_text())
@@ -319,17 +351,23 @@ def run(
     br_path = side_dir / "bridge_report.json"
     bridge_report = json.loads(br_path.read_text()) if br_path.exists() else None
 
-    bag = _read_bag(bag_path)
+    bag = read_bag(bag_path)
     traj = None
     if bag.gt:
         t, p, q = zip(*bag.gt, strict=True)
         traj = Trajectory(np.array(t, dtype=np.int64), np.array(p), np.array(q))
     plane_arrays = load_planes(planes) if planes is not None else None
-    render_cells = load_render_table(render_table) if render_table is not None else None
+    world = sidecar_world(planes) if planes is not None else None
+    render_cells = load_render_table(render_table, world) if render_table is not None else None
     min_range = float(prof["lidar"].get("min_range_m", 0.0))
     lid = prof["lidar"]
-    samples = _lidar_pass(
-        bag_path, bag, traj, plane_arrays, min_range, float(lid.get("edge_jump_m", 0.10))
+    samples = lidar_pass(
+        bag_path,
+        bag,
+        traj,
+        plane_arrays,
+        min_range,
+        float(lid.get("edge_jump_m", DEFAULT_EDGE_JUMP_M)),
     )
 
     sections: list[Section] = []

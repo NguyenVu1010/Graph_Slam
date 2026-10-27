@@ -368,7 +368,7 @@ def _table_from(cells: list[tuple[float, float, float]]) -> list:
         cos.append(np.full(20_000, c))
         ranges.append(np.full(20_000, r))
     res_a, cos_a, rng_a = np.concatenate(res), np.concatenate(cos), np.concatenate(ranges)
-    return build_render_table(res_a, cos_a, rng_a, np.ones(len(res_a), dtype=bool))
+    return build_render_table(res_a, cos_a, rng_a, np.ones(len(res_a), dtype=bool), 0.1)
 
 
 def test_table_builder_recovers_a_known_additive_error() -> None:
@@ -431,15 +431,146 @@ def test_uncalibrated_and_small_cells_shown_not_gated() -> None:
     assert excl["low-incidence points excluded"].measured == pytest.approx(300 / 5800)
 
 
-def test_load_render_table(tmp_path: Path) -> None:
+def _table_doc(**over: object) -> dict:
+    from mss_eval.noise_measure import INCIDENCE_BINS_COS, RANGE_BINS_M
+
+    doc = {
+        "world": "warehouse",
+        "range_bins_m": list(RANGE_BINS_M),
+        "incidence_bins_cos": list(INCIDENCE_BINS_COS),
+        "cells": [[10.0, 20.0, 0.9, 1.0, 5000, 0.01]],
+    }
+    doc.update(over)
+    return doc
+
+
+def test_load_render_table_valid(tmp_path: Path) -> None:
     from mss_eval.noise_report import load_render_table
 
     f = tmp_path / "t.yaml"
-    f.write_text(yaml.safe_dump({"world": "w", "cells": [[10.0, 20.0, 0.9, 1.0, 5000, 0.01]]}))
-    assert load_render_table(f) == [[10.0, 20.0, 0.9, 1.0, 5000, 0.01]]
-    f.write_text(yaml.safe_dump({"cells": [[1, 2, 3]]}))
-    with pytest.raises(ValueError, match="cells"):
-        load_render_table(f)
+    f.write_text(yaml.safe_dump(_table_doc()))
+    assert load_render_table(f, "warehouse") == [[10.0, 20.0, 0.9, 1.0, 5000, 0.01]]
+
+
+@pytest.mark.parametrize(
+    ("over", "match"),
+    [
+        ({"cells": []}, "non-empty"),
+        ({"world": "corridor"}, "planes world"),
+        ({"range_bins_m": [0.5, 2.0, 100.0]}, "range_bins_m"),
+        ({"incidence_bins_cos": [0.3, 1.0]}, "incidence_bins_cos"),
+        ({"cells": [[10.0, 15.0, 0.9, 1.0, 5000, 0.01]]}, "not a cell of the bin grid"),
+        ({"cells": [[10.0, 20.0, 0.9, 1.0, 0, 0.01]]}, "n > 0"),
+        ({"cells": [[10.0, 20.0, 0.9, 1.0, 10, -0.01]]}, "sigma >= 0"),
+        ({"cells": [[1, 2, 3]]}, "expected"),
+    ],
+)
+def test_load_render_table_rejects(tmp_path: Path, over: dict, match: str) -> None:
+    from mss_eval.noise_report import load_render_table
+
+    f = tmp_path / "t.yaml"
+    f.write_text(yaml.safe_dump(_table_doc(**over)))
+    with pytest.raises(ValueError, match=match):
+        load_render_table(f, "warehouse")
+
+
+def test_no_gated_cell_fails() -> None:
+    """A table that calibrates none of the measured cells leaves the range noise unchecked."""
+    from mss_eval.noise_measure import range_sigma_rows
+
+    rng = np.random.default_rng(3)
+    res = rng.normal(0, 0.02, 5000)
+    cos, ranges = np.full(5000, 0.95), np.full(5000, 15.0)
+    elsewhere = [[0.5, 2.0, 0.9, 1.0, 5000, 0.001]]
+    rows = range_sigma_rows(res, cos, ranges, np.zeros(5000, bool), _LIDAR_CFG, elsewhere)
+    check = next(r for r in rows if r.name == "range sigma cells gated")
+    assert check.ok is False and check.measured == 0
+    rows = range_sigma_rows(res, cos, ranges, np.zeros(5000, bool), _LIDAR_CFG, None)
+    assert next(r for r in rows if r.name == "range sigma cells gated").ok is True
+
+
+def test_noise_free_range_binning_unbiased_at_a_bin_edge() -> None:
+    """Points crowding a range-bin edge: binning on the measured range truncates the cell's
+    error one-sidedly; binning on the noise-free plane range recovers sigma within 2 %."""
+    from mss_eval.noise_measure import cell_sigma, in_cell
+
+    rng = np.random.default_rng(11)
+    n = 200_000
+    r_true = rng.uniform(1.9, 2.0, n)  # just below the 2 m edge, like corridor floor points
+    err = rng.normal(0.0, 0.02, n)
+    r_meas = r_true + err
+    cos = np.full(n, 0.95)
+    cell = (0.5, 2.0, 0.9, 1.0)
+    biased, _ = cell_sigma(err[in_cell(r_meas, cos, cell)], 0.02, 0.0)
+    clean, _ = cell_sigma(err[in_cell(r_meas - err, cos, cell)], 0.02, 0.0)
+    assert biased < 0.95 * 0.02  # the one-sided cut is visible
+    assert clean == pytest.approx(0.02, rel=0.02)
+
+
+def test_plane_ranges_are_noise_free() -> None:
+    from mss_eval.noise_measure import plane_ranges
+
+    rng = np.random.default_rng(12)
+    u = np.array([[1.0, 0.3, -0.1]])
+    u = u / np.linalg.norm(u)
+    o = np.array([[0.5, -0.2, 0.6]])
+    normals, offsets = np.array([[1.0, 0.0, 0.0]]), np.array([10.0])
+    r_star = (10.0 - o[0, 0]) / u[0, 0]
+    r = r_star + rng.normal(0, 0.05, 50)
+    p = o + r[:, None] * u
+    np.testing.assert_allclose(plane_ranges(p, np.repeat(o, 50, 0), normals, offsets), r_star)
+
+
+def test_oblique_plane_not_flagged_as_edge() -> None:
+    """A wall at 65-70 deg incidence with noise: adjacent-beam ranges differ by ~0.2-0.5 m, yet
+    fewer than 1 % of points are flagged (the rule uses the distance to the point's plane)."""
+    from mss_eval.noise_measure import plane_edge_mask, ray_residuals
+
+    rng = np.random.default_rng(13)
+    height, width = 16, 720
+    elev = np.radians(np.linspace(-15, 15, height))
+    az = np.radians(np.linspace(-180, 180, width, endpoint=False))
+    e, a = np.meshgrid(elev, az, indexing="ij")
+    u = np.stack([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)], -1).reshape(-1, 3)
+    normal = np.array([0.0, 1.0, 0.0])  # wall y = 5
+    n_u = u @ normal
+    hits = n_u > 0.05
+    xyz = np.full((len(u), 3), np.inf)  # no return
+    r = 5.0 / n_u[hits] + rng.normal(0, 0.02, hits.sum())
+    xyz[hits] = u[hits] * r[:, None]
+    ok = np.isfinite(xyz).all(axis=1)
+    p = xyz[ok]
+    edge = plane_edge_mask(xyz, ok, p, normal[None, :], np.array([5.0]), height, width, 0.10)
+    _, cos = ray_residuals(p, np.zeros(3), normal[None, :], np.array([5.0]))
+    oblique = (cos > np.cos(np.radians(70))) & (cos < np.cos(np.radians(65)))
+    assert oblique.sum() > 200
+    # Exclude the wall's own silhouette rows/columns next to no-return (inf) points.
+    grid_ok = ok.reshape(height, width)
+    interior = np.ones_like(grid_ok)
+    for axis, step in ((0, 1), (0, -1), (1, 1), (1, -1)):
+        nb = np.roll(grid_ok, step, axis=axis)
+        if axis == 0:
+            nb[0 if step == 1 else -1] = True
+        interior &= nb
+    interior = interior.reshape(-1)[ok]
+    assert edge[oblique & interior].mean() < 0.01
+
+
+def test_dropped_neighbour_counts_as_edge() -> None:
+    from mss_eval.noise_measure import plane_edge_mask
+
+    height, width = 3, 5
+    xyz = np.zeros((height * width, 3))
+    xyz[:, 0] = 10.0
+    xyz[:, 1] = np.tile(np.arange(width), height) * 0.1
+    xyz[:, 2] = np.repeat(np.arange(height), width) * 0.1
+    xyz[7] = np.nan  # dropped (middle row, middle column)
+    ok = np.isfinite(xyz).all(axis=1)
+    normals, offsets = np.array([[1.0, 0.0, 0.0]]), np.array([10.0])
+    edge = np.zeros(len(xyz), dtype=bool)
+    edge[ok] = plane_edge_mask(xyz, ok, xyz[ok], normals, offsets, height, width, 0.10)
+    assert edge[[2, 6, 8, 12]].all()  # the four grid neighbours of the dropped point
+    assert not edge[[0, 4, 10, 14]].any()
 
 
 def test_edge_points_excluded_plane_sigma_recovered() -> None:

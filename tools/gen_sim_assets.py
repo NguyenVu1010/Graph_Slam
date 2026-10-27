@@ -410,13 +410,20 @@ class BoxFace:
     coord_m: float  # the face lies on the plane p[axis] = coord_m
 
 
-def world_box_faces(world_sdf: Path) -> list[BoxFace]:
-    """All faces of the axis-aligned collision boxes of the world's models."""
+@dataclass(frozen=True)
+class WorldBox:
+    model: str
+    lo: np.ndarray  # (3,) minimum corner, world, m
+    hi: np.ndarray  # (3,) maximum corner, world, m
+
+
+def world_boxes(world_sdf: Path) -> list[WorldBox]:
+    """The axis-aligned collision boxes of the world's models."""
     root = ET.parse(world_sdf).getroot()
     world = root.find("world")
     if world is None:
         raise AssetError(f"{world_sdf}: no <world>")
-    faces: list[BoxFace] = []
+    boxes: list[WorldBox] = []
     for model in world.findall("model"):
         name = model.get("name", "?")
         p_model = _pose_xyz(model, name)
@@ -427,12 +434,20 @@ def world_box_faces(world_sdf: Path) -> list[BoxFace]:
                 size_el = col.find("geometry/box/size")
                 if size_el is None:
                     continue
-                size = np.array(_floats(size_el.text, 3, where))
+                half = np.array(_floats(size_el.text, 3, where)) / 2.0
                 c = p_link + _pose_xyz(col, where)
-                for axis in range(3):
-                    for sign in (-1.0, 1.0):
-                        faces.append(BoxFace(name, axis, float(c[axis] + sign * size[axis] / 2.0)))
-    return faces
+                boxes.append(WorldBox(name, c - half, c + half))
+    return boxes
+
+
+def world_box_faces(world_sdf: Path) -> list[BoxFace]:
+    """All faces of the axis-aligned collision boxes of the world's models."""
+    return [
+        BoxFace(b.model, axis, float(corner[axis]))
+        for b in world_boxes(world_sdf)
+        for axis in range(3)
+        for corner in (b.lo, b.hi)
+    ]
 
 
 def load_sidecar(path: Path) -> dict:

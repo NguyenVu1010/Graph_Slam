@@ -194,3 +194,22 @@ def test_errors_counted_per_reason() -> None:
     q.step(T0, NAMES, [1.0, 1.0])
     assert q.errors == {"missing_joint": 1, "non_finite": 1, "stamp_not_increasing": 1}
     assert q.n_errors == 3
+
+
+def test_non_divisor_input_rate_still_reads_at_50hz() -> None:
+    """3 ms joint states (not a divisor of 20 ms): reads stay on the 20 ms grid (50 Hz on
+    average) and each twist uses the actual elapsed time, so the speed is unbiased."""
+    q = WheelQuantizer(_noise(), np.random.default_rng(2))
+    dt_ns = 3_000_000
+    n = int(20e9 // dt_ns)  # 20 s
+    vel = _wheels(0.5, 0.0)
+    out = []
+    for i in range(n + 1):
+        tw = q.step(T0 + i * dt_ns, NAMES, vel)
+        if tw is not None:
+            out.append((T0 + i * dt_ns, tw))
+    assert abs(len(out) - 1000) <= 1  # 20 s x 50 Hz (a 21 ms window would give 952)
+    gaps = np.diff([t for t, _ in out])
+    assert gaps.min() >= 18_000_000 and gaps.max() <= 21_000_000
+    v = np.array([tw.v_mps for _, tw in out])
+    assert np.mean(v) == pytest.approx(0.5 * BELIEVED.wheel_radius_m / TRUE.wheel_radius_m, 1e-3)
