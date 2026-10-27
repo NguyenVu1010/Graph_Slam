@@ -44,11 +44,21 @@ class GnssNoise:
 
 
 @dataclass(frozen=True)
+class RenderModel:
+    """Range error gpu_lidar renders by itself: sigma_render(r) = k_per_m * r + offset_m.
+
+    Measured with the Gazebo noise at 0 (sim/README.md "LiDAR render error"); used only by the
+    noise report's expectation, never subtracted from or added to the Gazebo noise.
+    """
+
+    k_per_m: float  # m of sigma per m of range
+    offset_m: float
+
+
+@dataclass(frozen=True)
 class LidarNoise:
-    range_sigma_m: float  # total range noise of the simulated sensor, m
-    # Range error gpu_lidar renders by itself (measured, sim/README.md "LiDAR render error"); the
-    # Gazebo noise is sqrt(range_sigma_m^2 - render_sigma_m^2). 0 for a non-rendered source.
-    render_sigma_m: float
+    range_sigma_m: float  # range noise the noise layer adds (Gazebo LiDAR noise), m
+    render_model: RenderModel  # what the renderer adds on top, measured
     dropout_p: float
     dropout_p_grazing: float
     grazing_deg: float

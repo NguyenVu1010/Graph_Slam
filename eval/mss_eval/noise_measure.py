@@ -449,31 +449,48 @@ def expected_dropout(cos: np.ndarray, lidar_cfg: dict) -> tuple[float, float]:
 
 
 RANGE_BINS_M = (0.5, 2.0, 5.0, 10.0, 20.0, 40.0, 100.0)
-_MIN_BIN_POINTS = 100
+_MIN_BIN_POINTS = 100  # a bin with fewer points gets no row
+MIN_GATE_POINTS = 1000  # a bin with fewer points is shown but not gated
+
+
+def render_sigma(lidar_cfg: dict, range_m: float) -> float:
+    """``sigma_render(r) = k_per_m * r + offset_m`` from ``lidar.render_model`` (0 if absent)."""
+    model = lidar_cfg.get("render_model") or {}
+    return float(model.get("k_per_m", 0.0)) * range_m + float(model.get("offset_m", 0.0))
 
 
 def range_bin_rows(
-    residuals: np.ndarray, cos: np.ndarray, ranges_m: np.ndarray, s_decl: float
+    residuals: np.ndarray, cos: np.ndarray, ranges_m: np.ndarray, lidar_cfg: dict
 ) -> list[Row]:
-    """Range sigma per sensor-range bin (informational): same selection as ``range_sigma_m``."""
+    """Range sigma per sensor-range bin against ``sqrt(sigma_declared^2 + sigma_render(r)^2)``.
+
+    ``r`` is the bin's mean range; same selection as the pooled row. Gated +-15 % when the bin
+    has at least ``MIN_GATE_POINTS`` points, shown only from ``_MIN_BIN_POINTS``.
+    """
+    s_decl = float(lidar_cfg["range_sigma_m"])
     rows = []
     sel = cos > _MIN_RAY_COS
     for lo, hi in zip(RANGE_BINS_M[:-1], RANGE_BINS_M[1:], strict=True):
         in_bin = sel & (ranges_m >= lo) & (ranges_m < hi)
-        d = residuals[in_bin]
-        d = d[np.abs(d) <= _OUTLIER_SIGMAS * s_decl]
+        keep = np.abs(residuals) <= _OUTLIER_SIGMAS * s_decl
+        d = residuals[in_bin & keep]
         if len(d) < _MIN_BIN_POINTS:
             continue
+        r_mean = float(np.mean(ranges_m[in_bin & keep]))
+        s_render = render_sigma(lidar_cfg, r_mean)
+        expected = float(np.hypot(s_decl, s_render))
         sigma = float(np.std(d, ddof=1))
+        gated = len(d) >= MIN_GATE_POINTS
         rows.append(
             Row(
                 f"range_sigma_m [{lo:g}, {hi:g}) m",
-                s_decl,
+                expected,
                 sigma,
-                "informational",
-                None,
-                f"{len(d)} points",
-            )  # fmt: skip
+                "±15 %" if gated else f"not gated (< {MIN_GATE_POINTS} points)",
+                _rel_ok(sigma, expected, _SIGMA_TOL) if gated else None,
+                f"{len(d)} points, mean range {r_mean:.1f} m; expected = sqrt(σ_declared² + "
+                f"σ_render(r)²), σ_render = {s_render:.4g} m",
+            )
         )
     return rows
 
@@ -491,7 +508,8 @@ def lidar_section(
     """``cos``: plane incidence of each residual; ``incidence_cos``: neighbour-normal incidence of
     the surviving points (``neighbour_incidence_cos``) for the grazing share, else ``cos``; an
     unknown incidence (NaN: a neighbour without return) counts as non-grazing, as in the bridge.
-    ``ranges_m``: sensor range per residual; adds informational per-range-bin sigma rows."""
+    ``ranges_m``: sensor range per residual. With it the range sigma is gated per range bin
+    (``range_bin_rows``, declared + rendered error) and the pooled row is informational."""
     s_decl = float(lidar_cfg["range_sigma_m"])
     use = residuals[cos > _MIN_RAY_COS]
     sigma = estimate_range_sigma(use, s_decl)
@@ -503,8 +521,8 @@ def lidar_section(
             "range_sigma_m",
             s_decl,
             sigma,
-            "±15 %",
-            _rel_ok(sigma, s_decl, _SIGMA_TOL),
+            "±15 %" if ranges_m is None else "informational (gated per range bin)",
+            _rel_ok(sigma, s_decl, _SIGMA_TOL) if ranges_m is None else None,
             f"along-ray residual, |n·u| > {_MIN_RAY_COS:g}, |d| ≤ {_OUTLIER_SIGMAS:g} σ_declared;"
             f" {len(use)} points",
             (pipeline_lidar or {}).get("range_sigma_m"),
@@ -521,7 +539,7 @@ def lidar_section(
         ),
     ]
     if ranges_m is not None:
-        rows += range_bin_rows(residuals, cos, ranges_m, s_decl)
+        rows += range_bin_rows(residuals, cos, ranges_m, lidar_cfg)
     fig, (a,) = _axes(1, width_in=6.5)
     lim = _OUTLIER_SIGMAS * s_decl
     _hist_vs_gauss(a, use, s_decl, lim, f"declared σ = {s_decl:g} m")

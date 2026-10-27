@@ -121,7 +121,9 @@ def test_lidar_section_on_noise_free_synthetic_bag(report_dir: tuple[Report, Pat
     sigma = _row(report, "LiDAR", "range_sigma_m")
     assert sigma.declared == pytest.approx(0.02)
     assert isinstance(sigma.measured, float) and sigma.measured < 0.005
-    assert sigma.ok is False
+    assert sigma.ok is None  # pooled row informational: the range sigma is gated per bin
+    bins = [r for r in _section(report, "LiDAR").rows if r.name.startswith("range_sigma_m [")]
+    assert bins and any(r.ok is False for r in bins)
     assert report.passed is False  # the LiDAR mismatch fails the report
 
 
@@ -331,15 +333,50 @@ def test_unknown_incidence_counts_as_non_grazing() -> None:
     assert dropout.declared == pytest.approx(p_exp) and 0.05 < g < 0.2
 
 
-def test_range_bin_rows() -> None:
+_LIDAR_CFG = {"range_sigma_m": 0.02}
+
+
+def _bin_rows(res: np.ndarray, ranges: np.ndarray, model: dict | None) -> dict:
     from mss_eval.noise_measure import range_bin_rows
 
-    rng = np.random.default_rng(5)
-    ranges = np.concatenate([np.full(1000, 1.5), np.full(1000, 15.0), np.full(10, 50.0)])
-    res = np.concatenate([rng.normal(0, 0.005, 1000), rng.normal(0, 0.02, 1000), np.zeros(10)])
-    rows = range_bin_rows(res, np.ones(len(res)), ranges, 0.02)
-    by = {r.name: r.measured for r in rows}
-    assert by["range_sigma_m [0.5, 2) m"] == pytest.approx(0.005, rel=0.1)
-    assert by["range_sigma_m [10, 20) m"] == pytest.approx(0.02, rel=0.1)
-    assert not any("[40, 100)" in name for name in by)  # fewer than 100 points: no row
-    assert all(r.ok is None for r in rows)
+    cfg = {**_LIDAR_CFG, **({"render_model": model} if model is not None else {})}
+    return {r.name: r for r in range_bin_rows(res, np.ones(len(res)), ranges, cfg)}
+
+
+def _synthetic_ranges(rng: np.random.Generator, k_per_m: float) -> tuple[np.ndarray, np.ndarray]:
+    """Residuals with the declared 0.02 m plus a render error k * r, at 1.5, 15 and 30 m."""
+    ranges = np.repeat([1.5, 15.0, 30.0], 20_000)
+    sigma = np.hypot(0.02, k_per_m * ranges)
+    return rng.normal(0.0, sigma), ranges
+
+
+def test_bins_declared_sigma_only_passes() -> None:
+    res, ranges = _synthetic_ranges(np.random.default_rng(5), 0.0)
+    rows = _bin_rows(res, ranges, None)
+    names = {"range_sigma_m [0.5, 2) m", "range_sigma_m [10, 20) m", "range_sigma_m [20, 40) m"}
+    assert set(rows) == names
+    assert all(r.ok is True for r in rows.values())
+    assert rows["range_sigma_m [10, 20) m"].declared == pytest.approx(0.02)
+
+
+def test_bins_render_error_passes_only_with_the_model() -> None:
+    k = 0.001  # 0.015 m at 15 m, 0.03 m at 30 m
+    res, ranges = _synthetic_ranges(np.random.default_rng(6), k)
+    without = _bin_rows(res, ranges, None)
+    assert without["range_sigma_m [0.5, 2) m"].ok is True  # 0.0015 m render error: invisible
+    assert without["range_sigma_m [20, 40) m"].ok is False
+    with_model = _bin_rows(res, ranges, {"k_per_m": k, "offset_m": 0.0})
+    assert all(r.ok is True for r in with_model.values())
+    assert with_model["range_sigma_m [20, 40) m"].declared == pytest.approx(np.hypot(0.02, 0.03))
+    wrong = _bin_rows(res, ranges, {"k_per_m": 0.3 * k, "offset_m": 0.0})
+    assert wrong["range_sigma_m [20, 40) m"].ok is False
+
+
+def test_small_bins_shown_not_gated() -> None:
+    rng = np.random.default_rng(7)
+    ranges = np.concatenate([np.full(5000, 15.0), np.full(500, 50.0)])
+    res = np.concatenate([rng.normal(0, 0.02, 5000), rng.normal(0, 0.05, 500)])
+    rows = _bin_rows(res, ranges, None)
+    small = rows["range_sigma_m [40, 100) m"]
+    assert small.ok is None and "not gated" in small.tol
+    assert rows["range_sigma_m [10, 20) m"].ok is True

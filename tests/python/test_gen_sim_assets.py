@@ -2,7 +2,6 @@
 
 import math
 import xml.etree.ElementTree as ET
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -127,9 +126,8 @@ def test_lidar_and_gnss_sensors(model: ET.Element) -> None:
     assert math.degrees(step / 719) == pytest.approx(0.5)
     assert _f(lidar, "lidar/range/min") == prof.lidar.min_range_m == 0.5
     assert _f(lidar, "lidar/range/max") == 100.0
-    render = prof.lidar.render_sigma_m
-    gz_sigma = _f(lidar, "lidar/noise/stddev")
-    assert math.hypot(gz_sigma, render) == pytest.approx(prof.lidar.range_sigma_m, rel=1e-12)
+    # The declared sigma exactly: the renderer's own error is modelled by the noise report.
+    assert _f(lidar, "lidar/noise/stddev") == prof.lidar.range_sigma_m
     gnss = _sensor(model, "navsat")
     assert _f(gnss, "update_rate") == prof.gnss.rate_hz == 5.0
     assert _floats(gnss.find("pose"))[:3] == [-0.20, 0.10, 0.60]
@@ -263,13 +261,6 @@ def test_cli_writes_default_names(tmp_path: Path) -> None:
         "robot.sdf",
         "tf_static.yaml",
     ]
-
-
-def test_render_error_above_profile_sigma_rejected() -> None:
-    prof = load_profile(PROFILE)
-    bad = replace(prof, lidar=replace(prof.lidar, render_sigma_m=0.05))
-    with pytest.raises(gsa.AssetError, match="render_sigma_m"):
-        gsa.gz_range_sigma(bad)
 
 
 def test_lidar_gz_sigma_override(tmp_path: Path) -> None:

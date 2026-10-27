@@ -22,8 +22,8 @@
   With tau = {{ imu.bias_corr_time_s }} s the Allan deviation follows the random walk over
   tau_Allan in [0.01, 100] s only (ADR-011 section 3).
 
-  LiDAR range noise: stddev = sqrt(sigma_profile^2 - sigma_render^2), sigma_render being the range
-  error gpu_lidar renders by itself (profile lidar.render_sigma_m, measured statically).
+  LiDAR range noise: stddev = the profile's lidar.range_sigma_m. gpu_lidar adds its own range
+  error on top (profile lidar.render_model, measured; the noise report expects both).
 -->
 <sdf version="1.10">
   <model name="{{ robot.model_name }}">

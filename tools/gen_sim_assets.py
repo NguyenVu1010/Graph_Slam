@@ -176,21 +176,14 @@ def imu_discrete_noise(profile: NoiseProfile) -> dict[str, float]:
 
 
 def gz_range_sigma(profile: NoiseProfile, override_m: float | None = None) -> float:
-    """Gazebo LiDAR range stddev: the profile sigma minus (in quadrature) the measured rendering
-    error ``lidar.render_sigma_m``; ``override_m`` (calibration runs, e.g. 0) replaces it."""
+    """Gazebo LiDAR range stddev = the declared ``lidar.range_sigma_m``; the renderer's own error
+    is modelled in the noise report (``lidar.render_model``), not compensated here.
+    ``override_m`` (render calibration runs: 0) replaces it."""
     if override_m is not None:
         if not (math.isfinite(override_m) and override_m >= 0):
             raise AssetError(f"--lidar-gz-sigma must be a finite number >= 0, got {override_m}")
         return override_m
-    total = profile.lidar.range_sigma_m
-    render = profile.lidar.render_sigma_m
-    if not render < total:
-        msg = (
-            f"lidar.range_sigma_m {total} m must exceed lidar.render_sigma_m {render} m "
-            "(gpu_lidar's own range error)"
-        )
-        raise AssetError(msg)
-    return math.sqrt(total * total - render * render)
+    return profile.lidar.range_sigma_m
 
 
 @dataclass(frozen=True)
@@ -544,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
         "--lidar-gz-sigma",
         type=float,
         default=None,
-        help="Gazebo LiDAR range noise, m (calibration of lidar.render_sigma_m: 0)",
+        help="Gazebo LiDAR range noise, m (render-model calibration: 0)",
     )
     args = ap.parse_args(argv)
     if args.check_worlds:
