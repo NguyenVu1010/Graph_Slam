@@ -119,6 +119,75 @@ TEST(PlaneFit, FewerThanThreeIsNullopt) {
                   .has_value());
 }
 
+// Planarity gate (derivation section 3): two faces at 90 deg (z = 0 and x = 0) pass the
+// 0.05 m RMS gate (rms 0.038 m) but have lambda_min / lambda_mid = 0.46; a noisy plane has
+// a ratio of 3e-4. Gate off (ratio 0) accepts both.
+TEST(PlaneFit, PlanarityGateRejectsEdgeAcceptsPlane) {
+  const map::NeighborBuffer edge = make_buffer({Vec3(0.0, 0.0, 0.0),
+                                                Vec3(0.125, 0.0, 0.0),
+                                                Vec3(0.0, 0.125, 0.0),
+                                                Vec3(0.0, 0.0, 0.125),
+                                                Vec3(0.0, 0.125, 0.125)});
+  const map::NeighborBuffer plane = make_buffer({Vec3(0.0, 0.0, 0.0),
+                                                 Vec3(0.125, 0.0, 0.003),
+                                                 Vec3(0.0, 0.125, -0.002),
+                                                 Vec3(0.125, 0.125, 0.001),
+                                                 Vec3(0.06, 0.06, -0.002)});
+  const std::optional<detail::PlaneFit> fe = detail::fit_plane(edge);
+  const std::optional<detail::PlaneFit> fp = detail::fit_plane(plane);
+  ASSERT_TRUE(fe.has_value() && fp.has_value());
+  EXPECT_LT(fe->rms_m, 0.05);
+  EXPECT_NEAR(fe->lambda_min_m2 / fe->lambda_mid_m2, 0.4597, 1e-3);
+  EXPECT_LT(fp->lambda_min_m2 / fp->lambda_mid_m2, 1e-3);
+  for (const double ratio : {0.05, 0.1, 0.2}) {
+    EXPECT_FALSE(detail::passes_planarity(*fe, ratio)) << ratio;
+    EXPECT_TRUE(detail::passes_planarity(*fp, ratio)) << ratio;
+  }
+  EXPECT_TRUE(detail::passes_planarity(*fe, 0.0));
+  EXPECT_TRUE(detail::passes_planarity(*fp, 0.0));
+  // Collinear: lambda_min = lambda_mid = 0 passes (no division).
+  const std::optional<detail::PlaneFit> fl = detail::fit_plane(
+      make_buffer({Vec3(0.0, 0.0, 0.0), Vec3(0.1, 0.0, 0.0), Vec3(0.2, 0.0, 0.0)}));
+  ASSERT_TRUE(fl.has_value());
+  EXPECT_TRUE(detail::passes_planarity(*fl, 0.1));
+}
+
+// Collinearity gate (derivation section 3): five points on one line (a single ring) have
+// lambda_mid = 0 and are rejected at any ratio > 0; a 2-D patch passes; points 1 cm off a
+// line (two rings 1 cm apart over 0.5 m) have lambda_mid / lambda_max ~ 4e-4. Off accepts all.
+TEST(PlaneFit, CollinearityGateRejectsLineAcceptsPatch) {
+  const map::NeighborBuffer line = make_buffer({Vec3(0.0, 0.0, 0.0),
+                                                Vec3(0.1, 0.0, 0.0),
+                                                Vec3(0.2, 0.0, 0.0),
+                                                Vec3(0.3, 0.0, 0.0),
+                                                Vec3(0.4, 0.0, 0.0)});
+  const map::NeighborBuffer thin = make_buffer({Vec3(0.0, 0.0, 0.0),
+                                                Vec3(0.125, 0.01, 0.0),
+                                                Vec3(0.25, 0.0, 0.0),
+                                                Vec3(0.375, 0.01, 0.0),
+                                                Vec3(0.5, 0.0, 0.0)});
+  const map::NeighborBuffer patch = make_buffer({Vec3(0.0, 0.0, 0.0),
+                                                 Vec3(0.125, 0.0, 0.0),
+                                                 Vec3(0.0, 0.125, 0.0),
+                                                 Vec3(0.125, 0.125, 0.0),
+                                                 Vec3(0.06, 0.06, 0.0)});
+  const std::optional<detail::PlaneFit> fl = detail::fit_plane(line);
+  const std::optional<detail::PlaneFit> ft = detail::fit_plane(thin);
+  const std::optional<detail::PlaneFit> fp = detail::fit_plane(patch);
+  ASSERT_TRUE(fl.has_value() && ft.has_value() && fp.has_value());
+  EXPECT_NEAR(fl->lambda_mid_m2, 0.0, 1e-12);
+  EXPECT_LT(ft->lambda_mid_m2 / ft->lambda_max_m2, 1e-3);
+  EXPECT_GT(fp->lambda_mid_m2 / fp->lambda_max_m2, 0.5);
+  for (const double ratio : {0.01, 0.05, 0.1}) {
+    EXPECT_FALSE(detail::passes_collinearity(*fl, ratio)) << ratio;
+    EXPECT_FALSE(detail::passes_collinearity(*ft, ratio)) << ratio;
+    EXPECT_TRUE(detail::passes_collinearity(*fp, ratio)) << ratio;
+  }
+  EXPECT_TRUE(detail::passes_collinearity(*fl, 0.0));
+  EXPECT_TRUE(detail::passes_collinearity(*ft, 0.0));
+  EXPECT_TRUE(detail::passes_collinearity(*fp, 0.0));
+}
+
 pipeline::Config default_config() {
   const common::Result<pipeline::Config> cfg =
       pipeline::load_config(std::filesystem::path{MSS_REPO_DIR} / "config/default.yaml");
@@ -156,6 +225,10 @@ TEST(ScanMatcher, ConstructorRejectsInvalidConfig) {
   expect_throw([](ScanMatchConfig& s) { s.trans_tol_m = -1.0; });
   expect_throw([](ScanMatchConfig& s) { s.max_corr_dist_m = 0.0; });
   expect_throw([](ScanMatchConfig& s) { s.plane_rms_max_m = 0.0; });
+  expect_throw([](ScanMatchConfig& s) { s.plane_min_eig_ratio = -0.1; });
+  expect_throw([](ScanMatchConfig& s) { s.plane_min_eig_ratio = 1.0; });
+  expect_throw([](ScanMatchConfig& s) { s.min_mid_eig_ratio = -0.1; });
+  expect_throw([](ScanMatchConfig& s) { s.min_mid_eig_ratio = 1.0; });
   expect_throw([](ScanMatchConfig& s) { s.robust_huber_delta_m = 0.0; });
   expect_throw([](ScanMatchConfig& s) { s.min_inliers = 5; });
   expect_throw([](ScanMatchConfig& s) { s.cov_scale = 0.0; });

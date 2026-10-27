@@ -52,7 +52,10 @@ stdout. `est.tum` has one line per scan that produced an estimate; there are non
 IMU static initialisation, which needs `imu.init_window_s` of still IMU data before a scan.
 Besides the record and drop counts, `bench.json` reports `n_keyframes`, `n_match_failures`,
 `n_skipped_scans` (scans without an estimate), `n_uncovered_scans` (of those, no IMU up to
-the scan end at end of data), `n_map_rebuilds`, `n_gnss_factors` and `n_odom_factors`. Exit codes: 0 success; 2 usage, config, dataset or output error; 3 the replay finished
+the scan end at end of data), `n_map_rebuilds`, `n_gnss_factors`, `n_odom_factors`,
+`n_map_points` (VoxelMap points at the end) and `n_map_spacing_replaced` (points refreshed in
+place by `map.min_point_dist_m`, summed over rebuilds; every rebuild re-inserts the keyframe
+window, so it grows with `n_map_rebuilds` and is not a map-quality figure). Exit codes: 0 success; 2 usage, config, dataset or output error; 3 the replay finished
 but some records were not processed (dropped or rejected, see `bench.json`). Format:
 `docs/mssdata_format.md`, decision: `docs/adr/014-bench-dataset-format.md`.
 
@@ -183,6 +186,20 @@ estimates `T_e_w` as one graph variable shared by all GNSS factors, with a prior
 `backend.gnss_frame_tilt_sigma_deg` (tight, keeps it 4-DoF), `backend.gnss_frame_yaw_sigma_deg`
 and `backend.gnss_frame_pos_sigma_m` (loose). `imu.init_max_acc_std_mps2` must exceed the per-sample accelerometer noise
 `acc_noise_density * sqrt(rate_hz)` by about 3x, or the static initialisation never passes.
+
+Plane-fit gates and map spacing (ADR-007 amendment), all evaluated and off by default (the
+shipped behaviour is bit-identical to main): `scan_match.plane_min_eig_ratio` (`[0, 1)`)
+rejects a neighbourhood with `lambda_min > ratio * lambda_mid` (two faces across an edge). It
+improves E-01 on noise-free sim data (2.2 to 0.95 mm at 0.01), but the ratio compares range
+noise with patch size: at 1 cm noise about half of the planar 5-NN patches are rejected at
+0.01, and on the ov_plain replay 0.01 gives ATE 14.8 to 24.0 mm and scan p95 6.1 to 11.5 ms
+(0.05: 14.5 mm, 5.5 ms). Its cut of the corridor-axis information (1.1 to 0.10 %) is a
+conditioning statement, not an accuracy gain: the fused corridor ATE goes 1.8 to 5.2 m.
+`scan_match.min_mid_eig_ratio` (`[0, 1)`) rejects `lambda_mid <= ratio * lambda_max` (lines,
+thin strips); at 0.2 it removes the S-02 box-edge bias but breaks narrow corridors.
+`map.min_point_dist_m` (m, `>= 0`) makes a new point replace the nearest stored point of its
+voxel closer than this: a memory and speed option (0.1 m: about 30 % fewer map points).
+Tables: `docs/derivations/map.md` and `docs/derivations/scan_match.md` section 3.
 
 `deterministic: true` (the default) runs the estimator on one thread with a fixed seed so a
 replay reproduces bit for bit. It also sets `backend.single_thread` (not a YAML key): the first

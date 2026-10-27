@@ -81,6 +81,9 @@ struct CoreCounters {
   std::uint64_t n_odom_factors = 0;        ///< wheel factors added
   std::uint64_t n_odom_rejected = 0;       ///< wheel deltas dropped by the time check
   std::uint64_t n_backend_failures = 0;    ///< optimize() errors (stub build: every keyframe)
+  /// VoxelMap spacing replacements counted before the map's last clear() (rebuilds); the
+  /// total is this plus VoxelMap::num_spacing_replaced().
+  std::uint64_t n_map_spacing_replaced_cleared = 0;
 };
 
 /// The per-message algorithm of the single-threaded estimator (docs/derivations/pipeline.md,
@@ -117,6 +120,8 @@ class EstimatorCore {
   /// Latest estimate (Estimator::latest_state() semantics). Default until has_estimate().
   [[nodiscard]] const common::Estimate& latest() const { return latest_; }
   [[nodiscard]] const CoreCounters& counters() const { return counters_; }
+  /// The VoxelMap cache (read-only, for diagnostics such as Estimator::stats()).
+  [[nodiscard]] const map::VoxelMap& voxel_map() const { return map_; }
 
  private:
   // Processes deferred GNSS fixes whose time the buffered IMU now covers.

@@ -28,8 +28,11 @@ struct NeighborBuffer {
 ///
 /// Key: integer voxel coordinate `floor(p_w / voxel_m)` per axis. Each voxel stores at
 /// most `max_points_per_voxel` points in a ring: when full, a new point overwrites the
-/// oldest one in that voxel. Open-addressing table with capacity reserved once for
-/// `max_voxels` voxels; no allocation after construction.
+/// oldest one in that voxel. With `min_point_dist_m > 0` a point closer than that to a
+/// stored point of its voxel replaces the nearest such point instead (spacing,
+/// ADR-007 amendment).
+/// Open-addressing table with capacity reserved once for `max_voxels` voxels; no
+/// allocation after construction.
 /// Ownership/threading: single-threaded; one instance owned by pipeline::Estimator.
 /// Written and read by the front-end thread; the backend never touches it directly
 /// (ADR-005: pose corrections go through a queue and are applied between scans).
@@ -39,10 +42,11 @@ class VoxelMap {
   /// `cfg.max_points_per_voxel` points each.
   /// Frames: none. Units: see MapConfig.
   /// Errors: throws std::invalid_argument when `voxel_m <= 0`, `max_points_per_voxel <= 0`,
-  ///   `knn_k <= 0`, `knn_k > NeighborBuffer::kMaxNeighbors`, `max_voxels == 0` or
-  ///   `prune_radius_m <= 0`; also std::invalid_argument when `voxel_m` or
-  ///   `prune_radius_m` is not finite, `max_voxels > 2^30`, or the point storage size
-  ///   overflows std::size_t; may throw std::bad_alloc.
+  ///   `knn_k <= 0`, `knn_k > NeighborBuffer::kMaxNeighbors`, `max_voxels == 0`,
+  ///   `prune_radius_m <= 0` or `min_point_dist_m < 0`; also std::invalid_argument when
+  ///   `voxel_m`, `prune_radius_m` or `min_point_dist_m` is not finite,
+  ///   `max_voxels > 2^30`, or the point storage size overflows std::size_t; may throw
+  ///   std::bad_alloc.
   /// Hot path: no (allocates).
   /// Tests: M-01, M-02.
   explicit VoxelMap(const MapConfig& cfg);
@@ -52,14 +56,20 @@ class VoxelMap {
   /// Points with non-finite coordinates are skipped. A point whose voxel does not exist
   /// yet while the table already holds `max_voxels` voxels is dropped silently (no
   /// per-point log) and counted in num_dropped(), which the pipeline logs off the hot
-  /// path.
+  /// path. Spacing: when `min_point_dist_m > 0` and some stored point of the voxel has
+  /// squared distance `< min_point_dist_m^2` to the new point (double, from the float
+  /// coordinates), the nearest such point is overwritten in place by the new one (slot,
+  /// count and ring head unchanged) and num_spacing_replaced() grows; at most
+  /// `max_points_per_voxel` distance checks per point. Otherwise the point goes into the
+  /// ring as above (overwriting the oldest when the voxel is full).
   /// Frames: `scan` in l (already preprocessed: deskewed to its t_start), `T_w_l` = pose
   ///   of l in w at `scan.t_start`.
   /// Units: metres.
   /// Preconditions: none.
   /// Errors: none (void); bad points are skipped as above.
   /// Hot path: yes, per scan. No heap allocation, no logging, no exceptions.
-  /// Tests: M-01 (inserted points are found), M-02 (<= max_points_per_voxel per voxel).
+  /// Tests: M-01 (inserted points are found), M-02 (<= max_points_per_voxel per voxel),
+  ///   Spacing* (replacement, counter, full voxel), InsertDoesNotAllocate.
   void insert(const common::ScanFrame& scan, const common::Pose& T_w_l);
 
   /// Finds up to `k` nearest stored points to `p_w` among the 27 voxels around (and
@@ -105,6 +115,11 @@ class VoxelMap {
   /// this counter and logs increases off the hot path. O(1). Hot path safe. Tests: M-02.
   std::size_t num_dropped() const;
 
+  /// Number of stored points that insert() refreshed in place since construction (or
+  /// clear()) because a new point fell within `min_point_dist_m` of them. Diagnostics,
+  /// like num_dropped(). O(1). Hot path safe. Tests: SpacingReplacesNearest.
+  std::size_t num_spacing_replaced() const;
+
   /// Number of stored points over all voxels, <= num_voxels() * max_points_per_voxel.
   /// O(1). Hot path safe. Tests: M-02.
   std::size_t num_points() const;
@@ -141,6 +156,10 @@ class VoxelMap {
   [[nodiscard]] std::size_t home_slot(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
   // Slot that holds the key, or the empty slot that ends its probe sequence.
   [[nodiscard]] std::size_t find_slot(std::int32_t kx, std::int32_t ky, std::int32_t kz) const;
+  // Slot of the point among the `count` points at `pts` nearest to (x, y, z) with squared
+  // distance < min_point_dist_m^2 (double), or -1 if none. Hot path: no allocation.
+  [[nodiscard]] std::int32_t nearest_within(
+      const float* pts, std::int32_t count, float x, float y, float z) const;
   // Empties slots_[slot] by backward-shift deletion, so probe chains stay intact.
   void erase_slot(std::size_t slot);
 
@@ -154,6 +173,8 @@ class VoxelMap {
   std::size_t num_voxels_ = 0;
   std::size_t num_points_ = 0;
   std::size_t dropped_ = 0;
+  std::size_t spacing_replaced_ = 0;
+  double min_point_dist2_m2_ = 0.0;  // m^2, min_point_dist_m squared; 0 = spacing off
 };
 
 }  // namespace mss::map

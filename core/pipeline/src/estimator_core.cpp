@@ -509,6 +509,7 @@ void EstimatorCore::maybe_rebuild_map() {
                                  cfg_.map.rebuild_rot_rad)) {
     return;
   }
+  counters_.n_map_spacing_replaced_cleared += map_.num_spacing_replaced();
   map_.clear();
   for (std::size_t i = 0; i < window_.size(); ++i) {
     const WindowEntry& e = window_.at(i);
