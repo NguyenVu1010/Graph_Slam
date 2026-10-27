@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -40,6 +41,17 @@ TEST(BackendApi, ConstructorRejectsInvalidConfig) {
     imu::ImuConfig c = default_imu_config();
     c.gravity_mps2 = 0.0;
     expect_throw(default_backend_config(), c, p_b_g);
+  }
+  {
+    BackendConfig c = default_backend_config();
+    c.relative_factor = static_cast<RelativeFactor>(7);  // not one of the three forms
+    try {
+      const Graph g(c, default_imu_config(), p_b_g);
+      ADD_FAILURE() << "an unknown backend.relative_factor must be rejected";
+    } catch (const std::invalid_argument& e) {
+      EXPECT_NE(std::string(e.what()).find("backend.relative_factor"), std::string::npos)
+          << e.what();
+    }
   }
   BackendConfig b = default_backend_config();
   b.keyframe_dist_m = 0.0;

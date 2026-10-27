@@ -1,8 +1,11 @@
 // B-01: custom backend factors against numerical differentiation
 // (docs/derivations/backend_factors.md sections 3, 5, 6, 7).
+#include <algorithm>
 #include <cmath>
 #include <optional>
 #include <random>
+#include <string>
+#include <type_traits>
 #include <vector>
 
 #include <Eigen/Eigenvalues>
@@ -25,6 +28,7 @@
 #include "graph_scenarios.hpp"
 #include "imu_factor.hpp"
 #include "odom_factor.hpp"
+#include "relative_pose_factor.hpp"
 #include "static_gravity_factor.hpp"
 
 namespace mss::backend::detail {
@@ -322,7 +326,179 @@ TEST(BackendFactors, B01_OdomFactorZeroCovRejected) {
   EXPECT_FALSE(OdomBetweenFactor::create(pose_key(0), pose_key(1), od).has_value());
 }
 
-// Not a custom factor: checks the permuted noise path and the Cauchy wrap used for loops.
+// Pose pair (T_i, T_j) whose SE(3) residual Log(Z^-1 T_i^-1 T_j) is exactly r_m ([rho, phi]).
+gtsam::Values pose_pair(const Pose& T_i, const Pose& Z, const Vec6& r_m) {
+  gtsam::Values v;
+  v.insert(pose_key(0), to_gtsam(T_i));
+  v.insert(pose_key(1), to_gtsam(T_i * Z * common::se3_exp(r_m)));
+  return v;
+}
+
+// Pose pair whose decoupled residual is exactly r_p (translation) and r_phi (rotation):
+// R_j = R_i R_Z Exp(r_phi), p_j = p_i + R_i (p_Z + R_Z r_p).
+gtsam::Values decoupled_pair(const Pose& T_i, const Pose& Z, const Vec3& r_p, const Vec3& r_phi) {
+  Pose T_j;
+  T_j.R = T_i.R * Z.R * common::so3_exp(r_phi);
+  T_j.p = T_i.p + T_i.R * (Z.p + Z.R * r_p);
+  gtsam::Values v;
+  v.insert(pose_key(0), to_gtsam(T_i));
+  v.insert(pose_key(1), to_gtsam(T_j));
+  return v;
+}
+
+// A residual with translation part |rho| = rho_m and rotation part |phi| = phi_rad.
+Vec6 residual_of_size(std::mt19937& rng, double rho_m, double phi_rad) {
+  Vec6 r;
+  r << rho_m * random_vec3(rng, 1.0).normalized(), phi_rad * random_vec3(rng, 1.0).normalized();
+  return r;
+}
+
+constexpr double kLargeRhoM = 5.0;                        // 5 m
+constexpr double kLargePhiRad = 30.0 * EIGEN_PI / 180.0;  // 30 deg
+
+// LiDAR-like covariance, [rho, phi] (m^2, rad^2).
+Mat6 rel_pose_cov() {
+  Mat6 S = Mat6::Zero();
+  S.diagonal() << 0.04, 0.09, 0.01, 0.0025, 0.0004, 0.0009;
+  return S;
+}
+
+// Values for the factor form F at a residual r = [translation; rotation] ([rho, phi]).
+template <class F>
+gtsam::Values values_at(const Pose& T_i, const Pose& Z, const Vec6& r) {
+  if constexpr (std::is_same_v<F, DecoupledRelativePoseFactor>) {
+    return decoupled_pair(T_i, Z, r.head<3>(), r.tail<3>());
+  } else {
+    return pose_pair(T_i, Z, r);
+  }
+}
+
+// Numerical differences (EXPECT_CORRECT_FACTOR_JACOBIANS and relative error < 1e-6) at small
+// residuals and at 30 deg / 5 m; the known residual [rotation; translation] and the whitened
+// error r^T cov^-1 r at both.
+template <class F>
+void check_relative_factor(const char* name) {
+  SCOPED_TRACE(name);
+  std::mt19937 rng(kSeed);
+  const Mat6 S = rel_pose_cov();
+  const auto noise = gtsam::noiseModel::Gaussian::Covariance(permute_cov(S));
+  for (const bool large : {false, true}) {
+    for (int rep = 0; rep < 20; ++rep) {
+      const Pose T_i = random_pose(rng);
+      const Pose Z = random_pose(rng);
+      const Vec6 r =
+          large ? residual_of_size(rng, kLargeRhoM, kLargePhiRad) : random_vec6(rng, 0.05);
+      const gtsam::Values v = values_at<F>(T_i, Z, r);
+      const F f(pose_key(0), pose_key(1), Z, noise);
+      MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f, v);
+      EXPECT_LT(max_relative_jacobian_error(f, v), kRelJacTol) << "large " << large;
+      Vec6 e_expect;
+      e_expect << r.tail<3>(), r.head<3>();  // [phi, rho]
+      EXPECT_LT((f.unwhitenedError(v) - e_expect).norm(), 1e-9) << "large " << large;
+      const double expected = r.dot(S.ldlt().solve(r));
+      EXPECT_NEAR(2.0 * f.error(v), expected, 1e-9 * expected);
+    }
+  }
+  const Pose T_i = random_pose(rng);
+  const Pose Z = random_pose(rng);
+  const F f(pose_key(0), pose_key(1), Z, noise);
+  EXPECT_LT(f.unwhitenedError(values_at<F>(T_i, Z, Vec6::Zero())).norm(), 1e-12);
+}
+
+// The loop wrap Robust(Cauchy k, Gaussian(P cov P^T)) around a form. At zero error the
+// weight is 1 and the Jacobians pass the numerical checks; elsewhere (whitened norm 0.1 and
+// the large residual) the robust linearisation is the Gaussian one, checked numerically by
+// check_relative_factor, scaled by sqrt(w), w = 1 / (1 + (|e| / k)^2).
+template <class F>
+void check_robust_loop(const char* name) {
+  SCOPED_TRACE(name);
+  std::mt19937 rng(kSeed);
+  const Mat6 S = rel_pose_cov();
+  const Mat6 L = S.llt().matrixL();
+  const Pose T_i = random_pose(rng);
+  const Pose Z = random_pose(rng);
+  const auto gaussian = gtsam::noiseModel::Gaussian::Covariance(permute_cov(S));
+  const auto robust = gtsam::noiseModel::Robust::Create(
+      gtsam::noiseModel::mEstimator::Cauchy::Create(kLoopCauchyK), gaussian);
+  const F f_gauss(pose_key(0), pose_key(1), Z, gaussian);
+  const F f_robust(pose_key(0), pose_key(1), Z, robust);
+
+  const gtsam::Values v0 = values_at<F>(T_i, Z, Vec6::Zero());
+  MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f_robust, v0);
+  EXPECT_LT(max_relative_jacobian_error(f_robust, v0), kRelJacTol);
+
+  const Vec6 u = random_vec6(rng, 1.0).normalized();
+  const Vec6 r_small = L * (0.1 * u);
+  const Vec6 r_large = residual_of_size(rng, kLargeRhoM, kLargePhiRad);
+  for (const Vec6& r : {r_small, r_large}) {
+    const gtsam::Values v = values_at<F>(T_i, Z, r);
+    const double e_w = f_gauss.whitenedError(v).norm();
+    const double w = 1.0 / (1.0 + (e_w / kLoopCauchyK) * (e_w / kLoopCauchyK));
+    const auto lin_g = boost::dynamic_pointer_cast<gtsam::JacobianFactor>(f_gauss.linearize(v));
+    const auto lin_r = boost::dynamic_pointer_cast<gtsam::JacobianFactor>(f_robust.linearize(v));
+    ASSERT_TRUE(lin_g && lin_r);
+    for (int k = 0; k < 2; ++k) {
+      const gtsam::Matrix A_g = lin_g->getA(lin_g->begin() + k);
+      const gtsam::Matrix A_r = lin_r->getA(lin_r->begin() + k);
+      EXPECT_LT((A_r - std::sqrt(w) * A_g).norm(), 1e-9 * A_g.norm());
+    }
+  }
+}
+
+TEST(BackendFactors, B01_Se3RelativePoseFactorJacobians) {
+  check_relative_factor<Se3RelativePoseFactor>("se3_exact");
+}
+
+TEST(BackendFactors, B01_DecoupledRelativePoseFactorJacobians) {
+  check_relative_factor<DecoupledRelativePoseFactor>("decoupled");
+}
+
+TEST(BackendFactors, B01_RelativePoseRobustLoopJacobians) {
+  check_robust_loop<Se3RelativePoseFactor>("se3_exact");
+  check_robust_loop<DecoupledRelativePoseFactor>("decoupled");
+}
+
+// se3_exact against GTSAM's own exact chain: e = Logmap(Z^-1 (T_i^-1 T_j)),
+// H = D Logmap * D between * D between (Pose3::Logmap's Jacobian is exact), at small and at
+// large residuals; so se3_exact is BetweenFactor<Pose3> with the Jacobian it omits.
+TEST(BackendFactors, B01_Se3RelativePoseFactorMatchesGtsamExactChain) {
+  std::mt19937 rng(kSeed);
+  const auto noise = gtsam::noiseModel::Gaussian::Covariance(permute_cov(rel_pose_cov()));
+  for (const bool large : {false, true}) {
+    for (int rep = 0; rep < 20; ++rep) {
+      const Pose T_i = random_pose(rng);
+      const Pose Z = random_pose(rng);
+      const Vec6 r_m =
+          large ? residual_of_size(rng, kLargeRhoM, kLargePhiRad) : random_vec6(rng, 0.05);
+      const gtsam::Values v = pose_pair(T_i, Z, r_m);
+      const gtsam::Pose3 Ti = v.at<gtsam::Pose3>(pose_key(0));
+      const gtsam::Pose3 Tj = v.at<gtsam::Pose3>(pose_key(1));
+      gtsam::Matrix66 D_rel_i;
+      gtsam::Matrix66 D_rel_j;
+      gtsam::Matrix66 D_err_rel;
+      gtsam::Matrix66 D_log;
+      const gtsam::Pose3 rel = Ti.between(Tj, D_rel_i, D_rel_j);
+      const gtsam::Pose3 err = to_gtsam(Z).between(rel, boost::none, D_err_rel);
+      const gtsam::Vector6 e_ref = gtsam::Pose3::Logmap(err, D_log);
+      const Mat6 H_i_ref = D_log * D_err_rel * D_rel_i;
+      const Mat6 H_j_ref = D_log * D_err_rel * D_rel_j;
+      const Se3RelativePoseFactor f(pose_key(0), pose_key(1), Z, noise);
+      gtsam::Matrix H_i;
+      gtsam::Matrix H_j;
+      const gtsam::Vector e = f.evaluateError(Ti, Tj, H_i, H_j);
+      EXPECT_LT((e - e_ref).norm(), 1e-9);
+      EXPECT_LT((H_i - H_i_ref).norm(), 1e-9 * H_i_ref.norm()) << "large " << large;
+      EXPECT_LT((H_j - H_j_ref).norm(), 1e-9 * H_j_ref.norm()) << "large " << large;
+      // The default form, BetweenFactor<Pose3>, has the same error.
+      const gtsam::BetweenFactor<gtsam::Pose3> between(
+          pose_key(0), pose_key(1), to_gtsam(Z), noise);
+      EXPECT_LT((between.unwhitenedError(v) - e).norm(), 1e-9);
+    }
+  }
+}
+
+// The default form (backend.relative_factor: between), not a custom factor: checks the
+// permuted noise path and the Cauchy wrap used for loops.
 TEST(BackendFactors, B01_BetweenAndRobustLoopJacobians) {
   std::mt19937 rng(kSeed);
   Mat6 S_m = Mat6::Zero();
@@ -371,6 +547,26 @@ TEST(BackendFactors, B01_BetweenAndRobustLoopJacobians) {
     const gtsam::Matrix A_r = lin_r->getA(lin_r->begin() + k);
     EXPECT_LT((A_r - std::sqrt(w) * A_g).norm(), 1e-9 * A_g.norm());
   }
+}
+
+// Control (why the exact forms exist): gtsam::BetweenFactor<Pose3>, the default form, fails
+// the numerical Jacobian check at 30 deg / 5 m (its Jacobian omits Jr^-1 of the Logmap) and
+// passes it at zero error.
+TEST(BackendFactors, B01_BetweenFactorJacobianApproximateAtLargeResidual) {
+  std::mt19937 rng(kSeed);
+  const auto noise = gtsam::noiseModel::Gaussian::Covariance(permute_cov(rel_pose_cov()));
+  double worst = 0.0;
+  for (int rep = 0; rep < 20; ++rep) {
+    const Pose T_i = random_pose(rng);
+    const Pose Z = random_pose(rng);
+    const gtsam::BetweenFactor<gtsam::Pose3> between(pose_key(0), pose_key(1), to_gtsam(Z), noise);
+    const gtsam::Values v0 = pose_pair(T_i, Z, Vec6::Zero());
+    EXPECT_LT(max_relative_jacobian_error(between, v0), kRelJacTol);
+    const gtsam::Values v = pose_pair(T_i, Z, residual_of_size(rng, kLargeRhoM, kLargePhiRad));
+    worst = std::max(worst, max_relative_jacobian_error(between, v));
+  }
+  EXPECT_GT(worst, 0.1);
+  RecordProperty("between_factor_worst_rel_jacobian_error", std::to_string(worst));
 }
 
 }  // namespace

@@ -62,3 +62,71 @@ và Jacobian đúng đưa lần chạy đó về -8,7 m với sigma 24,5 m.
 Việc tiếp theo: PR 4e riêng, nhỏ (factor LiDAR với Jacobian `Jr^-1` đúng, hoặc define của
 GTSAM). Tiêu chí nhận: lần đối chứng "x removed, no backend feedback" của nghiên cứu nằm trong
 sigma của chính nó. PR 4b (dùng ngữ nghĩa "không quan sát") cần nó.
+
+## Ghi chú (PR 4e, 2026-10-28): ba dạng factor tương đối cho LiDAR và loop, chờ quyết định
+
+Trạng thái: **đang chờ quyết định của owner**. PR 4e thêm khoá `backend.relative_factor` với ba
+dạng; mặc định `between` (hành vi trước PR 4e, `est.tum` của E-01 trùng md5 với main). Hai dạng
+chính xác là tùy chọn đã đánh giá, chưa được chọn. Đạo hàm và số liệu đầy đủ:
+`docs/derivations/backend_factors.md` §5 và §5a.
+
+Ba dạng (cùng nhiễu `Gaussian::Covariance(P cov P^T)` và cùng kernel Cauchy cho loop):
+
+- `between`: `gtsam::BetweenFactor<Pose3>`, phần dư `Logmap(Z^-1 T_i^-1 T_j)`. Jacobian bỏ
+  `Jr^-1(e)` của `Logmap` (GTSAM 4.2 không có `GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR`): đúng khi
+  sai số bằng 0, sai tương đối `O(|e|)` ở chỗ khác (> 0,1 ở 5 m / 30 độ).
+- `se3_exact` (`detail::Se3RelativePoseFactor`): cùng phần dư SE(3), Jacobian đúng
+  `J_j = Jr^-1(r)`, `J_i = -Jr^-1(r) Ad(T_j^-1 T_i)` lấy từ `odom::relative_pose_residual`.
+- `decoupled` (`detail::DecoupledRelativePoseFactor`): phần dư tịnh tiến
+  `R_Z^T (R_i^T (p_j - p_i) - p_Z)` và quay `Log(R_Z^T R_i^T R_j)` tách riêng, Jacobian đúng.
+  Với `E = Z^-1 T_i^-1 T_j = (R_E, t_E)`: phần quay giống nhau, phần tịnh tiến liên hệ chính
+  xác qua `rho_SE3 = V(phi_E)^-1 t_E = t_E - 0,5 phi_E x t_E + ...`, nên hai dạng bằng nhau ở
+  bậc một của phần dư `E` và chỉ khác khi phần dư lớn.
+
+Phương án `GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR` (build GTSAM với cờ đó) không đưa vào đánh
+giá: tính đúng khi đó phụ thuộc cờ build và bản pin trong image deps (build khác cờ sẽ lặng lẽ
+quay về Jacobian gần đúng), và cờ đổi cả những chỗ GTSAM tự dùng `BetweenFactor`. Về số học
+nó giống `se3_exact`.
+
+Kết quả đối chứng ("x removed, no backend feedback", seed 42, sai số x của keyframe cuối và
+sigma tự báo):
+
+| dạng | circle | straight |
+| --- | --- | --- |
+| between | +5772,3 m (14,05): 411 sigma | +11,37 m (20,90): 0,54 sigma |
+| se3_exact | -28,23 m (1,75): 16 sigma | +7,47 m (24,28): 0,31 sigma |
+| decoupled | -8,71 m (24,46): 0,36 sigma | +4,36 m (24,48): 0,18 sigma |
+
+Cả ba dạng dùng covariance của scan matcher giống hệt nhau ở bậc một: `cov` tỉ lệ với nghịch
+đảo Hessian Gauss-Newton của point-to-plane tại nhiễu loạn 0, nơi chart SE(3) và SO(3) x R3
+trùng nhau (`V(0) = I`), và phép đổi `l -> b` cũng trùng nhau. Chúng chỉ khác khi phần dư lớn,
+qua liên hệ chính xác `V(phi)^-1`. Với một trục tịnh tiến tự do, `decoupled` giữ hướng tự do
+đó tự do ở mọi góc quay, đúng như hàm chi phí point-to-plane; `se3_exact` bẻ cong nó (phần
+lệch trục `0,5 s |phi|` bị tính vào các sigma quan sát được, tức thông tin giả). Vậy
+`decoupled` là cách dùng trung thực hơn cùng một covariance, không phải mô hình lỗi mới.
+Lần đối chứng xác nhận điều đó bằng số: `se3_exact` hết phân kỳ nhưng tự tin quá mức trên
+circle, chỉ `decoupled` nằm trong sigma của chính nó ở cả hai cảnh. Trên test tổng hợp (mỗi
+dạng với nhiễu sinh trong chart của nó, nên test kiểm tra factor và bộ tối ưu, không kiểm tra
+chart): NEES theo x của `se3_exact` là 0,85, của `decoupled` là 0,92, còn `between` làm hệ suy
+biến.
+
+Cấu hình đang ship, 15 seed (42..56) ghép cặp với `between`: không dạng nào khác `between` có
+ý nghĩa thống kê (mọi CI 95 % của hiệu trung vị đều chứa 0). Trung vị của `between` / `se3_exact`
+/ `decoupled`:
+
+- hành lang 60 s có GNSS: 1,85 / 2,58 / 3,37 m;
+- hành lang 60 s chỉ LiDAR: 38,3 / 41,1 / 45,1 m;
+- box NEES: 8,57 / 8,58 / 8,47 (cả ba trong 7,8 ± 1 ở `cov_scale` 4,7, nên không cần hiệu chỉnh lại);
+- circle 20 s, sai số cuối: 1,45 / 2,60 / 2,30 m;
+- straight 20 s, sai số cuối: 2,72 / 3,26 / 3,38 m.
+
+Các cảnh này hỗn loạn: cùng dạng `decoupled`, chỉ đổi thứ tự phép nhân dấu phẩy động, cho
+trung vị circle 3,30 thay vì 2,30 m. Với seed 42..44 của `CorridorImuOnlyAlongAxisWithinDeadReckoning`,
+`se3_exact` vượt ngưỡng 3 sigma_DR (trung vị 7,33 m so với 2,11 m), `decoupled` thì không.
+E-01..E-03 và độ trễ (trung vị 5 lần) không đổi trong phạm vi nhiễu đo với cả ba dạng.
+
+Hệ quả, chung cho mọi lựa chọn: dạng chính xác tốn thêm một `Jr^-1` cho mỗi lần tính factor
+(một lần mỗi keyframe và mỗi lần relinearize), không đo được trên E-01. PR 4b dùng ngữ nghĩa
+"không quan sát" (một trục tịnh tiến tự do), nên phụ thuộc vào quyết định này.
+
+Quyết định: chờ owner.

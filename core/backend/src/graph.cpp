@@ -44,6 +44,7 @@
 #include "gnss_factor.hpp"
 #include "imu_factor.hpp"
 #include "odom_factor.hpp"
+#include "relative_pose_factor.hpp"
 #include "static_gravity_factor.hpp"
 #include "study_seams.hpp"
 #include "validate.hpp"
@@ -64,6 +65,25 @@ constexpr double kNsPerS = 1e9;
 constexpr double kMsPerNs = 1e-6;
 // IMU duration tolerance in sample periods (graph.hpp, add_imu_factor).
 constexpr double kImuTolSamples = 1.5;
+
+// LiDAR / loop relative-pose factor of the configured form (backend_factors.md section 5).
+// `noise` in GTSAM order [phi, rho]; the same for every form.
+gtsam::NonlinearFactor::shared_ptr relative_pose_factor(RelativeFactor form,
+                                                        gtsam::Key x_i,
+                                                        gtsam::Key x_j,
+                                                        const common::Pose& T_bi_bj,
+                                                        const gtsam::SharedNoiseModel& noise) {
+  switch (form) {
+    case RelativeFactor::kSe3Exact:
+      return boost::make_shared<detail::Se3RelativePoseFactor>(x_i, x_j, T_bi_bj, noise);
+    case RelativeFactor::kDecoupled:
+      return boost::make_shared<detail::DecoupledRelativePoseFactor>(x_i, x_j, T_bi_bj, noise);
+    case RelativeFactor::kBetween:
+      break;
+  }
+  return boost::make_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
+      x_i, x_j, detail::to_gtsam(T_bi_bj), noise);
+}
 
 // Symmetric positive definite and finite (Cholesky succeeds on the symmetrised matrix).
 template <int N>
@@ -542,11 +562,12 @@ void Graph::add_lidar_factor(common::KeyId i,
     reject(call, "covariance not positive definite");
     return;
   }
-  m.pending_factors.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
+  m.pending_factors.push_back(relative_pose_factor(
+      m.cfg.relative_factor,
       detail::pose_key(i),
       detail::pose_key(j),
-      detail::to_gtsam(T_bi_bj),
-      gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(symmetrised<6>(cov))));
+      T_bi_bj,
+      gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(symmetrised<6>(cov)))));
   if (degeneracy != nullptr) {
     bool any = false;
     for (const bool flag : degeneracy->degenerate) {
@@ -792,8 +813,8 @@ void Graph::add_loop_factor(const common::LoopConstraint& lc) {
   const gtsam::SharedNoiseModel noise = gtsam::noiseModel::Robust::Create(
       gtsam::noiseModel::mEstimator::Cauchy::Create(kLoopCauchyK),
       gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(symmetrised<6>(lc.cov))));
-  m.pending_factors.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
-      detail::pose_key(lc.i), detail::pose_key(lc.j), detail::to_gtsam(lc.T_bi_bj), noise);
+  m.pending_factors.push_back(relative_pose_factor(
+      m.cfg.relative_factor, detail::pose_key(lc.i), detail::pose_key(lc.j), lc.T_bi_bj, noise));
 }
 
 common::Result<common::Estimate> Graph::optimize() {

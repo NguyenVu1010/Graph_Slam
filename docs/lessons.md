@@ -122,18 +122,25 @@ Format of an entry: **symptom** → cause → fix → rule.
 - **Rule.** Evaluate every geometric gate with the sensor noise model on, and prefer a
   noise-aware form (`λ_min > ρ·λ_mid + n·(k·σ_range)²`) over a pure ratio.
 
-### 1.9 Library Jacobian approximations fail at large residuals (PR 4e, ADR-015 note)
+### 1.9 The residual's chart, not only its Jacobian, decides a free axis (PR 4e, ADR-015 note)
 
 - **Symptom.** In a control run with the LiDAR constraint removed along one axis the estimate
   ended at +5772 m while the marginal sigma claimed 14 m.
-- **Cause.** GTSAM's `BetweenFactor<Pose3>` approximates the `Logmap` derivative unless the
-  library is built with `GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR`. The approximation is fine for
-  millimetre residuals and wrong for metre residuals, which is exactly when the covariance
-  matters most.
-- **Fix.** A custom relative-pose factor using the exact right-perturbation Jacobians already
-  tested in the odometry module.
-- **Rule.** Check every analytic Jacobian against numerical differences at small and at large
-  residuals. Read the build flags of a dependency before trusting its defaults.
+- **Cause.** Two effects. GTSAM's `BetweenFactor<Pose3>` approximates the `Logmap` derivative
+  (no `GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR`), which is wrong at metre residuals. The dominant
+  one is the SE(3) residual itself: `rho = V(phi)^-1 t` couples a large residual along the
+  unobserved translation axis into the observed components, which then count as information.
+  With the exact Jacobian (`se3_exact`) the divergence goes, but the estimate stays 16 sigma
+  over-confident (-28 m, sigma 1.75 m). Translation and rotation residuals kept separate
+  (`decoupled`, the SO(3) x R3 chart, the same covariance to first order) keep the free axis
+  free: -8.7 m, sigma 24.5 m.
+- **Fix.** `backend.relative_factor` (`between`, `se3_exact`, `decoupled`); default `between`,
+  the choice of default is the owner's (ADR-015 PR 4e note).
+- **Rule.** An exact Jacobian is necessary but not sufficient. Check every analytic Jacobian
+  against numerical differences at small and at large residuals, and test the residual form
+  on a free axis: check that the residual's chart matches the structure of the error (a free
+  translation stays free at any rotation). Read the build flags of a dependency before trusting
+  its defaults.
 
 ### 1.10 Failure paths in the optimiser must re-anchor (PR #11)
 

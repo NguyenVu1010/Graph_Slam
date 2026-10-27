@@ -182,6 +182,26 @@ class Reader {
     return true;
   }
 
+  // A string key that must be one of `options` (name -> value); `out` unchanged otherwise.
+  template <typename E>
+  void choice(const std::string& key,
+              E& out,
+              const std::vector<std::pair<std::string, E>>& options) {
+    std::string name;
+    if (!field(key, name)) {
+      return;
+    }
+    std::string names;
+    for (const auto& [n, v] : options) {
+      if (n == name) {
+        out = v;
+        return;
+      }
+      names += (names.empty() ? "" : ", ") + n;
+    }
+    errors_.add(key, "must be one of " + names + " (got " + name + ")");
+  }
+
   // YAML key `<name>_deg` (degrees) -> `out` in radians (struct field `<name>_rad`).
   void angle_deg(const std::string& key, double& out, Range range = Range::kAny) {
     double deg = 0.0;
@@ -470,6 +490,11 @@ Config read_config(Reader& r) {
           c.backend.static_gravity_check_keyframes,
           Range::kNonNegative);  // 0 = check off
   r.field("backend.static_gravity_chi2_gate", c.backend.static_gravity_chi2_gate, Range::kPositive);
+  r.choice("backend.relative_factor",
+           c.backend.relative_factor,
+           {{"between", backend::RelativeFactor::kBetween},
+            {"se3_exact", backend::RelativeFactor::kSe3Exact},
+            {"decoupled", backend::RelativeFactor::kDecoupled}});
   r.field("backend.gnss_frame_variable", c.backend.gnss_frame_variable);
   r.angle_deg(
       "backend.gnss_frame_tilt_sigma_deg", c.backend.gnss_frame_tilt_sigma_rad, Range::kPositive);
