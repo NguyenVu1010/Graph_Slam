@@ -284,13 +284,20 @@ def test_t_b_l_written_and_used(ramp_bag: tuple[Path, SynthInfo]) -> None:
             [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
         ]
     )
-    t_ns, cloud = _read(ramp_bag, "/lidar/points")[0]
+    scans = _read(ramp_bag, "/lidar/points")
     gt = GroundTruth.from_odometry_msgs(m for _, m in _read(ramp_bag, "/ground_truth"))
-    r_w_b, p_w_b = gt.pose_at(np.array([t_ns], dtype=np.int64))
-    xyz = cloud_to_arrays(cloud).xyz
-    finite = np.isfinite(xyz).all(axis=1)
-    assert finite.sum() > 0
-    p_b = xyz[finite].astype(float) @ r_b_l.T + np.array(_T_B_L[0])
-    p_w = p_b @ r_w_b[0].T + p_w_b[0]
-    dist = np.min([np.abs(p_w @ n - d) for n, d in ramp_bag[1].planes], axis=0)
-    assert dist.max() < 1e-6
+    # Scan 0 is in the still phase (T_w_b = I); scan 55 (t = 5.5 s) is in cruise, where a wrong
+    # T_w_l = T_w_b * T_b_l composition (order, or missing R_w_b on p_b_l) would show.
+    for k in (0, 55):
+        t_ns, cloud = scans[k]
+        r_w_b, p_w_b = gt.pose_at(np.array([t_ns], dtype=np.int64))
+        yaw = np.arctan2(r_w_b[0][1, 0], r_w_b[0][0, 0])
+        if k == 55:
+            assert yaw > 0.7 and np.linalg.norm(p_w_b[0]) > 1.0
+        xyz = cloud_to_arrays(cloud).xyz
+        finite = np.isfinite(xyz).all(axis=1)
+        assert finite.sum() > 0
+        p_b = xyz[finite].astype(float) @ r_b_l.T + np.array(_T_B_L[0])
+        p_w = p_b @ r_w_b[0].T + p_w_b[0]
+        dist = np.min([np.abs(p_w @ n - d) for n, d in ramp_bag[1].planes], axis=0)
+        assert dist.max() < 1e-5, (k, dist.max())  # float32 points at up to ~11 m

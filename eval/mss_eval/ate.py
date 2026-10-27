@@ -92,11 +92,26 @@ def umeyama_se3(src: np.ndarray, dst: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return rot, mu_dst - rot @ mu_src
 
 
+def _require_finite(path: Path, poses: np.ndarray) -> None:
+    """ValueError naming the file line of the first pose with a NaN or infinite value."""
+    bad = np.flatnonzero(~np.isfinite(poses).all(axis=1))
+    if len(bad) == 0:
+        return
+    data_lines = [
+        n
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    raise ValueError(f"{path}: line {data_lines[bad[0]]}: non-finite pose ({len(bad)} rows)")
+
+
 def _aligned_pairs(
     est_path: Path, gt_path: Path, max_dt_ns: int, min_pairs: int
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Aligned estimate positions, matching GT positions and the number of unmatched estimates."""
     est, gt = read_tum(Path(est_path)), read_tum(Path(gt_path))
+    _require_finite(Path(est_path), np.column_stack([est.p, est.q_xyzw]))
+    _require_finite(Path(gt_path), np.column_stack([gt.p, gt.q_xyzw]))
     gt_ns = read_tum_stamps_ns(gt_path)
     order = np.argsort(gt_ns, kind="stable")
     i_est, i_gt = associate(read_tum_stamps_ns(est_path), gt_ns[order], max_dt_ns)

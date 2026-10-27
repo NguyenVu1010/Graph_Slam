@@ -12,6 +12,7 @@ import pytest
 from run_integration import (
     REORDER_NOTE,
     judge,
+    judge_e03_drops,
     judge_latency,
     main,
     to_bench_path,
@@ -20,9 +21,10 @@ from run_integration import (
 _REPO = Path(__file__).resolve().parents[2]
 
 # Stand-in for mss_bench: copies the dataset's ground truth (gt.bin, GT_DTYPE of
-# bag_to_mssdata) to <out>/est.tum and writes a bench.json; exit code from FAKE_BENCH_EXIT.
+# bag_to_mssdata) to <out>/est.tum and writes a bench.json (n_scans = the dataset's scan
+# count); exit code from FAKE_BENCH_EXIT, optional delay FAKE_BENCH_SLEEP_S.
 _FAKE_BENCH = """
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 import numpy as np
 
@@ -40,7 +42,9 @@ for r in gt:
     vals = [*r["p"], x, y, z, w]
     lines.append(f"{t // 10**9}.{t % 10**9:09d} " + " ".join(f"{v:.17g}" for v in vals))
 (out / "est.tum").write_text("\\n".join(lines) + "\\n", encoding="utf-8")
-bench = {"n_scans": 10, "scan_process_ms_p50": 0.5, "scan_process_ms_p95": 1.0}
+time.sleep(float(os.environ.get("FAKE_BENCH_SLEEP_S", "0")))
+n_scans = json.loads((data / "index.json").read_text())["topics"]["lidar"]["count"]
+bench = {"n_scans": n_scans, "scan_process_ms_p50": 0.5, "scan_process_ms_p95": 1.0}
 (out / "bench.json").write_text(json.dumps(bench), encoding="utf-8")
 sys.exit(int(os.environ.get("FAKE_BENCH_EXIT", "0")))
 """
@@ -86,6 +90,12 @@ def test_end_to_end_with_fake_bench(e2e: tuple[int, Path, str | None, str | None
     assert res["E-02"]["identical"] is True
     assert "no baseline" in res["E-01"]["note"]
     assert res["PF-01"]["p95_latency_ms"] == 1.0
+    src = res["data_source"]
+    assert src["speed_mps"] == 0.5 and src["omega_radps"] == 0.3
+    assert src["box_half_m"] == [8.0, 5.0, 2.0] and src["duration_s"] == 8.0
+    assert (src["static_s"], src["ramp_s"], src["seed"]) == (5.0, 2.0, 42)
+    assert src["scenario_world_trajectory_used"] is False
+    assert "E-03 processed" in res["E-03"]["note"]
     for test_id in ("E-01", "E-02", "E-03"):
         assert (out / test_id / "est.tum").is_file()
         assert (out / test_id / "ate.json").is_file()
@@ -188,3 +198,53 @@ def test_writes_only_under_out(e2e: tuple[int, Path, str | None, str | None]) ->
     if before is None or after is None:
         pytest.skip("git not available")
     assert after == before
+
+
+def test_e03_drops_must_reach_the_bench() -> None:
+    v = judge_e03_drops(80, 80, 20)  # as many scans as E-01: the drops never reached the bench
+    assert not v.passed
+    assert "E-03 processed 80 of 80 E-01 scans; 20 records dropped upstream" in v.note
+    assert not judge_e03_drops(75, 80, 0).passed  # mutate_bag.py dropped nothing
+    assert not judge_e03_drops(None, 80, 20).passed  # no bench.json
+    assert judge_e03_drops(75, 80, 20).passed
+
+
+def test_e03_summary_carries_scan_counts(e2e: tuple[int, Path, str | None, str | None]) -> None:
+    _, out, _, _ = e2e
+    summary = (out / "summary.md").read_text(encoding="utf-8")
+    assert "E-03 processed " in summary and " of 80 E-01 scans; " in summary
+    assert "synthetic box circle, R = V/W = 0.5/0.3 = 1.67 m" in summary
+
+
+def test_e02_needs_a_trajectory() -> None:
+    base = {"E-01": {"ate_rmse_m": None}}
+    v = judge("E-02", None, 0, base, True, ate_error="only 0 pairs")
+    assert not v.passed and "only 0 pairs" in v.note
+
+
+def test_ate_error_is_in_the_note() -> None:
+    v = judge("E-01", None, 0, {"E-01": {}}, None, ate_error="est.tum: line 3: non-finite pose")
+    assert not v.passed and "line 3: non-finite pose" in v.note
+
+
+def test_bench_timeout_fails_the_test(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAKE_BENCH_SLEEP_S", "30")
+    out = tmp_path / "results"
+    cmd = _fake_bench_cmd(tmp_path)
+    argv = ["--bench-cmd", cmd, "--out", str(out), "--duration-s", "6", "--tests", "E-01"]
+    assert main([*argv, "--timeout-s", "1"]) == 1
+    res = json.loads((out / "integration.json").read_text(encoding="utf-8"))
+    assert res["E-01"]["bench_exit"] == 124 and "timed out" in res["E-01"]["note"]
+
+
+def test_unexpected_exception_is_setup_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import run_integration
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("rosbags exploded")
+
+    monkeypatch.setattr(run_integration, "prepare", boom)
+    out = tmp_path / "results"
+    assert main(["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out)]) == 2

@@ -119,6 +119,16 @@ def test_too_few_pairs_raises(tmp_path: Path) -> None:
         ate(tmp_path / "x.tum", tmp_path / "x.tum", min_pairs=10)
 
 
+def test_non_finite_pose_is_a_clear_error(tmp_path: Path) -> None:
+    t_ns, p = _trajectory(20)
+    _write_tum(tmp_path / "gt.tum", t_ns, p)
+    p_bad = p.copy()
+    p_bad[1, 0] = np.nan  # second pose: file line 3 (after the header comment)
+    _write_tum(tmp_path / "est.tum", t_ns, p_bad)
+    with pytest.raises(ValueError, match=r"est\.tum: line 3: non-finite pose"):
+        ate(tmp_path / "est.tum", tmp_path / "gt.tum")
+
+
 def test_plot_xy_writes_png(tmp_path: Path) -> None:
     t_ns, p = _trajectory(100)
     _write_tum(tmp_path / "x.tum", t_ns, p)
