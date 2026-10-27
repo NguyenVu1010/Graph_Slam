@@ -10,7 +10,7 @@ T0 = 1_700_000_000_000_000_000
 DT_NS = 20_000_000  # 50 Hz
 NAMES = ["left_wheel_joint", "right_wheel_joint"]
 TRUE = Kinematics(wheel_radius_m=0.10, track_m=0.40)
-BELIEVED = Kinematics(wheel_radius_m=0.101, track_m=0.394)
+BELIEVED = Kinematics(wheel_radius_m=0.101, track_m=0.399)
 
 
 def _noise(sigma: float = 0.0) -> OdomNoise:
@@ -54,9 +54,22 @@ def test_spin_in_place_yaw_scaled_by_calibration_error() -> None:
     twists = _run(q, 0.0, 1.0, n)
     pose = integrate_pose(twists)
     elapsed = (twists[-1][0] - T0) / 1e9
-    expected = elapsed * (0.101 / 0.100) * (0.400 / 0.394)
+    expected = elapsed * (0.101 / 0.100) * (0.400 / 0.399)
     assert abs(pose[-1, 2] - expected) / expected < 5e-3
     assert abs(pose[-1, 0]) < 1e-2 and abs(pose[-1, 1]) < 1e-2
+
+
+def test_spin_in_place_yaw_error_per_rev_meets_adr_target() -> None:
+    # ADR-011 section 3: omega = (v_r - v_l) / track_believed with wheel speeds scaled by the
+    # believed radius, so one true revolution reads 360 deg * (r_b / r_t) * (track_t / track_b);
+    # the error per revolution is that minus 360 deg (1.01 * 0.40 / 0.399 -> about 4.5 deg).
+    scale = (BELIEVED.wheel_radius_m / TRUE.wheel_radius_m) * (TRUE.track_m / BELIEVED.track_m)
+    assert 4.0 < 360.0 * (scale - 1.0) < 5.0
+    q = WheelQuantizer(_noise(), np.random.default_rng(1))
+    n = int(round(2 * math.pi / (DT_NS / 1e9)))  # 1 rad/s for one true revolution
+    pose = integrate_pose(_run(q, 0.0, 1.0, n))
+    true_yaw = (n - 1) * DT_NS / 1e9  # the first step has no twist
+    assert 4.0 < math.degrees(pose[-1, 2] - true_yaw) < 5.0
 
 
 def test_missing_joint_returns_none_and_counts() -> None:
