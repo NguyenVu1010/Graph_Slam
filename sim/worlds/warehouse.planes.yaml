@@ -1,0 +1,18 @@
+# Sidecar of sim/worlds/warehouse.sdf (ADR-011 section 5).
+# planes: reference planes n . p = d in world coordinates (metres) that the LiDAR section of
+#   eval/mss_eval/noise_report.py --planes uses; every plane lies on a box face of the SDF
+#   within 1 mm (tools/gen_sim_assets.py --check-worlds).
+# spawn: robot start pose in world (the launch file spawns the body frame there).
+# enu_origin_w_m: where the ENU frame e sits in w; e = w (gz spherical_coordinates, ENU,
+#   heading 0). The geodetic origin_lla itself comes from the scenario and must equal the
+#   world's <spherical_coordinates>.
+world: warehouse
+enu_origin_w_m: [0.0, 0.0, 0.0]
+spawn: {x_m: -8.0, y_m: 0.8, yaw_rad: 0.0}
+planes:
+  - {name: floor, n: [0.0, 0.0, 1.0], d: 0.0}
+  - {name: ceiling, n: [0.0, 0.0, 1.0], d: 6.0}
+  - {name: wall_east, n: [1.0, 0.0, 0.0], d: 20.0}
+  - {name: wall_west, n: [1.0, 0.0, 0.0], d: -20.0}
+  - {name: wall_north, n: [0.0, 1.0, 0.0], d: 12.5}
+  - {name: wall_south, n: [0.0, 1.0, 0.0], d: -12.5}

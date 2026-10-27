@@ -217,8 +217,14 @@ def _pipeline_params(path: Path | None) -> dict:
 
 
 def load_planes(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Planes ``n . p = d`` from YAML; ``n`` and ``d`` are scaled by the same ``1/|n|``."""
+    """Planes ``n . p = d`` from YAML; ``n`` and ``d`` are scaled by the same ``1/|n|``.
+
+    The YAML is a list of ``{n, d}`` or a world sidecar (``sim/worlds/<world>.planes.yaml``), a
+    mapping whose ``planes`` key holds that list.
+    """
     items = yaml.safe_load(Path(path).read_text())
+    if isinstance(items, dict):
+        items = items["planes"]
     normals = np.array([p["n"] for p in items], dtype=float).reshape(-1, 3)
     d = np.array([p["d"] for p in items], dtype=float)
     norms = np.linalg.norm(normals, axis=1)
@@ -358,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("bag_dir", type=Path, help="bridge output dir (with bag/) or the bag itself")
     ap.add_argument("profile", type=Path, help="declared noise profile, sim/noise/*.yaml")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--planes", type=Path, help="YAML list of {n: [x, y, z], d: m}, n . p = d")
+    ap.add_argument("--planes", type=Path, help="planes n . p = d: YAML list or world sidecar")
     ap.add_argument("--pipeline-config", type=Path, help="pipeline YAML (lever arm, beliefs)")
     ap.add_argument("--static-s", type=float, default=5.0, help="initial static window, s")
     ap.add_argument("--allan-gate", action="store_true", help="gate on Allan deviation")
