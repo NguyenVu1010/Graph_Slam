@@ -466,11 +466,13 @@ the head of the branch.
 
 - Rows labelled "full residual" use the study seam `detail::set_static_gravity_full_residual`
   (`core/backend/src/study_seams.hpp`), which restores the round-1 3x1 residual. They reproduce
-  round 1: box NEES 9.60 and the per-seed GNSS-corridor values, except where the
-  consistency check of section 12 now removes the factor (section 10g). The full residual's
-  statistic has 3 DoF: against the 2-DoF gate (5.991) a consistent window would fail about
-  11 % of the time, so that gate would be stricter, not more permissive. The full-residual
-  rows therefore use the 3-DoF 0.95 quantile, `static_gravity_chi2_gate: 7.815`.
+  round 1: box NEES 9.60 and, with the consistency check off as shipped, seed 42's
+  -88 mrad slide (10c). The full residual's statistic has 3 DoF: against the 2-DoF gate
+  (5.991) a consistent window would fail about 11 % of the time, so that gate would be
+  stricter, not more permissive. The full-residual "check at 5" row of 10g therefore uses
+  the 3-DoF 0.95 quantile, `static_gravity_chi2_gate: 7.815`.
+- Every row runs at the shipped configuration, consistency check off
+  (`backend.static_gravity_check_keyframes: 0`), unless it says "check at 5" (10g).
 - Rows labelled "direction only" or "shipped form" are the product factor.
 - The noise variants use the hook `CoreTestHooks::static_gravity_cov` with
   `backend.static_gravity_sigma_scale: 1`.
@@ -486,8 +488,8 @@ Scenes:
 | variant | GNSS corridor ATE median (max) (m) | per seed (m) | box NEES median (exp. 6) | per seed | end E yaw err median (mrad) | end E pos err median (m) | end kf tilt err median (mrad) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | main (factor off) | 0.64 (7.57) | 1.82 7.57 0.64 0.63 0.59 | 8.55 | 7.8 6.7 12.6 8.5 8.6 | 5.28 | 0.45 | 6.06 |
-| full residual, window sigma | 4.15 (5.03) | 5.03 0.74 3.04 4.15 4.66 | 9.60 | 10.8 7.1 13.8 7.4 9.6 | 2.68 | 1.59 | 8.44 |
-| full residual, sigma / 10 | 2.28 (22.30) | 22.30 0.41 2.28 0.86 3.24 | 10.17 | 11.9 8.3 15.2 6.6 10.2 | 5.95 | 0.96 | 15.20 |
+| full residual, window sigma | 4.15 (5.22) | 5.22 0.74 3.04 4.15 4.66 | 9.60 | 10.8 7.1 13.8 7.4 9.6 | 1.80 | 1.59 | 8.44 |
+| full residual, sigma / 10 | 2.28 (25.97) | 25.97 0.41 2.28 0.86 3.24 | 10.17 | 11.9 8.3 15.2 6.6 10.2 | 5.95 | 0.96 | 15.20 |
 | full residual, sigma x 3 | 2.61 (3.98) | 3.98 0.50 3.33 0.30 2.61 | 7.81 | 7.8 5.8 11.3 8.1 7.6 | 4.50 | 0.42 | 23.71 |
 | full residual, sigma x 10 | 0.63 (2.70) | 0.42 0.63 2.70 0.45 2.43 | 8.53 | 8.5 7.2 11.2 8.7 6.7 | 5.28 | 0.49 | 32.81 |
 | direction only, window sigma | 0.70 (2.81) | 0.46 0.70 2.81 0.70 0.59 | 8.64 | 9.8 6.7 14.0 7.3 8.6 | 3.50 | 0.65 | 27.23 |
@@ -500,7 +502,7 @@ Scenes:
 the 4.1e-3 m/s^2 standard error, so the window carries no magnitude mismatch.
 
 Dropping the magnitude row (direction only) still helps the GNSS corridor over 15 seeds (10e):
-the median falls from 3.72 m (full residual) to 2.44 m (shipped form, scale 1), with the same
+the median falls from 4.15 m (full residual) to 2.44 m (shipped form, scale 1), with the same
 NEES (9.60 / 9.42). The magnitude row adds nothing about the tilt and pins `ba_z` to one 2 s
 noise realisation, so it is dropped.
 
@@ -512,16 +514,15 @@ noise realisation, so it is dropped.
 | main | 43.9 | +2.066 | +0.604 | -2.01 / +29.81 | +0.2378 / +0.0039 | -9.13 | 1.719 |
 | main | 53.9 | +1.294 | +0.290 | -6.62 / +21.41 | +0.2729 / +0.0021 | -5.21 | 1.488 |
 | full residual, window sigma | 24.4 | -5.401 | -2.168 | +1.29 / +16.78 | +0.0827 / +0.0252 | +1018.52 | 4.450 |
-| full residual, window sigma | 34.6 | +0.734 | -1.918 | +32.40 / +7.56 | -0.0505 / -0.0008 | -12.81 | 2.609 |
-| full residual, window sigma | 64.9 | -3.138 | -1.637 | +11.25 / -6.50 | -0.1816 / +0.0002 | +3.01 | 2.990 |
-| historical round 1, full residual (pre-check) | 34.8 | -3.397 | -3.246 | +1.01 / -88.45 | -0.8345 / -0.0009 | +56.83 | 2.637 |
+| full residual, window sigma | 34.8 | -3.397 | -3.246 | +1.01 / -88.45 | -0.8345 / -0.0009 | +56.83 | 2.637 |
+| full residual, window sigma | 63.6 | -2.582 | -1.580 | +4.52 / -49.06 | -0.4910 / +0.0086 | -1.11 | 3.325 |
 | shipped | 22.4 | -0.080 | -0.082 | -0.28 / -0.68 | -0.0297 / -0.0006 | -41.57 | 0.312 |
 | shipped | 44.3 | +0.388 | -0.083 | +0.06 / -3.36 | -0.0405 / -0.0009 | -5.56 | 0.291 |
 | shipped | 63.9 | +0.481 | -0.092 | -0.53 / -0.67 | -0.0107 / -0.0020 | -2.06 | 0.297 |
 
 **10c, interaction with ADR-019.** The forms that anchor the tilt at the window's information
 or more (full residual window sigma, direction only, shipped) end with a smaller `E` yaw error
-than main over seeds 42..46: medians 2.68, 3.50 and 3.53 mrad against 5.28 mrad. The looser
+than main over seeds 42..46: medians 1.80, 3.50 and 3.53 mrad against 5.28 mrad. The looser
 or over-tight forms do not (full residual sigma / 10: 5.95; x 3: 4.50; x 10: 5.28 mrad). So the
 factor does not move error into `E`'s yaw.
 
@@ -532,10 +533,10 @@ at keyframe 0, not each term, and the solution can slide along the null mode.
 
 In seed 42 a transient yaw excursion of `E` during the early alignment (1018 mrad at 24 s, the
 track is still short and straight) is followed by a slide:
-- in round 1, to -88 mrad of pitch with `ba_x` -0.83 m/s^2 (`g * 0.088 = 0.87`, 8 sigma of the
-  bias prior) and 3.2 m of z error;
-- at the head of the branch (consistency check present), to +32 mrad of roll at 35 s instead,
-  with 1.9 m of z error.
+to -88 mrad of pitch with `ba_x` -0.83 m/s^2 (`g * 0.088 = 0.87`, 8 sigma of the bias prior)
+and 3.2 m of z error at 35 s, as in round 1. (With the consistency check at keyframe 5 the
+factor is removed in this seed and the run slides to +32 mrad of roll instead, 1.9 m of z
+error: the path is chaotic.)
 
 The path along the null mode is chaotic; its size is the point. Without the factor the same
 mode also moves (+30 mrad, `ba_x` +0.24 m/s^2 at 44 s), less in this seed. The full residual at
@@ -559,23 +560,22 @@ Five seeds were not enough: main's GNSS-corridor ATE is heavy-tailed (0.54 to 27
 Lower is better everywhere. The IMU-only rows also report the along-x RMS of every published
 estimate and the largest `|x err(t)| / sigma_DR(t)` (over `T >= 2 s`), not only the end error.
 
-| metric | main | full residual, window sigma (gate 7.815) | shipped, scale 1 | scale 1.5 | **scale 2 (shipped)** | scale 3 |
+| metric | main | full residual, window sigma | scale 1 | scale 1.5 | **scale 2 (shipped)** | scale 3 |
 | --- | --- | --- | --- | --- | --- | --- |
-| GNSS corridor ATE (m) | 3.03 (27.9) | 3.72 (37.3), 7/8, [-6.83, +3.53] | 2.44 (16.6), 9/6, [-20.20, +2.29] | 2.95 (35.7), 9/6, [-19.41, +0.55] | 1.85 (11.3), 8/7, [-20.77, +1.23] | 2.14 (33.3), 8/7, [-6.81, +1.50] |
-| LiDAR-only corridor ATE (m) | 24.9 (64.0) | 31.1 (105), 8/7, [-15.11, +14.88] | 21.4 (168), 9/6, [-14.21, +9.85] | 28.9 (74.4), 9/6, [-14.01, +26.73] | 37.5 (107), 6/9, [-11.04, +21.58] | 26.5 (89.5), 8/7, [-11.51, +10.97] |
-| box NEES (exp. 6) | 7.49 (13.3) | 9.6 (15.3), 3/12, [+0.31, +3.86] | 9.42 (15.3), 5/10, [-0.00, +4.28] | 8.49 (13.5), 5/10, [-0.51, +2.75] | 8.57 (12.5), 6/9, [-0.39, +2.09] | 7.51 (11.5), 8/7, [-0.68, +1.04] |
-| circle \|end x err\| (m) | 21.7 (224) | 2.08 (8.88), 14/1, [-84.71, -0.75] | 3.64 (6.94), 13/2, [-83.48, -4.09] | 2.83 (14.2), 12/3, [-82.07, -0.05] | 1.45 (7.02), 14/1, [-83.37, -0.94] | 2.15 (11.4), 12/3, [-80.13, -0.06] |
-| circle along-x RMS (m) | 11.6 (99.3) | 1.15 (3.12), 15/0, [-34.30, -3.60] | 1.31 (4.25), 14/1, [-34.16, -6.10] | 1.22 (5.77), 15/0, [-33.78, -4.83] | 1.36 (2.84), 15/0, [-33.79, -4.74] | 1.87 (4.33), 13/2, [-33.26, -3.79] |
-| circle max \|x\|/sigma_DR(t) | 79.5 (349) | 6.4 (24.8), 15/0, [-159.37, -26.86] | 6.07 (25.7), 15/0, [-161.35, -33.32] | 5.88 (20.3), 15/0, [-159.90, -30.95] | 7.09 (23.8), 15/0, [-147.85, -23.56] | 12.4 (22.7), 15/0, [-157.76, -23.38] |
-| straight \|end x err\| (m) | 3.56 (66.5) | 1.32 (7.25), 11/4, [-5.73, +0.63] | 1.86 (12.9), 10/5, [-5.24, +1.38] | 1.27 (5.62), 11/4, [-5.90, -0.50] | 2.72 (6.28), 10/5, [-6.43, +1.19] | 4.14 (14.6), 8/7, [-2.66, +1.78] |
-| straight along-x RMS (m) | 1.85 (23.8) | 0.85 (3.21), 11/4, [-3.06, -0.32] | 0.79 (5.16), 12/3, [-2.21, -0.17] | 1.06 (2.58), 11/4, [-2.21, -0.06] | 1.34 (3.07), 12/3, [-2.19, -0.17] | 1.3 (4.66), 10/5, [-1.10, +0.32] |
-| straight max \|x\|/sigma_DR(t) | 8.35 (95.7) | 4.11 (12.2), 11/4, [-13.75, -1.92] | 4.25 (18.3), 12/3, [-7.04, -0.85] | 6.33 (11.7), 12/3, [-9.41, -1.60] | 6.72 (11.8), 12/3, [-10.54, -1.32] | 7.58 (20.8), 11/4, [-9.80, -1.15] |
+| GNSS corridor ATE (m) | 3.03 (27.9) | 4.15 (32.6), 8/7, [-5.55, +3.41] | 2.44 (27.2), 9/6, [-20.20, +2.29] | 3.28 (35.7), 9/6, [-19.41, +0.55] | **1.85 (18.5), 8/7, [-19.60, +1.23]** | 2.14 (34.8), 8/7, [-6.81, +1.50] |
+| LiDAR-only corridor ATE (m) | 24.9 (64.0) | 31.1 (76.0), 7/8, [-15.11, +30.77] | 21.4 (73.1), 9/6, [-14.21, +5.51] | 28.9 (128), 9/6, [-14.01, +23.97] | **38.3 (205), 6/9, [-11.04, +30.80]** | 26.5 (89.5), 8/7, [-11.51, +10.97] |
+| box NEES (exp. 6) | 7.49 (13.3) | 9.6 (15.3), 3/12, [+0.31, +3.86] | 9.42 (15.3), 5/10, [-0.00, +4.28] | 8.49 (13.5), 5/10, [-0.51, +2.75] | **8.57 (12.5), 6/9, [-0.39, +2.09]** | 7.51 (11.5), 8/7, [-0.68, +1.04] |
+| circle \|end x err\| (m) | 21.7 (224) | 2.08 (8.88), 13/2, [-84.71, -0.40] | 2.97 (6.7), 13/2, [-83.48, -4.09] | 2.83 (14.2), 12/3, [-82.07, -0.05] | **1.45 (7.02), 14/1, [-83.37, -0.94]** | 2.15 (11.4), 12/3, [-80.13, -0.06] |
+| circle along-x RMS (m) | 11.6 (99.3) | 1.15 (3.12), 15/0, [-34.30, -3.60] | 1.31 (3.73), 15/0, [-34.16, -6.10] | 1.22 (5.77), 15/0, [-33.78, -4.83] | **1.36 (2.84), 15/0, [-33.79, -4.74]** | 1.87 (4.33), 13/2, [-33.26, -3.79] |
+| circle max \|x\|/sigma_DR(t) | 79.5 (349) | 6.4 (18.4), 15/0, [-159.37, -26.86] | 6.07 (20.2), 15/0, [-161.35, -33.32] | 5.88 (20.3), 15/0, [-159.90, -30.95] | **7.09 (23.8), 15/0, [-147.85, -23.56]** | 12.4 (22.7), 15/0, [-157.76, -23.38] |
+| straight \|end x err\| (m) | 3.56 (66.5) | 1.72 (6.92), 11/4, [-5.73, +0.27] | 1.86 (23.6), 10/5, [-5.24, +0.46] | 1.29 (5.62), 10/5, [-5.90, +0.25] | **2.72 (6.28), 10/5, [-6.43, +1.19]** | 3.85 (14.6), 8/7, [-2.66, +1.78] |
+| straight along-x RMS (m) | 1.85 (23.8) | 0.85 (2.63), 11/4, [-3.06, -0.32] | 0.79 (8.88), 12/3, [-2.21, -0.17] | 1.06 (2.58), 11/4, [-2.21, -0.06] | **1.34 (3.07), 12/3, [-2.19, -0.17]** | 1.3 (4.43), 10/5, [-1.10, +0.32] |
+| straight max \|x\|/sigma_DR(t) | 8.35 (95.7) | 4.11 (11.4), 11/4, [-13.75, -1.92] | 4.25 (35.8), 12/3, [-10.04, -0.85] | 6.33 (11.7), 12/3, [-9.41, -1.60] | **6.64 (11.8), 12/3, [-10.54, -1.32]** | 7.58 (20.8), 11/4, [-9.80, -1.15] |
 
-Regenerated in fix round 2 with the innovation statistic of the consistency check
-(`results/imu-fr2`). Against fix round 1 only cells of runs whose factor the check now
-removes changed (10g); for the shipped scale 2 only the straight corridor's maximum ratio
-(6.64 -> 6.72). How often the check removed the factor, per scene, is in 10g. The tables
-with every CI and the per-seed values are in `imu_round2_seeds.md`.
+Regenerated in fix round 3 (`results/imu-fr3`), every column at the shipped configuration
+with the consistency check off. The shipped column equals round 2 seed for seed. The check
+evaluated as a knob (on at keyframe 5) is in 10g. The tables with every CI and the per-seed
+values are in `imu_round2_seeds.md`.
 
 **Mid-run excursions (I-2).** For the shipped form the circle's end error (median 1.45 m) and
 RMS (1.36 m) are close to dead reckoning, but the largest `|x err(t)| / sigma_DR(t)` has a
@@ -596,14 +596,14 @@ cuts the RMS by 8x (11.6 -> 1.36 m). It does not stop the mid-run wander, which 
 sigma_DR. That is a known gap (ADR-020).
 
 **Choice of scale 2.** The GNSS-corridor and LiDAR-only medians are not monotonic in the scale
-(GNSS 2.44 / 2.95 / 1.85 / 2.14 m at 1 / 1.5 / 2 / 3), and every CI contains 0. Within the
+(GNSS 2.44 / 3.28 / 1.85 / 2.14 m at 1 / 1.5 / 2 / 3), and every CI contains 0. Within the
 spread of 15 seeds, no scale is better or worse than main on the 60 s corridors: "not worse
 within the spread", not "better". That includes the LiDAR-only 60 s corridor at scale 2, where
-the median is higher (37.5 against 24.9 m, 6 wins / 9 losses, CI [-11.0, +21.6]).
+the median is higher (38.3 against 24.9 m, 6 wins / 9 losses, CI [-11.0, +30.8]).
 
 The choice therefore rests on the box NEES and the IMU-only scenes, where the CIs exclude 0:
 - scale 1 raises NEES the most (9.42; 1.5: 8.49; 2: 8.57; 3: 7.51);
-- scale 3 gives back the straight corridor (median 4.14 m, 8 wins / 7 losses) and doubles the
+- scale 3 gives back the straight corridor (median 3.85 m, 8 wins / 7 losses) and doubles the
   circle's mid-run ratio (12.5);
 - scale 2 has the best circle end error (14 wins / 1 loss), a straight corridor better than
   main on RMS and maximum ratio (CIs exclude 0), and a NEES CI that contains 0
@@ -613,7 +613,7 @@ The choice therefore rests on the box NEES and the IMU-only scenes, where the CI
 
 **Known gap: the straight corridor misses 3 sigma_DR.** Its median end error at scale 2 is
 2.72 m = 3.9 sigma_DR (the brief's target is 3 sigma_DR = 2.11 m), and the mid-run maximum
-ratio has a median of 6.7. The component test asserts the median of seeds 42..44:
+ratio has a median of 6.6. The component test asserts the median of seeds 42..44:
 - |end| <= 1.86 m and RMS <= 1.88 m, twice the measured 0.93 m and 0.94 m;
 - the same seeds without the factor give 6.90 m and 3.52 m, so this half of the test also
   fails with the factor off (the circle half is the stronger distinction: 84.8 m and 34.7 m
@@ -656,37 +656,48 @@ The round-2 p95 rise (+5 to 9 %) is not reproduced. Splitting the per-scan time 
 So the factor adds no per-scan or iSAM2 cost; the round-2 difference was run-to-run variation
 of the separate bench processes.
 
-### 10g. The consistency check per scene (fix round 2)
+### 10g. The consistency check: evaluated, shipped off
 
-Every scene of 10e starts at rest (the box world's still phase), so every removal below is a
-removal of a factor whose window was at rest. Count of removed / not evaluated
-(`n_gravity_factor_removed` / `n_gravity_factor_unchecked`) over the 15 seeds:
+The check (section 12) ships off (`backend.static_gravity_check_keyframes: 0`). This section
+is its evaluation as a knob: the same 15 seeds with the check on at keyframe 5. Every scene
+starts at rest (the box world's still phase), so every removal below removes a factor whose
+window was at rest. Removed / not evaluated (`n_gravity_factor_removed` /
+`n_gravity_factor_unchecked`):
 
 | variant | GNSS 60 s corridor | LiDAR-only 60 s corridor | box NEES | IMU-only circle | IMU-only straight |
 | --- | --- | --- | --- | --- | --- |
-| full residual, window sigma (gate 7.815) | 6 / 0 | 2 / 0 | 0 / 0 | 1 / 0 | 3 / 0 |
-| shipped form, scale 1 | 4 / 0 | 3 / 0 | 0 / 0 | 1 / 0 | 4 / 0 |
-| shipped form, scale 1.5 | 2 / 0 | 2 / 0 | 0 / 0 | 0 / 0 | 2 / 0 |
-| **shipped form, scale 2** | **6 / 0** | **2 / 0** | **0 / 0** | **0 / 0** | **2 / 0** |
-| shipped form, scale 3 | 2 / 0 | 1 / 0 | 0 / 0 | 0 / 0 | 1 / 0 |
-| scale 2, posterior statistic (fix round 1, study seam) | 6 / 0 | 2 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
-| scale 2, no check (round 2) | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| **scale 2, check off (shipped)** | **0 / 0** | **0 / 0** | **0 / 0** | **0 / 0** | **0 / 0** |
+| scale 2, check at 5 (innovation) | 6 / 0 | 2 / 0 | 0 / 0 | 0 / 0 | 2 / 0 |
+| scale 2, check at 5 (posterior statistic, fix round 1) | 6 / 0 | 2 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| scale 1, check at 5 | 4 / 0 | 3 / 0 | 0 / 0 | 1 / 0 | 4 / 0 |
+| full residual, check at 5 (gate 7.815) | 6 / 0 | 2 / 0 | 0 / 0 | 1 / 0 | 3 / 0 |
 
-**The check fires at rest.** With the shipped factor it removed it in 10 of the 73 runs where
-it ran (two straight runs, seeds 52 and 56, never reach 5 keyframes): 6 of 15 in the GNSS
-corridor (statistic 37 to 147), 2 of 15 in the LiDAR-only corridor (30, 49), 2 of 13 in the
-straight IMU-only corridor (24, 14), none in the box world or the circle. That is about 14 %
-overall and 40 % in the GNSS corridor, against the 5 % a chi-square(2) statistic would give.
-The statistic is chi-square(2) only if the rest of the graph is consistent with its own
-covariance at keyframe 5. It is not in these scenes: the LiDAR factors are over-confident
-(box NEES 8.57 against 6, a factor 1.4), and in the GNSS corridor the frame variable `E` is
-still aligning on a short straight track (10c). The removals are the check reacting to the
-rest of the graph, not to motion in the window. The not-evaluated count is 0 everywhere:
-the smallest eigenvalue of `S` was 0.013 to 0.66 in the scenes measured.
+With the check on at scale 2 it removed the factor in 10 of the 73 runs where it ran (two
+straight runs, seeds 52 and 56, never reach 5 keyframes): about 14 % overall and 40 % in the
+GNSS corridor, against the 5 % of a chi-square(2) statistic. The statistic at those rest
+removals (37 to 147 in the GNSS corridor, 14 to 49 elsewhere) overlaps its values at the
+moving starts of section 12 (38 to 233), so no gate separates the two. The not-evaluated
+count is 0 everywhere (smallest eigenvalue of `S` 0.013 to 0.66).
 
-Effect of these removals (shipped scale 2 against the same factor with no check, per seed):
+The 15-seed tables with the check on (paired against main, as in 10e):
 
-| scene | seed | removed at | ATE or error, no check -> shipped |
+| metric | main | **scale 2, check off (shipped)** | scale 2, check at 5 (innovation) | scale 2, check at 5 (posterior, fix round 1) | scale 1, check at 5 | full residual, check at 5 (gate 7.815) |
+| --- | --- | --- | --- | --- | --- | --- |
+| GNSS corridor ATE (m) | 3.03 (27.9) | **1.85 (18.5), 8/7, [-19.60, +1.23]** | 1.85 (11.3), 8/7, [-20.77, +1.23] | 1.85 (11.3), 8/7, [-20.77, +1.23] | 2.44 (16.6), 9/6, [-20.20, +2.29] | 3.72 (37.3), 7/8, [-6.83, +3.53] |
+| LiDAR-only corridor ATE (m) | 24.9 (64.0) | **38.3 (205), 6/9, [-11.04, +30.80]** | 37.5 (107), 6/9, [-11.04, +21.58] | 37.5 (107), 6/9, [-11.04, +21.58] | 21.4 (168), 9/6, [-14.21, +9.85] | 31.1 (105), 8/7, [-15.11, +14.88] |
+| box NEES (exp. 6) | 7.49 (13.3) | **8.57 (12.5), 6/9, [-0.39, +2.09]** | 8.57 (12.5), 6/9, [-0.39, +2.09] | 8.57 (12.5), 6/9, [-0.39, +2.09] | 9.42 (15.3), 5/10, [-0.00, +4.28] | 9.6 (15.3), 3/12, [+0.31, +3.86] |
+| circle \|end x err\| (m) | 21.7 (224) | **1.45 (7.02), 14/1, [-83.37, -0.94]** | 1.45 (7.02), 14/1, [-83.37, -0.94] | 1.45 (7.02), 14/1, [-83.37, -0.94] | 3.64 (6.94), 13/2, [-83.48, -4.09] | 2.08 (8.88), 14/1, [-84.71, -0.75] |
+| circle along-x RMS (m) | 11.6 (99.3) | **1.36 (2.84), 15/0, [-33.79, -4.74]** | 1.36 (2.84), 15/0, [-33.79, -4.74] | 1.36 (2.84), 15/0, [-33.79, -4.74] | 1.31 (4.25), 14/1, [-34.16, -6.10] | 1.15 (3.12), 15/0, [-34.30, -3.60] |
+| circle max \|x\|/sigma_DR(t) | 79.5 (349) | **7.09 (23.8), 15/0, [-147.85, -23.56]** | 7.09 (23.8), 15/0, [-147.85, -23.56] | 7.09 (23.8), 15/0, [-147.85, -23.56] | 6.07 (25.7), 15/0, [-161.35, -33.32] | 6.4 (24.8), 15/0, [-159.37, -26.86] |
+| straight \|end x err\| (m) | 3.56 (66.5) | **2.72 (6.28), 10/5, [-6.43, +1.19]** | 2.72 (6.28), 10/5, [-6.43, +1.19] | 2.72 (6.28), 10/5, [-6.43, +1.19] | 1.86 (12.9), 10/5, [-5.24, +1.38] | 1.32 (7.25), 11/4, [-5.73, +0.63] |
+| straight along-x RMS (m) | 1.85 (23.8) | **1.34 (3.07), 12/3, [-2.19, -0.17]** | 1.34 (3.07), 12/3, [-2.19, -0.17] | 1.34 (3.07), 12/3, [-2.19, -0.17] | 0.79 (5.16), 12/3, [-2.21, -0.17] | 0.85 (3.21), 11/4, [-3.06, -0.32] |
+| straight max \|x\|/sigma_DR(t) | 8.35 (95.7) | **6.64 (11.8), 12/3, [-10.54, -1.32]** | 6.72 (11.8), 12/3, [-10.54, -1.32] | 6.64 (11.8), 12/3, [-10.54, -1.32] | 4.25 (18.3), 12/3, [-7.04, -0.85] | 4.11 (12.2), 11/4, [-13.75, -1.92] |
+
+The check leaves every median unchanged against the shipped column. It shortens the tails of
+the 60 s corridors (GNSS max 18.5 -> 11.3 m, LiDAR-only 205 -> 107 m) and costs two straight
+runs 0.6 to 1.3 m at the end. Per seed (scale 2, check off -> check at 5):
+
+| scene | seed | statistic | ATE or error, check off -> on |
 | --- | --- | --- | --- |
 | GNSS corridor | 48 | 147.3 | 4.84 -> 4.96 m |
 | GNSS corridor | 51 | 77.8 | 3.30 -> 3.61 m |
@@ -699,33 +710,56 @@ Effect of these removals (shipped scale 2 against the same factor with no check,
 | straight IMU-only | 48 | 23.8 | end 4.11 -> 5.37 m, RMS 1.64 -> 2.36 m |
 | straight IMU-only | 50 | 13.8 | end 4.53 -> 5.13 m, RMS 1.74 -> 1.67 m |
 
-Every median is unchanged (GNSS 1.85 m, LiDAR-only 37.5 against 38.3 m, straight 2.72 m and
-1.34 m); the tails of the 60 s corridors shrink (GNSS max 18.5 -> 11.3 m, LiDAR-only 205 ->
-107 m) and two straight runs get 0.6 to 1.3 m worse at the end. So the check at rest costs
-little, and on the long corridors it removes a factor that the drifting rest of the graph
-would otherwise fight.
+**Why it fires at rest: isolation** (`ImuStaticGravityCheckIsolation`, `imu_check_isolation.md`;
+GNSS corridor scene, scale 2, check at 5, 15 seeds):
+
+| scene | removed (of 15) | ATE median (max) (m) |
+| --- | --- | --- |
+| GNSS on, `scan_match.cov_scale` 4.7 (shipped scene) | 6 | 1.85 (11.3) |
+| (a) GNSS off, cov_scale 4.7 | 2 | 37.5 (107) |
+| (b) GNSS on, cov_scale 6.7 (box LiDAR NEES 8.57 -> 6.22) | 5 | 2.46 (33.0) |
+| (a) and (b): GNSS off, cov_scale 6.7 | 2 | 20.9 (251) |
+
+- (b) brings the LiDAR factors to a consistent box NEES (median 6.22 over 15 seeds, 4.7 x
+  8.57 / 6 = 6.7) and changes the removals by one (6 -> 5 with GNSS, 2 -> 2 without). LiDAR
+  over-confidence, as the box NEES measures it, does not explain the removals.
+- (a) turning GNSS off prevents 4 of the 6 removals: seeds 51, 53, 54 and 55 keep the factor,
+  48 and 52 are still removed (statistic 29.8 and 48.9). The GNSS side, with `E` still aligning at keyframe 5 on a
+  short straight track (10c: `E` yaw excursions of up to 1 rad at 24 s in seed 42), is the
+  larger cause.
+- Neither isolates the rest: without GNSS and with consistent LiDAR covariances, 2 of 15 runs
+  (statistic 34.8 and 10.7) are still removed, 13 % against 5 %. The corridor's own null mode
+  (the tilt about the axis normal to x that the LiDAR cannot see, sections 8 and 11) is the
+  likely remainder: there the LiDAR chain carries tilt with a covariance that does not see
+  it. That was not isolated further.
 
 **Round 2 -> fix round 1 shifts (N-2 of the re-review).** Two numbers moved between round 2
 and fix round 1, where the gate and the check were the only product changes for a start at
 rest:
-- **GNSS-corridor max 18.54 -> 11.32 m (scale 2).** The "no check" variant reproduces round
-  2 exactly (every per-seed value), and the "posterior statistic" variant reproduces fix
-  round 1 exactly. Fix round 1's posterior statistic removed the factor in seeds 48, 51, 52,
-  53, 54 and 55 (statistic 37.3, 8.6, 7.7, 12.1, 7.1, 15.8), the same six seeds the
-  innovation statistic removes; seed 53 holds the maximum (18.54 -> 11.32 m). The median
-  seed is not among them, so the median stayed at 1.85 m. Fix round 1's "0 of 90 IMU-only
-  runs" was true and did not cover these corridor runs.
+- **GNSS-corridor max 18.54 -> 11.32 m (scale 2).** The check-off column reproduces round 2
+  exactly (every per-seed value), and the "posterior statistic" variant reproduces fix round
+  1 exactly. Fix round 1's posterior statistic removed the factor in seeds 48, 51, 52, 53, 54
+  and 55 (statistic 37.3, 8.6, 7.7, 12.1, 7.1, 15.8), the same six seeds the innovation
+  statistic removes; seed 53 holds the maximum (18.54 -> 11.32 m). The median seed is not
+  among them, so the median stayed at 1.85 m. Fix round 1's "0 of 90 IMU-only runs" was true
+  and did not cover these corridor runs.
 - **Scale-1 direction-only median 1.99 -> 2.44 m.** Not the check: round 2's row "direction
   only, window sigma" was another factor, the full 3x1 residual with (1 km/s^2)^2 added along
   `f_b` through the covariance hook (an approximation of the direction-only form). Fix round
   1 put the projected product factor at scale 1 in that row. The projected factor gives 2.44
-  m with no check and with the posterior check (which removed it only in seed 55, at 7.3,
-  without moving the median), and 2.44 m (max 16.6 m) with the innovation check (4 removals).
+  m with the check off and with the posterior check (which removed it only in seed 55, at
+  7.3, without moving the median).
 
 Innovation against posterior statistic (scale 2): the same corridor removals, plus the two
 straight IMU-only seeds (innovation 23.8 and 13.8 where the posterior statistic was 3.8 and
 3.5). On the starts in motion of section 12 the innovation is 1.1 to 2.5 times the posterior
-statistic. The 5-seed rows of 10a/b/d are unchanged except "full residual, sigma / 10".
+statistic.
+
+**Decision.** The check cannot tell a start in motion from a rest of the graph that is not
+yet consistent at keyframe 5, and the factor it is meant to remove costs little when it is
+wrong (section 12: at most +2.2 % ATE at the accelerating starts, because the initializer's
+`R_w_b` comes from the same window mean). The rest gate stays on; the check ships off and
+stays as an evaluated knob with its counters.
 
 ## 11. Tilt wander over long runs
 
@@ -749,15 +783,15 @@ on the shared map, so consecutive errors largely cancel. The wander grows once t
 its 21.6 m ATE.
 
 With the shipped form the median keyframe tilt is 2.0 mrad at 60 s over these five seeds. Over
-15 seeds (10e) its LiDAR-only ATE median is 37.5 m against 24.9 m for main, 6 wins / 9
-losses, CI [-11.0, +21.6]: within the spread, but the factor does not make the long LiDAR-only
+15 seeds (10e) its LiDAR-only ATE median is 38.3 m against 24.9 m for main, 6 wins / 9
+losses, CI [-11.0, +30.8]: within the spread, but the factor does not make the long LiDAR-only
 run better.
 
 A periodic re-anchor is the follow-up: a weak gravity-direction factor on the keyframe in each
 later window the `imu.init_*` thresholds and the rest gate accept as static. It does not help
 in these corridors, which never stop, so it is not implemented here.
 
-## 12. Rest precondition: rest gate and consistency check (fix round 1, I-1)
+## 12. Rest precondition: rest gate (on) and consistency check (evaluated, off)
 
 The factor reads the init window as "body at rest". The initializer accepts a window on
 per-axis std only, so a constant-rate turn (centripetal 0.125 m/s^2 at 0.5 m/s on R = 2 m, a
@@ -775,38 +809,42 @@ Two guards (keys under `imu` and `backend`, validated by `load_config`):
 | wheel speed (when `wheel_odom.enabled`) | <= `imu.init_max_wheel_speed_mps` over the window | 0.1 m/s, above the noise at rest (10f) |
 | specific-force magnitude | `\|\|f\| - g\|` <= `imu.init_gravity_check_sigma` x sqrt(u^T C u + prior_bias_acc^2) | factor 3; weak, since a horizontal acceleration changes `\|f\|` only to second order |
 
-**Consistency check, after keyframe `backend.static_gravity_check_keyframes` (5).** If the
-factor's innovation statistic against the rest of the graph (`backend_factors.md` section 6c)
-exceeds `backend.static_gravity_chi2_gate` (5.991, chi-square 2 DoF at 0.95), it is removed
-from iSAM2 (`removeFactorIndices`), counted in `Stats::n_gravity_factor_removed` (and
-`bench.json`), and one warning is logged. A failed removal leaves the factor (warning, no
-retry); a statistic that cannot be evaluated leaves it too
-(`Stats::n_gravity_factor_unchecked`).
+**Consistency check, shipped off** (`backend.static_gravity_check_keyframes: 0`; a value
+> 0 turns it on at that keyframe). When on, if the factor's innovation statistic against the
+rest of the graph (`backend_factors.md` section 6c) exceeds `backend.static_gravity_chi2_gate`
+(5.991, chi-square 2 DoF at 0.95), the factor is removed from iSAM2 (`removeFactorIndices`),
+counted in `Stats::n_gravity_factor_removed` (and `bench.json`), and one warning is logged. A
+failed removal leaves the factor (warning, no retry); a statistic that cannot be evaluated
+leaves it too (`Stats::n_gravity_factor_unchecked`).
 
 Fix round 1 used the posterior residual `|W r|^2` at the estimate, after the factor had
 pulled tilt and bias. Its expected value at rest is `2 - leverage`, below 2, so 5 % was an
 upper bound on its false-removal rate and its power against a window in motion was lower.
 The innovation statistic is chi-square(2) at rest when the rest of the graph is consistent.
 
-The check needs keyframes: 10, the value first proposed, was never reached in a 20 s
-slow-start run (8 to 9 keyframes), so it is 5. Measured at rest (10g): no removal in the box
-world, the circle or E-01..E-03, but 6 of 15 in the GNSS corridor, 2 of 15 in the LiDAR-only
-corridor and 2 of 13 in the straight corridor, because the rest of the graph is not
-consistent there at keyframe 5. The medians are unchanged by those removals.
+Keyframe 5 when on: 10, the value first proposed, was never reached in a 20 s slow-start run
+(8 to 9 keyframes). Why it ships off (10g): at rest it removed the factor in 6 of 15 GNSS-
+corridor runs, 2 of 15 LiDAR-only and 2 of 13 straight runs (none in the box world, the circle
+or E-01..E-03), with statistics (14 to 147) that overlap those of the starts in motion below
+(38 to 233).
 
 Component tests, `PipelineComponent.GravityFactor*`, box world without the still phase,
 LiDAR + IMU:
 
-| start | factor off ATE (m) | shipped ATE (m) | what happened |
-| --- | --- | --- | --- |
-| circle from t = 0 (0.25 rad/s turn) | 1.0017 | 1.0017 | gated (mean gyro) |
-| same, gyro bound opened to 1 rad/s | 1.0017 | 1.0006 | added, innovation 106.7 at the check (posterior 43.0), removed |
-| straight, 6 s speed ramp from t = 0 (mean a 0.06 m/s^2 in the window) | 0.1043 | 0.1025 | added, innovation 38.1 (posterior 28.9), removed |
-| straight, 2 s speed ramp (mean a 0.25 m/s^2) | 0.5465 | 0.5575 (+2 %) | added, innovation 233 (posterior 207), removed |
+| start | factor off ATE (m) | shipped (check off) ATE (m) | check at 5 ATE (m) | what happened |
+| --- | --- | --- | --- | --- |
+| circle from t = 0 (0.25 rad/s turn) | 1.0017 | 1.0017 | - | gated (mean gyro) |
+| same, gyro bound opened to 1 rad/s | 1.0017 | - | 1.0006 | check at 5: innovation 106.7 (posterior 43.0), removed |
+| straight, 6 s speed ramp from t = 0 (mean a 0.06 m/s^2 in the window) | 0.1043 | 0.1028 (-1.4 %) | 0.1025 | shipped: added and kept; check at 5: innovation 38.1 (posterior 28.9), removed |
+| straight, 2 s speed ramp (mean a 0.25 m/s^2) | 0.5465 | 0.5584 (+2.2 %) | 0.5575 | shipped: added and kept; check at 5: innovation 233 (posterior 207), removed |
 
-The tests assert that the factor is gated or removed and that the ATE is at most 1.1x the
-factor-off ATE (the 1.0001x in the gated case). A start in motion stays a start in motion: the
-ATE without the factor is already 0.1 to 1 m, because the initial velocity is taken as zero.
+`GravityFactorTurningStartGated` and `GravityFactorAcceleratingStartKeptCostsLittle` assert
+the shipped behaviour (gated; kept with ATE within +5 % of the factor-off run);
+`GravityFactorCheckRemovesMovingStarts` asserts the removals with the check at 5. A wrong
+factor at an accelerating start costs at most +2.2 % because the initializer's `R_w_b` comes
+from the same window mean: the run starts with the same tilt with or without the factor. A
+start in motion stays a start in motion: the ATE without the factor is already 0.1 to 1 m,
+because the initial velocity is taken as zero.
 
 **Limitation: a start the guards cannot see.** A steady straight acceleration from t = 0, in
 a scene that does not observe the travel axis, without wheel odometry:
@@ -831,12 +869,13 @@ stays a precondition that the guards do not fully enforce (ADR-020).
 - mid-run excursions of up to 24 sigma_DR(t) (circle median of the maximum 7.1) with transient
   tilt errors of 8 to 11 mrad;
 - the straight corridor's 3 sigma_DR target (median 3.9 sigma_DR);
-- the long-run tilt wander through the LiDAR chain (60 s LiDAR-only corridor, median 37.5 m
+- the long-run tilt wander through the LiDAR chain (60 s LiDAR-only corridor, median 38.3 m
   against 24.9 m, within the spread);
 - the backend consistency defect of the exploratory controls (`BetweenFactor<Pose3>`'s
   approximate Jacobian, x-removed no-feedback control at +5772 m with sigma 14 m). That is
   ADR-015's note and PR 4e;
 - a start in steady straight acceleration in a scene that does not observe the travel axis,
   without wheel odometry (section 12): undetectable, so starting at rest is a precondition;
-- the check's removals at rest where the rest of the graph is inconsistent at keyframe 5
-  (10g: 6 of 15 GNSS-corridor runs; medians unchanged).
+- a start in motion that the rest gate passes (a straight acceleration): the factor is kept,
+  at a measured cost of at most +2.2 % ATE; the consistency check that would remove it ships
+  off because it also fires at rest (10g).

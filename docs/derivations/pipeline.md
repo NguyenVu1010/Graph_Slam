@@ -173,8 +173,8 @@ gate: |mean gyro| <= `imu.init_max_mean_gyro_radps`, no wheel speed above
 after `t` already queued do not count), and
 ||f| - g| <= `imu.init_gravity_check_sigma` x sqrt(sigma_mean^2 + prior_bias_acc^2). A
 failure is logged and counted (`Stats::n_gravity_factor_gated`). After keyframe
-`backend.static_gravity_check_keyframes` is optimised, the factor is removed if its
-innovation statistic (`backend_factors.md` section 6c) exceeds
+`backend.static_gravity_check_keyframes` (> 0; default 0 = off, ADR-020) is optimised, the
+factor is removed if its innovation statistic (`backend_factors.md` section 6c) exceeds
 `backend.static_gravity_chi2_gate` (`Stats::n_gravity_factor_removed`, one warning). A
 failed removal leaves the factor (warning, no retry); a statistic that cannot be evaluated
 leaves it too (`Stats::n_gravity_factor_unchecked`, one info line).

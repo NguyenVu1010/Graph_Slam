@@ -194,14 +194,16 @@ end-point drift along a corridor axis the LiDAR cannot see to what the window me
 does not stop mid-run wander, and the straight 20 s corridor misses 3 sigma_DR: ADR-020)
 (`docs/derivations/imu_only_observability.md` sections 9, 10 and 12). **Start stationary**: the
 factor reads the init window as the body at rest. A start in motion that the initializer still
-accepts is caught by the rest gate (`imu.init_max_mean_gyro_radps`, `imu.init_max_wheel_speed_mps`,
-`imu.init_gravity_check_sigma`; counted in `n_gravity_factor_gated`) or, after
-`backend.static_gravity_check_keyframes` keyframes, by the innovation chi-square check
-(`backend.static_gravity_chi2_gate`), which removes the factor (`n_gravity_factor_removed`;
-`n_gravity_factor_unchecked` when it cannot be evaluated). The guards do not cover every
-start in motion: a steady straight acceleration from t = 0, in a scene that does not observe
-the travel axis and without wheel odometry, is undetectable (ADR-020), so starting at rest
-stays a precondition.
+accepts is caught by the rest gate when it turns or the wheels move
+(`imu.init_max_mean_gyro_radps`, `imu.init_max_wheel_speed_mps`, `imu.init_gravity_check_sigma`;
+counted in `n_gravity_factor_gated`). A steady straight acceleration passes the gate; the factor
+is then wrong but costs at most +2.2 % ATE in the tests, because the initializer's attitude
+comes from the same window, and in a scene that does not observe the travel axis no
+statistic can detect it (ADR-020): starting at rest stays a precondition. The innovation
+chi-square check `backend.static_gravity_check_keyframes` (default 0 = off; > 0 runs it at
+that keyframe against `backend.static_gravity_chi2_gate`, counters `n_gravity_factor_removed`
+and `n_gravity_factor_unchecked`) was evaluated and ships off: at rest it removed the factor
+in 6 of 15 GNSS-corridor runs, with statistics that overlap those of starts in motion.
 
 Plane-fit gates and map spacing (ADR-007 amendment), all evaluated and off by default (the
 shipped behaviour is bit-identical to main): `scan_match.plane_min_eig_ratio` (`[0, 1)`)

@@ -196,8 +196,8 @@ The window is used twice: the keyframe-0 rotation prior is centred on the initia
 mrad)^2) is about 0.2 % of the factor's at the shipped noise (1 / (0.84 mrad)^2), so the
 double count is negligible.
 
-Consistency check (ADR-020): after keyframe `backend.static_gravity_check_keyframes` is
-optimised, `Graph::static_gravity_chi2()` returns the factor's **innovation statistic**
+Consistency check (ADR-020; evaluated and shipped off, `backend.static_gravity_check_keyframes:
+0`): with a value > 0, after that keyframe is optimised, `Graph::static_gravity_chi2()` returns the factor's **innovation statistic**
 against the rest of the graph. In whitened units (`W` the factor's square-root
 information), with `e = W r` at the estimate, `J = W dr/d[X_k, B_k]`, `P` the joint marginal
 covariance of `(X_k, B_k)` with the factor and `P_rest` without it:
