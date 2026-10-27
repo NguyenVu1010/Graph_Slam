@@ -231,12 +231,16 @@ TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
     const fs::path sub = dir / (gnss ? "gnss" : "lidar_only");
     fs::create_directories(sub);
     {
+      // GNSS alone (no wheel: wheel speed would observe the corridor axis).
+      std::string yaml = test::box_overlay_yaml(p, false);
+      if (gnss) {
+        const std::string off = "    gnss:\n      enabled: false\n";
+        yaml.replace(yaml.find(off), off.size(), "    gnss:\n      enabled: true\n");
+      }
       std::ofstream f(sub / "overlay.yaml");
-      f << test::box_overlay_yaml(p, false)
+      f << yaml
         << "    preprocess:\n      max_range_m: 10.0\n"
-           "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n"
-           "    gnss:\n      enabled: "
-        << (gnss ? "true" : "false") << "\n";
+           "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n";
     }
     const auto cfg = load_config(kDefault, sub / "overlay.yaml");
     EXPECT_TRUE(cfg.is_ok()) << cfg.reason();

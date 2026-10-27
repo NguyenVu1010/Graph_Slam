@@ -39,7 +39,12 @@ mss_node:
       init_max_gyro_std_radps: 0.01    # max gyro std in the window to accept "static", rad/s
 
     gnss:
-      enabled: false
+      # On since PR 4a (docs/derivations/gnss_fusion_study.md, ADR-019, needs
+      # backend.gnss_frame_variable). ATE, GTSAM, same data: box world 0.0088 m LiDAR only,
+      # 0.0089 m with GNSS 0.5 m (was 0.0322 m); E-01 0.0028 m off, 0.0027 m on (was
+      # 0.0709 m); degenerate corridor 26.1 m LiDAR only, 1.93 m with GNSS. Evaluated with
+      # nominal fixes only (no multipath or outage zones yet).
+      enabled: true
       sigma_h_m: 1.5  # horizontal fix sigma, m
       sigma_v_m: 3.0  # vertical fix sigma, m
       max_cov_m2: 25.0  # gate: reject fixes whose per-axis variance exceeds this, m^2

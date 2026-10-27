@@ -281,8 +281,8 @@ inline common::Status write_box_dataset(const std::filesystem::path& dir, const 
   return w.finish();
 }
 
-// Overlay for config/default.yaml: the box world's extrinsics and, when asked, GNSS and
-// wheel odometry enabled.
+// Overlay for config/default.yaml: the box world's extrinsics and GNSS + wheel odometry
+// enabled when asked, else both disabled.
 inline std::string box_overlay_yaml(const BoxWorldParams& p, bool gnss_and_wheel) {
   const Eigen::Quaterniond q(p.T_b_l.R);
   char buf[1024];
@@ -306,9 +306,10 @@ inline std::string box_overlay_yaml(const BoxWorldParams& p, bool gnss_and_wheel
                 p.p_b_g.y(),
                 p.p_b_g.z());
   std::string out(buf);
-  if (gnss_and_wheel) {
-    out += "    gnss:\n      enabled: true\n    wheel_odom:\n      enabled: true\n";
-  }
+  // Both flags explicit: config/default.yaml enables GNSS (PR 4a).
+  out += gnss_and_wheel
+             ? "    gnss:\n      enabled: true\n    wheel_odom:\n      enabled: true\n"
+             : "    gnss:\n      enabled: false\n    wheel_odom:\n      enabled: false\n";
   return out;
 }
 
