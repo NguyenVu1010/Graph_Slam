@@ -118,7 +118,10 @@ drops reached the bench (fewer scans processed than the E-01 dataset holds), and
 within the E-01 threshold; PF-01 only warns when the per-scan p95 latency is 20 % above
 baseline. A `null` baseline passes with a note that prints the measured value. Each bench run
 is killed after `--timeout-s` (default 10 x the scenario duration), which fails that test. The
-bench is any command, so it can run in Docker or WSL; all paths are passed absolute. Locally on
+bench is any command, so it can run in Docker or WSL; all paths are passed absolute. A
+`{container}` in `--bench-cmd` (as in `docker run --rm --name {container} ...`) becomes
+`mss-bench-<run-id>-<test-id>`, and on a timeout the harness also runs `docker kill` on that
+name so the container does not keep running after its client is killed. Locally on
 Windows with the bench built in WSL:
 
 ```sh

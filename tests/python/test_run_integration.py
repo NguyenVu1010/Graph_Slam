@@ -11,11 +11,13 @@ import pytest
 import yaml
 
 from run_integration import (
+    BENCH_TIMEOUT,
     REORDER_NOTE,
     judge,
     judge_e03_drops,
     judge_latency,
     main,
+    run_bench,
     to_bench_path,
 )
 
@@ -276,3 +278,49 @@ def test_unexpected_exception_is_setup_error(
     monkeypatch.setattr(run_integration, "prepare", boom)
     out = tmp_path / "results"
     assert main(["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out)]) == 2
+
+
+_SLEEPER = "import time; time.sleep(5)"
+
+
+def _kill_recorder(marker: Path) -> list[str]:
+    """Stand-in for ``docker kill``: writes the container name it is given into ``marker``."""
+    code = "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])"
+    return [sys.executable, "-c", code, str(marker)]
+
+
+def test_timeout_without_container_kills_nothing(tmp_path: Path) -> None:
+    marker = tmp_path / "killed.txt"
+    cmd = [sys.executable, "-c", _SLEEPER]
+    data = tmp_path / "data"
+    data.mkdir()
+    code = run_bench(
+        cmd,
+        _REPO / "config/default.yaml",
+        data,
+        _REPO / "config/sim/warehouse.yaml",
+        tmp_path / "E-01",
+        "native",
+        0.5,
+        kill_cmd=_kill_recorder(marker),
+    )
+    assert code == BENCH_TIMEOUT
+    assert not marker.exists()
+
+
+def test_timeout_kills_the_container(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import run_integration
+
+    marker = tmp_path / "killed.txt"
+    monkeypatch.setattr(run_integration, "DOCKER_KILL", tuple(_kill_recorder(marker)))
+    cmd = shlex.join([Path(sys.executable).as_posix(), "-c", _SLEEPER, "--name", "{container}"])
+    out = tmp_path / "run 1"
+    argv = ["--bench-cmd", cmd, "--out", str(out), "--duration-s", "6", "--tests", "E-01"]
+    assert main([*argv, "--scenario", str(_scenario(tmp_path)), "--timeout-s", "0.5"]) == 1
+    res = json.loads((out / "integration.json").read_text(encoding="utf-8"))
+    assert res["E-01"]["bench_exit"] == BENCH_TIMEOUT and "timed out" in res["E-01"]["note"]
+    name = "mss-bench-run-1-E-01"  # sanitised: the space becomes '-'
+    assert marker.read_text() == name
+    assert name in res["E-01"]["note"]
+    log = (out / "E-01" / "bench.log").read_text(encoding="utf-8")
+    assert f"--name {name}" in log and "kill" in log

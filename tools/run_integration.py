@@ -18,7 +18,10 @@ Chain: synthetic bag -> noise bridge with the scenario -> ``bag_to_mssdata.py``;
 ``mutate_bag.py`` (``prep.mutate``; E-01: 5 % drops, 2 % reordering, seed 42) before the
 conversion. Each test replays
 its dataset with ``<bench-cmd> config/default.yaml <mssdata> --overlay <overlay> --out <dir>``
-(killed after ``--timeout-s``, default 10 x the scenario duration) and scores ``est.tum``
+(killed after ``--timeout-s``, default 10 x the scenario duration). ``{container}`` in the
+command becomes ``mss-bench-<run-id>-<test-id>`` (``<run-id>`` = the ``--out`` directory name);
+a timeout then also runs ``docker kill`` on that name, so the container does not outlive the
+killed ``docker run`` client. and scores ``est.tum``
 against the bridge's ``gt.tum`` with ``mss_eval.ate``.
 
 The bench is an external command (it may be ``docker run ... mss_bench`` or ``wsl -- ...``), so
@@ -50,6 +53,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -76,6 +80,9 @@ _EXIT_OK, _EXIT_INCOMPLETE = 0, 3  # mss_bench exit codes
 _E03_BENCH_OK = (_EXIT_OK, _EXIT_INCOMPLETE)
 # docker: daemon / image error (125); shell, wsl, docker: not executable (126) / not found (127)
 _SHELL_NOT_FOUND = (125, 126, 127)
+CONTAINER = "{container}"  # --bench-cmd placeholder for the bench container's name
+DOCKER_KILL = ("docker", "kill")  # run with the container name after a bench timeout
+_KILL_TIMEOUT_S = 30.0  # give up on docker kill after this long (logged)
 BENCH_TIMEOUT = 124  # bench_exit recorded when the bench was killed after --timeout-s
 REORDER_NOTE = "reordering is re-sorted by bag_to_mssdata.py; only drops reach the bench"
 EXIT_PASS, EXIT_FAIL, EXIT_SETUP = 0, 1, 2
@@ -183,6 +190,28 @@ def to_bench_path(path: Path | str, path_style: str) -> str:
     return str(Path(text).resolve())
 
 
+def container_name(out: Path) -> str:
+    """``mss-bench-<run-id>-<test-id>`` for the bench output dir ``<run-id>/<test-id>``."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "-", f"mss-bench-{out.parent.name}-{out.name}")
+
+
+def _kill_container(kill_cmd: Sequence[str], name: str) -> str:
+    """Run ``kill_cmd name``; its exit code is ignored. Returns a line for bench.log."""
+    cmd = [*kill_cmd, name]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            errors="replace",
+            timeout=_KILL_TIMEOUT_S,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"$ {shlex.join(cmd)}\n--- kill failed: {e}\n"
+    return f"$ {shlex.join(cmd)}\n--- kill exit {proc.returncode} {proc.stderr.strip()[-300:]}\n"
+
+
 def run_bench(
     bench_cmd: list[str],
     default_yaml: Path,
@@ -191,14 +220,21 @@ def run_bench(
     out: Path,
     path_style: str,
     timeout_s: float | None = None,
+    *,
+    kill_cmd: Sequence[str] | None = None,
 ) -> int:
     """Run the bench on ``data`` into ``out``; stdout/stderr go to ``out / "bench.log"``.
 
-    Returns the exit code, or ``BENCH_TIMEOUT`` when the bench ran longer than ``timeout_s``
-    (killed; a test failure). Raises SetupError when the command cannot be started or the
-    shell reports it missing.
+    ``{container}`` in ``bench_cmd`` is replaced with ``container_name(out)``. Returns the exit
+    code, or ``BENCH_TIMEOUT`` when the bench ran longer than ``timeout_s`` (killed; a test
+    failure; with the placeholder, ``kill_cmd`` (default ``DOCKER_KILL``) then runs on the
+    name). Raises SetupError when the command cannot be started or the shell reports it
+    missing.
     """
     out.mkdir(parents=True, exist_ok=True)
+    name = container_name(out)
+    has_container = any(CONTAINER in tok for tok in bench_cmd)
+    bench_cmd = [tok.replace(CONTAINER, name) for tok in bench_cmd]
     args = [
         to_bench_path(default_yaml, path_style),
         to_bench_path(data, path_style),
@@ -218,10 +254,10 @@ def run_bench(
             timeout=timeout_s,
         )
     except subprocess.TimeoutExpired:
-        log.write_text(
-            f"$ {shlex.join([*bench_cmd, *args])}\n--- killed after {timeout_s} s\n",
-            encoding="utf-8",
-        )
+        text = f"$ {shlex.join([*bench_cmd, *args])}\n--- killed after {timeout_s} s\n"
+        if has_container:
+            text += _kill_container(DOCKER_KILL if kill_cmd is None else kill_cmd, name)
+        log.write_text(text, encoding="utf-8")
         return BENCH_TIMEOUT
     except OSError as e:
         raise SetupError(f"cannot run bench command {bench_cmd!r}: {e}") from e
@@ -509,6 +545,9 @@ def _run(args: argparse.Namespace) -> int:
             drops = judge_e03_drops(row["bench"].get("n_scans"), n_e01, n_dropped)
             row["drops_note"] = drops.note
             verdict = Verdict(verdict.passed and drops.passed, f"{verdict.note}; {drops.note}")
+        if exits[test_id] == BENCH_TIMEOUT and any(CONTAINER in t for t in bench_cmd):
+            note = f"{verdict.note}; docker kill {container_name(out / test_id)}"
+            verdict = Verdict(verdict.passed, note)
         row.update(
             bench_exit=exits[test_id],
             baseline=baselines.get(test_id, {}).get("ate_rmse_m"),
