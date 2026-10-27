@@ -121,12 +121,12 @@
 // status: done | stub | planned | io | ext     fn.real: true = có trong code
 // ============================================================================
 const DATA = {
-  repo: { commit: "144bce0", date: "2026-10-26", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
-  ci: { run: 40346649937, jobs: [
+  repo: { commit: "925d8ca", date: "2026-10-27", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
+  ci: { run: 40446144188, jobs: [
     { name: "lint", ok: true, note: "clang-format 18 + ruff" },
     { name: "core-no-gtsam", ok: true, note: "CMake + GTest, -Werror" },
     { name: "python", ok: true, note: "pip install -e + pytest" },
-    { name: "docker-full", ok: true, note: "ROS 2 Jazzy + GTSAM 4.2.0, colcon -Werror" } ] },
+    { name: "docker-full", ok: true, note: "ROS 2 Jazzy + GTSAM 4.2.0, colcon -Werror; tích hợp E-01..E-03, PF-01 (tools/run_integration.py, baselines.json còn null)" } ] },
 
   modules: [
     // -------------------------------------------------------------- inputs
@@ -524,7 +524,10 @@ const DATA = {
         { name: "test_imu_static_segment_gates_white_sigma", file: "tests/python/test_noise_report.py", ok: true },
         { name: "test_lidar_sigma_is_along_ray_at_mixed_incidence", file: "tests/python/test_noise_report.py", ok: true },
         { name: "test_expected_dropout_accounts_for_grazing_and_nan", file: "tests/python/test_noise_report.py", ok: true },
-        { name: "test_gnss_sigma_rejects_multipath_steps", file: "tests/python/test_noise_report.py", ok: true } ],
+        { name: "test_gnss_sigma_rejects_multipath_steps", file: "tests/python/test_noise_report.py", ok: true },
+        { name: "test_ate: 12 case (Umeyama SE(3), ghép mốc thời gian, NaN, thiếu cặp)", file: "tests/python/test_ate.py", ok: true },
+        { name: "test_run_integration: 20 case (ngưỡng 20%, PF-01, baseline null, E-03 phải mất scan, E-02 cần quỹ đạo, mã thoát)", file: "tests/python/test_run_integration.py", ok: true },
+        { name: "E-01..E-03, PF-01 trong CI docker-full (run 40446144188: ATE 0.0708 / 0.0708 / 0.0707 m, p95 10.5 ms, chưa có baseline)", file: ".github/workflows/ci.yml", ok: true } ],
       fns: [
         { id: "read", name: "read_tum", real: true, sig: "def read_tum(path: Path) -> Trajectory", stage: 0, note: "Kiểm tra 8 cột, bỏ dòng #." },
         { id: "write", name: "write_tum", real: true, sig: "def write_tum(path: Path, traj: Trajectory) -> None", stage: 0, note: "" },
@@ -532,8 +535,8 @@ const DATA = {
         { id: "fit", name: "fit_white_and_walk", real: true, sig: "def fit_white_and_walk(taus: np.ndarray, adev: np.ndarray) -> tuple[float, float]", stage: 1, note: "Khớp mật độ white/random-walk từ Allan deviation." },
         { id: "rsig", name: "estimate_range_sigma", real: true, sig: "def estimate_range_sigma(distances: np.ndarray, sigma_declared: float) -> float", stage: 1, note: "σ dọc tia từ phần dư mặt phẳng." },
         { id: "gsig", name: "estimate_gnss_sigma", real: true, sig: "def estimate_gnss_sigma(residuals: np.ndarray, sigma_declared: float) -> tuple[float, float]", stage: 1, note: "Loại bước multipath trước khi ước lượng." },
-        { id: "ate", name: "compute_ate", sig: "def compute_ate(est: Trajectory, gt: Trajectory) -> AteResult", stage: 2, note: "PR #14 (đang review): mss_eval.ate, căn chỉnh SE(3) Umeyama." },
-        { id: "cmp", name: "compare_baseline", sig: "def compare_baseline(result, baselines_json) -> bool", stage: 3, note: "Ngưỡng 20%; bộ chạy tools/run_integration.py (E-01..E-03, PF-01) ở PR #14." } ],
+        { id: "ate", name: "ate", real: true, sig: "def ate(est_path: Path, gt_path: Path, *, max_dt_ns: int = DEFAULT_MAX_DT_NS, min_pairs: int = DEFAULT_MIN_PAIRS) -> AteResult", stage: 2, note: "mss_eval.ate (PR #14): ghép mốc thời gian ns gần nhất, căn chỉnh SE(3) Umeyama, RMSE; ValueError khi dòng không hữu hạn hoặc dưới min_pairs." },
+        { id: "cmp", name: "run_integration.judge", real: true, sig: "def judge(test_id: str, ate_m: float | None, bench_exit: int, baselines: dict, identical: bool | None, *, ate_error: str | None = None) -> Verdict", stage: 3, note: "tools/run_integration.py (PR #14): fail nếu ATE xấu hơn baseline 20%; baseline null = pass kèm ghi chú; E-03 thêm judge_e03_drops (phải mất bản ghi và ít scan hơn E-01); PF-01 judge_latency. Exit 0 / 1 gate / 2 setup. Ghi results/<run-id>/." } ],
       calls: [["read","ate"],["ate","cmp"],["read","nrun"],["nrun","fit"],["nrun","rsig"],["nrun","gsig"]] },
 
     { id: "sim", status: "done", name: "sim (py)", short: "noise layer, bridge", x: 1040, y: 560, w: 150, h: 46,
