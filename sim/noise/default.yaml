@@ -22,11 +22,20 @@ gnss:
   degraded_factor: 3.0
 lidar:
   range_sigma_m: 0.02
-  # range_sigma_m is what the noise layer adds (Gazebo LiDAR noise, exactly). The renderer adds
-  # sigma_render(r) = k_per_m * r + offset_m on top: measured, not tuned (static calibration,
-  # Gazebo noise 0, warehouse + corridor, 2026-10-28; least-squares k*r fit of the per-bin
-  # sigma, residuals up to 0.011 m: sim/README.md "LiDAR render error"). Noise report only.
-  render_model: {k_per_m: 1.59e-4, offset_m: 0.0}
+  # range_sigma_m is what the noise layer adds (Gazebo LiDAR noise, exactly). The rest is used by
+  # the noise report only. edge_jump_m: 5 declared sigma, so a neighbour that far from the
+  # point's plane is on another surface (silhouette), not noise. min_incidence_cos 0.3: below
+  # it (> 72.5 deg) the along-ray residual d / |n.u| amplifies the plane distance > 3x.
+  edge_jump_m: 0.10
+  min_incidence_cos: 0.3
+  # What gpu_lidar renders on top, measured, not tuned: static calibration (robot still,
+  # Gazebo noise 0, 10 s per world, edges excluded, 2026-10-28; sim/README.md "LiDAR render
+  # error"). No range or incidence formula fits both worlds, so the per-bin table is the model.
+  render_model:
+    form: table
+    sigma_by_incidence_m:              # [|n.u| lo, |n.u| hi, sigma_m]
+      warehouse: [[0.3, 0.5, 0.0250], [0.5, 0.7, 0.0204], [0.7, 0.9, 0.0150], [0.9, 1.0, 0.0082]]
+      corridor: [[0.3, 0.5, 0.0149], [0.5, 0.7, 0.0043], [0.7, 0.9, 0.0016], [0.9, 1.0, 0.0009]]
   dropout_p: 0.02
   dropout_p_grazing: 0.3
   grazing_deg: 80.0

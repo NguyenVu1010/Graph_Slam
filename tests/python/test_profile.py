@@ -90,3 +90,25 @@ def test_multipath_amp_min_above_max_rejected(tmp_path: Path) -> None:
     bad["gnss"]["multipath_amp_min_m"] = bad["gnss"]["multipath_amp_max_m"] + 1.0
     with pytest.raises(ProfileError, match=r"gnss\.multipath_amp_min_m"):
         load_profile(_write(tmp_path, bad))
+
+
+def test_render_model_table_and_forms_validated(tmp_path: Path) -> None:
+    import yaml
+
+    base = yaml.safe_load(Path("sim/noise/default.yaml").read_text())
+    assert base["lidar"]["render_model"]["form"] == "table"
+    f = tmp_path / "p.yaml"
+    for bad, match in (
+        ({"form": "spline"}, r"lidar\.render_model\.form"),
+        ({"form": "tan"}, r"takes exactly the keys"),
+        ({"form": "tan", "k_m": -1}, r"k_m"),
+        ({"form": "table", "sigma_by_incidence_m": {"w": [[0.5, 0.3, 0.01]]}}, r"cos_lo < cos_hi"),
+    ):
+        data = {**base, "lidar": {**base["lidar"], "render_model": bad}}
+        f.write_text(yaml.safe_dump(data))
+        with pytest.raises(ProfileError, match=match):
+            load_profile(f)
+    data = {**base, "lidar": {**base["lidar"], "min_incidence_cos": 1.5}}
+    f.write_text(yaml.safe_dump(data))
+    with pytest.raises(ProfileError, match="min_incidence_cos"):
+        load_profile(f)

@@ -122,7 +122,7 @@ def test_lidar_section_on_noise_free_synthetic_bag(report_dir: tuple[Report, Pat
     assert sigma.declared == pytest.approx(0.02)
     assert isinstance(sigma.measured, float) and sigma.measured < 0.005
     assert sigma.ok is None  # pooled row informational: the range sigma is gated per bin
-    bins = [r for r in _section(report, "LiDAR").rows if r.name.startswith("range_sigma_m [")]
+    bins = [r for r in _section(report, "LiDAR").rows if r.name.startswith("range_sigma_m |n.u|")]
     assert bins and any(r.ok is False for r in bins)
     assert report.passed is False  # the LiDAR mismatch fails the report
 
@@ -333,50 +333,91 @@ def test_unknown_incidence_counts_as_non_grazing() -> None:
     assert dropout.declared == pytest.approx(p_exp) and 0.05 < g < 0.2
 
 
-_LIDAR_CFG = {"range_sigma_m": 0.02}
+_LIDAR_CFG = {"range_sigma_m": 0.02, "edge_jump_m": 0.10, "min_incidence_cos": 0.3}
+_INC_K = {"form": "inv_cos_minus_1", "k_m": 0.02}
 
 
-def _bin_rows(res: np.ndarray, ranges: np.ndarray, model: dict | None) -> dict:
-    from mss_eval.noise_measure import range_bin_rows
+def _inc_rows(res: np.ndarray, cos: np.ndarray, model: dict | None, edge=None) -> dict:  # noqa: ANN001
+    from mss_eval.noise_measure import range_sigma_rows
 
     cfg = {**_LIDAR_CFG, **({"render_model": model} if model is not None else {})}
-    return {r.name: r for r in range_bin_rows(res, np.ones(len(res)), ranges, cfg)}
+    edge = np.zeros(len(res), dtype=bool) if edge is None else edge
+    rows = range_sigma_rows(res, cos, np.full(len(res), 10.0), edge, cfg, "w")
+    return {r.name: r for r in rows}
 
 
-def _synthetic_ranges(rng: np.random.Generator, k_per_m: float) -> tuple[np.ndarray, np.ndarray]:
-    """Residuals with the declared 0.02 m plus a render error k * r, at 1.5, 15 and 30 m."""
-    ranges = np.repeat([1.5, 15.0, 30.0], 20_000)
-    sigma = np.hypot(0.02, k_per_m * ranges)
-    return rng.normal(0.0, sigma), ranges
+def _synthetic_incidence(rng: np.random.Generator, k_m: float) -> tuple[np.ndarray, np.ndarray]:
+    """Residuals with the declared 0.02 m plus k (1/cos - 1) at cos 0.4, 0.6, 0.8, 0.95."""
+    cos = np.repeat([0.4, 0.6, 0.8, 0.95], 20_000)
+    return rng.normal(0.0, np.hypot(0.02, k_m * (1 / cos - 1))), cos
 
 
-def test_bins_declared_sigma_only_passes() -> None:
-    res, ranges = _synthetic_ranges(np.random.default_rng(5), 0.0)
-    rows = _bin_rows(res, ranges, None)
-    names = {"range_sigma_m [0.5, 2) m", "range_sigma_m [10, 20) m", "range_sigma_m [20, 40) m"}
-    assert set(rows) == names
-    assert all(r.ok is True for r in rows.values())
-    assert rows["range_sigma_m [10, 20) m"].declared == pytest.approx(0.02)
+def test_incidence_bins_declared_sigma_only_passes() -> None:
+    res, cos = _synthetic_incidence(np.random.default_rng(5), 0.0)
+    rows = _inc_rows(res, cos, None)
+    gated = [r for n, r in rows.items() if n.startswith("range_sigma_m |n.u|")]
+    assert len(gated) == 4 and all(r.ok is True for r in gated)
+    assert all(r.ok is None for n, r in rows.items() if n.startswith("range_sigma_m ["))
 
 
-def test_bins_render_error_passes_only_with_the_model() -> None:
-    k = 0.001  # 0.015 m at 15 m, 0.03 m at 30 m
-    res, ranges = _synthetic_ranges(np.random.default_rng(6), k)
-    without = _bin_rows(res, ranges, None)
-    assert without["range_sigma_m [0.5, 2) m"].ok is True  # 0.0015 m render error: invisible
-    assert without["range_sigma_m [20, 40) m"].ok is False
-    with_model = _bin_rows(res, ranges, {"k_per_m": k, "offset_m": 0.0})
-    assert all(r.ok is True for r in with_model.values())
-    assert with_model["range_sigma_m [20, 40) m"].declared == pytest.approx(np.hypot(0.02, 0.03))
-    wrong = _bin_rows(res, ranges, {"k_per_m": 0.3 * k, "offset_m": 0.0})
-    assert wrong["range_sigma_m [20, 40) m"].ok is False
+def test_incidence_error_passes_only_with_the_model() -> None:
+    res, cos = _synthetic_incidence(np.random.default_rng(6), 0.02)
+    without = _inc_rows(res, cos, None)
+    assert without["range_sigma_m |n.u| [0.3, 0.5]"].ok is False
+    with_model = _inc_rows(res, cos, _INC_K)
+    assert all(r.ok is True for n, r in with_model.items() if "|n.u|" in n)
+    wrong = _inc_rows(res, cos, {**_INC_K, "k_m": 0.006})
+    assert wrong["range_sigma_m |n.u| [0.3, 0.5]"].ok is False
+    table = {"form": "table", "sigma_by_incidence_m": {"w": [[0.3, 0.5, 0.03], [0.5, 1.0, 0.0]]}}
+    assert _inc_rows(res, cos, table)["range_sigma_m |n.u| [0.3, 0.5]"].ok is True
 
 
-def test_small_bins_shown_not_gated() -> None:
+def test_small_incidence_bins_shown_not_gated_and_exclusions_reported() -> None:
     rng = np.random.default_rng(7)
-    ranges = np.concatenate([np.full(5000, 15.0), np.full(500, 50.0)])
-    res = np.concatenate([rng.normal(0, 0.02, 5000), rng.normal(0, 0.05, 500)])
-    rows = _bin_rows(res, ranges, None)
-    small = rows["range_sigma_m [40, 100) m"]
-    assert small.ok is None and "not gated" in small.tol
-    assert rows["range_sigma_m [10, 20) m"].ok is True
+    cos = np.concatenate([np.full(5000, 0.95), np.full(500, 0.4), np.full(300, 0.1)])
+    res = rng.normal(0, 0.02, len(cos))
+    rows = _inc_rows(res, cos, None)
+    small = rows["range_sigma_m |n.u| [0.3, 0.5]"]
+    assert small.ok is None and "points" in small.tol
+    assert rows["range_sigma_m |n.u| [0.9, 1]"].ok is True
+    assert rows["low-incidence points excluded"].measured == pytest.approx(300 / 5800)
+
+
+def test_edge_points_excluded_plane_sigma_recovered() -> None:
+    """A wall with a box in front: the wall points next to the box silhouette carry mixed depth
+    (as gpu_lidar's texels do); excluding edges recovers the wall's sigma within 2 %."""
+    from mss_eval.noise_measure import plane_edge_mask, ray_residuals
+
+    rng = np.random.default_rng(8)
+    height, width, sigma = 16, 360, 0.02
+    elev = np.radians(np.linspace(-15, 15, height))
+    az = np.radians(np.linspace(-40, 40, width))
+    e, a = np.meshgrid(elev, az, indexing="ij")
+    u = np.stack([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)], -1).reshape(-1, 3)
+    r_wall = 10.0 / u[:, 0]  # wall x = 10
+    box = (np.abs(a) < np.radians(8)).reshape(-1) & (e < np.radians(5)).reshape(-1)
+    r = np.where(box, 8.0 / u[:, 0], r_wall)  # box face x = 8 in front of the wall
+    r = r + rng.normal(0, sigma, len(r))
+    xyz = u * r[:, None]
+    grid_box = box.reshape(height, width)
+    silhouette = np.zeros_like(grid_box)
+    for axis, step in ((0, 1), (0, -1), (1, 1), (1, -1)):
+        nb = np.roll(grid_box, step, axis=axis)
+        if axis == 0:  # rings do not wrap
+            nb[0 if step == 1 else -1] = False
+        silhouette |= nb & ~grid_box
+    mixed = silhouette.reshape(-1)
+    xyz[mixed] -= u[mixed] * rng.uniform(0.02, 0.09, mixed.sum())[:, None]  # mixed depth texels
+    normals, offsets = np.array([[1.0, 0.0, 0.0]]), np.array([10.0])
+    ok = np.ones(len(xyz), dtype=bool)
+    edge = plane_edge_mask(xyz, ok, xyz, normals, offsets, height, width, 0.10)
+    res, cos = ray_residuals(xyz, np.zeros(3), normals, offsets)
+    on_wall = (np.abs(res) <= 0.1) & ~box
+    assert edge[mixed].all()
+    # Clean wall points are excluded only next to a mixed point whose depth plus noise exceeds
+    # edge_jump_m (the next ring of the silhouette): a small share.
+    assert edge[~box & ~mixed & on_wall].mean() < 0.05
+    contaminated = float(np.std(res[on_wall], ddof=1))
+    clean = float(np.std(res[on_wall & ~edge], ddof=1))
+    assert contaminated > 1.05 * sigma
+    assert clean == pytest.approx(sigma, rel=0.02)

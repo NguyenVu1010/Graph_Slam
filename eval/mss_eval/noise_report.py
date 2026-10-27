@@ -37,6 +37,7 @@ from mss_eval.noise_measure import (
     lidar_section,
     neighbour_incidence_cos,
     odom_section,
+    plane_edge_mask,
     ray_residuals,
     scan_to_world,
 )
@@ -120,23 +121,29 @@ def _read_bag(path: Path) -> _Bag:
     return bag
 
 
+@dataclass
+class LidarSamples:
+    """Per-point LiDAR measurements against the reference planes (all scans concatenated)."""
+
+    residual: np.ndarray  # along-ray residual to the nearest plane, m
+    cos: np.ndarray  # |n . u| to that plane
+    range_m: np.ndarray  # sensor range, m
+    edge: np.ndarray  # bool, point at a silhouette (``plane_edge_mask``)
+    n_nan: int
+    n_not_inf: int
+    incidence: np.ndarray | None  # neighbour-normal incidence of surviving points (dropout)
+
+
 def _lidar_pass(
     path: Path,
     bag: _Bag,
     traj: Trajectory | None,
     planes: tuple[np.ndarray, np.ndarray] | None,
     min_range_m: float,
-) -> tuple[np.ndarray, np.ndarray, int, int, np.ndarray | None, np.ndarray]:
-    """Record LiDAR stamps; with planes and GT, return
-    (residuals, cos, n_nan, n_not_inf, inc, ranges).
-
-    ``inc``: neighbour-normal incidence cosines of the surviving points of organized clouds
-    (None when no cloud is organized); ``ranges``: sensor range of each residual's point, m.
-    """
-    dists: list[np.ndarray] = []
-    coss: list[np.ndarray] = []
-    incs: list[np.ndarray] = []
-    rngs: list[np.ndarray] = []
+    edge_jump_m: float,
+) -> LidarSamples:
+    """Record LiDAR stamps; with planes and GT, measure every point against the planes."""
+    cols: dict[str, list[np.ndarray]] = {"res": [], "cos": [], "rng": [], "edge": [], "inc": []}
     n_nan = n_not_inf = 0
     t_b_l = bag.T_b_l
     with Reader(path) as reader:
@@ -151,20 +158,34 @@ def _lidar_pass(
             n_nan += int(np.isnan(xyz).any(axis=1).sum())
             n_not_inf += int((~np.isinf(xyz).any(axis=1)).sum())
             ok = np.isfinite(xyz).all(axis=1) & (np.linalg.norm(xyz, axis=1) >= min_range_m)
-            if height > 1 and height * width == len(xyz):
-                incs.append(neighbour_incidence_cos(xyz, height, width)[ok].astype(np.float32))
+            organized = height > 1 and height * width == len(xyz)
+            if organized:
+                inc = neighbour_incidence_cos(xyz, height, width)[ok]
+                cols["inc"].append(inc.astype(np.float32))
             t_i = stamp + (t_off[ok].astype(np.int64) if t_off is not None else 0)
             p_w, o_w = scan_to_world(xyz[ok], np.broadcast_to(t_i, ok.sum()), traj, t_b_l)
             res, cos = ray_residuals(p_w, o_w, *planes)
-            dists.append(res.astype(np.float32))
-            coss.append(cos.astype(np.float32))
-            rngs.append(np.linalg.norm(xyz[ok], axis=1).astype(np.float32))
-    inc = np.concatenate(incs) if incs else None
-    if not dists:
-        empty = np.empty(0, np.float32)
-        return empty, empty, n_nan, n_not_inf, inc, empty
-    cat = np.concatenate
-    return cat(dists), cat(coss), n_nan, n_not_inf, inc, cat(rngs)
+            if organized:
+                edge = plane_edge_mask(xyz, ok, p_w, *planes, height, width, edge_jump_m)
+            else:
+                edge = np.zeros(len(p_w), dtype=bool)
+            cols["res"].append(res.astype(np.float32))
+            cols["cos"].append(cos.astype(np.float32))
+            cols["rng"].append(np.linalg.norm(xyz[ok], axis=1).astype(np.float32))
+            cols["edge"].append(edge)
+
+    def cat(key: str, dtype: type) -> np.ndarray:
+        return np.concatenate(cols[key]) if cols[key] else np.empty(0, dtype)
+
+    return LidarSamples(
+        cat("res", np.float32),
+        cat("cos", np.float32),
+        cat("rng", np.float32),
+        cat("edge", bool),
+        n_nan,
+        n_not_inf,
+        cat("inc", np.float32) if cols["inc"] else None,
+    )
 
 
 def _bag_section(bag: _Bag, bridge_report: dict | None) -> Section:
@@ -249,6 +270,12 @@ def load_planes(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return normals / norms[:, None], d / norms
 
 
+def _sidecar_world(path: Path) -> str | None:
+    """World name of a planes sidecar (``world`` key), None for a bare list of planes."""
+    data = yaml.safe_load(Path(path).read_text())
+    return str(data["world"]) if isinstance(data, dict) and "world" in data else None
+
+
 def _resolve(bag_dir: Path) -> tuple[Path, Path]:
     """(bag path, directory holding ``bridge_report.json``) for a bridge output or bare bag."""
     if (bag_dir / "bag").is_dir():
@@ -288,9 +315,11 @@ def run(
         t, p, q = zip(*bag.gt, strict=True)
         traj = Trajectory(np.array(t, dtype=np.int64), np.array(p), np.array(q))
     plane_arrays = load_planes(planes) if planes is not None else None
+    world = _sidecar_world(planes) if planes is not None else None
     min_range = float(prof["lidar"].get("min_range_m", 0.0))
-    dists, coss, n_nan, n_not_inf, incs, rngs = _lidar_pass(
-        bag_path, bag, traj, plane_arrays, min_range
+    lid = prof["lidar"]
+    samples = _lidar_pass(
+        bag_path, bag, traj, plane_arrays, min_range, float(lid.get("edge_jump_m", 0.10))
     )
 
     sections: list[Section] = []
@@ -335,7 +364,16 @@ def run(
         if plane_arrays is not None and bag.T_b_l is not None:
             sections.append(
                 lidar_section(
-                    dists, coss, n_nan, n_not_inf, prof["lidar"], pipe.get("lidar"), incs, rngs
+                    samples.residual,
+                    samples.cos,
+                    samples.n_nan,
+                    samples.n_not_inf,
+                    lid,
+                    pipe.get("lidar"),
+                    samples.incidence,
+                    samples.range_m,
+                    samples.edge,
+                    world,
                 )
             )
         if len(bag.odom) > 1:
