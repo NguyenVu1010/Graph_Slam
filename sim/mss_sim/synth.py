@@ -1,9 +1,11 @@
 """Synthetic "raw Gazebo" MCAP bag: clean sensors plus ground truth, no Gazebo or ROS needed.
 
 A robot drives a circle of radius ``speed / omega`` starting at the world origin (body x
-forward, z up) inside a closed box. The LiDAR is at the body origin (``T_b_l`` identity) and
-ray-casts the six box planes. Only the IMU carries noise (white, from the default profile,
-like Gazebo's own IMU); everything else is exact.
+forward, z up) inside a closed box. Optionally it stands still for ``static_s`` and then ramps
+its speed up over ``ramp_s`` on the same circle (``docs/derivations/pipeline.md`` section 7).
+The LiDAR sits at ``T_b_l`` (identity by default) and ray-casts the six box planes from the
+pose at the scan stamp. Only the IMU carries noise (white, from the default profile, like
+Gazebo's own IMU); everything else is exact.
 """
 
 from dataclasses import dataclass
@@ -33,6 +35,10 @@ _N_SPAWN, _SPAWN_IMU = 5, 3  # SeedSequence children: [lidar, gnss, odom, imu, m
 _FRAME_WORLD, _FRAME_BODY, _FRAME_LIDAR = "map", "base_link", "lidar_link"
 
 
+# (translation_m, quaternion_wxyz): T_b_l, LiDAR in body, Hamilton order (w, x, y, z).
+_TBL = tuple[tuple[float, float, float], tuple[float, float, float, float]]
+
+
 @dataclass(frozen=True)
 class SynthInfo:
     """What the generator wrote: planes ``(n_w unit normal, d)`` with ``n . p = d``."""
@@ -53,10 +59,43 @@ def _box_planes(half: tuple[float, float, float]) -> list[tuple[np.ndarray, floa
     return planes
 
 
-def _pose(t_s: np.ndarray, speed: float, omega: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+@dataclass(frozen=True)
+class _Motion:
+    static_s: float
+    ramp_s: float
+    speed: float  # V, cruise speed [m/s]
+    omega: float  # W, cruise yaw rate [rad/s]
+
+
+def _profile(t_s: np.ndarray, m: _Motion) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Speed profile of pipeline.md section 7 at times ``t_s`` (seconds after T0).
+
+    Returns ``(u, r, a_t)``: ``u = s / V`` (arc length in cruise-seconds), ``r = v / V`` and the
+    tangential acceleration ``a_t`` [m/s^2]. Then ``s = V u``, ``psi = W u``, ``v = V r`` and
+    ``omega = W r``. With ``static_s = ramp_s = 0`` this gives ``u = t_s`` and ``r = 1`` exactly,
+    so the constant circle is reproduced bit for bit.
+    """
+    tau = t_s - m.static_s
+    u = np.zeros_like(tau)
+    r = np.zeros_like(tau)
+    a_t = np.zeros_like(tau)
+    cruise = tau >= m.ramp_s
+    u[cruise] = m.ramp_s / 2 + (tau[cruise] - m.ramp_s)
+    r[cruise] = 1.0
+    ramp = (tau >= 0.0) & ~cruise
+    if ramp.any():
+        x = np.pi * tau[ramp] / m.ramp_s
+        u[ramp] = (tau[ramp] - (m.ramp_s / np.pi) * np.sin(x)) / 2
+        r[ramp] = (1.0 - np.cos(x)) / 2
+        a_t[ramp] = m.speed * np.pi / (2 * m.ramp_s) * np.sin(x)
+    return u, r, a_t
+
+
+def _pose(t_s: np.ndarray, m: _Motion) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Circle through the origin heading +x: returns (yaw, p_w_b, R_w_b) for times ``t_s``."""
-    yaw = omega * t_s
-    radius = speed / omega
+    u, _, _ = _profile(t_s, m)
+    yaw = m.omega * u
+    radius = m.speed / m.omega
     p = np.stack([radius * np.sin(yaw), radius * (1.0 - np.cos(yaw)), np.zeros_like(t_s)], axis=1)
     rot = Rotation.from_rotvec(np.stack([0 * yaw, 0 * yaw, yaw], axis=1)).as_matrix()
     return yaw, p, rot
@@ -136,6 +175,7 @@ def _identity_quat() -> object:
 
 
 def _odometry(stamp: int, yaw: float, p: np.ndarray, speed: float, omega: float) -> object:
+    """Ground truth ``T_w_b`` with the body twist (``speed`` along x, ``omega`` about z)."""
     ty = TYPESTORE.types
     point = ty["geometry_msgs/msg/Point"](x=float(p[0]), y=float(p[1]), z=float(p[2]))
     # Pure yaw, Hamilton (w, x, y, z) = (cos(yaw/2), 0, 0, sin(yaw/2)).
@@ -192,11 +232,16 @@ def _joint_state(stamp: int, vel: np.ndarray, pos: np.ndarray) -> object:
     )
 
 
-def _tf_static(stamp: int) -> object:
+def _tf_static(stamp: int, t_b_l: _TBL | None) -> object:
     ty = TYPESTORE.types
-    transform = ty["geometry_msgs/msg/Transform"](
-        translation=_vec3(np.zeros(3)), rotation=_identity_quat()
-    )  # T_b_l = identity
+    if t_b_l is None:
+        rotation = _identity_quat()  # T_b_l = identity
+        translation = np.zeros(3)
+    else:
+        translation = np.asarray(t_b_l[0], dtype=float)
+        w, x, y, z = t_b_l[1]  # Hamilton (w, x, y, z); ROS fields are x, y, z, w
+        rotation = ty["geometry_msgs/msg/Quaternion"](x=x, y=y, z=z, w=w)
+    transform = ty["geometry_msgs/msg/Transform"](translation=_vec3(translation), rotation=rotation)
     stamped = ty["geometry_msgs/msg/TransformStamped"](
         header=make_header(stamp, _FRAME_BODY), child_frame_id=_FRAME_LIDAR, transform=transform
     )
@@ -214,17 +259,35 @@ def write_synthetic_raw_bag(
     speed_mps: float = 0.5,
     max_range_m: float = _DEFAULT_MAX_RANGE_M,
     origin_lla: Lla,
+    static_s: float = 0.0,
+    ramp_s: float = 0.0,
+    t_b_l: _TBL | None = None,
 ) -> SynthInfo:
-    """Write a raw bag into ``out_dir / "raw"`` and describe it."""
+    """Write a raw bag into ``out_dir / "raw"`` and describe it.
+
+    ``static_s`` seconds still, then a speed ramp over ``ramp_s`` seconds to ``speed_mps`` on a
+    circle of curvature ``omega_radps / speed_mps`` (pipeline.md section 7). ``t_b_l`` is
+    ``(translation_m, quaternion_wxyz)``, Hamilton order; ``None`` means identity. The defaults
+    reproduce the constant circle with an identity ``T_b_l`` byte for byte.
+    """
     if not organized:
         raise NotImplementedError("only organized (16 x 720) clouds are generated")
+    if static_s < 0.0 or ramp_s < 0.0:
+        raise ValueError(f"static_s and ramp_s must be >= 0, got {static_s}, {ramp_s}")
+    motion = _Motion(static_s, ramp_s, speed_mps, omega_radps)
     profile = load_profile(_DEFAULT_PROFILE)
     kin = profile.odom.kinematics_true
     rng_imu = np.random.default_rng(np.random.SeedSequence(seed).spawn(_N_SPAWN)[_SPAWN_IMU])
     planes = _box_planes(box_half_m)
     dirs_l = _scan_dirs()
     half_track = omega_radps * kin.track_m / 2
+    # Cruise wheel speeds [rad/s]; the profile scales them by r = v / V, positions by u = s / V.
     wheel_vel = np.array([speed_mps - half_track, speed_mps + half_track]) / kin.wheel_radius_m
+    r_b_l, p_b_l = np.eye(3), np.zeros(3)
+    if t_b_l is not None:
+        w, x, y, z = t_b_l[1]  # Hamilton (w, x, y, z); scipy wants (x, y, z, w)
+        r_b_l = Rotation.from_quat([x, y, z, w]).as_matrix()
+        p_b_l = np.asarray(t_b_l[0], dtype=float)
 
     with BagWriter(out_dir / "raw") as bag:
         for name, typename in (
@@ -236,20 +299,26 @@ def write_synthetic_raw_bag(
             ("/tf_static", "tf2_msgs/msg/TFMessage"),
         ):
             bag.add_topic(name, typename)
-        bag.write("/tf_static", T0_NS, _tf_static(T0_NS))
+        bag.write("/tf_static", T0_NS, _tf_static(T0_NS, t_b_l))
 
         stamps = _times(duration_s, _GT_HZ, inclusive=True)
-        yaw, p, _ = _pose(_rel_s(stamps), speed_mps, omega_radps)
+        yaw, p, _ = _pose(_rel_s(stamps), motion)
+        _, r, _ = _profile(_rel_s(stamps), motion)
         for i, s in enumerate(stamps):
-            bag.write(
-                "/ground_truth", int(s), _odometry(int(s), yaw[i], p[i], speed_mps, omega_radps)
-            )
+            v, w = speed_mps * r[i], omega_radps * r[i]
+            bag.write("/ground_truth", int(s), _odometry(int(s), yaw[i], p[i], v, w))
 
         stamps = _times(duration_s, _IMU_HZ)
-        yaw, _, rot = _pose(_rel_s(stamps), speed_mps, omega_radps)
+        yaw, _, rot = _pose(_rel_s(stamps), motion)
+        _, r, a_t = _profile(_rel_s(stamps), motion)
+        # Centripetal kappa v^2 = V W r^2 [-sin, cos, 0], plus a_t [cos, sin, 0] in the ramp.
         a_w = speed_mps * omega_radps * np.stack([-np.sin(yaw), np.cos(yaw), 0 * yaw], axis=1)
+        if ramp_s > 0.0 or static_s > 0.0:
+            a_w = a_w * (r * r)[:, None]
+            a_w += a_t[:, None] * np.stack([np.cos(yaw), np.sin(yaw), 0 * yaw], axis=1)
         acc_b = np.einsum("nji,nj->ni", rot, a_w - GRAVITY_W)  # R_w_b^T (a_w - g_w)
-        gyro_b = np.tile([0.0, 0.0, omega_radps], (len(stamps), 1))
+        gyro_b = np.zeros((len(stamps), 3))
+        gyro_b[:, 2] = omega_radps * r
         sqrt_rate = np.sqrt(profile.imu.rate_hz)  # discrete sigma = density * sqrt(rate)
         gyro_b += rng_imu.normal(0.0, profile.imu.gyro_noise_density * sqrt_rate, gyro_b.shape)
         acc_b += rng_imu.normal(0.0, profile.imu.acc_noise_density * sqrt_rate, acc_b.shape)
@@ -257,22 +326,27 @@ def write_synthetic_raw_bag(
             bag.write("/imu/data", int(s), _imu(int(s), gyro_b[i], acc_b[i]))
 
         for s in _times(duration_s, _LIDAR_HZ):
-            _, p1, rot1 = _pose(_rel_s(np.array([s])), speed_mps, omega_radps)
+            _, p1, rot1 = _pose(_rel_s(np.array([s])), motion)
+            origin, rot_l = p1[0], rot1[0]
+            if t_b_l is not None:  # T_w_l = T_w_b * T_b_l
+                origin, rot_l = origin + rot_l @ p_b_l, rot_l @ r_b_l
             bag.write(
                 "/lidar/points",
                 int(s),
-                _raw_cloud(int(s), _raycast(p1[0], rot1[0], planes, dirs_l, max_range_m)),
+                _raw_cloud(int(s), _raycast(origin, rot_l, planes, dirs_l, max_range_m)),
             )
 
         stamps = _times(duration_s, _GNSS_HZ)
-        _, p, rot = _pose(_rel_s(stamps), speed_mps, omega_radps)
+        _, p, rot = _pose(_rel_s(stamps), motion)
         lla = np.asarray(enu_to_lla(p + rot @ P_B_G, origin_lla))  # p_w_g = p_w_b + R_w_b p_b_g
         for i, s in enumerate(stamps):
             bag.write("/gnss/fix", int(s), _gnss(int(s), lla[i]))
 
-        for s in _times(duration_s, _JOINT_HZ):
+        stamps = _times(duration_s, _JOINT_HZ)
+        u, r, _ = _profile(_rel_s(stamps), motion)
+        for i, s in enumerate(stamps):
             bag.write(
-                "/joint_states", int(s), _joint_state(int(s), wheel_vel, wheel_vel * _rel_s(s))
+                "/joint_states", int(s), _joint_state(int(s), wheel_vel * r[i], wheel_vel * u[i])
             )
 
     return SynthInfo(planes=planes, t0_ns=T0_NS, origin_lla=origin_lla, duration_s=duration_s)

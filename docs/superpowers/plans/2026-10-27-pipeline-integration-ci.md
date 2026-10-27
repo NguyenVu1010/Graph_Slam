@@ -63,7 +63,7 @@ CI decision (dispatch question): E-01 needs the GTSAM backend, so the integratio
 **Interfaces:**
 - Produces: `write_synthetic_raw_bag(out_dir, *, duration_s=6.0, seed=0, organized=True, box_half_m=(10.0, 6.0, 3.0), omega_radps=0.3, speed_mps=0.5, max_range_m=100.0, origin_lla, static_s: float = 0.0, ramp_s: float = 0.0, t_b_l: tuple[tuple[float, float, float], tuple[float, float, float, float]] | None = None) -> SynthInfo` — `t_b_l = (translation_m, quaternion_wxyz)` Hamilton order; `None` = identity (today's behaviour). Motion per `docs/derivations/pipeline.md §7` with `V = speed_mps`, `W = omega_radps`; `/ground_truth` twist, IMU, joint states (wheel speeds `(v -+ omega * track / 2) / radius`, positions = integrals) and GNSS all from that profile; the LiDAR ray-casts from `T_w_b * T_b_l` and `/tf_static` carries `T_b_l`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 ```python
 # Defaults unchanged: the existing tests in test_synth.py (circle, IMU kinematics, tf identity)
 # and the bridge/SIM-05 tests keep passing without edits.
@@ -78,10 +78,10 @@ def test_t_b_l_written_and_used(tmp_path) -> None:
     # t_b_l = ((0.10, 0.0, 0.50), (0.99984770, 0.0, 0.01745241, 0.0)): /tf_static carries it;
     # every finite point p_l of the first scan lies on a box plane after T_w_b * T_b_l (1e-6 m)
 ```
-- [ ] **Step 2: Run** `python -m pytest tests/python/test_synth.py -v`. Expected: FAIL (unexpected keyword arguments).
-- [ ] **Step 3: Implement** the profile helper `_profile(t_s, static_s, ramp_s, speed, omega) -> (s, v, a_t)` and use it everywhere `_pose` was used.
-- [ ] **Step 4: Run** `python -m pytest tests/python -q` (all Python tests, incl. bridge/SIM-05 that use the defaults). Expected: PASS. `python -m ruff check . && python -m ruff format --check .` clean.
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run** `python -m pytest tests/python/test_synth.py -v`. Expected: FAIL (unexpected keyword arguments).
+- [x] **Step 3: Implement** the profile helper `_profile(t_s, static_s, ramp_s, speed, omega) -> (s, v, a_t)` and use it everywhere `_pose` was used.
+- [x] **Step 4: Run** `python -m pytest tests/python -q` (all Python tests, incl. bridge/SIM-05 that use the defaults). Expected: PASS. `python -m ruff check . && python -m ruff format --check .` clean.
+- [x] **Step 5: Commit**
 ```bash
 git add sim/mss_sim/synth.py tests/python/test_synth.py
 git commit -m "feat(sim): synthetic bag with static start, speed ramp and configurable T_b_l"
