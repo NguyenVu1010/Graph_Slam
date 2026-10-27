@@ -186,6 +186,24 @@ estimates `T_e_w` as one graph variable shared by all GNSS factors, with a prior
 `backend.gnss_frame_tilt_sigma_deg` (tight, keeps it 4-DoF), `backend.gnss_frame_yaw_sigma_deg`
 and `backend.gnss_frame_pos_sigma_m` (loose). `imu.init_max_acc_std_mps2` must exceed the per-sample accelerometer noise
 `acc_noise_density * sqrt(rate_hz)` by about 3x, or the static initialisation never passes.
+`backend.static_gravity_factor` (PR 4d, ADR-020, default on) adds the gravity direction of
+the static initialisation window as a factor on keyframe 0's pose and bias (tilt against
+horizontal accelerometer bias, no magnitude); `backend.static_gravity_sigma_scale` (default 2,
+> 0) multiplies the window's standard error of the mean. It anchors the tilt, and so the
+end-point drift along a corridor axis the LiDAR cannot see to what the window measured (it
+does not stop mid-run wander, and the straight 20 s corridor misses 3 sigma_DR: ADR-020)
+(`docs/derivations/imu_only_observability.md` sections 9, 10 and 12). **Start stationary**: the
+factor reads the init window as the body at rest. A start in motion that the initializer still
+accepts is caught by the rest gate when it turns or the wheels move
+(`imu.init_max_mean_gyro_radps`, `imu.init_max_wheel_speed_mps`, `imu.init_gravity_check_sigma`;
+counted in `n_gravity_factor_gated`). A steady straight acceleration passes the gate; the factor
+is then wrong but costs at most +2.2 % ATE in the tests, because the initializer's attitude
+comes from the same window, and in a scene that does not observe the travel axis no
+statistic can detect it (ADR-020): starting at rest stays a precondition. The innovation
+chi-square check `backend.static_gravity_check_keyframes` (default 0 = off; > 0 runs it at
+that keyframe against `backend.static_gravity_chi2_gate`, counters `n_gravity_factor_removed`
+and `n_gravity_factor_unchecked`) was evaluated and ships off: at rest it removed the factor
+in 6 of 15 GNSS-corridor runs, with statistics that overlap those of starts in motion.
 
 Plane-fit gates and map spacing (ADR-007 amendment), all evaluated and off by default (the
 shipped behaviour is bit-identical to main): `scan_match.plane_min_eig_ratio` (`[0, 1)`)

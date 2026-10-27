@@ -320,6 +320,11 @@ TEST(BackendGraph, GnssFrameVariableAbsorbsAlignmentError) {
     for (KeyId k = 0; k < 4; ++k) {
       max_err_m = std::max(max_err_m, (state_or_fail(g, k).T_w_b.p - s.truth[k].T_w_b.p).norm());
     }
+    const common::Result<Pose> E = g.gnss_frame_estimate();
+    EXPECT_EQ(E.is_ok(), frame_variable);
+    if (E.is_ok()) {
+      EXPECT_LT((E.value().p - T_e_w.p).norm(), 0.05);  // m, the offset guess was 1.4 m off
+    }
     return max_err_m;
   };
   EXPECT_LT(run(true), 5e-3);
@@ -427,6 +432,14 @@ TEST(BackendGraph, RejectsBadCovariances) {
   }
   {
     CapturingLogger log;
+    g.add_static_gravity_factor(1, Vec3(0.0, 0.0, 9.8), Mat3::Zero());
+    g.add_static_gravity_factor(7, Vec3(0.0, 0.0, 9.8), Mat3::Identity());  // unknown keyframe
+    g.add_static_gravity_factor(1, Vec3(std::nan(""), 0.0, 9.8), Mat3::Identity());
+    g.add_static_gravity_factor(1, Vec3::Zero(), Mat3::Identity());  // zero specific force
+    EXPECT_EQ(log.warnings.size(), 4U);
+  }
+  {
+    CapturingLogger log;
     g.add_lidar_factor(0, 1, rel, Mat6::Identity() * 1e-4, nullptr);
     EXPECT_TRUE(log.warnings.empty());
     const common::Result<Estimate> r = g.optimize();
@@ -441,6 +454,9 @@ TEST(BackendGraph, OptimizeFailureDropsPendingFactorsKeepsKeyframes) {
   const test::Scenario s = test::square_loop(false, 0);
   Graph g(default_backend_config(), default_imu_config(), p_b_g);
   g.add_keyframe(s.truth[0].t, s.truth[0]);
+  // ADR-020: the keyframe-0 gravity factor rides with the priors and survives the failure.
+  const Vec3 g_w(0.0, 0.0, -default_imu_config().gravity_mps2);
+  g.add_static_gravity_factor(0, -(s.truth[0].T_w_b.R.transpose() * g_w), Mat3::Identity() * 1e-5);
   g.add_keyframe(s.truth[1].t, s.truth[1]);
   common::GnssMeasurement m;
   m.p_e_g = s.truth[1].T_w_b * p_b_g + Vec3(1.0, 0.0, 0.0);  // T_e_w = identity, 1 m off
@@ -458,6 +474,160 @@ TEST(BackendGraph, OptimizeFailureDropsPendingFactorsKeepsKeyframes) {
   // The GNSS factor was dropped: keyframe 1 follows the LiDAR edge exactly.
   EXPECT_LT(pose_error(r.value().state.T_w_b, s.truth[1].T_w_b), 1e-6);
   EXPECT_TRUE(r.value().cov.allFinite());
+  const common::Result<double> chi2 = g.static_gravity_chi2();
+  ASSERT_TRUE(chi2.is_ok()) << chi2.reason();
+  EXPECT_LT(chi2.value(), 1e-6);  // consistent with the truth
+}
+
+// ADR-020 known answer: keyframe 0 alone, guessed 10 mrad off in roll, true bias 0, the
+// gravity factor measured at the true attitude. The factor fixes g*theta - ba (theta the
+// roll error), the priors centred on the guess (rotation sigma_r) and on ba = 0 (sigma_b)
+// share the rest: theta = theta_0 / (1 + g^2 sigma_r^2 / sigma_b^2) to first order, and the
+// roll marginal is 1 / sqrt(1 / sigma_r^2 + g^2 / (sigma_b^2 + s^2 sigma_f^2)).
+TEST(BackendGraph, StaticGravityFactorKnownAnswer) {
+  const BackendConfig cfg = default_backend_config();
+  const imu::ImuConfig imu_cfg = default_imu_config();
+  Graph g(cfg, imu_cfg, Vec3::Zero());
+  const double g_mps2 = imu_cfg.gravity_mps2;
+  const double theta0_rad = 0.01;
+  NavState guess;
+  guess.T_w_b.R = common::so3_exp(Vec3(theta0_rad, 0.0, 0.0));  // truth: level, ba = 0
+  g.add_keyframe(guess.t, guess);
+  const double var_f = 1.7e-5;  // (m/s^2)^2 per axis, the window's covariance of the mean
+  g.add_static_gravity_factor(0, Vec3(0.0, 0.0, g_mps2), Mat3::Identity() * var_f);
+  for (int k = 0; k < 3; ++k) {
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+  const common::Result<NavState> x = g.keyframe_state(0);
+  ASSERT_TRUE(x.is_ok());
+  const double theta_rad = common::so3_log(x.value().T_w_b.R).x();
+  const double sr2 = cfg.prior_rot_sigma_rad * cfg.prior_rot_sigma_rad;
+  const double sb2 = cfg.prior_bias_acc_sigma_mps2 * cfg.prior_bias_acc_sigma_mps2 +
+                     cfg.static_gravity_sigma_scale * cfg.static_gravity_sigma_scale * var_f;
+  const double expected_rad = theta0_rad / (1.0 + g_mps2 * g_mps2 * sr2 / sb2);
+  EXPECT_NEAR(theta_rad, expected_rad, 2e-4);  // rad, first order in theta0
+  const double sigma_rad = 1.0 / std::sqrt(1.0 / sr2 + g_mps2 * g_mps2 / sb2);
+  EXPECT_NEAR(std::sqrt(g.marginal_cov(0)(3, 3)), sigma_rad, 0.05 * sigma_rad);
+  // The window and the bias agree: the factor's residual is small.
+  const common::Result<double> chi2 = g.static_gravity_chi2();
+  ASSERT_TRUE(chi2.is_ok());
+  EXPECT_LT(chi2.value(), 1.0);
+}
+
+// ADR-020 innovation statistic, known answer: keyframe 0 alone, guessed theta0 off in roll,
+// the window level (f_b = [0, 0, g]). To first order the residual is g*theta - ba_y (one
+// axis); the rest of the graph is the rotation prior (sigma_r, centred on theta0) and the
+// bias prior (sigma_b, centred on 0). In units of the factor sigma s*sigma_f:
+//   innovation nu = g theta0 / (s sigma_f), rest variance q = (g^2 sigma_r^2 + sigma_b^2) /
+//   (s sigma_f)^2, innovation statistic nu^2 / (1 + q), posterior statistic nu^2 / (1 + q)^2.
+// The numbers put the posterior statistic below the 5.991 gate and the innovation above it:
+// the window mean is inconsistent with the rest of the graph, and only the innovation form
+// sees it.
+TEST(BackendGraph, StaticGravityInnovationKnownAnswer) {
+  BackendConfig cfg = default_backend_config();
+  cfg.prior_rot_sigma_rad = 0.01;       // rad
+  cfg.prior_bias_acc_sigma_mps2 = 0.1;  // m/s^2
+  cfg.static_gravity_sigma_scale = 1.0;
+  const imu::ImuConfig imu_cfg = default_imu_config();
+  const double g_mps2 = imu_cfg.gravity_mps2;
+  const double var_f = 0.0025;  // (m/s^2)^2, (s sigma_f)^2
+  const double q = (g_mps2 * g_mps2 * cfg.prior_rot_sigma_rad * cfg.prior_rot_sigma_rad +
+                    cfg.prior_bias_acc_sigma_mps2 * cfg.prior_bias_acc_sigma_mps2) /
+                   var_f;
+  const double innovation_target = 20.0;
+  const double nu = std::sqrt(innovation_target * (1.0 + q));
+  const double theta0_rad = std::asin(nu * std::sqrt(var_f) / g_mps2);
+  Graph g(cfg, imu_cfg, Vec3::Zero());
+  NavState guess;
+  guess.T_w_b.R = common::so3_exp(Vec3(theta0_rad, 0.0, 0.0));
+  g.add_keyframe(guess.t, guess);
+  g.add_static_gravity_factor(0, Vec3(0.0, 0.0, g_mps2), Mat3::Identity() * var_f);
+  for (int k = 0; k < 3; ++k) {
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+  const double posterior = nu * nu / ((1.0 + q) * (1.0 + q));
+  ASSERT_LT(posterior, 5.991);  // the round-1 posterior statistic would keep the factor
+  const common::Result<double> chi2 = g.static_gravity_chi2();
+  ASSERT_TRUE(chi2.is_ok()) << chi2.reason();
+  RecordProperty("innovation", std::to_string(chi2.value()));
+  EXPECT_NEAR(chi2.value(), innovation_target, 0.02 * innovation_target);  // first order
+  EXPECT_GT(chi2.value(), 5.991);
+}
+
+// The factor as practically the only information on what it measures (its variance 1e-16
+// (m/s^2)^2 against priors of about 1e-2): S = I - J P J^T is about 1e-14, below the
+// backend bound, and the check is reported as not evaluated.
+TEST(BackendGraph, StaticGravityInnovationUncheckedWhenFactorIsOnlyInformation) {
+  Graph g(default_backend_config(), default_imu_config(), Vec3::Zero());
+  NavState x0;
+  g.add_keyframe(x0.t, x0);
+  g.add_static_gravity_factor(0, Vec3(0.0, 0.0, 9.80665), Mat3::Identity() * 1e-16);
+  ASSERT_TRUE(g.optimize().is_ok());
+  const common::Result<double> chi2 = g.static_gravity_chi2();
+  ASSERT_FALSE(chi2.is_ok());
+  EXPECT_EQ(chi2.reason().rfind("innovation covariance not positive definite", 0), 0U)
+      << chi2.reason();
+}
+
+// ADR-020 consistency check: a window that was not at rest (a 0.2 m/s^2 horizontal
+// acceleration read as tilt) against tight priors gives a large statistic; the factor is
+// removed from iSAM2 and from the rebuild set, and the graph still optimises. Then:
+// - a failed optimize() after the removal rebuilds iSAM2 from the committed factors, which
+//   no longer hold the factor (the estimate stays on the priors);
+// - a factor removed while still pending (before the first optimize()) never reaches iSAM2.
+TEST(BackendGraph, StaticGravityFactorRemovedOnRequest) {
+  BackendConfig cfg = default_backend_config();
+  cfg.prior_bias_acc_sigma_mps2 = 1e-4;
+  cfg.prior_rot_sigma_rad = 1e-4;
+  const Vec3 p_b_g(0.3, 0.0, 0.8);
+  const test::Scenario s = test::square_loop(false, 0);
+  const Vec3 up_w(0.0, 0.0, 9.80665);  // -g_w, m/s^2
+  const Vec3 accel_w(0.2, 0.0, 0.0);   // m/s^2, read as tilt
+  {
+    Graph g(cfg, default_imu_config(), p_b_g);
+    g.add_keyframe(s.truth[0].t, s.truth[0]);
+    const Vec3 f_b = s.truth[0].T_w_b.R.transpose() * (up_w + accel_w);
+    g.add_static_gravity_factor(0, f_b, Mat3::Identity() * 1.7e-5);
+    ASSERT_TRUE(g.optimize().is_ok());
+    const common::Result<double> chi2 = g.static_gravity_chi2();
+    ASSERT_TRUE(chi2.is_ok()) << chi2.reason();
+    EXPECT_GT(chi2.value(), 5.991);
+    EXPECT_TRUE(g.remove_static_gravity_factor());
+    EXPECT_FALSE(g.static_gravity_chi2().is_ok());
+    EXPECT_FALSE(g.remove_static_gravity_factor());
+    const common::Result<Estimate> r = g.optimize();
+    ASSERT_TRUE(r.is_ok()) << r.reason();
+    EXPECT_LT(pose_error(r.value().state.T_w_b, s.truth[0].T_w_b), 1e-6);  // on the priors
+
+    // Forced failure after the removal (as OptimizeFailureDropsPendingFactorsKeepsKeyframes):
+    // the rebuild must not bring the factor back.
+    g.add_keyframe(s.truth[1].t, s.truth[1]);
+    common::GnssMeasurement m;
+    m.p_e_g = s.truth[1].T_w_b * p_b_g;
+    m.cov = Mat3::Identity() * 0.01;
+    g.add_gnss_factor(1, m, Pose{});  // 3 of 6 DoF of keyframe 1: indeterminant
+    ASSERT_FALSE(g.optimize().is_ok());
+    g.add_lidar_factor(0, 1, s.edge_meas[0], s.edge_cov, nullptr);
+    const common::Result<Estimate> after = g.optimize();
+    ASSERT_TRUE(after.is_ok()) << after.reason();
+    EXPECT_FALSE(g.static_gravity_chi2().is_ok());  // still no gravity factor
+    const common::Result<NavState> x0 = g.keyframe_state(0);
+    ASSERT_TRUE(x0.is_ok());
+    EXPECT_LT(pose_error(x0.value().T_w_b, s.truth[0].T_w_b), 1e-6);
+  }
+  {
+    Graph g(cfg, default_imu_config(), p_b_g);
+    g.add_keyframe(s.truth[0].t, s.truth[0]);
+    const Vec3 f_b = s.truth[0].T_w_b.R.transpose() * (up_w + accel_w);
+    g.add_static_gravity_factor(0, f_b, Mat3::Identity() * 1.7e-5);
+    EXPECT_FALSE(g.static_gravity_chi2().is_ok());  // not optimised yet
+    EXPECT_TRUE(g.remove_static_gravity_factor());  // pending only
+    EXPECT_FALSE(g.remove_static_gravity_factor());
+    const common::Result<Estimate> r = g.optimize();
+    ASSERT_TRUE(r.is_ok()) << r.reason();
+    EXPECT_LT(pose_error(r.value().state.T_w_b, s.truth[0].T_w_b), 1e-6);  // priors only
+    EXPECT_FALSE(g.static_gravity_chi2().is_ok());
+  }
 }
 
 TEST(BackendGraph, MarginalCovIsMssOrder) {

@@ -13,6 +13,10 @@ struct ImuConfig {
   double init_window_s = 0.0;            // s, static window for initialisation
   double init_max_acc_std_mps2 = 0.0;    // m/s^2, max accel std to accept the window as static
   double init_max_gyro_std_radps = 0.0;  // rad/s, max gyro std to accept the window as static
+  // Rest gate of the keyframe-0 gravity factor (pipeline, ADR-020), all > 0:
+  double init_max_mean_gyro_radps = 0.0;  // rad/s, max |mean gyro| of the window (bias + turn)
+  double init_max_wheel_speed_mps = 0.0;  // m/s, max |wheel speed| in the window (wheel on)
+  double init_gravity_check_sigma = 0.0;  // max ||f| - g| in sigmas (mean noise + acc bias prior)
 };
 
 }  // namespace mss::imu

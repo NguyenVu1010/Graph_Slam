@@ -60,11 +60,12 @@ struct BoxWorldParams {
   common::Pose T_b_l = box_default_T_b_l();
   common::Vec3 p_b_g{-0.20, 0.10, 0.60};  // m, antenna lever arm in b
   // IMU white noise densities, equal to config/default.yaml.
-  double acc_noise_density = 5.8e-3;      // m/s^2/sqrt(Hz)
-  double gyro_noise_density = 3.5e-4;     // rad/s/sqrt(Hz)
-  double gnss_sigma_m = 0.5;              // m, GNSS white noise per axis
-  double gnss_yaw_e_w_deg = 30.0;         // deg, yaw of T_e_w
-  common::Vec3 p_e_w_m{12.0, -7.0, 1.0};  // m, translation of T_e_w
+  double acc_noise_density = 5.8e-3;       // m/s^2/sqrt(Hz)
+  double gyro_noise_density = 3.5e-4;      // rad/s/sqrt(Hz)
+  common::Vec3 acc_bias_b{0.0, 0.0, 0.0};  // m/s^2, constant accelerometer bias in b
+  double gnss_sigma_m = 0.5;               // m, GNSS white noise per axis
+  double gnss_yaw_e_w_deg = 30.0;          // deg, yaw of T_e_w
+  common::Vec3 p_e_w_m{12.0, -7.0, 1.0};   // m, translation of T_e_w
   std::uint32_t seed = 42;
 };
 
@@ -135,7 +136,7 @@ inline common::ImuSample box_imu(const BoxWorldParams& p, common::Timestamp t, s
   const common::Vec3 g_w(0.0, 0.0, -kBoxGravity);
   common::ImuSample s;
   s.t = t;
-  s.acc_b = box_rz(psi).transpose() * (a_w - g_w);
+  s.acc_b = box_rz(psi).transpose() * (a_w - g_w) + p.acc_bias_b;
   s.gyro_b = common::Vec3(0.0, 0.0, kappa * ps.v_mps);
   if (rng != nullptr) {
     std::normal_distribution<double> n01(0.0, 1.0);

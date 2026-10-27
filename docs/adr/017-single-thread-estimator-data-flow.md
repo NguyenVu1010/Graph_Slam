@@ -52,3 +52,11 @@ Sau các PR module của giai đoạn 1, mọi module (`imu`, `preprocess`, `sca
 
 - Đã giải quyết (PR 4a), xem `docs/derivations/gnss_fusion_study.md` và ADR-019: GNSS làm xấu box world vì mỗi factor đóng băng `T_e_w` của aligner và kéo gauge 4 bậc tự do của w. Đề xuất giữ lại factor đến khi độ trải đủ lớn đã được đo và bị loại (chỉ có tác dụng khi cổng không bao giờ mở, và chặn việc sửa trôi trong hành lang). Thay vào đó `T_e_w` là một biến của graph (`backend.gnss_frame_variable`); quyết định 8 vẫn đúng về việc gắn fix vào keyframe, phần "mỗi factor dùng ước lượng `T_e_w` mới nhất của aligner" chỉ còn áp dụng khi cờ tắt. Box world có GNSS 0,5 m: 0,0089 m so với 0,0088 m chỉ LiDAR.
 - Giới hạn TBB của `backend` khi `deterministic: true`: đã quyết định trong ADR-018 (`BackendConfig::single_thread`, `tbb::global_control` trong `Graph`).
+
+## Bổ sung (PR 4d, 2026-10-27): thông tin của cửa sổ tĩnh vào keyframe 0
+
+Quyết định 4 được mở rộng bởi ADR-020: `ImuInitializer` trả thêm trung bình gia tốc của cửa sổ và
+hiệp phương sai của trung bình đó (`InitState::acc_mean_b`, `acc_mean_cov`), và pipeline thêm
+factor hướng trọng lực lên keyframe 0 (`backend.static_gravity_factor`, mặc định bật, nhiễu x2)
+khi keyframe 0 chính là scan khởi tạo. Lý do và số liệu: ADR-020,
+`docs/derivations/imu_only_observability.md`.

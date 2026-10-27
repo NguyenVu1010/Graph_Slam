@@ -25,6 +25,7 @@
 #include "graph_scenarios.hpp"
 #include "imu_factor.hpp"
 #include "odom_factor.hpp"
+#include "static_gravity_factor.hpp"
 
 namespace mss::backend::detail {
 namespace {
@@ -193,6 +194,88 @@ TEST(BackendFactors, B01_GnssFrameFactorMatchesFixedFactor) {
   values.insert(pose_key(0), to_gtsam(s.T_w_b));
   values.insert(frame_key(), to_gtsam(s.T_e_w));
   EXPECT_LT((f.unwhitenedError(values) - fixed.unwhitenedError(values)).norm(), 1e-12);
+}
+
+// Section 6c: static-window specific-force factor on (T_w_b, B). Random attitude and bias,
+// measurement off the model by a random vector so the residual is not zero.
+TEST(BackendFactors, B01_StaticGravityFactorJacobians) {
+  std::mt19937 rng(kSeed);
+  for (int rep = 0; rep < 20; ++rep) {
+    const Pose T_w_b = random_pose(rng);
+    const common::ImuBias b = random_bias(rng);
+    const Vec3 f_b = b.ba - T_w_b.R.transpose() * kGravityW + random_vec3(rng, 0.05);
+    const Mat3 cov = Mat3::Identity() * 1.7e-5 + 0.2e-5 * Mat3::Ones();
+    const StaticGravityFactor f(pose_key(0), bias_key(0), f_b, cov, kGravityW);
+    gtsam::Values values;
+    values.insert(pose_key(0), to_gtsam(T_w_b));
+    values.insert(bias_key(0), to_gtsam(b));
+    ASSERT_GT(f.unwhitenedError(values).norm(), 1e-4);
+    // 2x1 residual: the full residual projected normal to f_b; noise P cov P^T.
+    const StaticGravityFactor::Projection P = StaticGravityFactor::projection(f_b);
+    const Vec3 e = f_b - b.ba + T_w_b.R.transpose() * kGravityW;
+    const Eigen::Vector2d r = f.unwhitenedError(values);
+    EXPECT_LT((r - P * e).norm(), 1e-12);
+    EXPECT_LT((P * P.transpose() - Eigen::Matrix2d::Identity()).norm(), 1e-12);
+    EXPECT_LT((P * f_b).norm(), 1e-9);
+    const Eigen::Matrix2d C2 = P * cov * P.transpose();
+    const double expected = r.dot(C2.ldlt().solve(r));
+    EXPECT_NEAR(2.0 * f.error(values), expected, 1e-9 * expected);
+    MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f, values);
+    EXPECT_LT(max_relative_jacobian_error(f, values), kRelJacTol) << "rep " << rep;
+  }
+}
+
+// Study-only full residual (StudySeams, imu_only_observability.md section 9): the 3x1
+// residual e = f_b - ba + R^T g_w with Jacobians [skew(R^T g_w), 0] and [-I, 0] and noise
+// cov. It is compiled into the backend, so it gets the same B-01 checks.
+TEST(BackendFactors, B01_StaticGravityFactorFullResidualJacobians) {
+  std::mt19937 rng(kSeed);
+  for (int rep = 0; rep < 20; ++rep) {
+    const Pose T_w_b = random_pose(rng);
+    const common::ImuBias b = random_bias(rng);
+    const Vec3 f_b = b.ba - T_w_b.R.transpose() * kGravityW + random_vec3(rng, 0.05);
+    const Mat3 cov = Mat3::Identity() * 1.7e-5 + 0.2e-5 * Mat3::Ones();
+    const StaticGravityFactor f(pose_key(0), bias_key(0), f_b, cov, kGravityW, true);
+    gtsam::Values values;
+    values.insert(pose_key(0), to_gtsam(T_w_b));
+    values.insert(bias_key(0), to_gtsam(b));
+    const Vec3 e = f_b - b.ba + T_w_b.R.transpose() * kGravityW;
+    const gtsam::Vector r = f.unwhitenedError(values);
+    ASSERT_EQ(r.size(), 3);
+    EXPECT_LT((r - e).norm(), 1e-12);
+    const double expected = e.dot(cov.ldlt().solve(e));
+    EXPECT_NEAR(2.0 * f.error(values), expected, 1e-9 * expected);
+    MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f, values);
+    EXPECT_LT(max_relative_jacobian_error(f, values), kRelJacTol) << "rep " << rep;
+  }
+}
+
+// Direction only (section 10b): a different magnitude of f_b at the same direction leaves
+// the residual unchanged (|g| against ba_z is not constrained).
+TEST(BackendFactors, B01_StaticGravityFactorIgnoresMagnitude) {
+  std::mt19937 rng(kSeed);
+  const Pose T_w_b = random_pose(rng);
+  const common::ImuBias b = random_bias(rng);
+  const Vec3 f_b = b.ba - T_w_b.R.transpose() * kGravityW;
+  const StaticGravityFactor f(
+      pose_key(0), bias_key(0), 1.01 * f_b, Mat3::Identity() * 1e-5, kGravityW);
+  gtsam::Values values;
+  values.insert(pose_key(0), to_gtsam(T_w_b));
+  values.insert(bias_key(0), to_gtsam(b));
+  EXPECT_LT(f.unwhitenedError(values).norm(), 1e-12);
+}
+
+// At rest the measured specific force is ba - R^T g_w: zero residual.
+TEST(BackendFactors, B01_StaticGravityFactorZeroAtRest) {
+  std::mt19937 rng(kSeed);
+  const Pose T_w_b = random_pose(rng);
+  const common::ImuBias b = random_bias(rng);
+  const Vec3 f_b = b.ba - T_w_b.R.transpose() * kGravityW;
+  const StaticGravityFactor f(pose_key(0), bias_key(0), f_b, Mat3::Identity() * 1e-5, kGravityW);
+  gtsam::Values values;
+  values.insert(pose_key(0), to_gtsam(T_w_b));
+  values.insert(bias_key(0), to_gtsam(b));
+  EXPECT_LT(f.unwhitenedError(values).norm(), 1e-12);
 }
 
 TEST(BackendFactors, B01_OdomFactorRotatedSingularCov) {

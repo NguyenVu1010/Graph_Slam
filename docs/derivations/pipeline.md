@@ -161,4 +161,28 @@ processing order of everything else is unchanged.
 Static initialisation at the first scan with start `t` uses the buffered samples from the
 last one at or before `t - init_window_s` to the first one at or after `t`, so the window
 spans at least `init_window_s` whatever the sample phase. Until it succeeds no estimate is
-published (`latest_state().state.t == Timestamp{}`).
+published (`latest_state().state.t == Timestamp{}`). The window mean and the covariance of
+that mean (`imu::InitState::acc_mean_b`, `acc_mean_cov`) feed the optional keyframe-0 gravity
+factor (`backend.static_gravity_factor`, default on, `backend_factors.md` section 6c) when keyframe 0 is
+the initialisation scan (ADR-020).
+
+Keyframe-0 gravity factor (ADR-020). It is added only when the window also passes the rest
+gate: |mean gyro| <= `imu.init_max_mean_gyro_radps`, no wheel speed above
+`imu.init_max_wheel_speed_mps` inside the window `[t - init_window_s, t]` (when
+`wheel_odom.enabled`; samples are checked as they are consumed, in time order, so samples
+after `t` already queued do not count), and
+||f| - g| <= `imu.init_gravity_check_sigma` x sqrt(sigma_mean^2 + prior_bias_acc^2). A
+failure is logged and counted (`Stats::n_gravity_factor_gated`). After keyframe
+`backend.static_gravity_check_keyframes` (> 0; default 0 = off, ADR-020) is optimised, the
+factor is removed if its innovation statistic (`backend_factors.md` section 6c) exceeds
+`backend.static_gravity_chi2_gate` (`Stats::n_gravity_factor_removed`, one warning). A
+failed removal leaves the factor (warning, no retry); a statistic that cannot be evaluated
+leaves it too (`Stats::n_gravity_factor_unchecked`, one info line).
+
+## 9. Test-only seam
+
+`detail::CoreTestHooks` (`estimator_core.hpp`, `set_core_test_hooks`) lets the studies and
+component tests observe factors, force `T_e_w`, change the keyframe rule, replace a LiDAR
+measurement or covariance, and override the gravity factor's covariance. The core keeps one
+`const CoreTestHooks*`, read at construction. It is never set outside tests: production
+builds pass nullptr, and every branch on it is a null-pointer test.

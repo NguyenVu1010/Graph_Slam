@@ -7,6 +7,7 @@ add_library(mss_pipeline STATIC
   src/estimator_core.cpp
   src/frames.cpp
   src/gnss_fusion.cpp
+  src/gravity_rest.cpp
   src/imu_buffer.cpp
   src/imu_trajectory_builder.cpp
   src/keyframe_policy.cpp

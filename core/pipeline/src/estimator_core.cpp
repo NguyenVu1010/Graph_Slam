@@ -1,6 +1,7 @@
 #include "estimator_core.hpp"
 
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -11,6 +12,7 @@
 #include "mss/degeneracy/degeneracy.hpp"
 
 #include "frames.hpp"
+#include "gravity_rest.hpp"
 #include "imu_trajectory_builder.hpp"
 
 namespace mss::pipeline::detail {
@@ -92,8 +94,8 @@ EstimatorCore::EstimatorCore(const Config& cfg)
       gnss_out_(std::make_unique<std::array<common::GnssMeasurement, kMaxAuxQueue>>()),
       pre_out_(cfg.realtime.max_points_per_scan),
       kf_cloud_(cfg.realtime.max_points_per_scan) {
+  hooks_ = g_test_hooks;
   if (g_test_hooks != nullptr) {
-    observer_ = g_test_hooks->observer;
     if (g_test_hooks->force_T_e_w) {
       fusion_.force_T_e_w(g_test_hooks->T_e_w);
     }
@@ -146,16 +148,26 @@ void EstimatorCore::on_wheel(const common::WheelSample& s) {
   if (wheel_queue_.size() == wheel_queue_.capacity()) {
     common::WheelSample oldest;
     wheel_queue_.pop(oldest);
-    (void)wheel_.integrate(oldest);
+    consume_wheel(oldest);
   }
   wheel_queue_.push(s);
+}
+
+void EstimatorCore::consume_wheel(const common::WheelSample& s) {
+  // Gravity rest gate (ADR-020): consumed in time order, so at the init scan (after
+  // integrate_wheel(init_t_)) this is the last moving sample at or before init_t_.
+  if (std::abs(s.v_mps) > cfg_.imu.init_max_wheel_speed_mps) {
+    wheel_moved_ = true;
+    last_wheel_motion_t_ = s.t;
+  }
+  (void)wheel_.integrate(s);
 }
 
 void EstimatorCore::integrate_wheel(common::Timestamp t) {
   while (!wheel_queue_.empty() && wheel_queue_.front().t <= t) {
     common::WheelSample s;
     wheel_queue_.pop(s);
-    (void)wheel_.integrate(s);
+    consume_wheel(s);
   }
 }
 
@@ -229,8 +241,8 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
         "gnss: chi-square rejected gnss.max_consecutive_rejects fixes in a row, "
         "aligner restarted");
   }
-  if (observer_ != nullptr && outcome == FixOutcome::kAccepted) {
-    observer_->on_fix_accepted(m.t, fusion_.T_e_w());
+  if (observer() != nullptr && outcome == FixOutcome::kAccepted) {
+    observer()->on_fix_accepted(m.t, fusion_.T_e_w());
   }
   if (outcome == FixOutcome::kAccepted || outcome == FixOutcome::kNotAligned) {
     gnss_reject_streak_ = false;
@@ -308,6 +320,8 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
     front_.t = t;
     front_.T_w_b.R = init.value().R_w_b;
     front_.bias = init.value().bias;
+    init_ = init.value();
+    init_t_ = t;
     g_w_ = init.value().g_w;
     pred_.reset(front_.bias);
     kf_.reset(front_.bias);
@@ -315,6 +329,9 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
     (void)kf_.integrate(boundary_);
     pred_last_t_ = t;
     integrate_wheel(t);
+    // Samples up to t are consumed now; later ones, already queued, do not count.
+    init_wheel_moved_ = wheel_moved_ && last_wheel_motion_t_.ns >= t.ns - init_window_ns_ &&
+                        last_wheel_motion_t_.ns <= t.ns;
     (void)wheel_.take_delta();
     predicted = front_;
     common::log_info("imu initialised");
@@ -372,9 +389,19 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
   front_.v_w_b = predicted.v_w_b;
   front_.bias = predicted.bias;
   common::PoseCovariance cov_out = cov_b;
+  if (observer() != nullptr) {
+    observer()->on_scan_matched(t, predicted.T_w_b, front_.T_w_b, m);
+  }
 
   // 8. Keyframe.
-  if (is_new_keyframe(ref_, front_.T_w_b, cfg_.backend)) {
+  bool keyframe = false;
+  if (hooks_ != nullptr && hooks_->keyframe_every_n_scans > 0) {  // test-only rule
+    keyframe = ++scans_since_keyframe_ >= hooks_->keyframe_every_n_scans;
+  } else {
+    keyframe = is_new_keyframe(ref_, front_.T_w_b, cfg_.backend);
+  }
+  if (keyframe) {
+    scans_since_keyframe_ = 0;
     add_keyframe(t, m, cov_b, cov_out);
   }
 
@@ -393,6 +420,26 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
 
 void EstimatorCore::first_keyframe(common::Timestamp t, const common::NavState& predicted) {
   const common::KeyId id = graph_.add_keyframe(t, predicted);
+  if (cfg_.backend.static_gravity_factor) {
+    // The window statistics describe the body at rest at init_t_ (ADR-020): only valid when
+    // keyframe 0 is that scan and the rest gate passes (imu_only_observability.md 12).
+    const bool wheel_moved = cfg_.wheel_odom.enabled && init_wheel_moved_;
+    const char* rest_failure =
+        t == init_t_ ? gravity_rest_failure(
+                           init_, cfg_.imu, cfg_.backend.prior_bias_acc_sigma_mps2, wheel_moved)
+                     : "keyframe 0 is not the init scan";
+    if (rest_failure == nullptr) {
+      const common::Mat3 cov =
+          (hooks_ != nullptr && hooks_->static_gravity_cov)  // test-only override
+              ? hooks_->static_gravity_cov(init_.acc_mean_b, init_.acc_mean_cov)
+              : init_.acc_mean_cov;
+      graph_.add_static_gravity_factor(id, init_.acc_mean_b, cov);
+      gravity_factor_added_ = true;
+    } else {
+      ++counters_.n_gravity_factor_gated;
+      common::log_info(std::string("static gravity factor not added: ") + rest_failure);
+    }
+  }
   front_ = predicted;
   common::PoseCovariance cov = prior_cov(cfg_.backend);
   const common::Result<common::Estimate> opt = graph_.optimize();
@@ -428,16 +475,20 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   const common::KeyId j = graph_.add_keyframe(t, front_);
   graph_.add_imu_factor(i, j, kf_.delta());
   // LiDAR factor measurement (pipeline.md section 4).
-  const common::Pose T_bi_bj = ref_.inverse() * front_.T_w_b;
-  if (observer_ != nullptr) {
-    observer_->on_lidar_factor(last_kf_t_, t, T_bi_bj, cov_b);
+  const common::Pose T_bi_bj = (hooks_ != nullptr && hooks_->lidar_oracle)
+                                   ? hooks_->lidar_oracle(last_kf_t_, t)
+                                   : ref_.inverse() * front_.T_w_b;
+  const common::PoseCovariance cov_f =
+      (hooks_ != nullptr && hooks_->lidar_cov) ? hooks_->lidar_cov(t, cov_b) : cov_b;  // test-only
+  if (observer() != nullptr) {
+    observer()->on_lidar_factor(last_kf_t_, t, T_bi_bj, cov_f);
   }
   if (cfg_.degeneracy.enabled) {
     const common::DegeneracyReport report_b =
         degeneracy_in_body(degeneracy::analyze(match.H, cfg_.degeneracy), T_b_l_);
-    graph_.add_lidar_factor(i, j, T_bi_bj, cov_b, &report_b);
+    graph_.add_lidar_factor(i, j, T_bi_bj, cov_f, &report_b);
   } else {
-    graph_.add_lidar_factor(i, j, T_bi_bj, cov_b, nullptr);
+    graph_.add_lidar_factor(i, j, T_bi_bj, cov_f, nullptr);
   }
   // Wheel odometry between the keyframes (graph.hpp time check).
   const common::OdomDelta d = wheel_.take_delta();
@@ -455,8 +506,8 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
     const std::size_t n = fusion_.collect(t, front_.T_w_b, *gnss_out_);
     for (std::size_t k = 0; k < n; ++k) {
       graph_.add_gnss_factor(j, (*gnss_out_)[k], fusion_.T_e_w());
-      if (observer_ != nullptr) {
-        observer_->on_gnss_factor(t, (*gnss_out_)[k], fusion_.T_e_w());
+      if (observer() != nullptr) {
+        observer()->on_gnss_factor(t, (*gnss_out_)[k], fusion_.T_e_w());
       }
     }
     counters_.n_gnss_factors += n;
@@ -464,10 +515,20 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   const common::Result<common::Estimate> opt = graph_.optimize();
   const bool optimised = opt.is_ok();
   if (optimised) {
-    front_ = opt.value().state;
-    front_.t = t;
+    if (observer() != nullptr) {
+      observer()->on_keyframe_optimized(t, opt.value().state, opt.value().cov);
+      const common::Result<common::Pose> E = graph_.gnss_frame_estimate();
+      if (E.is_ok()) {
+        observer()->on_frame_estimate(t, E.value());
+      }
+    }
+    if (hooks_ == nullptr || !hooks_->frontend_keeps_own_state) {  // test-only seam
+      front_ = opt.value().state;
+      front_.t = t;
+    }
     cov_out = opt.value().cov;
     backend_failure_streak_ = false;
+    check_gravity_factor(j);
   } else {
     log_backend_failure(opt.reason());
   }
@@ -480,6 +541,39 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   insert_keyframe_cloud(j, t);
   if (optimised) {
     maybe_rebuild_map();
+  }
+}
+
+void EstimatorCore::check_gravity_factor(common::KeyId j) {
+  if (!gravity_factor_added_ || gravity_factor_checked_ ||
+      cfg_.backend.static_gravity_check_keyframes == 0 ||  // check off (shipped, ADR-020)
+      j < static_cast<common::KeyId>(cfg_.backend.static_gravity_check_keyframes)) {
+    return;
+  }
+  gravity_factor_checked_ = true;  // once: a failed removal is not retried (ADR-020)
+  const common::Result<double> chi2 = graph_.static_gravity_chi2();
+  GravityCheckOutcome outcome = GravityCheckOutcome::kKept;
+  if (!chi2.is_ok()) {
+    outcome = GravityCheckOutcome::kUnchecked;
+    ++counters_.n_gravity_factor_unchecked;
+    common::log_info("static gravity factor kept unchecked: " + chi2.reason());
+  } else if (chi2.value() > cfg_.backend.static_gravity_chi2_gate) {
+    if (graph_.remove_static_gravity_factor()) {
+      outcome = GravityCheckOutcome::kRemoved;
+      ++counters_.n_gravity_factor_removed;
+      common::log_warn(
+          "static gravity factor removed: its innovation failed "
+          "backend.static_gravity_chi2_gate (the init window was not at rest)");
+    } else {
+      outcome = GravityCheckOutcome::kRemovalFailed;
+      common::log_warn(
+          "static gravity factor failed backend.static_gravity_chi2_gate but its removal "
+          "failed: the factor stays (not retried)");
+    }
+  }
+  if (observer() != nullptr) {
+    observer()->on_gravity_check(
+        chi2.is_ok() ? chi2.value() : std::numeric_limits<double>::quiet_NaN(), outcome);
   }
 }
 
