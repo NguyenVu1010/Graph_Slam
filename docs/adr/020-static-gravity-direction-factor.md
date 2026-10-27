@@ -70,10 +70,10 @@ hai đại lượng. Prior nghiêng chặt sẽ ghim sai độ nghiêng khi IMU 
    - Tổng cộng 10/73, khoảng 14 % (40 % trên hành lang GNSS), so với 5 % của chi-square(2).
    - Thống kê khi đứng yên (14 đến 147) chồng lên thống kê ở các lần khởi động đang chuyển động
      (38 đến 233): không ngưỡng nào tách được hai trường hợp.
-   - Tách nguyên nhân (mục 10g): tắt GNSS làm số lần gỡ từ 6 còn 2 (biến `E` còn đang căn
-     chỉnh ở keyframe 5 là nguyên nhân lớn hơn); tăng `scan_match.cov_scale` lên 6,7 (NEES box
+   - Tách nguyên nhân (mục 10g): tắt GNSS ngăn 4 trong 6 lần gỡ (phía GNSS là nguyên nhân lớn
+     hơn; giả thuyết chưa kiểm chứng: biến `E` còn đang căn chỉnh ở keyframe 5); tăng `scan_match.cov_scale` lên 6,7 (NEES box
      8,57 xuống 6,22) chỉ đổi 6 thành 5. Phần còn lại (2/15 khi không GNSS và NEES nhất quán)
-     chưa tách được.
+     chưa tách được, và 2/15 ở mức 5 % không vượt ngẫu nhiên (xác suất nhị thức khoảng 0,17).
    - Một factor sai ở lần khởi động tăng tốc thẳng chỉ tốn tối đa +2,2 % ATE (đo: -1,4 % và
      +2,2 %), vì `R_w_b` của bộ khởi tạo lấy từ cùng giá trị trung bình của cửa sổ. Trong hành
      lang mà LiDAR không quan sát trục di chuyển, không thống kê nào phát hiện được trường hợp
@@ -117,7 +117,8 @@ cột in đậm là cấu hình phát hành. Các cột có kiểm tra bật ở
 - Với các dạng neo độ nghiêng bằng thông tin của cửa sổ (đầy đủ nhiễu x1, chỉ hướng, dạng chọn),
   sai số yaw cuối của `E` có trung vị 1,8 / 3,5 / 3,5 mrad so với 5,3 mrad của main (5 seed).
   Dạng quá lỏng hoặc quá chặt (x10, /10) thì không. Factor không đẩy sai số sang yaw của `E`.
-- Bật kiểm tra nhất quán (đánh giá, mục 10g) không đổi trung vị nào trong bảng trên; đuôi của
+- Bật kiểm tra nhất quán (đánh giá, mục 10g) không đổi trung vị nào trong bảng trên trừ hành lang
+  chỉ LiDAR 60 s (38,3 xuống 37,5 m) và tỉ số max hành lang thẳng (6,64 lên 6,72); đuôi của
   hai hành lang 60 s ngắn lại (GNSS max 18,5 xuống 11,3 m; chỉ LiDAR 205 xuống 107 m), hai lần
   chạy hành lang thẳng kém đi 0,6 đến 1,3 m ở điểm cuối. Số lần gỡ nhầm ở quyết định 4.
 - E-01 / E-03 (tạo lại bằng `run_integration.py`, main `cc642be`): 2,181 / 2,175 mm so với

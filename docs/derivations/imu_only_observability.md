@@ -604,7 +604,7 @@ the median is higher (38.3 against 24.9 m, 6 wins / 9 losses, CI [-11.0, +30.8])
 The choice therefore rests on the box NEES and the IMU-only scenes, where the CIs exclude 0:
 - scale 1 raises NEES the most (9.42; 1.5: 8.49; 2: 8.57; 3: 7.51);
 - scale 3 gives back the straight corridor (median 3.85 m, 8 wins / 7 losses) and doubles the
-  circle's mid-run ratio (12.5);
+  circle's mid-run ratio (12.4);
 - scale 2 has the best circle end error (14 wins / 1 loss), a straight corridor better than
   main on RMS and maximum ratio (CIs exclude 0), and a NEES CI that contains 0
   ([-0.39, +2.09]).
@@ -693,7 +693,7 @@ The 15-seed tables with the check on (paired against main, as in 10e):
 | straight along-x RMS (m) | 1.85 (23.8) | **1.34 (3.07), 12/3, [-2.19, -0.17]** | 1.34 (3.07), 12/3, [-2.19, -0.17] | 1.34 (3.07), 12/3, [-2.19, -0.17] | 0.79 (5.16), 12/3, [-2.21, -0.17] | 0.85 (3.21), 11/4, [-3.06, -0.32] |
 | straight max \|x\|/sigma_DR(t) | 8.35 (95.7) | **6.64 (11.8), 12/3, [-10.54, -1.32]** | 6.72 (11.8), 12/3, [-10.54, -1.32] | 6.64 (11.8), 12/3, [-10.54, -1.32] | 4.25 (18.3), 12/3, [-7.04, -0.85] | 4.11 (12.2), 11/4, [-13.75, -1.92] |
 
-The check leaves every median unchanged against the shipped column. It shortens the tails of
+The check leaves every median unchanged against the shipped column except the LiDAR-only 60 s corridor (38.3 -> 37.5 m) and the straight max ratio (6.64 -> 6.72). It shortens the tails of
 the 60 s corridors (GNSS max 18.5 -> 11.3 m, LiDAR-only 205 -> 107 m) and costs two straight
 runs 0.6 to 1.3 m at the end. Per seed (scale 2, check off -> check at 5):
 
@@ -724,11 +724,13 @@ GNSS corridor scene, scale 2, check at 5, 15 seeds):
   8.57 / 6 = 6.7) and changes the removals by one (6 -> 5 with GNSS, 2 -> 2 without). LiDAR
   over-confidence, as the box NEES measures it, does not explain the removals.
 - (a) turning GNSS off prevents 4 of the 6 removals: seeds 51, 53, 54 and 55 keep the factor,
-  48 and 52 are still removed (statistic 29.8 and 48.9). The GNSS side, with `E` still aligning at keyframe 5 on a
-  short straight track (10c: `E` yaw excursions of up to 1 rad at 24 s in seed 42), is the
-  larger cause.
+  48 and 52 are still removed (statistic 29.8 and 48.9). The GNSS side is the larger cause;
+  the experiment does not say which part of it. A hypothesis, not tested here: `E` still
+  aligning at keyframe 5 on a short straight track (10c: `E` yaw excursions of up to 1 rad at
+  24 s in seed 42). Four discordant seeds (GNSS off) and one (cov_scale) are small counts.
 - Neither isolates the rest: without GNSS and with consistent LiDAR covariances, 2 of 15 runs
-  (statistic 34.8 and 10.7) are still removed, 13 % against 5 %. The corridor's own null mode
+  (statistic 34.8 and 10.7) are still removed. At a 5 % rate, 2 or more of 15 has a binomial
+  probability of about 0.17, so the remainder is not shown to exceed chance. The corridor's own null mode
   (the tilt about the axis normal to x that the LiDAR cannot see, sections 8 and 11) is the
   likely remainder: there the LiDAR chain carries tilt with a covariance that does not see
   it. That was not isolated further.

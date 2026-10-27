@@ -227,7 +227,7 @@ If `S`'s smallest eigenvalue is at most `kMinGravityInnovationEigen` = 1e-9
 (`constants.hpp`), or the rest of the graph does not determine `(X_k, B_k)`, the factor is
 the only information on what it measures and nothing can contradict it: the statistic is
 not evaluated, the factor stays, and the pipeline counts `Stats::n_gravity_factor_unchecked`.
-The shipped scenes measure 0.013 to 0.66.
+Measured with the check on (`imu_only_observability.md` 10g): 0.013 to 0.66.
 
 Above `backend.static_gravity_chi2_gate` (5.991, 0.95)
 `Graph::remove_static_gravity_factor()` removes it from iSAM2 (`ISAM2::update` with

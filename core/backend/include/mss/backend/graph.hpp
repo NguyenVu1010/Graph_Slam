@@ -182,8 +182,9 @@ class Graph {
   /// e the whitened residual and S = I - J P J^T its covariance (J the whitened Jacobian, P
   /// the joint marginal covariance of (X_k, B_k)), formed as S^-1 = I + J P_rest J^T with
   /// P_rest the joint marginal without the factor. Chi-square with 2 DoF (3 for the
-  /// study-only full residual) when the window was at rest: the factor tested against the
-  /// rest of the graph, not its posterior residual. One joint marginal over the graph.
+  /// study-only full residual) when the window was at rest and the rest of the graph is
+  /// consistent (backend_factors.md 6c): the factor tested against the rest of the graph,
+  /// not its posterior residual. One joint marginal over the graph.
   /// Errors (Result::error): "no gravity factor" (never added, or removed); "gravity factor
   ///   not optimised"; "innovation covariance not positive definite ..." (smallest
   ///   eigenvalue of S <= 1e-9, or the rest of the graph does not determine (X_k, B_k): the

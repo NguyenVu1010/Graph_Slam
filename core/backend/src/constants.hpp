@@ -15,7 +15,8 @@ inline constexpr double kLoopCauchyK = 3.5485;
 // which the statistic is not evaluated. Below 1e-9 the rest of the graph is more than 1e9
 // times less certain (in variance) than the factor about what the factor measures: the
 // factor is in effect the only information there, and nothing can contradict it. The
-// shipped scenes measure 0.013 to 0.66 (LiDAR-only, box and corridor component tests). A
+// scenes measure 0.013 to 0.66 with the check on (LiDAR-only, box and corridor component
+// tests, imu_only_observability.md 10g). A
 // bound on a ratio, not a tunable.
 inline constexpr double kMinGravityInnovationEigen = 1e-9;
 
