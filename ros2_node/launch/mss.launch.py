@@ -1,4 +1,8 @@
-"""Launch mss_node with the shared config/default.yaml."""
+"""Launch mss_node with the shared config/default.yaml.
+
+The YAML is read by the core config loader (ADR-008), so the node gets only its path as the
+string parameter `config_path`; override it with `config:=<file>`.
+"""
 
 from pathlib import Path
 
@@ -20,7 +24,8 @@ def generate_launch_description() -> LaunchDescription:
                 executable="mss_node",
                 name="mss_node",
                 output="screen",
-                parameters=[LaunchConfiguration("config")],
+                emulate_tty=True,
+                parameters=[{"config_path": LaunchConfiguration("config")}],
             ),
         ]
     )
