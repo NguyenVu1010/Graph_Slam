@@ -36,3 +36,39 @@ class GnssPositionFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3> {
 };
 
 }  // namespace mss::backend::detail
+
+namespace mss::backend::detail {
+
+/// GNSS antenna position factor on X_k = T_w_b and the frame variable E = T_e_w
+/// (ADR-019, docs/derivations/backend_factors.md section 6b). Residual (3x1, m):
+///   r = R_e_w (R_w_b p_b_g + p_w_b) + p_e_w - p_e_g
+/// Variables: T_w_b, T_e_w, both with the Pose3 right perturbation [dphi, drho]:
+///   d r / d[dphi, drho]_x = [-R_e_w R_w_b skew(p_b_g), R_e_w R_w_b]
+///   d r / d[dphi, drho]_e = [-R_e_w skew(q), R_e_w],  q = T_w_b p_b_g (in w)
+/// Constant: lever arm p_b_g (m, in b). Noise: Gaussian::Covariance(cov_m2).
+class GnssFrameFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3, gtsam::Pose3> {
+ public:
+  using Base = gtsam::NoiseModelFactorN<gtsam::Pose3, gtsam::Pose3>;
+  using Base::evaluateError;
+
+  /// Precondition: cov_m2 symmetric positive definite.
+  GnssFrameFactor(gtsam::Key x,
+                  gtsam::Key e,
+                  const common::Vec3& p_e_g,
+                  const common::Mat3& cov_m2,
+                  const common::Vec3& p_b_g);
+
+  [[nodiscard]] gtsam::Vector evaluateError(
+      const gtsam::Pose3& T_w_b,
+      const gtsam::Pose3& T_e_w,
+      boost::optional<gtsam::Matrix&> H_x = boost::none,
+      boost::optional<gtsam::Matrix&> H_e = boost::none) const override;
+
+  [[nodiscard]] gtsam::NonlinearFactor::shared_ptr clone() const override;
+
+ private:
+  common::Vec3 p_e_g_;
+  common::Vec3 p_b_g_;
+};
+
+}  // namespace mss::backend::detail

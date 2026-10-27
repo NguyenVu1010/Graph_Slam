@@ -16,7 +16,7 @@ Sau các PR module của giai đoạn 1, mọi module (`imu`, `preprocess`, `sca
 5. **Chưa khởi tạo IMU thì không có ước lượng**: `latest_state().state.t == Timestamp{}`. Scan khớp thất bại thì đi theo dự đoán IMU, không tạo keyframe, không chèn bản đồ.
 6. **Chỉ đám mây keyframe vào `VoxelMap`**, chèn tại pose đã tối ưu (nếu `optimize()` thành công), khớp với cơ chế dựng lại của ADR-016.
 7. **Đo LiDAR vào factor**: `T_bi_bj = (T_w_bi^ref)^-1 * T_w_bj^match`, hiệp phương sai là `cov_b` của scan j (như LIO-SAM; ADR-004 ghi nhận là lạc quan) (`pipeline.md` §4).
-8. **GNSS gắn vào keyframe kế tiếp**, dời về thời điểm keyframe theo `pipeline.md` §5; mỗi factor dùng ước lượng `T_e_w` mới nhất của aligner. Cổng chi-square chạy trước aligner, nên bước nhảy bị loại không làm lệch `T_e_w`. Pose tại thời điểm fix được nội suy đúng tại `m.t`: fix được giữ trong một vòng đệm cố định (32 phần tử) cho đến khi có mẫu IMU `t >= m.t`, rồi dự đoán từ trạng thái front-end ở đầu scan trước qua các mẫu IMU và mẫu nội suy tại `m.t`. Fix cũ hơn đầu scan đã xử lý gần nhất bị loại và đếm (`n_gnss_late`).
+8. **GNSS gắn vào keyframe kế tiếp**, dời về thời điểm keyframe theo `pipeline.md` §5; mỗi factor dùng ước lượng `T_e_w` mới nhất của aligner (khi `backend.gnss_frame_variable` tắt; khi bật, mọi factor dùng chung biến `T_e_w` của graph, xem ADR-019). Cổng chi-square chạy trước aligner, nên bước nhảy bị loại không làm lệch `T_e_w`. Pose tại thời điểm fix được nội suy đúng tại `m.t`: fix được giữ trong một vòng đệm cố định (32 phần tử) cho đến khi có mẫu IMU `t >= m.t`, rồi dự đoán từ trạng thái front-end ở đầu scan trước qua các mẫu IMU và mẫu nội suy tại `m.t`. Fix cũ hơn đầu scan đã xử lý gần nhất bị loại và đếm (`n_gnss_late`).
 9. **Backend stub (`MSS_WITH_GTSAM=OFF`)**: lỗi `optimize()` thì dùng trạng thái front-end, chỉ ghi log ở lần lỗi đầu của một chuỗi.
 
 ## Phương án đã cân nhắc
@@ -50,5 +50,5 @@ Sau các PR module của giai đoạn 1, mọi module (`imu`, `preprocess`, `sca
 
 ## Việc còn mở
 
-- Đề xuất giữ lại factor GNSS cho đến khi độ trải ngang của các cặp trong aligner lớn hơn nhiều lần `sigma_h_m` (cần khoá cấu hình hoặc ADR riêng), để fix không làm xấu quỹ đạo khi `T_e_w` còn kém xác định.
+- Đã giải quyết (PR 4a), xem `docs/derivations/gnss_fusion_study.md` và ADR-019: GNSS làm xấu box world vì mỗi factor đóng băng `T_e_w` của aligner và kéo gauge 4 bậc tự do của w. Đề xuất giữ lại factor đến khi độ trải đủ lớn đã được đo và bị loại (chỉ có tác dụng khi cổng không bao giờ mở, và chặn việc sửa trôi trong hành lang). Thay vào đó `T_e_w` là một biến của graph (`backend.gnss_frame_variable`); quyết định 8 vẫn đúng về việc gắn fix vào keyframe, phần "mỗi factor dùng ước lượng `T_e_w` mới nhất của aligner" chỉ còn áp dụng khi cờ tắt. Box world có GNSS 0,5 m: 0,0089 m so với 0,0088 m chỉ LiDAR.
 - Giới hạn TBB của `backend` khi `deterministic: true`: đã quyết định trong ADR-018 (`BackendConfig::single_thread`, `tbb::global_control` trong `Graph`).

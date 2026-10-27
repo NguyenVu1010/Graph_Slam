@@ -66,9 +66,10 @@ class Estimator {
     std::uint64_t n_gnss_late = 0;        ///< GNSS fixes older than the last processed scan
     std::uint64_t n_gnss_ring_overflow = 0;  ///< GNSS fixes dropped: waiting-for-IMU ring full
     std::uint64_t n_gnss_unfused_eof = 0;    ///< GNSS fixes after the last IMU sample at flush()
-    std::uint64_t n_nonfinite_imu = 0;       ///< IMU samples dropped (non-finite acc or gyro)
-    double push_scan_us_p50 = 0.0;           ///< us, median wall time of push_scan()
-    double push_scan_us_p95 = 0.0;           ///< us, 95th percentile wall time of push_scan()
+    std::uint64_t n_gnss_realign = 0;  ///< GNSS aligner restarts after gnss.max_consecutive_rejects
+    std::uint64_t n_nonfinite_imu = 0;  ///< IMU samples dropped (non-finite acc or gyro)
+    double push_scan_us_p50 = 0.0;      ///< us, median wall time of push_scan()
+    double push_scan_us_p95 = 0.0;      ///< us, 95th percentile wall time of push_scan()
   };
 
   /// Builds every module and reserves every buffer: a pool of

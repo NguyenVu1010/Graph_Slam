@@ -58,7 +58,13 @@ common::PoseCovariance prior_cov(const backend::BackendConfig& b) {
   return c;
 }
 
+const CoreTestHooks* g_test_hooks = nullptr;  // test-only, see set_core_test_hooks
+
 }  // namespace
+
+void set_core_test_hooks(const CoreTestHooks* hooks) {
+  g_test_hooks = hooks;
+}
 
 EstimatorCore::EstimatorCore(const Config& cfg)
     : cfg_(validated(cfg)),
@@ -85,7 +91,14 @@ EstimatorCore::EstimatorCore(const Config& cfg)
       traj_(std::make_unique<imu::ImuTrajectory>()),
       gnss_out_(std::make_unique<std::array<common::GnssMeasurement, kMaxAuxQueue>>()),
       pre_out_(cfg.realtime.max_points_per_scan),
-      kf_cloud_(cfg.realtime.max_points_per_scan) {}
+      kf_cloud_(cfg.realtime.max_points_per_scan) {
+  if (g_test_hooks != nullptr) {
+    observer_ = g_test_hooks->observer;
+    if (g_test_hooks->force_T_e_w) {
+      fusion_.force_T_e_w(g_test_hooks->T_e_w);
+    }
+  }
+}
 
 EstimatorCore::~EstimatorCore() = default;
 
@@ -210,6 +223,15 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
       predict_state_at(imu_, pred_, pred_last_t_, front_, m.t, g_w_, scratch_);
   FixOutcome outcome = FixOutcome::kAccepted;
   (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome);
+  if (fusion_.n_realign() != counters_.n_gnss_realign) {
+    counters_.n_gnss_realign = fusion_.n_realign();
+    common::log_warn(
+        "gnss: chi-square rejected gnss.max_consecutive_rejects fixes in a row, "
+        "aligner restarted");
+  }
+  if (observer_ != nullptr && outcome == FixOutcome::kAccepted) {
+    observer_->on_fix_accepted(m.t, fusion_.T_e_w());
+  }
   if (outcome == FixOutcome::kAccepted || outcome == FixOutcome::kNotAligned) {
     gnss_reject_streak_ = false;
     return;
@@ -407,6 +429,9 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   graph_.add_imu_factor(i, j, kf_.delta());
   // LiDAR factor measurement (pipeline.md section 4).
   const common::Pose T_bi_bj = ref_.inverse() * front_.T_w_b;
+  if (observer_ != nullptr) {
+    observer_->on_lidar_factor(last_kf_t_, t, T_bi_bj, cov_b);
+  }
   if (cfg_.degeneracy.enabled) {
     const common::DegeneracyReport report_b =
         degeneracy_in_body(degeneracy::analyze(match.H, cfg_.degeneracy), T_b_l_);
@@ -430,6 +455,9 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
     const std::size_t n = fusion_.collect(t, front_.T_w_b, *gnss_out_);
     for (std::size_t k = 0; k < n; ++k) {
       graph_.add_gnss_factor(j, (*gnss_out_)[k], fusion_.T_e_w());
+      if (observer_ != nullptr) {
+        observer_->on_gnss_factor(t, (*gnss_out_)[k], fusion_.T_e_w());
+      }
     }
     counters_.n_gnss_factors += n;
   }

@@ -68,6 +68,15 @@ TEST(BackendApi, ConstructorRejectsInvalidConfig) {
   b = default_backend_config();
   b.prior_bias_gyro_sigma_radps = 0.0;
   expect_throw(b, default_imu_config(), p_b_g);
+  b = default_backend_config();
+  b.gnss_frame_variable = true;  // ADR-019: its prior sigmas are then required (> 0)
+  b.gnss_frame_tilt_sigma_rad = 1e-4;
+  b.gnss_frame_yaw_sigma_rad = 0.5;
+  expect_throw(b, default_imu_config(), p_b_g);  // gnss_frame_pos_sigma_m still 0
+  b.gnss_frame_pos_sigma_m = 10.0;
+  EXPECT_NO_THROW(Graph(b, default_imu_config(), p_b_g));
+  b.gnss_frame_yaw_sigma_rad = 0.0;
+  expect_throw(b, default_imu_config(), p_b_g);
   {
     imu::ImuConfig c = default_imu_config();
     c.acc_random_walk = -1e-4;

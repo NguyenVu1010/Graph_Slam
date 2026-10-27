@@ -163,6 +163,38 @@ TEST(BackendFactors, B01_GnssFactorZeroWhenConsistent) {
   EXPECT_LT(f.unwhitenedError(values).norm(), 1e-12);
 }
 
+// ADR-019 / section 6b: GNSS factor on (T_w_b, E = T_e_w). E random (tilt included) so
+// the full 3x6 Jacobian of E is checked, not only its 4-DoF part.
+TEST(BackendFactors, B01_GnssFrameFactorJacobians) {
+  std::mt19937 rng(kSeed);
+  for (int rep = 0; rep < 20; ++rep) {
+    GnssSetup s;
+    s.T_w_b = random_pose(rng);
+    s.T_e_w = random_pose(rng);
+    const Vec3 p_e_g = s.T_e_w * (s.T_w_b * s.p_b_g) + 0.5 * random_vec3(rng, 1.0).normalized();
+    const GnssFrameFactor f(pose_key(0), frame_key(), p_e_g, s.cov, s.p_b_g);
+    gtsam::Values values;
+    values.insert(pose_key(0), to_gtsam(s.T_w_b));
+    values.insert(frame_key(), to_gtsam(s.T_e_w));
+    EXPECT_NEAR(f.unwhitenedError(values).norm(), 0.5, 1e-9);
+    MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f, values);
+    EXPECT_LT(max_relative_jacobian_error(f, values), kRelJacTol);
+  }
+}
+
+TEST(BackendFactors, B01_GnssFrameFactorMatchesFixedFactor) {
+  std::mt19937 rng(kSeed);
+  GnssSetup s;
+  s.T_w_b = random_pose(rng);
+  const Vec3 p_e_g = s.T_e_w * (s.T_w_b * s.p_b_g) + random_vec3(rng, 1.0);
+  const GnssFrameFactor f(pose_key(0), frame_key(), p_e_g, s.cov, s.p_b_g);
+  const GnssPositionFactor fixed(pose_key(0), p_e_g, s.cov, s.T_e_w, s.p_b_g);
+  gtsam::Values values;
+  values.insert(pose_key(0), to_gtsam(s.T_w_b));
+  values.insert(frame_key(), to_gtsam(s.T_e_w));
+  EXPECT_LT((f.unwhitenedError(values) - fixed.unwhitenedError(values)).norm(), 1e-12);
+}
+
 TEST(BackendFactors, B01_OdomFactorRotatedSingularCov) {
   const Pose T_b_o = pose_from(Vec3(0.1, -0.2, 0.3), Vec3(0.2, 0.0, 0.1));
   const common::OdomDelta od = test::wheel_delta(T_b_o);

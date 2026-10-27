@@ -56,10 +56,20 @@ class GnssFusion {
                       std::array<common::GnssMeasurement, kMaxAuxQueue>& out);
 
   [[nodiscard]] bool aligned() const { return aligned_; }
+  /// Test-only (CoreTestHooks): use `T_e_w` from now on, aligned, without the aligner.
+  void force_T_e_w(const common::Pose& T_e_w) {
+    T_e_w_ = T_e_w;
+    aligned_ = true;
+    forced_ = true;
+  }
   /// Latest aligner estimate (identity until aligned()). Maps w to e.
   [[nodiscard]] const common::Pose& T_e_w() const { return T_e_w_; }
   /// Accepted fixes dropped from the full pending queue so far.
   [[nodiscard]] std::uint64_t n_pending_dropped() const { return n_pending_dropped_; }
+  /// Aligner restarts so far: after `max_consecutive_rejects` chi-square rejections in a row
+  /// the aligner is rebuilt empty (no allocation), aligned() becomes false and the rejected
+  /// fix is the first pair of the new alignment (pipeline.md section 5).
+  [[nodiscard]] std::uint64_t n_realign() const { return n_realign_; }
 
  private:
   struct PendingFix {
@@ -67,8 +77,12 @@ class GnssFusion {
     common::Pose T_w_b_fix;
   };
 
+  gnss::GnssConfig cfg_;  // kept to rebuild the aligner
   double max_cov_m2_;
   double chi2_gate_;
+  int consecutive_rejects_ = 0;
+  bool forced_ = false;  // force_T_e_w: the aligner is never run
+  std::uint64_t n_realign_ = 0;
   common::Vec3 p_b_g_;
   gnss::GnssAligner aligner_;
   bool aligned_ = false;
