@@ -184,6 +184,19 @@ TEST(Config, ScanMatchResidualSigmaFloor) {
   EXPECT_TRUE(mentions(cfg.reason(), "scan_match.min_residual_sigma_m")) << cfg.reason();
 }
 
+// ADR-018: backend.single_thread is not a YAML key; it follows `deterministic` (ADR-008).
+TEST(Config, DeterministicSetsBackendSingleThread) {
+  const std::string base = read_file(kDefault);
+  const auto on = parse_config(base, overlay("    deterministic: true\n"));
+  ASSERT_TRUE(on.is_ok()) << on.reason();
+  EXPECT_TRUE(on.value().deterministic);
+  EXPECT_TRUE(on.value().backend.single_thread);
+  const auto off = parse_config(base, overlay("    deterministic: false\n"));
+  ASSERT_TRUE(off.is_ok()) << off.reason();
+  EXPECT_FALSE(off.value().deterministic);
+  EXPECT_FALSE(off.value().backend.single_thread);
+}
+
 TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   const auto cfg = load_config(kDefault);
   ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
