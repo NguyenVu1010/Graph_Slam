@@ -104,6 +104,11 @@ and the translation, with the un-shifted means,
     p_e_w = mean(p_e_g) - Rz(yaw) mean(p_w_g)
           = (p_e_g,0 + sum b / n) - Rz(yaw) (p_w_g,0 + sum a / n)
 
+Use of the result: the pipeline gates fixes with this `T_e_w` (chi-square, `pipeline.md`
+section 5) and uses its rotation to shift fixes to keyframe time. With
+`backend.gnss_frame_variable` (ADR-019, default) it only seeds the graph's variable
+`E = T_e_w` (`backend_factors.md` section 6b); the factors use `E`, not this estimate.
+
 Horizontal spread (RMS distance of `p_w_g,h` from its centroid):
 
     spread = sqrt(max(0, sum |a_h|^2 / n - |sum a_h / n|^2))

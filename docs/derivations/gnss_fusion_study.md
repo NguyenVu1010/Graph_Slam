@@ -8,8 +8,11 @@ fix adopted (ADR-019, `backend_factors.md` section 6b).
 
 Synthetic box world of `tests/component/box_world.hpp` (`pipeline.md` section 7) with its
 default parameters: 3 s static, 2 s ramp, 15 s cruise at 0.5 m/s on a circle of radius
-2 m (yaw rate 0.25 rad/s), 199 scans, 200 Hz IMU, 5 Hz GNSS, fixed seeds (42, 43). The run
-is 20 s, not 60 s; about 85 fixes arrive after the first estimate. GNSS fixes are
+2 m (yaw rate 0.25 rad/s), 199 scans, 200 Hz IMU, 5 Hz GNSS, fixed seeds (42, 43). The PR
+brief asked for 60 s on a circle of R = 1.67 m (the integration data); the study uses the
+box-world defaults of the component tests instead: 20 s, R = 2 m, about 85 fixes after the
+first estimate. The 60 s evidence is E-01 (R = 1.67 m), which only compares the fixed `T_e_w`
+with the frame variable (section 9). GNSS fixes are
 `T_e_w (T_w_b p_b_g) + N(0, sigma^2 I)` with `cov = sigma^2 I`; `T_e_w` has yaw 30 deg.
 Wheel odometry is off unless stated. GTSAM build, Release.
 
@@ -18,11 +21,15 @@ w, without alignment (as in the component test). "ATE 4-DoF" is the RMS after th
 yaw + translation fit of the estimate to the truth (the aligner's closed form), so it
 measures deformation only.
 
-Driver: a scratch gtest plus an instrumentation patch, neither committed. The patch logs
-every LiDAR factor `(t_i, t_j, T_bi_bj, cov_b)`, every GNSS factor
-`(t_k, p_e_g', cov, T_e_w used)` and every accepted aligner estimate, and can force a
-perfect `T_e_w`. It is kept with the PR report. The committed tests of Task 3 reproduce the
-ATE numbers.
+Driver: `PipelineComponent.GnssFusionStudy` in `tests/component/test_pipeline_component.cpp`,
+skipped unless `MSS_GNSS_STUDY=1`. It regenerates every table of this file except the gate
+rows of section 7 into `results/<run-id>/gnss_study.md` (`MSS_GNSS_STUDY_RUN_ID`, default
+`gnss-study`). The perfect `T_e_w` and the per-factor logging go through the test-only seam
+`detail::CoreTestHooks` (an observer of every LiDAR factor `(t_i, t_j, T_bi_bj, cov_b)`, GNSS
+factor `(t_k, p_e_g', cov, T_e_w used)` and accepted fix). The run takes about 90 s.
+Since PR 4a fix round 1 the pipeline also has the lock-out guard
+`gnss.max_consecutive_rejects` (25); it changes only corridor rows where the gate locked out
+(noted in section 8).
 
 NEES: for a LiDAR factor, `e = boxminus(T_bi_bj, T_true)` and NEES `e^T cov_b^-1 e`, expected
 mean 6. For a GNSS factor, `r = p_e_g' - T_e_w (T_w_bk_true p_b_g)` and NEES `r^T cov^-1 r`,
@@ -98,13 +105,20 @@ Between the first and the last estimate the yaw moves by 1.9 deg.
 | `cov_scale` 5, aligner | 0.0326 | 0.0292 |
 | `cov_scale` 5, perfect `T_e_w` | 0.0607 | 0.0290 |
 | `cov_scale` 5 + tight prior, aligner | 0.0092 | 0.0035 |
+| map rebuilt at every keyframe (`rebuild_*` 1e-6), aligner | 0.0360 | 0.0314 |
+| map rebuilt at every keyframe, perfect `T_e_w` | 0.0682 | 0.0356 |
 
 - A consistent LiDAR covariance changes nothing, so covariance weighting is not the
   cause.
 - Pinning the 4-DoF gauge of w (a tight prior on keyframe 0) removes all of the damage, with
   the aligner and with a perfect `T_e_w`. The damage is therefore a rigid pull of the whole
   trajectory in the four gauge directions (x, y, z, yaw), which the default prior leaves
-  soft. The map/graph mismatch of section 3 then turns that pull into deformation.
+  soft, together with the deformation it causes (4-DoF ATE 0.029 m without the tight prior).
+- Rebuilding the map at every keyframe (22 rebuilds) removes the map/graph mismatch of
+  section 3: the LiDAR NEES falls from 534 to 20. The deformation stays (4-DoF ATE 0.031 m),
+  so the mismatch is not what deforms the trajectory: the GNSS pull itself bends the chain
+  within the slack of the LiDAR factors (each about 4 mm, about 2 cm as a random walk over
+  22 keyframes). The mismatch is a consequence of the ADR-016 thresholds (dated note there).
 
 ## 5. Expected optimum
 
@@ -128,8 +142,10 @@ LiDAR chain drifts by more than the fixes can resolve, roughly `sigma_h / sqrt(n
    not zero-mean against the trajectory. With a perfect `T_e_w`, the pull is the mean of
    the fix noise instead. Either way the GNSS information is far weaker than the LiDAR
    chain's (section 5), so any pull is damage.
-2. The map/graph mismatch turns the rigid pull into deformation: LiDAR factor errors grow
-   4x (section 3), and the map is rebuilt 3 to 4 times.
+2. The pull also bends the trajectory within the slack of the LiDAR chain (4-DoF ATE 0.029
+   m); pinning the gauge removes both. The map/graph mismatch (LiDAR factor errors 4x,
+   3 to 4 rebuilds) comes with it but is not its cause: rebuilding at every keyframe removes
+   the mismatch and keeps the deformation (section 4).
 3. Ruled out: the GNSS covariance (NEES 2.4 where 3 is expected), the LiDAR covariance
    (4.7x optimistic, but making it consistent changes nothing), and the keyframe-time
    shift.
@@ -152,7 +168,9 @@ frozen `T_e_w` then differs little from the final one.
 | (5, 1 deg) | - | - | - | 24.8 |
 | (10, 1 deg) | 0.0256 | 0.0088 | 0.0088 | 25.3 |
 
-ATE in m. The gate removes the damage only when it never opens (box world at 0.5 and 2 m);
+ATE in m. These rows come from a prototype of the gate (fixed `T_e_w`, keys
+`gnss.align_min_spread_sigma` and `gnss.align_max_yaw_sigma_deg` in `GnssAligner`) that was
+not kept, so the committed study driver cannot regenerate them. The gate removes the damage only when it never opens (box world at 0.5 and 2 m);
 at 0.1 m it opens and the damage stays (2.9x). In the corridor it delays the alignment until
 the LiDAR + IMU chain has drifted by metres; the aligner then fits `T_e_w` to the drifted
 trajectory, the chi-square gate rejects the later fixes, and GNSS no longer corrects
@@ -167,9 +185,9 @@ the information it really has: the shape of the trajectory. Results in section 9
 Also checked: the aligner keeps adding pairs while it has no transform, and re-estimates
 `T_e_w` from all pairs at every fix (it is not frozen; now tested).
 
-Out of scope, recorded as open items: the LiDAR covariance optimism (NEES 28), the
-map/graph mismatch after a correction below the ADR-016 rebuild thresholds, and the
-degeneracy covariance along an unobservable direction (section 8).
+Out of scope at this point: the LiDAR covariance optimism (NEES 28), the degeneracy
+covariance along an unobservable direction (section 8), and the map/graph mismatch after a
+correction below the ADR-016 rebuild thresholds (a design consequence, section 4).
 
 ## 8. Where GNSS must help: a degenerate corridor
 
@@ -182,7 +200,7 @@ on that axis comes from the IMU.
 | `degeneracy.relax_factor` | LiDAR only ATE (m) | + GNSS 0.5, aligner (m) | + GNSS 0.5, perfect `T_e_w` (m) |
 | --- | --- | --- | --- |
 | 10 (default) | 11.5 | 7.6 | 3.1 |
-| 1e4 | 13.7 | 32.2 | 16.2 |
+| 1e4 | 13.7 | 32.2 (22.5 with the lock-out guard) | 16.2 |
 | 1e8 | 26.1 | 0.74 | 0.33 |
 
 With the default `relax_factor` the LiDAR factor still claims about 2 mm along the
@@ -215,3 +233,18 @@ the scenario (LiDAR only: 3 to 50 m depending on duration and
 `backend.relinearize_threshold`), because the IMU-only axis there is itself poorly behaved;
 the component test asserts only the 2x bound at 60 s. Without GTSAM (stub backend) GNSS adds
 no factor and both scenarios equal LiDAR only.
+
+## 10. Cost of the frame variable on a long run
+
+`E` is connected to every keyframe that has a fix, so relinearising it can touch most of the
+iSAM2 tree. `PipelineComponent.GnssFusionStudyLongRun` (`MSS_GNSS_STUDY_LONG=1`, about
+150 s) replays a 10-minute box world (6049 scans, GNSS 0.5 m) and times the `run_once()` call
+that processes each scan (keyframe scans include `optimize()`), desktop WSL:
+
+| `T_e_w` | keyframes | GNSS factors | ATE (m) | p50 (ms) | p99 (ms) | max (ms) |
+| --- | --- | --- | --- | --- | --- | --- |
+| fixed | 849 | 2820 | 0.0561 | 4.17 | 9.48 | 20.48 |
+| frame variable | 859 | 2828 | 0.0081 | 4.44 | 9.32 | 20.27 |
+
+No latency spike from `E`, so no separate relinearisation threshold for it. On the long run
+the fixed `T_e_w` degrades the box world 7x, the frame variable does not.
