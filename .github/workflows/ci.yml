@@ -70,7 +70,7 @@ jobs:
       - name: Integration E-01..E-03, PF-01
         run: >
           python tools/run_integration.py
-          --bench-cmd "docker run --rm -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }} mss /ws/install/multi_sensor_slam/bin/mss_bench"
+          --bench-cmd "docker run --rm --name {container} -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }} mss /ws/install/multi_sensor_slam/bin/mss_bench"
           --out ${{ github.workspace }}/results/ci-${{ github.run_id }} --plots
       - if: always()
         run: |

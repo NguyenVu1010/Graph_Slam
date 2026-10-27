@@ -18,3 +18,14 @@ topics:
   - /ground_truth
   - /tf_static
   - /clock
+prep:                      # synthetic data for the integration harness (ADR-011 part A)
+  static_s: 5.0            # still phase for IMU initialisation
+  ramp_s: 2.0              # speed ramp after the still phase
+  speed_mps: 0.5           # cruise speed V
+  omega_radps: 0.3         # yaw rate W; circle radius R = V / W
+  box_half_m: [8.0, 5.0, 2.0]  # floor and ceiling inside the +-15 deg beams
+  mutate:                  # E-03 only: what mutate_bag.py does to the E-01 bag
+    drop_fraction: 0.05
+    reorder_fraction: 0.02
+    window_ns: 20000000    # reorder only neighbours closer than 20 ms
+    seed: 42
