@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from run_integration import (
     REORDER_NOTE,
@@ -56,6 +57,16 @@ def _fake_bench_cmd(tmp: Path) -> str:
     return shlex.join([Path(sys.executable).as_posix(), script.as_posix()])
 
 
+def _scenario(tmp: Path, prep: bool = True) -> Path:
+    """Copy of sim/scenarios/E-01.yaml in ``tmp``; ``prep=False`` drops the prep block."""
+    data = yaml.safe_load((_REPO / "sim/scenarios/E-01.yaml").read_text(encoding="utf-8"))
+    if not prep:
+        data.pop("prep")
+    path = tmp / ("scenario.yaml" if prep else "scenario_no_prep.yaml")
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
 def _git_status() -> str | None:
     if shutil.which("git") is None:
         return None
@@ -75,7 +86,8 @@ def e2e(tmp_path_factory: pytest.TempPathFactory) -> tuple[int, Path, str | None
     tmp = tmp_path_factory.mktemp("integration")
     before = _git_status()
     out = tmp / "results"
-    code = main(["--bench-cmd", _fake_bench_cmd(tmp), "--out", str(out), "--duration-s", "8"])
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp), "--out", str(out), "--duration-s", "8"]
+    code = main([*argv, "--scenario", str(_scenario(tmp))])
     return code, out, before, _git_status()
 
 
@@ -95,6 +107,13 @@ def test_end_to_end_with_fake_bench(e2e: tuple[int, Path, str | None, str | None
     assert src["box_half_m"] == [8.0, 5.0, 2.0] and src["duration_s"] == 8.0
     assert (src["static_s"], src["ramp_s"], src["seed"]) == (5.0, 2.0, 42)
     assert src["scenario_world_trajectory_used"] is False
+    assert src["prep_source"].endswith("scenario.yaml")
+    assert src["mutate"] == {
+        "drop_fraction": 0.05,
+        "reorder_fraction": 0.02,
+        "window_ns": 20_000_000,
+        "seed": 42,
+    }
     assert "E-03 processed" in res["E-03"]["note"]
     for test_id in ("E-01", "E-02", "E-03"):
         assert (out / test_id / "est.tum").is_file()
@@ -102,6 +121,15 @@ def test_end_to_end_with_fake_bench(e2e: tuple[int, Path, str | None, str | None
         assert (out / test_id / "bench.log").is_file()
     assert (out / "data" / "mssdata" / "index.json").is_file()
     assert (out / "data" / "mssdata_e03" / "index.json").is_file()
+
+
+def test_missing_prep_is_setup_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "results"
+    scenario = _scenario(tmp_path, prep=False)
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out)]
+    assert main([*argv, "--scenario", str(scenario)]) == 2
+    assert "scenario E-01: missing prep block" in capsys.readouterr().err
+    assert not out.exists()  # rejected before any data is prepared
 
 
 def test_null_baseline_passes_with_note() -> None:

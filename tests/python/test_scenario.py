@@ -33,6 +33,45 @@ def test_e01_loads() -> None:
     assert sc.gnss_zones == []
     assert len(sc.topics) == 7
     assert "/ground_truth" in sc.topics
+    assert sc.prep is not None
+    assert (sc.prep.static_s, sc.prep.ramp_s) == (5.0, 2.0)
+    assert (sc.prep.speed_mps, sc.prep.omega_radps) == (0.5, 0.3)
+    assert sc.prep.box_half_m == (8.0, 5.0, 2.0)
+    m = sc.prep.mutate
+    assert (m.drop_fraction, m.reorder_fraction, m.window_ns, m.seed) == (
+        0.05,
+        0.02,
+        20_000_000,
+        42,
+    )
+
+
+def test_prep_absent_is_none(tmp_path: Path) -> None:
+    assert load_scenario(_write(tmp_path, lambda d: d.pop("prep"))).prep is None
+
+
+def test_negative_ramp_rejected(tmp_path: Path) -> None:
+    def mutate(d: dict) -> None:
+        d["prep"]["ramp_s"] = -1.0
+
+    with pytest.raises(ScenarioError, match=r"prep\.ramp_s"):
+        load_scenario(_write(tmp_path, mutate))
+
+
+def test_two_element_box_rejected(tmp_path: Path) -> None:
+    def mutate(d: dict) -> None:
+        d["prep"]["box_half_m"] = [8.0, 5.0]
+
+    with pytest.raises(ScenarioError, match=r"prep\.box_half_m"):
+        load_scenario(_write(tmp_path, mutate))
+
+
+def test_zero_drop_fraction_rejected(tmp_path: Path) -> None:
+    def mutate(d: dict) -> None:
+        d["prep"]["mutate"]["drop_fraction"] = 0
+
+    with pytest.raises(ScenarioError, match=r"prep\.mutate\.drop_fraction"):
+        load_scenario(_write(tmp_path, mutate))
 
 
 def test_overlapping_segments_rejected(tmp_path: Path) -> None:

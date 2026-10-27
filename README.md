@@ -90,9 +90,27 @@ against the ground truth with `mss_eval.ate`, then compares with `eval/baselines
 The data are a synthetic box circle, not the warehouse lap: a circle of radius
 R = V / W = 0.5 / 0.3 = 1.67 m (5 s still, 2 s speed ramp) inside a 16 x 10 x 4 m box, using the
 seed, duration, origin, noise profile and `T_b_l` of `sim/scenarios/E-01.yaml` and
-`config/sim/warehouse.yaml`. The scenario's `world` and `trajectory` are not used yet. These
-parameters are written to `integration.json` under `data_source`, so a baseline recorded on
-this data is not silently compared with a different dataset later.
+`config/sim/warehouse.yaml`. The scenario's `world` and `trajectory` are not used yet. The
+synthetic-data values come from the scenario's `prep` block (a scenario without one is a setup
+error, exit 2):
+
+```yaml
+prep:
+  static_s: 5.0              # still phase for IMU initialisation
+  ramp_s: 2.0                # speed ramp after the still phase
+  speed_mps: 0.5             # cruise speed V
+  omega_radps: 0.3           # yaw rate W; circle radius R = V / W
+  box_half_m: [8.0, 5.0, 2.0]
+  mutate:                    # E-03 only: mutate_bag.mutate() arguments
+    drop_fraction: 0.05
+    reorder_fraction: 0.02
+    window_ns: 20000000
+    seed: 42
+```
+
+Every value must be > 0 (fractions in (0, 1], `seed` >= 0). These parameters and
+`prep_source` (the scenario path) are written to `integration.json` under `data_source`, so a
+baseline recorded on this data is not silently compared with a different dataset later.
 
 Gates: E-01 fails if ATE RMSE is more than 20 % above its baseline; E-02 needs a byte-identical,
 non-empty `est.tum` on a second run; E-03 must not crash (bench exit 0 or 3), must show that the

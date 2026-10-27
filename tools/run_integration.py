@@ -7,13 +7,16 @@ Usage:
       [--path-style native|wsl]
 
 Data: a synthetic box circle, not the warehouse lap. ``mss_sim.synth`` drives a circle of
-radius R = V / W = 0.5 / 0.3 = 1.67 m (5 s still, 2 s speed ramp) inside a 16 x 10 x 4 m box,
-with the scenario's seed, duration, origin, noise profile and ``T_b_l`` (pipeline overlay);
-the scenario's ``world`` and ``trajectory`` are not used yet. ``integration.json`` records
-these parameters under ``data_source`` so a baseline is never compared across datasets.
+radius R = V / W after a still phase and a speed ramp inside a box, all taken from the
+scenario's ``prep`` block (E-01: 0.5 / 0.3 = 1.67 m, 5 s still, 2 s ramp, 16 x 10 x 4 m), with
+the scenario's seed, duration, origin, noise profile and ``T_b_l`` (pipeline overlay); the
+scenario's ``world`` and ``trajectory`` are not used yet. A scenario without ``prep`` is a
+setup error. ``integration.json`` records these parameters under ``data_source`` so a baseline
+is never compared across datasets.
 
 Chain: synthetic bag -> noise bridge with the scenario -> ``bag_to_mssdata.py``; E-03 adds
-``mutate_bag.py`` (5 % drops, 2 % reordering, seed 42) before the conversion. Each test replays
+``mutate_bag.py`` (``prep.mutate``; E-01: 5 % drops, 2 % reordering, seed 42) before the
+conversion. Each test replays
 its dataset with ``<bench-cmd> config/default.yaml <mssdata> --overlay <overlay> --out <dir>``
 (killed after ``--timeout-s``, default 10 x the scenario duration) and scores ``est.tum``
 against the bridge's ``gt.tum`` with ``mss_eval.ate``.
@@ -56,7 +59,7 @@ from mss_eval.ate import ate, plot_xy
 from mss_sim.bridge import run_bridge
 from mss_sim.config_overlay import get, load_pipeline_config
 from mss_sim.profile import load_profile
-from mss_sim.scenario import load_scenario
+from mss_sim.scenario import ScenarioError, load_scenario
 from mss_sim.synth import write_synthetic_raw_bag
 from mutate_bag import mutate
 
@@ -64,12 +67,6 @@ _REPO = Path(__file__).resolve().parents[1]
 _DEFAULT_YAML = _REPO / "config" / "default.yaml"
 _TESTS = ("E-01", "E-02", "E-03")
 
-# Data preparation (ADR-011 section 5; planner's values where the sources are silent).
-_STATIC_S = 5.0  # every scenario starts with 5 s still (IMU initialisation)
-_RAMP_S = 2.0  # smooth speed ramp after the still phase
-_BOX_HALF_M = (8.0, 5.0, 2.0)  # floor and ceiling inside the +-15 deg beams
-_E03_DROP, _E03_REORDER, _E03_WINDOW_NS, _E03_SEED = 0.05, 0.02, 20_000_000, 42
-_SPEED_MPS, _OMEGA_RADPS = 0.5, 0.3  # synth cruise speed V and yaw rate W: R = V / W
 _TIMEOUT_PER_SCENARIO_S = 10.0  # default bench timeout = this x the scenario duration
 
 # Judging (ADR-009, CLAUDE.md): more than 20 % worse than the baseline fails.
@@ -103,9 +100,21 @@ class Verdict:
     note: str
 
 
+def _repo_relative(path: Path) -> str:
+    """``path`` relative to the repository (posix), or absolute when it lies outside."""
+    resolved = Path(path).resolve()
+    try:
+        return resolved.relative_to(_REPO).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
 def prepare(scenario: Path, out: Path, duration_s: float | None) -> Prepared:
     """Synthesise, bridge and convert the scenario's bag under ``out / "data"``."""
     sc = load_scenario(scenario)
+    if sc.prep is None:
+        raise SetupError(f"scenario {sc.id}: missing prep block")
+    prep = sc.prep
     if duration_s is not None:
         sc = replace(sc, duration_s=duration_s)
     cfg = load_pipeline_config(_DEFAULT_YAML, sc.pipeline_config)
@@ -117,12 +126,12 @@ def prepare(scenario: Path, out: Path, duration_s: float | None) -> Prepared:
         data,
         duration_s=sc.duration_s,
         seed=sc.seed,
-        box_half_m=_BOX_HALF_M,
-        omega_radps=_OMEGA_RADPS,
-        speed_mps=_SPEED_MPS,
+        box_half_m=prep.box_half_m,
+        omega_radps=prep.omega_radps,
+        speed_mps=prep.speed_mps,
         origin_lla=sc.origin_lla,
-        static_s=_STATIC_S,
-        ramp_s=_RAMP_S,
+        static_s=prep.static_s,
+        ramp_s=prep.ramp_s,
         t_b_l=((tr[0], tr[1], tr[2]), (q[0], q[1], q[2], q[3])),
     )
     bridged = data / "bridged"
@@ -131,10 +140,10 @@ def prepare(scenario: Path, out: Path, duration_s: float | None) -> Prepared:
     report = mutate(
         bridged / "bag",
         data / "bag_e03",
-        drop_fraction=_E03_DROP,
-        reorder_fraction=_E03_REORDER,
-        window_ns=_E03_WINDOW_NS,
-        seed=_E03_SEED,
+        drop_fraction=prep.mutate.drop_fraction,
+        reorder_fraction=prep.mutate.reorder_fraction,
+        window_ns=prep.mutate.window_ns,
+        seed=prep.mutate.seed,
     )
     (data / "mutate_report.json").write_text(
         json.dumps(asdict(report), indent=2) + "\n", encoding="utf-8"
@@ -144,12 +153,14 @@ def prepare(scenario: Path, out: Path, duration_s: float | None) -> Prepared:
         "generator": "mss_sim.synth.write_synthetic_raw_bag (synthetic box circle)",
         "scenario": sc.id,
         "scenario_world_trajectory_used": False,
-        "speed_mps": _SPEED_MPS,
-        "omega_radps": _OMEGA_RADPS,
-        "radius_m": _SPEED_MPS / _OMEGA_RADPS,
-        "box_half_m": list(_BOX_HALF_M),
-        "static_s": _STATIC_S,
-        "ramp_s": _RAMP_S,
+        "prep_source": _repo_relative(scenario),
+        "speed_mps": prep.speed_mps,
+        "omega_radps": prep.omega_radps,
+        "radius_m": prep.speed_mps / prep.omega_radps,
+        "box_half_m": list(prep.box_half_m),
+        "static_s": prep.static_s,
+        "ramp_s": prep.ramp_s,
+        "mutate": asdict(prep.mutate),
         "duration_s": sc.duration_s,
         "seed": sc.seed,
     }
@@ -432,6 +443,12 @@ def _setup(args: argparse.Namespace) -> tuple[list[str], list[str], dict]:
         raise SetupError(f"--tests: unknown or empty {unknown or args.tests!r}")
     if not args.scenario.is_file():
         raise SetupError(f"scenario {args.scenario} not found")
+    try:
+        sc = load_scenario(args.scenario)
+    except (OSError, ScenarioError) as e:
+        raise SetupError(f"scenario {args.scenario}: {e}") from e
+    if sc.prep is None:
+        raise SetupError(f"scenario {sc.id}: missing prep block")
     try:
         baselines = json.loads(args.baselines.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
