@@ -47,3 +47,18 @@ phụ thuộc cờ preintegration của GTSAM. Phải giữ đạo hàm và test
 viết. Kernel Cauchy có thể bỏ qua một loop đúng nhưng có covariance quá tự tin; cần đo trên
 E-01..E-03 khi module loop vào. Không đổi ATE hay độ trễ của pipeline hiện tại (backend chưa
 nối vào `Estimator`).
+
+## Ghi chú (PR 4d, 2026-10-27): Jacobian gần đúng của `BetweenFactor<Pose3>` cho factor LiDAR
+
+Chẩn đoán `docs/derivations/imu_only_observability.md` ("Exploratory controls") tìm thấy một lỗi
+nhất quán của backend: với factor LiDAR không mang thông tin dọc trục hành lang (ngữ nghĩa "không
+quan sát" của PR 4b, relax 1e8 hoặc bỏ hẳn) và không phản hồi backend về front end, keyframe cuối
+của backend ở +5772 m trong khi sigma tự báo là 14 m. Nguyên nhân: `BetweenFactor<Pose3>` dùng
+Jacobian của `between` mà bỏ `Jr^-1` của `Logmap` (GTSAM không có
+`GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR`), và phần dư SE(3) truyền sai số lớn dọc hướng không quan
+sát sang các hướng quan sát qua `V(phi)^-1`. Một factor LiDAR với phần dư tách tịnh tiến / quay
+và Jacobian đúng đưa lần chạy đó về -8,7 m với sigma 24,5 m.
+
+Việc tiếp theo: PR 4e riêng, nhỏ (factor LiDAR với Jacobian `Jr^-1` đúng, hoặc define của
+GTSAM). Tiêu chí nhận: lần đối chứng "x removed, no backend feedback" của nghiên cứu nằm trong
+sigma của chính nó. PR 4b (dùng ngữ nghĩa "không quan sát") cần nó.

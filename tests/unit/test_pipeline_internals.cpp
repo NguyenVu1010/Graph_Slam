@@ -23,6 +23,7 @@
 
 #include "alloc_counter.hpp"
 #include "frames.hpp"
+#include "gravity_rest.hpp"
 #include "imu_buffer.hpp"
 #include "imu_trajectory_builder.hpp"
 #include "keyframe_policy.hpp"
@@ -531,6 +532,48 @@ TEST(KeyframePolicy, OdomDeltaTimeCheck) {
   d.t1 = t_j;
   EXPECT_TRUE(odom_delta_in_time(d, t_i, t_j, period));
   EXPECT_FALSE(odom_delta_in_time(d, t_i, t_j, 0));
+}
+
+// ADR-020 rest gate of the keyframe-0 gravity factor (gravity_rest.hpp).
+imu::InitState rest_state(const Vec3& f_b, const Vec3& bg) {
+  imu::InitState s;
+  s.acc_mean_b = f_b;
+  s.acc_mean_cov = Mat3::Identity() * 1.7e-5;  // (m/s^2)^2: 4.1e-3 m/s^2 per axis
+  s.bias.bg = bg;
+  return s;
+}
+
+imu::ImuConfig rest_config() {
+  imu::ImuConfig c = imu_config();
+  c.init_max_mean_gyro_radps = 0.15;
+  c.init_max_wheel_speed_mps = 0.1;
+  c.init_gravity_check_sigma = 3.0;
+  return c;
+}
+
+TEST(PipelineInternals, GravityRestGateAcceptsRest) {
+  const imu::ImuConfig c = rest_config();
+  EXPECT_EQ(detail::gravity_rest_failure(
+                rest_state(Vec3(0.0, 0.0, kG), Vec3(0.01, 0.0, 0.0)), c, 0.1, false),
+            nullptr);
+}
+
+TEST(PipelineInternals, GravityRestGateRejectsTurnWheelAndMagnitude) {
+  const imu::ImuConfig c = rest_config();
+  const Vec3 f(0.0, 0.0, kG);
+  // A 0.25 rad/s turn (the box-world circle): |mean gyro| above 0.15 rad/s.
+  EXPECT_NE(detail::gravity_rest_failure(rest_state(f, Vec3(0.0, 0.0, 0.25)), c, 0.1, false),
+            nullptr);
+  // The wheel reported motion inside the window.
+  EXPECT_NE(detail::gravity_rest_failure(rest_state(f, Vec3::Zero()), c, 0.1, true), nullptr);
+  // ||f| - g| = 0.5 m/s^2 > 3 * sqrt(1.7e-5 + 0.01) = 0.30 m/s^2.
+  EXPECT_NE(detail::gravity_rest_failure(
+                rest_state(Vec3(0.0, 0.0, kG + 0.5), Vec3::Zero()), c, 0.1, false),
+            nullptr);
+  // 0.2 m/s^2 is inside the bound: the magnitude check is weak by design.
+  EXPECT_EQ(detail::gravity_rest_failure(
+                rest_state(Vec3(0.0, 0.0, kG + 0.2), Vec3::Zero()), c, 0.1, false),
+            nullptr);
 }
 
 }  // namespace

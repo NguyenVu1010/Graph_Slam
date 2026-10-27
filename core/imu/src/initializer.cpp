@@ -1,5 +1,6 @@
 #include "mss/imu/initializer.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -84,6 +85,12 @@ Result<InitState> ImuInitializer::try_init(Span<const ImuSample> samples) {
   out.bias.bg = gyro_mean;
   out.bias.ba = Vec3::Zero();
   out.g_w = Vec3(0.0, 0.0, -cfg_.gravity_mps2);
+  out.acc_mean_b = acc_mean;
+  // Variance of the mean per axis; the believed white noise per sample is the floor.
+  const double noise_var = cfg_.acc_noise_density * cfg_.acc_noise_density * cfg_.rate_hz;
+  for (int k = 0; k < 3; ++k) {
+    out.acc_mean_cov(k, k) = std::max(acc_ss(k) / (n - 1.0), noise_var) / n;  // (m/s^2)^2
+  }
   return Result<InitState>::ok(out);
 }
 

@@ -14,6 +14,16 @@ struct BackendConfig {
   double prior_vel_sigma_mps = 0.0;          // m/s, velocity sigma
   double prior_bias_acc_sigma_mps2 = 0.0;    // m/s^2, accelerometer bias sigma
   double prior_bias_gyro_sigma_radps = 0.0;  // rad/s, gyroscope bias sigma
+  // Keyframe 0 also gets the static-window gravity-direction factor (Graph::
+  // add_static_gravity_factor, imu_only_observability.md sections 9, 10) when the pipeline has
+  // the initializer's window statistics; false: priors only (the behaviour before PR 4d).
+  bool static_gravity_factor = false;
+  // Validated (> 0) only when static_gravity_factor is true.
+  double static_gravity_sigma_scale = 2.0;  // multiplier on the window std of the mean
+  // Keyframes before the consistency check; 0 = check off (shipped, ADR-020: evaluated, its
+  // statistic at rest overlaps its values at moving starts).
+  int static_gravity_check_keyframes = 0;
+  double static_gravity_chi2_gate = 5.991464547107979;  // chi-square 2 DoF, 0.95
   // ADR-019: T_e_w is one graph variable E shared by every GNSS factor (true) instead of a
   // fixed parameter per factor (false, the previous behaviour). E gets one prior, centred on
   // the first T_e_w given to add_gnss_factor, with these sigmas (all > 0 when true):

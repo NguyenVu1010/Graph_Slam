@@ -8,23 +8,29 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <Eigen/Eigenvalues>
 #include <gtest/gtest.h>
 
 #include "mss/common/lie.hpp"
 #include "mss/common/scan_frame.hpp"
+#include "mss/common/span.hpp"
 #include "mss/common/timestamp.hpp"
 #include "mss/common/types.hpp"
+#include "mss/imu/initializer.hpp"
+#include "mss/imu/preintegrator.hpp"
 #include "mss/io/dataset_reader.hpp"
 #include "mss/pipeline/config.hpp"
 #include "mss/pipeline/estimator.hpp"
@@ -32,6 +38,7 @@
 #include "alloc_counter.hpp"
 #include "box_world.hpp"
 #include "estimator_core.hpp"
+#include "pipeline_test_support.hpp"
 
 #ifndef MSS_TEST_WITH_GTSAM
 #error "MSS_TEST_WITH_GTSAM must be defined (tests/component/CMakeLists.txt)"
@@ -40,259 +47,7 @@
 namespace mss::pipeline {
 namespace {
 
-namespace fs = std::filesystem;
-using common::Estimate;
-using common::ImuSample;
-using common::ScanFrame;
-using common::Timestamp;
-using common::Vec3;
-using test::BoxWorldParams;
-
-const fs::path kDefault = fs::path{MSS_REPO_DIR} / "config/default.yaml";
-constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
-constexpr bool kWithGtsam = MSS_TEST_WITH_GTSAM != 0;
-
-fs::path test_dir() {
-  const std::string name = ::testing::UnitTest::GetInstance()->current_test_info()->name();
-  return fs::path{MSS_TEST_OUTPUT_DIR} / ("pipeline_" + name);
-}
-
-// config/default.yaml + the box-world overlay (written next to the dataset); `extra_yaml`:
-// more sections under mss_node.ros__parameters; `gnss_keys`: more lines in the gnss section.
-Config box_config(const BoxWorldParams& p,
-                  bool gnss,
-                  bool wheel,
-                  const fs::path& dir,
-                  const std::string& extra_yaml = "",
-                  const std::string& gnss_keys = "") {
-  fs::create_directories(dir);
-  const fs::path overlay = dir / "overlay.yaml";
-  {
-    std::ofstream f(overlay);
-    f << test::box_overlay_yaml(p, gnss, wheel, gnss_keys) << extra_yaml;
-  }
-  const auto cfg = load_config(kDefault, overlay);
-  EXPECT_TRUE(cfg.is_ok()) << cfg.reason();
-  return cfg.value();
-}
-
-Config box_config(const BoxWorldParams& p, bool gnss_and_wheel, const fs::path& dir) {
-  return box_config(p, gnss_and_wheel, gnss_and_wheel, dir);
-}
-
-struct ReplayResult {
-  std::vector<Estimate> estimates;  // one per new latest_state().state.t
-  Estimator::Stats stats;
-};
-
-// Replays an mssdata directory in time order, run_once() after every pushed record
-// (so before and after every scan push), flush() at the end. `after_scan(est, k)` (if set)
-// runs after the k-th scan record (k from 1) has been pushed and drained.
-ReplayResult replay(const fs::path& data,
-                    const Config& cfg,
-                    const std::function<void(Estimator&, int)>& after_scan = {}) {
-  ReplayResult out;
-  auto opened = io::DatasetReader::open(data, cfg.realtime.max_points_per_scan);
-  EXPECT_TRUE(opened.is_ok()) << opened.reason();
-  if (!opened.is_ok()) {
-    return out;
-  }
-  io::DatasetReader reader = std::move(opened).value();
-  Estimator est(cfg);
-  ScanFrame scan(cfg.realtime.max_points_per_scan);
-  io::Record rec;
-  Timestamp last{};
-  int n_scan_records = 0;
-  const auto collect = [&]() {
-    const Estimate e = est.latest_state();
-    if (e.state.t != Timestamp{} && e.state.t != last) {
-      out.estimates.push_back(e);
-      last = e.state.t;
-    }
-  };
-  for (;;) {
-    const auto more = reader.next(rec, scan);
-    EXPECT_TRUE(more.is_ok()) << more.reason();
-    if (!more.is_ok() || !more.value()) {
-      break;
-    }
-    switch (rec.kind) {
-      case io::RecordKind::kImu:
-        (void)est.push_imu(rec.imu);
-        break;
-      case io::RecordKind::kGnss:
-        (void)est.push_gnss(rec.gnss);
-        break;
-      case io::RecordKind::kOdom:
-        (void)est.push_odom(rec.odom);
-        break;
-      case io::RecordKind::kLidar:
-        est.run_once();
-        collect();
-        (void)est.push_scan(scan);
-        ++n_scan_records;
-        break;
-      case io::RecordKind::kGt:
-        break;
-    }
-    est.run_once();
-    collect();
-    if (rec.kind == io::RecordKind::kLidar && after_scan) {
-      after_scan(est, n_scan_records);
-      est.run_once();
-      collect();
-    }
-  }
-  est.flush();
-  collect();
-  out.stats = est.stats();
-  return out;
-}
-
-struct Errors {
-  double ate_m = 0.0;
-  double max_yaw_deg = 0.0;
-};
-
-Errors trajectory_errors(const BoxWorldParams& p, const std::vector<Estimate>& est) {
-  Errors e;
-  double sum_sq = 0.0;
-  for (const Estimate& x : est) {
-    const common::NavState truth = test::box_truth(p, x.state.t);
-    sum_sq += (x.state.T_w_b.p - truth.T_w_b.p).squaredNorm();
-    const common::Mat3 dR = truth.T_w_b.R.transpose() * x.state.T_w_b.R;
-    const double yaw_deg = std::abs(std::atan2(dR(1, 0), dR(0, 0))) * kRadToDeg;
-    e.max_yaw_deg = std::max(e.max_yaw_deg, yaw_deg);
-  }
-  e.ate_m = est.empty() ? 1e9 : std::sqrt(sum_sq / static_cast<double>(est.size()));
-  return e;
-}
-
-// Scans with t_start >= t0 + init_window_s produce an estimate.
-std::size_t expected_estimates(const BoxWorldParams& p, const Config& cfg) {
-  std::size_t n = 0;
-  for (int k = 1; k <= test::box_num_scans(p); ++k) {
-    if (test::box_scan_time(p, k).ns >= p.t0_ns + test::box_ns(cfg.imu.init_window_s)) {
-      ++n;
-    }
-  }
-  return n;
-}
-
-// Replays the box world; with `gnss_and_wheel` also replays the same dataset with the wheel
-// only (GNSS off) and checks GNSS + wheel ATE <= 1.2 x wheel-only ATE: on a 2 m circle GNSS
-// at 0.5 m cannot improve on the LiDAR chain, so it must not degrade it
-// (gnss_fusion_study.md section 5; before ADR-019 the ratio was 4.2). `after_scan` as in
-// replay().
-ReplayResult run_box_world(bool gnss_and_wheel,
-                           const BoxWorldParams& p = BoxWorldParams{},
-                           const std::function<void(Estimator&, int)>& after_scan = {}) {
-  const fs::path dir = test_dir();
-  const Config cfg = box_config(p, gnss_and_wheel, dir);
-  const auto written = test::write_box_dataset(dir / "data", p);
-  EXPECT_TRUE(written.is_ok()) << written.reason();
-  const ReplayResult r = replay(dir / "data", cfg, after_scan);
-  EXPECT_EQ(r.estimates.size(), expected_estimates(p, cfg));
-  EXPECT_EQ(r.stats.n_scans, static_cast<std::uint64_t>(test::box_num_scans(p)));
-  EXPECT_EQ(r.stats.n_uncovered_scans, 0U);
-  EXPECT_GT(r.stats.n_keyframes, 5U);
-  const Errors e = trajectory_errors(p, r.estimates);
-  const double ate_tol_m = kWithGtsam ? 0.05 : 0.10;
-  const double yaw_tol_deg = kWithGtsam ? 1.0 : 2.0;
-  EXPECT_LT(e.ate_m, ate_tol_m);
-  EXPECT_LT(e.max_yaw_deg, yaw_tol_deg);
-  std::printf(
-      "[ box world ] gtsam %d gnss+wheel %d: ATE %.4f m, max yaw %.3f deg, %zu estimates, "
-      "%llu keyframes, %llu match failures, %llu gnss factors, %llu odom factors, "
-      "%llu rebuilds, %llu map points, %llu spacing replaced\n",
-      kWithGtsam ? 1 : 0,
-      gnss_and_wheel ? 1 : 0,
-      e.ate_m,
-      e.max_yaw_deg,
-      r.estimates.size(),
-      static_cast<unsigned long long>(r.stats.n_keyframes),
-      static_cast<unsigned long long>(r.stats.n_match_failures),
-      static_cast<unsigned long long>(r.stats.n_gnss_factors),
-      static_cast<unsigned long long>(r.stats.n_odom_factors),
-      static_cast<unsigned long long>(r.stats.n_map_rebuilds),
-      static_cast<unsigned long long>(r.stats.n_map_points),
-      static_cast<unsigned long long>(r.stats.n_map_spacing_replaced));
-  EXPECT_GT(r.stats.n_map_points, 0U);
-  if (gnss_and_wheel) {
-    EXPECT_GT(r.stats.n_odom_factors, 0U);
-    EXPECT_GT(r.stats.n_gnss_factors, 0U);
-    const Config wheel_only = box_config(p, false, true, dir / "wheel_only");
-    const Errors base = trajectory_errors(p, replay(dir / "data", wheel_only).estimates);
-    std::printf("[ box world ] LiDAR + wheel (GNSS off) on the same data %.4f m (ratio %.2f)\n",
-                base.ate_m,
-                e.ate_m / base.ate_m);
-    EXPECT_LE(e.ate_m, 1.2 * base.ate_m);
-  }
-  return r;
-}
-
-// Corridor drift scenario (gnss_fusion_study.md section 8): an almost straight 30 m drive
-// in a 120 m corridor whose end walls are out of range, so the LiDAR has no information
-// along it and degeneracy relaxes that direction (relax_factor 1e8, scenario value).
-BoxWorldParams corridor_params() {
-  BoxWorldParams p;
-  p.box_half_m = Vec3(60.0, 2.5, 1.5);
-  p.yaw_rate_radps = 0.0005;  // rad/s: 0.45 m lateral offset over the drive
-  p.motion_s = 60.0;
-  return p;
-}
-
-struct CorridorRun {
-  double ate_m = 0.0;
-  Estimator::Stats stats;
-  std::uint64_t gnss_factors_after_outage = 0;
-};
-
-// Scenario degeneracy overlay: the LiDAR covariance along the unobservable corridor axis
-// must be really large for GNSS to correct it (study section 8). PR 4b replaces this with
-// its scan_match.unobserved_var_m2 / unobserved_var_rad2 keys when it rebases on this PR.
-const char* const kCorridorRelaxYaml =
-    "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n";
-
-// Replays `data` with GNSS (no wheel: wheel speed would observe the corridor axis) on or off;
-// `gnss_keys`: more lines in the gnss section; `degeneracy_yaml`: the degeneracy section
-// ("" = shipped defaults).
-CorridorRun run_corridor(const BoxWorldParams& p,
-                         const fs::path& data,
-                         const fs::path& dir,
-                         bool gnss,
-                         const std::string& gnss_keys = "",
-                         const std::string& degeneracy_yaml = kCorridorRelaxYaml) {
-  const Config cfg = box_config(p,
-                                gnss,
-                                false,
-                                dir,
-                                "    preprocess:\n      max_range_m: 10.0\n" + degeneracy_yaml,
-                                gnss_keys);
-  CorridorRun out;
-  std::uint64_t at_outage_end = 0;
-  const std::int64_t outage_end_ns =
-      p.t0_ns + test::box_ns(p.gnss_outage_start_s + p.gnss_outage_s);
-  const ReplayResult r = replay(data, cfg, [&](Estimator& est, int k) {
-    if (test::box_scan_time(p, k).ns <= outage_end_ns) {
-      at_outage_end = est.stats().n_gnss_factors;
-    }
-  });
-  out.ate_m = trajectory_errors(p, r.estimates).ate_m;
-  out.stats = r.stats;
-  out.gnss_factors_after_outage = r.stats.n_gnss_factors - at_outage_end;
-  std::printf(
-      "[ corridor ] %s gnss %d: ATE %.3f m, %llu keyframes, %llu gnss factors (%llu after "
-      "the outage), %llu realign\n",
-      dir.filename().string().c_str(),
-      gnss ? 1 : 0,
-      out.ate_m,
-      static_cast<unsigned long long>(r.stats.n_keyframes),
-      static_cast<unsigned long long>(r.stats.n_gnss_factors),
-      static_cast<unsigned long long>(out.gnss_factors_after_outage),
-      static_cast<unsigned long long>(r.stats.n_gnss_realign));
-  return out;
-}
+using namespace ct;  // NOLINT(google-build-using-namespace): shared test helpers
 
 // GNSS must help where the LiDAR drifts: LiDAR + IMU drifts by metres; GNSS (0.5 m, 5 Hz)
 // must halve the ATE. The relative bound loosens when the LiDAR-only run gets worse, so the
@@ -742,24 +497,6 @@ TEST(PipelineComponent, CoreConstructorValidatesBuffers) {
 // MSS_GNSS_STUDY_RUN_ID (default "gnss-study"). Uses the test-only CoreTestHooks seam: a perfect
 // T_e_w and the factor observer for the NEES and aligner tables.
 
-double wrap_deg(double a_rad) {
-  return std::remainder(a_rad, 2.0 * 3.14159265358979323846) * kRadToDeg;
-}
-
-double yaw_of(const common::Mat3& R) {
-  return std::atan2(R(1, 0), R(0, 0));
-}
-
-// Installs the test hooks for its lifetime, so a throw cannot leave a dangling pointer in
-// the process-wide hook for later tests of this binary.
-class HooksScope {
- public:
-  explicit HooksScope(const detail::CoreTestHooks* hooks) { detail::set_core_test_hooks(hooks); }
-  ~HooksScope() { detail::set_core_test_hooks(nullptr); }
-  HooksScope(const HooksScope&) = delete;
-  HooksScope& operator=(const HooksScope&) = delete;
-};
-
 // Collects the factor statistics of one run against the box-world truth.
 class StudyObserver final : public detail::CoreObserver {
  public:
@@ -899,6 +636,29 @@ struct StudyResult {
   std::string factors;
 };
 
+// GNSS study table header and rows.
+void gnss_study_header(StudyReport& rep, const std::string& title) {
+  rep.line("");
+  rep.line("## " + title);
+  rep.line("");
+  rep.line(
+      "| case | GNSS factors | ATE (m) | ATE 4-DoF (m) | rebuilds | LiDAR NEES (exp. 6) | "
+      "LiDAR err / sqrt(tr cov_p) (m) | GNSS NEES used / true (exp. 3) | aligner |");
+  rep.line("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+}
+void gnss_study_row(StudyReport& rep, const std::string& name, const StudyResult& r) {
+  char buf[256];
+  std::snprintf(buf,
+                sizeof(buf),
+                "| %s | %llu | %.4f | %.4f | %llu | ",
+                name.c_str(),
+                static_cast<unsigned long long>(r.stats.n_gnss_factors),
+                r.ate_m,
+                r.ate4_m,
+                static_cast<unsigned long long>(r.stats.n_map_rebuilds));
+  rep.line(std::string(buf) + r.factors + " |");
+}
+
 StudyResult study_run(const BoxWorldParams& p,
                       const fs::path& data,
                       const fs::path& dir,
@@ -922,46 +682,6 @@ StudyResult study_run(const BoxWorldParams& p,
   return out;
 }
 
-class StudyReport {
- public:
-  explicit StudyReport(const std::string& file) {
-    const char* id = std::getenv("MSS_GNSS_STUDY_RUN_ID");
-    dir_ = fs::path{MSS_REPO_DIR} / "results" / (id != nullptr ? id : "gnss-study");
-    fs::create_directories(dir_);
-    out_.open(dir_ / file);
-  }
-  [[nodiscard]] const fs::path& dir() const { return dir_; }
-  void line(const std::string& s) {
-    out_ << s << "\n";
-    std::printf("%s\n", s.c_str());
-  }
-  void header(const std::string& title) {
-    line("");
-    line("## " + title);
-    line("");
-    line(
-        "| case | GNSS factors | ATE (m) | ATE 4-DoF (m) | rebuilds | LiDAR NEES (exp. 6) | "
-        "LiDAR err / sqrt(tr cov_p) (m) | GNSS NEES used / true (exp. 3) | aligner |");
-    line("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-  }
-  void row(const std::string& name, const StudyResult& r) {
-    char buf[256];
-    std::snprintf(buf,
-                  sizeof(buf),
-                  "| %s | %llu | %.4f | %.4f | %llu | ",
-                  name.c_str(),
-                  static_cast<unsigned long long>(r.stats.n_gnss_factors),
-                  r.ate_m,
-                  r.ate4_m,
-                  static_cast<unsigned long long>(r.stats.n_map_rebuilds));
-    line(std::string(buf) + r.factors + " |");
-  }
-
- private:
-  fs::path dir_;
-  std::ofstream out_;
-};
-
 TEST(PipelineComponent, GnssFusionStudy) {
   const char* on = std::getenv("MSS_GNSS_STUDY");
   if (on == nullptr || std::string(on) != "1") {
@@ -974,7 +694,7 @@ TEST(PipelineComponent, GnssFusionStudy) {
   const std::string rebuild0 =
       "    map:\n      rebuild_trans_m: 1.0e-6\n      rebuild_rot_deg: 1.0e-6\n";
 
-  rep.header("Box world (sections 1 to 4, 9), fixed T_e_w unless 'frame variable'");
+  gnss_study_header(rep, "Box world (sections 1 to 4, 9), fixed T_e_w unless 'frame variable'");
   for (const double sigma_m : {0.1, 0.5, 2.0}) {
     BoxWorldParams p;
     p.gnss_sigma_m = sigma_m;
@@ -1004,11 +724,11 @@ TEST(PipelineComponent, GnssFusionStudy) {
     for (StudyCase& c : cases) {
       const std::string label = c.name;
       c.name = tag + "_" + std::to_string(&c - cases.data());
-      rep.row(label + " (" + tag + ")", study_run(p, dir / "data", dir, c));
+      gnss_study_row(rep, label + " (" + tag + ")", study_run(p, dir / "data", dir, c));
     }
   }
 
-  rep.header("Degenerate corridor (sections 8, 9)");
+  gnss_study_header(rep, "Degenerate corridor (sections 8, 9)");
   for (const double motion_s : {20.0, 30.0, 60.0}) {
     BoxWorldParams p = corridor_params();
     p.motion_s = motion_s;
@@ -1031,7 +751,7 @@ TEST(PipelineComponent, GnssFusionStudy) {
       for (StudyCase c : cases) {
         const std::string label = tag + ", relax " + relax + ", " + c.name;
         c.name = std::string("r") + relax + "_" + c.name;
-        rep.row(label, study_run(p, dir / "data", dir, c));
+        gnss_study_row(rep, label, study_run(p, dir / "data", dir, c));
       }
     }
   }
@@ -1145,6 +865,258 @@ TEST(PipelineComponent, LidarFactorCovarianceConsistent) {
               static_cast<unsigned long long>(r.stats.n_keyframes));
   EXPECT_GE(obs.lidar_nees(), 3.0);
   EXPECT_LE(obs.lidar_nees(), 12.0);
+}
+
+// Seeds 42, 43, 44 (IMU noise), shipped configuration. sigma_DR is the dead-reckoning sigma
+// per axis after T: sigma_DR = hypot(q_a T^1.5 / sqrt(3), 0.5 q_a / sqrt(T_init) T^2)
+// (velocity random walk, static-init tilt; q_a = BoxWorldParams::acc_noise_density):
+// 0.70 m at T = 17.9 s. Medians over the three seeds are asserted (the 15-seed study,
+// imu_only_observability.md section 10e, has tails no 20 s scene can bound per seed):
+// - circle: |end x err| <= 3 sigma_DR (the brief's target; 15-seed median 1.45 m, without the
+//   factor 21.7 m); along-x RMS <= 3.0 m, the worst RMS of the 15 seeds (2.84 m, median
+//   1.36 m; without the factor median 11.6 m): mid-run excursions of up to 24 sigma_DR(t)
+//   remain, with transient tilt errors of 8 to 11 mrad (ADR-020 known gap);
+// - straight: |end x err| <= 1.86 m and along-x RMS <= 1.88 m, 2x the measured medians of
+//   seeds 42..44 with the shipped factor (0.93 m and 0.94 m; per seed 0.93 / 0.47 / 2.72 m
+//   and 0.61 / 1.34 / 0.94 m). Without the factor the same seeds give 6.90 m and 3.52 m, so
+//   both halves fail with the factor off. Over 15 seeds the straight medians are 2.72 m
+//   = 3.9 sigma_DR (misses the brief's 3 sigma_DR, ADR-020 known gap) and 1.34 m; without
+//   the factor 3.56 m and 1.85 m. The circle half is the stronger on / off distinction
+//   (without the factor its medians over these seeds are 84.8 m and 34.7 m).
+// Lateral error at the LiDAR level (< 1 cm) on every seed.
+TEST(PipelineComponent, CorridorImuOnlyAlongAxisWithinDeadReckoning) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend (IMU factors in the graph)";
+  }
+  for (const bool straight : {false, true}) {
+    std::vector<double> end_err_m;
+    std::vector<double> rms_m;
+    double sigma_dr_m = 0.0;
+    for (const std::uint32_t seed : {42U, 43U, 44U}) {
+      BoxWorldParams p = imu_corridor_params(straight);
+      p.seed = seed;
+      const fs::path dir =
+          test_dir() / ((straight ? "straight_" : "circle_") + std::to_string(seed));
+      ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+      const AxisRun r = corridor_axis_run(p, dir / "data", dir / "imu_only", false, "");
+      sigma_dr_m = dr_sigma_m(p.acc_noise_density, r.init_window_s, r.T_s);
+      std::printf("[ corridor axis ] %s seed %u: end / sigma_DR %.2f (sigma_DR %.3f m, T %.1f s)\n",
+                  straight ? "straight" : "circle",
+                  seed,
+                  std::abs(r.end_x_m) / sigma_dr_m,
+                  sigma_dr_m,
+                  r.T_s);
+      EXPECT_GT(r.T_s, 17.0) << seed;
+      EXPECT_LT(r.lateral_rms_m, 0.01) << seed;
+      EXPECT_GT(r.keyframes, 5U) << seed;
+      EXPECT_LT(r.keyframes, 40U) << seed;  // the 1 m rule does not fire on a drift along x
+      // At rest: the rest gate passes, the factor is added and kept (check off, shipped).
+      EXPECT_EQ(r.gravity_gated, 0U) << seed;
+      EXPECT_EQ(r.gravity_removed, 0U) << seed;
+      end_err_m.push_back(std::abs(r.end_x_m));
+      rms_m.push_back(r.along_rms_m);
+    }
+    std::sort(end_err_m.begin(), end_err_m.end());
+    std::sort(rms_m.begin(), rms_m.end());
+    std::printf(
+        "[ corridor axis ] %s: median end error %.3f m (3 sigma_DR %.3f m), median RMS %.3f m\n",
+        straight ? "straight" : "circle",
+        end_err_m[1],
+        3.0 * sigma_dr_m,
+        rms_m[1]);
+    if (straight) {
+      EXPECT_LE(end_err_m[1], 1.86);  // m, 2 x 0.93 (seeds 42..44, shipped)
+      EXPECT_LE(rms_m[1], 1.88);      // m, 2 x 0.94
+    } else {
+      EXPECT_LE(end_err_m[1], 3.0 * sigma_dr_m);
+      EXPECT_LE(rms_m[1], 3.0);
+    }
+  }
+}
+
+// The same corridor with wheel odometry: the wheel speed observes the axis.
+TEST(PipelineComponent, CorridorWithWheelAlongAxisMillimetres) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend (wheel factor in the graph)";
+  }
+  const BoxWorldParams p = imu_corridor_params(false);
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const AxisRun r = corridor_axis_run(p, dir / "data", dir / "wheel", true, "");
+  EXPECT_LE(r.along_rms_m, 0.005);
+  EXPECT_LT(r.lateral_rms_m, 0.01);
+}
+
+// ---------------------------------------------------------------------------------------
+// ADR-020 rest precondition (imu_only_observability.md section 12): the keyframe-0 gravity
+// factor reads the init window as "body at rest". A start in motion that the initializer
+// still accepts (constant per-axis readings) must not make the estimate much worse: the rest
+// gate does not add the factor (turn), or the factor costs little because the initializer's
+// R_w_b reads the same mean (straight acceleration). The consistency check is off (shipped).
+
+struct StartRun {
+  double ate_m = 0.0;
+  std::uint64_t gated = 0;
+  std::uint64_t removed = 0;
+  std::uint64_t unchecked = 0;
+  std::size_t estimates = 0;
+  double chi2 = -1.0;  // gravity-factor consistency check (-1: not run)
+  bool check_ran = false;
+  detail::GravityCheckOutcome outcome = detail::GravityCheckOutcome::kKept;
+};
+
+// Records the innovation statistic and outcome of the gravity factor's consistency check.
+class GravityCheckObserver final : public detail::CoreObserver {
+ public:
+  void on_gravity_check(double chi2, detail::GravityCheckOutcome outcome) override {
+    chi2_ = chi2;
+    outcome_ = outcome;
+    ran_ = true;
+  }
+  [[nodiscard]] double chi2() const { return chi2_; }
+  [[nodiscard]] detail::GravityCheckOutcome outcome() const { return outcome_; }
+  [[nodiscard]] bool ran() const { return ran_; }
+
+ private:
+  double chi2_ = -1.0;
+  detail::GravityCheckOutcome outcome_ = detail::GravityCheckOutcome::kKept;
+  bool ran_ = false;
+};
+
+StartRun start_run(const BoxWorldParams& p,
+                   const fs::path& data,
+                   const fs::path& dir,
+                   const std::string& backend_yaml) {
+  GravityCheckObserver obs;
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  const HooksScope scope(&hooks);
+  const ReplayResult r = replay(data, box_config(p, false, false, dir, backend_yaml));
+  StartRun out;
+  out.ate_m = trajectory_errors(p, r.estimates).ate_m;
+  out.gated = r.stats.n_gravity_factor_gated;
+  out.removed = r.stats.n_gravity_factor_removed;
+  out.unchecked = r.stats.n_gravity_factor_unchecked;
+  out.estimates = r.estimates.size();
+  out.chi2 = obs.chi2();
+  out.check_ran = obs.ran();
+  out.outcome = obs.outcome();
+  std::printf(
+      "[ moving start ] %s: ATE %.4f m, %zu estimates, gated %llu, removed %llu, unchecked "
+      "%llu, check innovation chi2 %.2f\n",
+      dir.filename().string().c_str(),
+      out.ate_m,
+      out.estimates,
+      static_cast<unsigned long long>(out.gated),
+      static_cast<unsigned long long>(out.removed),
+      static_cast<unsigned long long>(out.unchecked),
+      out.chi2);
+  return out;
+}
+
+const char* const kGravityOffYaml = "    backend:\n      static_gravity_factor: false\n";
+
+const char* const kGravityCheckOnYaml =
+    "    backend:\n      static_gravity_check_keyframes: 5\n";  // evaluated knob, off shipped
+
+BoxWorldParams turning_start_params() {
+  BoxWorldParams p;
+  p.static_s = 0.0;
+  p.ramp_s = 0.0;
+  return p;
+}
+
+// Straight run accelerating from t = 0 over `ramp_s` (no still phase).
+BoxWorldParams ramp_start_params(double ramp_s) {
+  BoxWorldParams p;
+  p.static_s = 0.0;
+  p.ramp_s = ramp_s;
+  p.motion_s = 20.0 - ramp_s;
+  p.yaw_rate_radps = 1e-4;  // rad/s: an almost straight run
+  p.box_half_m.x() = 30.0;  // m: the run stays inside the box
+  return p;
+}
+
+// Shipped config. Box circle from t = 0 (no still phase): a 0.25 rad/s turn, constant in b,
+// so the initializer accepts the window. The rest gate rejects it (|mean gyro| 0.25 > 0.15
+// rad/s): no factor, the same estimate as with the factor off.
+TEST(PipelineComponent, GravityFactorTurningStartGated) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend";
+  }
+  const BoxWorldParams p = turning_start_params();
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const StartRun off = start_run(p, dir / "data", dir / "off", kGravityOffYaml);
+  const StartRun on = start_run(p, dir / "data", dir / "on", "");
+  ASSERT_GT(off.estimates, 100U);
+  EXPECT_EQ(on.gated, 1U);
+  EXPECT_LE(on.ate_m, off.ate_m * 1.0001);
+}
+
+// Shipped config (consistency check off). Straight runs accelerating from t = 0, the gyro
+// reading ~0, so the rest gate passes and the factor is added and kept although the window
+// holds the forward acceleration a, read as a tilt a / g (6 s ramp: mean a about 0.06 m/s^2
+// in the window; 2 s ramp: 0.25 m/s^2). The cost is small because the initializer's R_w_b
+// comes from the same window mean: the run starts with that tilt with or without the factor.
+// Measured ATE, factor off -> kept: 6 s 0.1043 -> 0.1028 m (-1.4 %), 2 s 0.5465 -> 0.5584 m
+// (+2.2 %). Bound: +5 %.
+TEST(PipelineComponent, GravityFactorAcceleratingStartKeptCostsLittle) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend";
+  }
+  for (const double ramp_s : {6.0, 2.0}) {
+    const BoxWorldParams p = ramp_start_params(ramp_s);
+    const fs::path dir = test_dir() / ("ramp_" + std::to_string(static_cast<int>(ramp_s)));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const StartRun off = start_run(p, dir / "data", dir / "off", kGravityOffYaml);
+    const StartRun on = start_run(p, dir / "data", dir / "on", "");
+    ASSERT_GT(off.estimates, 100U);
+    EXPECT_EQ(on.gated, 0U) << ramp_s;
+    EXPECT_EQ(on.removed, 0U) << ramp_s;
+    EXPECT_FALSE(on.check_ran) << ramp_s;
+    EXPECT_LE(on.ate_m, off.ate_m * 1.05) << ramp_s;
+  }
+}
+
+// The consistency check as an evaluated knob (backend.static_gravity_check_keyframes: 5,
+// off in the shipped config, ADR-020): it removes the factor at the moving starts above.
+// Innovation statistic at the check: turning start with the gyro bound opened 106.7, 6 s ramp
+// 38.1, 2 s ramp 233 (removed; ATE 1.0006, 0.1025, 0.5575 m against 1.0017, 0.1043, 0.5465 m
+// with the factor off). At rest it also removes the factor where the rest of the graph is
+// inconsistent at keyframe 5 (imu_only_observability.md section 10g), so it ships off.
+TEST(PipelineComponent, GravityFactorCheckRemovesMovingStarts) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend";
+  }
+  {
+    const BoxWorldParams p = turning_start_params();
+    const fs::path dir = test_dir() / "turn";
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const StartRun off = start_run(p, dir / "data", dir / "off", kGravityOffYaml);
+    const StartRun open = start_run(
+        p,
+        dir / "data",
+        dir / "gate_open",
+        std::string("    imu:\n      init_max_mean_gyro_radps: 1.0\n") + kGravityCheckOnYaml);
+    EXPECT_EQ(open.gated, 0U);
+    EXPECT_EQ(open.removed, 1U);
+    EXPECT_TRUE(open.check_ran);
+    EXPECT_EQ(open.outcome, detail::GravityCheckOutcome::kRemoved);
+    EXPECT_LE(open.ate_m, off.ate_m * 1.1);
+  }
+  for (const double ramp_s : {6.0, 2.0}) {
+    const BoxWorldParams p = ramp_start_params(ramp_s);
+    const fs::path dir = test_dir() / ("ramp_" + std::to_string(static_cast<int>(ramp_s)));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const StartRun off = start_run(p, dir / "data", dir / "off", kGravityOffYaml);
+    const StartRun on = start_run(p, dir / "data", dir / "on", kGravityCheckOnYaml);
+    EXPECT_EQ(on.gated, 0U) << ramp_s;
+    EXPECT_EQ(on.removed, 1U) << ramp_s;
+    EXPECT_EQ(on.unchecked, 0U) << ramp_s;
+    EXPECT_EQ(on.outcome, detail::GravityCheckOutcome::kRemoved) << ramp_s;
+    EXPECT_LE(on.ate_m, off.ate_m * 1.1) << ramp_s;
+  }
 }
 
 }  // namespace
