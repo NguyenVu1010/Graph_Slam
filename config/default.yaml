@@ -164,6 +164,11 @@ mss_node:
       # corridors within the spread (GNSS 3.03 -> 1.85 m, LiDAR only 24.9 -> 38.3 m, CIs
       # contain 0). Scale 1: NEES 9.42; scale 3: NEES 7.51 but straight 3.85 m. Check off.
       static_gravity_factor: true
+      # Form of the LiDAR and loop relative-pose factors (backend_factors.md section 5,
+      # ADR-015 PR 4e note, decision pending): between (gtsam::BetweenFactor<Pose3>,
+      # approximate Jacobian, the previous behaviour), se3_exact (same residual, exact
+      # Jacobians), decoupled (translation and rotation residuals separate, exact Jacobians).
+      relative_factor: between
       static_gravity_sigma_scale: 2.0      # dimensionless, > 0
       # Consistency check (ADR-020), evaluated and OFF (0). With a value > 0 the factor is
       # removed from iSAM2 after that many keyframes when its innovation statistic against the
