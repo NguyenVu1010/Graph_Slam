@@ -1,0 +1,20 @@
+# LiDAR render table for world 'warehouse' (tools/calibrate_lidar_render.py).
+# cells: [range lo m, range hi m, |n.u| lo, |n.u| hi, points, sigma m].
+world: warehouse
+scenario: E-01
+date: '2026-10-27'
+gazebo: Gazebo Sim, version 8.15.0
+what: gpu_lidar range error alone (Gazebo noise 0, raw bag), per cell; measured, not tuned. Re-run when
+  the world, trajectory, sensor or Gazebo version changes.
+raw_bag_sha256: {metadata.yaml: 810b84d56653682b460ff8bc05308cf7b0f438ecbe664cb08a662a0d5d83a983, raw_bag_0.mcap.zstd: 23e5375c50ff7a5d195e74fb6c9a80c7c322b315008f839fabd67440c648ea17,
+  raw_bag_1.mcap.zstd: 49c7351501602f05eead98958d0ded8e98e214fe8680c83490012793983b50e6, raw_bag_2.mcap.zstd: ee670618e7527dc189d2999ff0239c40bb6b427da597c5e514783c0114d89009}
+selection: {edge_jump_m: 0.1, min_incidence_cos: 0.3, outlier_window_m: 0.1, min_points: 1000}
+range_bins_m: [0.5, 2.0, 5.0, 10.0, 20.0, 40.0, 100.0]
+incidence_bins_cos: [0.3, 0.5, 0.7, 0.9, 1.0]
+cells:
+- [10.0, 20.0, 0.5, 0.7, 7887, 0.03119]
+- [10.0, 20.0, 0.7, 0.9, 143018, 0.017725]
+- [10.0, 20.0, 0.9, 1.0, 406761, 0.008162]
+- [20.0, 40.0, 0.5, 0.7, 1564, 0.042993]
+- [20.0, 40.0, 0.7, 0.9, 13743, 0.022728]
+- [20.0, 40.0, 0.9, 1.0, 102172, 0.011167]

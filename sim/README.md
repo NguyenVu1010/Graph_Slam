@@ -81,6 +81,7 @@ It starts the recorder first, launches Gazebo paused, steps the world until the 
 subscribed, unpauses, pauses again at `duration_s` + 2 s of sim time, then stops everything
 (a trap kills Gazebo and the bridge on any exit). Options: `--no-driver` (robot stays at its
 spawn pose) and `--lidar-gz-sigma S` (Gazebo LiDAR noise, for the render calibration below).
+The noise report gets `--render-table sim/noise/render/<world>.yaml` when that file exists.
 Raw topics: `/lidar/points`, `/imu/data`, `/gnss/fix` (clean fix), `/ground_truth`,
 `/tf_static`, `/clock`, `/joint_states` (wheel joints, every physics step = 1 kHz); MCAP, zstd
 file compression, 100 MB splits, sim-time log stamps.
@@ -110,59 +111,65 @@ Continuous -> discrete noise (`gen_sim_assets.py`, comment in the template):
 ### LiDAR render error
 
 The declared `lidar.range_sigma_m` is what the noise layer adds (the Gazebo noise). gpu_lidar
-adds its own error on top (depth-texture interpolation). That error is measured, not tuned, and
-stored in the profile as `lidar.render_model`.
+adds its own error on top (depth-texture interpolation). That error depends on range, incidence
+and the geometry the robot actually sees, so it is calibrated where it is used: per world,
+along the scenario's trajectory.
 
-The noise report measures the range sigma as the along-ray residual to the sidecar planes,
-with two exclusions, and reports both excluded shares:
+A render table, `sim/noise/render/<world>.yaml` (tracked), holds the measured sigma per cell
+(range bin x incidence bin) for that world and trajectory. Each file records its world,
+scenario, date, Gazebo version, the raw bag SHA256, the selection and the point count of every
+cell. It is a measured property of gpu_lidar on that world and trajectory, not a tuned value.
+Re-run the calibration when the world, the trajectory, the sensor or the Gazebo version changes.
+
+Procedure:
+
+```
+tools/calibrate_lidar_render.sh sim/scenarios/E-01.yaml results/<run-id>/
+cp results/<run-id>/render_warehouse.yaml sim/noise/render/warehouse.yaml   # printed by the script
+```
+
+The script records the scenario once with the Gazebo LiDAR noise at 0
+(`record_scenario.sh --lidar-gz-sigma 0`; same scenario, seed, robot and driver). It then runs
+`tools/calibrate_lidar_render.py` on the raw bag. The raw bag has no bridge noise, and Gazebo
+renders each cloud at one instant, so the residual is the renderer's error alone. Selection is
+the same as the noise report, and cells with fewer than 1000 points stay out of the table. The
+script writes only under `results/`; installing the table is the copy shown above.
+
+The noise report (`--render-table`; `record_scenario.sh` passes
+`sim/noise/render/<world>.yaml` when it exists) measures the along-ray residual to the sidecar
+planes, with two exclusions:
 - **Silhouette points.** A point is excluded when a grid neighbour (±1 column, ±1 ring) lies
   more than `lidar.edge_jump_m` = 0.10 m (5 declared sigma) from the point's own plane, or has
-  no return. These points mix the depth of a shelf or column with the wall behind it. A plain
-  range jump would also flag oblique planes: adjacent beams differ by r·dphi·tan(theta), which
-  is 0.45 m at 30 m and 60 deg.
+  no return. A plain range jump would also flag oblique planes: adjacent beams differ by
+  r·dphi·tan(theta), which is 0.45 m at 30 m and 60 deg.
 - **Low-incidence points.** Points with `|n.u|` below `lidar.min_incidence_cos` = 0.3 are
-  excluded; below that the along-ray residual amplifies the plane distance more than 3x.
+  excluded.
 
-The range sigma is gated per incidence bin (`|n.u|` 0.3-0.5, 0.5-0.7, 0.7-0.9, 0.9-1.0) at
-±15 %, for bins with at least 1000 points. The expected value per bin is
-`sqrt(sigma_declared^2 + sigma_render^2)`. Range bins and the pooled row are informational.
+Gating:
+- The expected value per cell is `sqrt(sigma_declared^2 + sigma_render(cell)^2)`, gated at
+  ±15 % when the cell has at least 1000 points.
+- A cell without a table entry is shown but not gated.
+- Without any table the render error is taken as 0 and every cell is gated.
+- The pooled row is informational.
 
-Procedure (2026-10-28): record each world for 10 s with the robot still and the Gazebo LiDAR
-noise at 0, then measure the static bags with the noise report's selection:
+Calibration, 2026-10-28 (`date` in the files is the WSL clock), gz-sim 8.15.0, ogre2.
+`sigma_render` in m, with the point count in brackets:
 
-```
-tools/record_scenario.sh <scenario with duration_s: 10> results/<run-id>/ --no-driver --lidar-gz-sigma 0
-```
+| World (scenario) | range | 0.3-0.5 | 0.5-0.7 | 0.7-0.9 | 0.9-1.0 |
+| --- | --- | --- | --- | --- | --- |
+| warehouse (E-01) | 10-20 m | - | 0.0312 (7 887) | 0.0177 (143 018) | 0.0082 (406 761) |
+| warehouse (E-01) | 20-40 m | - | 0.0430 (1 564) | 0.0227 (13 743) | 0.0112 (102 172) |
+| corridor (E-04) | 0.5-2 m | 0.0076 (2 416) | 0.0019 (458 672) | 0.0016 (1 623 643) | 0.0008 (1 898 004) |
+| corridor (E-04) | 2-5 m | 0.0151 (851 972) | 0.0054 (697 167) | 0.0037 (479 442) | 0.0019 (508 330) |
+| corridor (E-04) | 5-10 m | 0.0310 (10 119) | 0.0136 (10 416) | 0.0053 (4 602) | 0.0039 (43 942) |
+| corridor (E-04) | 10-20 m | - | - | - | 0.0035 (28 572) |
+| corridor (E-04) | 20-40 m | - | - | - | 0.0020 (6 575) |
 
-Static calibration after silhouette exclusion (sigma in m, mean range in m):
-
-| World | 0.3-0.5 | 0.5-0.7 | 0.7-0.9 | 0.9-1.0 |
-| --- | --- | --- | --- | --- |
-| warehouse | 0.0250 (273 pts, r 27.7) | 0.0204 (3 968, r 17.9) | 0.0150 (48 798, r 15.3) | 0.0082 (113 723, r 14.2) |
-| corridor | 0.0149 (188 087, r 3.1) | 0.0043 (257 227, r 2.1) | 0.0016 (372 393, r 1.6) | 0.0009 (451 386, r 1.7) |
-
-The silhouette exclusion changes the plane bins little: warehouse head-on goes from 0.0092 to
-0.0082 m, and warehouse 0.5-0.7 from 0.0241 to 0.0204 m. The error grows toward grazing in both
-worlds, but head-on it is near zero only in the corridor (1.7 m) and is 0.0082 m in the
-warehouse (14 m). It depends on range or scene as well as incidence.
-
-Fits over the eight bins (least squares). The bin standard errors are 1e-5 to 1e-3 m:
-- `k (1/|n.u| - 1)`: k = 0.0161 m, residuals up to 0.0128 m.
-- `k tan(theta)`: k = 0.0097 m, residuals up to 0.0099 m.
-- `k r tan(theta)`: residuals up to 0.0104 m, for reference.
-
-None fits within the bin spread. The profile therefore stores the measured table itself
-(`render_model: {form: table, sigma_by_incidence_m: {warehouse: ..., corridor: ...}}`). The
-report picks the row set by the `world` of the planes sidecar; a world without a table gets 0.
-
-Timing was ruled out:
-- A driven warehouse run with the Gazebo noise at 0 gives the same 0.0113 m as the static one.
-- On the driven E-01 bag, a -6..+6 ms sweep of the LiDAR stamps gives the smallest residual
-  spread with the stamps unshifted (minimum at 0 within 1 ms, same on the raw and bridged bags).
-
-Earlier range-based fits, kept for the record (no longer used): per range bin the static sigma
-was 0.0012 / 0.0029 / 0.0006 m (corridor, at 1.4 / 12.2 / 53.9 m) and 0.0108 / 0.0151 m
-(warehouse, at 13.6 / 28.3 m). `k r` and `k r + offset` left residuals up to 0.011 m.
+The renderer error grows toward grazing incidence and with range, and differs between scenes
+at the same range and incidence. Earlier attempts to describe it with one formula failed: a
+constant, `k r`, `k (1/|n.u| - 1)` and `k tan(theta)` all left residuals of about 0.01 m against
+bin errors of 1e-3 m or less. Timing was ruled out: a driven and a static run with the Gazebo
+noise at 0 gave the same sigma, and a -6..+6 ms sweep of the LiDAR stamps had its minimum at 0.
 
 ### Wheel contact calibration
 
@@ -224,28 +231,33 @@ Message counts per run: IMU and `/ground_truth` 200 Hz with no gap, LiDAR 10 Hz,
 | Odom drift (not gated) | 1-3 % | 1.67 % | 0.92 % |
 | Odom yaw (not gated) | 4-5 deg/rev | 4.49 deg/rev | (no turn) |
 
-LiDAR range sigma per incidence bin, after silhouette exclusion (expected =
-`sqrt(0.02^2 + sigma_render(bin)^2)` from the world's table, ±15 %, at least 1000 points).
-Excluded shares: E-01 72.7 % silhouette (mostly points on shelves, boxes and columns, which are
-not plane points) and 17.6 % low incidence; E-04 3.2 % and 18.7 %.
+LiDAR range sigma per cell on the recorded bags, with the world's render table (expected =
+`sqrt(0.02^2 + sigma_render(cell)^2)`, ±15 %, at least 1000 points). Excluded shares: E-01
+72.7 % silhouette (mostly points on shelves, boxes and columns, which are not plane points) and
+17.6 % low incidence; E-04 3.2 % and 18.7 %.
 
-| World | `\|n.u\|` | points | expected | measured | result |
-| --- | --- | --- | --- | --- | --- |
-| E-01 warehouse | 0.3-0.5 | 541 | 0.0320 | 0.0484 | shown, not gated (< 1000) |
-| E-01 warehouse | 0.5-0.7 | 10 583 | 0.0286 | 0.0386 (+35 %) | **fail** |
-| E-01 warehouse | 0.7-0.9 | 160 928 | 0.0250 | 0.0270 (+8 %) | pass |
-| E-01 warehouse | 0.9-1.0 | 518 491 | 0.0216 | 0.0218 (+1 %) | pass |
-| E-04 corridor | 0.3-0.5 | 874 719 | 0.0249 | 0.0252 | pass |
-| E-04 corridor | 0.5-0.7 | 1 145 472 | 0.0205 | 0.0205 | pass |
-| E-04 corridor | 0.7-0.9 | 2 059 992 | 0.0201 | 0.0201 | pass |
-| E-04 corridor | 0.9-1.0 | 2 430 428 | 0.0200 | 0.0200 | pass |
+| World | range | `\|n.u\|` | points | expected | measured | result |
+| --- | --- | --- | --- | --- | --- | --- |
+| E-01 warehouse | 10-20 m | 0.5-0.7 | 8 615 | 0.0371 | 0.0363 | pass |
+| E-01 warehouse | 10-20 m | 0.7-0.9 | 146 824 | 0.0267 | 0.0266 | pass |
+| E-01 warehouse | 10-20 m | 0.9-1.0 | 413 192 | 0.0216 | 0.0216 | pass |
+| E-01 warehouse | 20-40 m | 0.3-0.5 | 541 | - | 0.0484 | shown (no calibrated cell) |
+| E-01 warehouse | 20-40 m | 0.5-0.7 | 1 968 | 0.0474 | 0.0472 | pass |
+| E-01 warehouse | 20-40 m | 0.7-0.9 | 14 104 | 0.0303 | 0.0301 | pass |
+| E-01 warehouse | 20-40 m | 0.9-1.0 | 105 299 | 0.0229 | 0.0229 | pass |
+| E-04 corridor | 0.5-2 m | 0.3-0.5 | 22 874 | 0.0214 | 0.0185 (-14 %) | pass |
+| E-04 corridor | 0.5-2 m | 0.5-0.7 / 0.7-0.9 / 0.9-1.0 | 0.45-1.85 M | 0.0201 / 0.0201 / 0.0200 | 0.0202 / 0.0201 / 0.0200 | pass |
+| E-04 corridor | 2-5 m | 0.3-0.5 / 0.5-0.7 / 0.7-0.9 / 0.9-1.0 | 0.47-0.84 M | 0.0250 / 0.0207 / 0.0203 / 0.0201 | 0.0252 / 0.0207 / 0.0203 / 0.0200 | pass |
+| E-04 corridor | 5-10 m | 0.3-0.5 / 0.5-0.7 / 0.7-0.9 / 0.9-1.0 | 4 457-43 318 | 0.0369 / 0.0242 / 0.0207 / 0.0204 | 0.0363 / 0.0241 / 0.0206 / 0.0202 | pass |
+| E-04 corridor | 10-20 m | 0.9-1.0 | 29 747 | 0.0203 | 0.0202 | pass |
+| E-04 corridor | 20-40 m | 0.9-1.0 | 8 515 | 0.0201 | 0.0202 | pass |
+| E-04 corridor | 40-100 m | 0.9-1.0 | 464 | - | 0.0207 | shown (no calibrated cell) |
 
-Exit codes: E-04 0. E-01 1, on the |n.u| 0.5-0.7 bin only. On the driven lap the robot sees
-the warehouse at other ranges and geometry than from the static spawn pose, and the render
-error depends on those as well as on incidence. It is reported as measured and not tuned.
-`odom_errors`: `stamp_not_increasing` only (8 on E-01, 22 on E-04), the duplicate joint-state
-stamps after the final pause. The odometry meets ADR-011 section 3, with the believed
-kinematics (1.01 radius, 0.399 track) as the only error.
+Exit codes: E-01 0, E-04 0; every gated row passes in both. The recorded bags and the
+calibration recordings are separate Gazebo runs of the same scenario (Gazebo is not
+deterministic). `odom_errors`: `stamp_not_increasing` only (8 on E-01, 22 on E-04), the
+duplicate joint-state stamps after the final pause. The odometry meets ADR-011 section 3, with
+the believed kinematics (1.01 radius, 0.399 track) as the only error.
 
 #### Pipeline on the Gazebo bag
 
