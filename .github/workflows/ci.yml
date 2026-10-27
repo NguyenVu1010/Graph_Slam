@@ -62,6 +62,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build -f docker/deps.Dockerfile -t mss-deps .
       - run: docker build -f docker/Dockerfile --build-arg DEPS=mss-deps -t mss .
+      - name: Launch check, ros2 launch mss_ros2 mss.launch.py stays up for 15 s
+        run: docker run --rm -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }} mss bash tools/ci/check_launch.sh
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install -e ".[eval]"

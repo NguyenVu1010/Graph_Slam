@@ -26,8 +26,8 @@
 - `-Wall -Wextra -Wpedantic -Werror` (build.sh sets `MSS_WERROR=ON`); files LF; clang-format-18 clean; random tests use fixed `std::mt19937` seeds.
 - Feature flag: with `degeneracy.enabled = false` the matcher never calls `analyze`; enabled with nothing flagged gives a bitwise identical result.
 - Build/test (the only way to compile):
-  `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-scan_match && tools/wsl/build.sh --no-gtsam --build-dir ~/mss-build/feat-scan_match-nogtsam --target <test_binary_name>"`; full build + ctest: same without `--target`.
-- Format check before each commit: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-scan_match && git ls-files -mo --exclude-standard '*.cpp' '*.hpp' | xargs -r clang-format-18 --dry-run --Werror"` -> no output, exit 0.
+  `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && tools/wsl/build.sh --no-gtsam --build-dir ~/mss-build/feat-scan_match-nogtsam --target <test_binary_name>"`; full build + ctest: same without `--target`.
+- Format check before each commit: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && git ls-files -mo --exclude-standard '*.cpp' '*.hpp' | xargs -r clang-format-18 --dry-run --Werror"` -> no output, exit 0.
 - Commits: Conventional Commits with trailers `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01DYAqFYL9xp2KFYiPfmqpc4`. Do not push. The PR will exceed the 400-line target (new module + tests); say so in the PR description.
 
 ## Review Focus
@@ -344,7 +344,7 @@ TEST(ScanMatchComponent, AlignTimingRecorded) {
 
 - [x] **Step 3: Full build + ctest.** Build command without `--target`. Expected: all tests pass, `BUILD OK`.
 
-- [x] **Step 4: clang-tidy on the new sources.** Run: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-scan_match && cmake -B ~/mss-build/feat-scan_match-nogtsam -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > /dev/null && clang-tidy-18 -p ~/mss-build/feat-scan_match-nogtsam core/scan_match/src/*.cpp"`. Expected: no warnings from `core/scan_match`; fix any and re-run Step 3.
+- [x] **Step 4: clang-tidy on the new sources.** Run: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && cmake -B ~/mss-build/feat-scan_match-nogtsam -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > /dev/null && clang-tidy-18 -p ~/mss-build/feat-scan_match-nogtsam core/scan_match/src/*.cpp"`. Expected: no warnings from `core/scan_match`; fix any and re-run Step 3.
 
 - [x] **Step 5: Format check, then commit**
 ```bash

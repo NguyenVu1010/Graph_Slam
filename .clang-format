@@ -19,7 +19,7 @@ IncludeCategories:
   - Regex: '^<(sys/)?[a-z_]+(\.h)?>$'
     Priority: 1
   # Third-party libraries
-  - Regex: '^<(Eigen|sophus|gtsam|pcl|yaml-cpp|gtest|rclcpp|sensor_msgs|nav_msgs|geometry_msgs)/'
+  - Regex: '^<(ament_index_cpp|Eigen|sophus|gtsam|pcl|yaml-cpp|gtest|rclcpp|sensor_msgs|nav_msgs|geometry_msgs)/'
     Priority: 2
   # Project headers
   - Regex: '^"mss/'

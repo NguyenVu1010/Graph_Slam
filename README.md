@@ -56,14 +56,32 @@ the scan end at end of data), `n_map_rebuilds`, `n_gnss_factors` and `n_odom_fac
 but some records were not processed (dropped or rejected, see `bench.json`). Format:
 `docs/mssdata_format.md`, decision: `docs/adr/014-bench-dataset-format.md`.
 
-Desktop with ROS 2 Jazzy (workspace contains this repo under `src/`):
+Desktop with ROS 2 Jazzy (workspace contains this repo under `src/multi-sensor-slam`). colcon
+stops at the root `CMakeLists.txt`, so name the three packages' paths (ADR-013):
+`multi_sensor_slam` (root superbuild: core, tests, bench), `mss_core` (`core/`) and `mss_ros2`
+(`ros2_node/`, finds `mss_core` through colcon's prefix path).
 
 ```sh
-colcon build --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release
-ros2 launch mss_ros2 mss.launch.py
+pkgs="src/multi-sensor-slam src/multi-sensor-slam/core src/multi-sensor-slam/ros2_node"
+colcon build --paths $pkgs --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release
+. install/setup.bash
+ros2 launch mss_ros2 mss.launch.py   # config:=<file> overrides the config path
 ```
 
-Docker: see the header of `docker/Dockerfile`.
+`mss_node` gets the path of `config/default.yaml` (installed to `share/mss_ros2/config`) as the
+string parameter `config_path` and logs `mss_node up; config_path=...` once; the pipeline is
+not wired to ROS topics yet.
+
+Docker: `docker/Dockerfile` (usage in its header) builds the same three packages, runs the
+superbuild tests (`colcon test --packages-select multi_sensor_slam`), and installs the bench
+at `/ws/install/multi_sensor_slam/bin/mss_bench`; the image's default command runs the launch
+file. CI then runs the launch check, which passes when the launch is still up after 15 s and
+the startup line was printed (`tools/ci/check_launch.sh [INSTALL_DIR]` also works on any
+machine with ROS 2 Jazzy):
+
+```sh
+docker run --rm -v "$PWD:$PWD" -w "$PWD" mss bash tools/ci/check_launch.sh
+```
 
 ## Python tooling
 
