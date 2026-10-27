@@ -139,6 +139,29 @@
   .yk { display: inline-block; font-family: var(--mono); font-size: 12px; padding: 1px 7px; margin: 2px 4px 2px 0; border-radius: 6px; background: var(--plan-bg); }
   .fnlink { font-family: var(--mono); font-size: 12.5px; font-weight: 600; cursor: pointer; }
   .note { border-left: 3px solid var(--stub); padding: 6px 10px; background: var(--stub-bg); border-radius: 0 8px 8px 0; font-size: 13.5px; margin: 10px 0; }
+  /* sequence diagrams */
+  .sq-head { cursor: pointer; } .sq-head rect { fill: var(--accent-bg); stroke: var(--accent); stroke-width: 1.4; }
+  .sq-head:hover rect, .sq-head:focus-visible rect { stroke-width: 2.4; } .sq-head:focus-visible { outline: none; }
+  .sq-head-t { font: 700 12px var(--mono); fill: var(--fg); } .sq-head-s { font-size: 10.5px; fill: var(--muted); }
+  .sq-life { stroke: var(--edge); stroke-width: 1; stroke-dasharray: 5 4; }
+  .sq-act { fill: var(--panel); stroke: var(--fg); stroke-width: 1; }
+  .sq-frame { fill: none; stroke: var(--muted); stroke-width: 1.1; }
+  .sq-frame-tab { fill: var(--plan-bg); stroke: var(--muted); stroke-width: 1.1; }
+  .sq-frame-kw { font: 700 11px var(--mono); fill: var(--fg); } .sq-frame-cond { font-size: 11px; fill: var(--muted); font-style: italic; paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
+  .sq-else { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 6 4; }
+  .sq-msg { cursor: pointer; } .sq-msg:focus-visible { outline: none; }
+  .sq-arrow { fill: none; stroke: var(--fg); stroke-width: 1.3; } .sq-arrow.ret { stroke-dasharray: 6 4; stroke: var(--muted); }
+  .sq-msg.k-self .sq-arrow { stroke: var(--accent); }
+  .sq-msg.planned .sq-arrow, .sq-arrow.plan { stroke: var(--plan); stroke-dasharray: 4 4; } .sq-msg.planned .sq-label { fill: var(--plan); }
+  .sq-hit { fill: transparent; stroke: none; }
+  .sq-label { font: 11px var(--mono); fill: var(--fg); paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
+  .sq-label.ret { fill: var(--muted); }
+  .sq-note { fill: var(--stub-bg); stroke: var(--stub); stroke-width: 1; }
+  .sq-msg:hover .sq-arrow, .sq-msg.sel .sq-arrow, .sq-msg:focus-visible .sq-arrow { stroke: var(--accent); stroke-width: 2.4; }
+  .sq-msg.sel .sq-label, .sq-msg:hover .sq-label, .sq-msg:focus-visible .sq-label { fill: var(--accent); font-weight: 700; }
+  .sq-msg.sel .sq-note { stroke: var(--accent); stroke-width: 2; }
+  .sq-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--muted); margin: 8px 0; align-items: center; }
+  .sq-legend span { display: inline-flex; align-items: center; gap: 6px; } .sq-legend svg { width: 46px; height: 16px; display: inline-block; flex: none; }
   /* timeline */
   .tl-lane { font-size: 12px; font-weight: 600; fill: var(--fg); }
   .tl-axis { stroke: var(--line); stroke-width: 1; }
@@ -170,6 +193,7 @@
     <a href="#tong-quan" role="tab" data-tab="tong-quan" aria-selected="true">Tổng quan</a>
     <a href="#chu-ky" role="tab" data-tab="chu-ky" aria-selected="false">Chu kỳ hoạt động</a>
     <a href="#dong-thoi-gian" role="tab" data-tab="dong-thoi-gian" aria-selected="false">Dòng thời gian</a>
+    <a href="#so-do-tuan-tu" role="tab" data-tab="so-do-tuan-tu" aria-selected="false">Sơ đồ tuần tự</a>
   </nav>
 </header>
 <main>
@@ -201,6 +225,22 @@
     </div>
     <div class="note" id="thread-note"></div>
     <div id="cycles"></div>
+  </section>
+
+  <section id="so-do-tuan-tu" role="tabpanel" hidden>
+    <h2>Sơ đồ tuần tự (UML)</h2>
+    <p class="hint">Mỗi sơ đồ là một đường đi của message qua các module: lifeline dọc cho từng thành phần, thời gian chạy xuống, mũi tên ngang là lời gọi hàm thật kèm dữ liệu chính (frame, đơn vị) và khóa YAML điều kiện. Nhấn một message để xem thẻ chi tiết giống tab Chu kỳ; nhấn tiêu đề lifeline để mở module ở Tổng quan. Mọi thứ chạy đơn luồng trong run_once() / flush() (deterministic: true); luồng ADR-005 chưa có. Sơ đồ rộng thì cuộn ngang trong khung của nó.</p>
+    <div class="sq-legend">
+      <span><svg viewBox="0 0 46 16"><path d="M2,8 H40" class="sq-arrow"/><path d="M36,4 L44,8 L36,12 z" fill="var(--fg)"/></svg>gọi đồng bộ</span>
+      <span><svg viewBox="0 0 46 16"><path d="M2,8 H42" class="sq-arrow ret"/><path d="M36,4 L44,8 L36,12" fill="none" stroke="var(--muted)" stroke-width="1.5"/></svg>trả về</span>
+      <span><svg viewBox="0 0 46 16"><path d="M2,8 H42" class="sq-arrow"/><path d="M36,4 L44,8 L36,12" fill="none" stroke="var(--fg)" stroke-width="1.5"/></svg>đưa vào hàng đợi (bất đồng bộ)</span>
+      <span><svg viewBox="0 0 46 16"><path d="M6,3 h22 v10 h-14" fill="none" stroke="var(--accent)" stroke-width="1.3"/><path d="M14,9 L6,13 L14,16 z" fill="var(--accent)"/></svg>tự gọi (bước nội bộ)</span>
+      <span><svg viewBox="0 0 46 16"><rect x="1" y="1" width="44" height="14" class="sq-frame"/><path d="M1,1 h22 v5 l-4,4 h-18 z" class="sq-frame-tab"/></svg>khung alt / opt / loop (rẽ nhánh, tùy chọn, lặp)</span>
+      <span><svg viewBox="0 0 46 16"><rect x="18" y="1" width="10" height="14" class="sq-act"/></svg>thanh kích hoạt</span>
+      <span><svg viewBox="0 0 46 16"><rect x="2" y="2" width="42" height="12" rx="3" class="sq-note"/></svg>ghi chú: bộ đếm, return</span>
+      <span><svg viewBox="0 0 46 16"><path d="M2,8 H42" class="sq-arrow plan"/></svg>dự kiến, chưa nối</span>
+    </div>
+    <div id="seqs"></div>
   </section>
 
   <section id="dong-thoi-gian" role="tabpanel" hidden>
@@ -960,6 +1000,345 @@ const DATA = {
           in: "VoxelMap / KeyframeStore.", out: "Đám mây trong w.",
           cond: ["Chưa có API: VoxelMap chỉ có bộ đếm."], ctr: ["n_map_points"], yaml: [], hot: ["none", "Dự kiến."], time: "" } ] },
   ],
+
+  // ---------------------------------------------------------------- sơ đồ tuần tự (tab "Sơ đồ tuần tự")
+  // participants: lifeline theo thứ tự trái → phải; mod: module mở khi nhấn tiêu đề.
+  // msgs: { k: call | ret | async | self | note, f: từ, t: tới (note/self: on), l: nhãn,
+  //         r: ["module.fn"], st: id bước chu kỳ (mượn thẻ chi tiết), d: {in, out, cond, ctr, yaml, hot, time}, p: 1 = dự kiến }
+  //       khung: { fr: alt | opt | loop, l: điều kiện } ... { el: nhánh khác } ... { end: 1 }
+  participants: [
+    { id: "app", name: "App", sub: ["bench Replayer", "mss_node (dự kiến)"], mod: "bench" },
+    { id: "est", name: "Estimator", sub: ["hàng đợi, run_once", "(pipeline)"], mod: "pipeline" },
+    { id: "core", name: "EstimatorCore", sub: ["pipeline, 1 luồng"], mod: "pipeline" },
+    { id: "imu", name: "imu", sub: ["ImuBuffer, ImuInitializer", "Preintegrator"], mod: "imu" },
+    { id: "pre", name: "Preprocessor", sub: ["preprocess"], mod: "preprocess" },
+    { id: "sm", name: "ScanMatcher", sub: ["scan_match, gọi knn", "và degeneracy"], mod: "scan_match" },
+    { id: "kfs", name: "KeyframeStore", sub: ["VoxelMap cache", "MapWindow (map)"], mod: "map" },
+    { id: "gnss", name: "GnssFusion", sub: ["GnssAligner (gnss)"], mod: "gnss" },
+    { id: "odom", name: "WheelIntegrator", sub: ["odom"], mod: "odom" },
+    { id: "graph", name: "Graph / iSAM2", sub: ["backend"], mod: "backend" },
+    { id: "out", name: "Outputs", sub: ["est.tum, bench.json", "Odometry + TF"], mod: "out_pose" },
+  ],
+  sequences: [
+    { id: "boot", title: "1. Khởi động: cấu hình, cửa sổ IMU tĩnh, keyframe 0",
+      caption: "App nạp YAML và dựng Estimator (mọi bộ đệm cấp phát một lần, Graph giới hạn TBB khi deterministic). Các mẫu IMU đứng yên lấp đầy bộ đệm vòng; ở scan đầu tiên được phủ, EstimatorCore lấy cửa sổ imu.init_window_s quanh t_start và gọi ImuInitializer::try_init. Thất bại thì scan bị bỏ và chưa có ước lượng. Thành công thì InitState (g_w, bias, R_w_b với yaw 0) khởi tạo các preintegrator, scan được deskew và preprocess, rồi thành keyframe 0 với prior pose, vận tốc, bias trong graph.",
+      msgs: [
+        { k: "call", f: "app", t: "est", l: "load_config(default.yaml, overlay) → Result<Config>", r: ["pipeline.load"], d: { out: "Config đã validate; _deg → _rad; backend.single_thread = deterministic.", yaml: ["deterministic (true)", "random_seed (42)"], cond: ["Lỗi: liệt kê mọi khóa sai dạng <dotted.key>: <reason>; bench thoát mã 2."] } },
+        { k: "call", f: "app", t: "est", l: "Estimator(cfg)", r: ["pipeline.ctor"], d: { cond: ["realtime.*_queue_depth ngoài [1, max biên dịch]: ném std::invalid_argument nêu tên khóa."], yaml: ["realtime.scan_queue_depth", "realtime.imu_queue_depth", "realtime.aux_queue_depth", "realtime.max_points_per_scan"] } },
+        { k: "call", f: "est", t: "core", l: "EstimatorCore(cfg): mọi module, pool scan_queue_depth + 2", r: ["pipeline.ctor"] },
+        { k: "call", f: "core", t: "graph", l: "Graph(cfg.backend, cfg.imu, p_b_g)", r: ["backend.ctor", "backend.tbb"], d: { cond: ["single_thread (= deterministic): tbb::global_control(1) cho cả tiến trình (ADR-018)."], yaml: ["backend.relinearize_threshold", "backend.relinearize_skip"] } },
+        { k: "ret", f: "graph", t: "core", l: "Graph sẵn sàng (iSAM2 rỗng)" },
+        { k: "ret", f: "core", t: "est", l: "core" },
+        { k: "ret", f: "est", t: "app", l: "Estimator" },
+        { fr: "loop", l: "mỗi mẫu IMU đứng yên (≥ imu.init_window_s = 2 s, khoảng 400 mẫu ở 200 Hz)" },
+        { k: "async", f: "app", t: "est", l: "push_imu(s{t ns, acc_b m/s², gyro_b rad/s})", r: ["pipeline.p_imu"], st: "a1" },
+        { k: "call", f: "app", t: "est", l: "run_once()", r: ["pipeline.run_once"], st: "d2" },
+        { k: "call", f: "est", t: "core", l: "on_imu(s)", r: ["pipeline.feedimu", "pipeline.c_imu"], st: "a3" },
+        { k: "call", f: "core", t: "imu", l: "ImuBuffer::push(s) (vòng 4096)", r: ["pipeline.ibuf"], st: "a4" },
+        { k: "ret", f: "imu", t: "core", l: "true" },
+        { k: "ret", f: "core", t: "est", l: "" },
+        { end: 1 },
+        { k: "async", f: "app", t: "est", l: "push_scan(scan_l): khóa = scan_end_time", r: ["pipeline.p_scan"], st: "b1" },
+        { k: "call", f: "app", t: "est", l: "run_once()", r: ["pipeline.run_once"], st: "b2" },
+        { k: "self", f: "est", t: "est", l: "imu_covers(t_end): t_end ≤ last_finite_imu_t", r: ["pipeline.covers"], st: "d4" },
+        { k: "call", f: "est", t: "core", l: "on_scan(raw_l), t = t_start", r: ["pipeline.core"], st: "b4" },
+        { k: "call", f: "core", t: "imu", l: "copy_range(mẫu ≤ t − init_window_s, mẫu ≥ t)", r: ["pipeline.ibuf"], st: "a5" },
+        { k: "call", f: "core", t: "imu", l: "ImuInitializer::try_init(window)", r: ["imu.init"], st: "a5" },
+        { fr: "alt", l: "cửa sổ không tĩnh / quá ngắn / mẫu hỏng" },
+        { k: "ret", f: "imu", t: "core", l: "Result::error(\"not static\" ...)", r: ["imu.init"] },
+        { k: "note", f: "core", t: "core", l: "n_skipped_scans++, log một lần, return: chưa có ước lượng", r: ["pipeline.core"], d: { ctr: ["n_skipped_scans"] } },
+        { el: "std acc ≤ init_max_acc_std_mps2 và std gyro ≤ init_max_gyro_std_radps" },
+        { k: "ret", f: "imu", t: "core", l: "InitState{g_w = [0,0,−9.80665], bias(bg = mean gyro, ba = 0), R_w_b (yaw 0)}", r: ["imu.initst"] },
+        { end: 1 },
+        { k: "call", f: "core", t: "imu", l: "pred_.reset(bias), kf_.reset(bias), integrate(s(t_start))", r: ["imu.reset", "imu.integ"] },
+        { k: "call", f: "core", t: "odom", l: "integrate_wheel(t); take_delta(): mở chuỗi odom", r: ["pipeline.wheel", "odom.delta"] },
+        { k: "call", f: "core", t: "imu", l: "build_imu_trajectory(x0, t_end, scratch_) → traj (b0)", r: ["pipeline.itraj"], st: "b7" },
+        { k: "ret", f: "imu", t: "core", l: "ImuTrajectory" },
+        { k: "call", f: "core", t: "pre", l: "process(raw_l, traj, pre_out_)", r: ["preprocess.process"], st: "b8" },
+        { k: "ret", f: "pre", t: "core", l: "pre_out_ (l tại t_start)" },
+        { k: "call", f: "core", t: "graph", l: "add_keyframe(t, x0) + prior pose / vận tốc / bias", r: ["backend.kf", "backend.pri"], st: "b9", d: { yaml: ["backend.prior_pos_sigma_m (0,1)", "backend.prior_rot_sigma_deg (1)", "backend.prior_vel_sigma_mps (0,1)", "backend.prior_bias_acc_sigma_mps2", "backend.prior_bias_gyro_sigma_radps"] } },
+        { k: "ret", f: "graph", t: "core", l: "KeyId 0" },
+        { k: "call", f: "core", t: "graph", l: "optimize()", r: ["backend.opt"] },
+        { fr: "alt", l: "GTSAM có" },
+        { k: "ret", f: "graph", t: "core", l: "Estimate{state, marginal cov [rho, phi]}", r: ["backend.opt"] },
+        { el: "bản build không GTSAM" },
+        { k: "ret", f: "graph", t: "core", l: "error(\"built without GTSAM\") → prior_cov, n_backend_failures", r: ["pipeline.bfail"] },
+        { end: 1 },
+        { k: "call", f: "core", t: "kfs", l: "KeyframeStore::add(0, t, cloud_l); VoxelMap::insert(cloud_l, T_w_b·T_b_l)", r: ["pipeline.kcloud", "pipeline.kstore", "map.insert"], st: "k10" },
+        { k: "ret", f: "core", t: "est", l: "has_estimate = true" },
+        { k: "async", f: "est", t: "out", l: "latest_state() → dòng est.tum đầu tiên", r: ["pipeline.state", "bench.tum"], st: "o2" },
+        { k: "ret", f: "est", t: "app", l: "" },
+      ] },
+
+    { id: "imu", title: "2. Mỗi mẫu IMU",
+      caption: "push_imu chỉ kiểm thứ tự thời gian và nâng watermark; xử lý thật diễn ra trong run_once khi phép trộn k-way chọn hàng đợi IMU. Mẫu không hữu hạn bị bỏ ở core nhưng cũng không nâng watermark ở Estimator. Mỗi mẫu mới có thể giải phóng fix GNSS đang chờ IMU phủ thời điểm của nó.",
+      msgs: [
+        { k: "call", f: "app", t: "est", l: "push_imu(s{t ns, acc_b m/s², gyro_b rad/s})", r: ["pipeline.p_imu"], st: "a1" },
+        { fr: "alt", l: "s.t ≤ mẫu đã nhận trước" },
+        { k: "ret", f: "est", t: "app", l: "error(\"imu timestamp not increasing\"), n_rejected_imu++", r: ["pipeline.p_imu"], d: { ctr: ["n_rejected_imu"] } },
+        { el: "hàng đợi đã đủ realtime.imu_queue_depth" },
+        { k: "self", f: "est", t: "est", l: "pop cũ nhất + push; n_dropped_imu++", r: ["pipeline.bq"], d: { ctr: ["n_dropped_imu"], yaml: ["realtime.imu_queue_depth (400)"] } },
+        { k: "ret", f: "est", t: "app", l: "error(\"imu queue full, dropped oldest\")" },
+        { el: "bình thường" },
+        { k: "self", f: "est", t: "est", l: "BoundedQueue::push(s); hữu hạn → last_finite_imu_t = s.t", r: ["pipeline.bq", "pipeline.covers"] },
+        { k: "ret", f: "est", t: "app", l: "Status::ok()" },
+        { end: 1 },
+        { k: "call", f: "app", t: "est", l: "run_once()", r: ["pipeline.run_once"], st: "d2" },
+        { k: "self", f: "est", t: "est", l: "select_next(heads) → kImu (khóa nhỏ nhất, hòa: IMU trước)", r: ["pipeline.sel"], st: "d3" },
+        { k: "call", f: "est", t: "core", l: "feed_imu → on_imu(s)", r: ["pipeline.feedimu", "pipeline.c_imu"], st: "a3" },
+        { fr: "alt", l: "acc_b hoặc gyro_b không hữu hạn" },
+        { k: "note", f: "core", t: "core", l: "n_nonfinite_imu++ (log một lần mỗi chuỗi), return", r: ["pipeline.c_imu"], d: { ctr: ["n_nonfinite_imu"] } },
+        { el: "hữu hạn, t tăng" },
+        { fr: "opt", l: "bộ đệm đầy và IMU đã khởi tạo" },
+        { k: "call", f: "core", t: "imu", l: "feed_preintegrators(front()): pred_, kf_.integrate", r: ["pipeline.feedpre", "imu.integ"] },
+        { end: 1 },
+        { k: "call", f: "core", t: "imu", l: "ImuBuffer::push(s) (vòng 4096, cấp phát một lần)", r: ["pipeline.ibuf"], st: "a4" },
+        { k: "ret", f: "imu", t: "core", l: "true" },
+        { end: 1 },
+        { fr: "opt", l: "gnss.enabled và có fix chờ với m.t ≤ s.t" },
+        { k: "call", f: "core", t: "gnss", l: "process_deferred_gnss() → fuse_gnss(m) (sơ đồ 5)", r: ["pipeline.defer", "pipeline.fuse", "pipeline.gfix"], st: "a6" },
+        { k: "ret", f: "gnss", t: "core", l: "FixOutcome" },
+        { end: 1 },
+        { k: "ret", f: "core", t: "est", l: "" },
+        { k: "ret", f: "est", t: "app", l: "(hàng đợi xả đến scan chưa phủ)" },
+      ] },
+
+    { id: "scan", title: "3. Mỗi scan không phải keyframe",
+      caption: "Scan chờ trong pool cho đến khi IMU hữu hạn phủ thời điểm cuối của nó (watermark). EstimatorCore kiểm thứ tự và độ phủ, dự đoán trạng thái tại t_start bằng tích phân trước có mẫu biên nội suy, dựng quỹ đạo deskew, preprocess, rồi khớp scan với VoxelMap bằng Gauss-Newton IRLS. Không phải keyframe thì chỉ cập nhật trạng thái front-end và không cấp phát. Khớp thất bại thì đi theo dự đoán IMU.",
+      msgs: [
+        { k: "call", f: "app", t: "est", l: "push_scan(scan_l)", r: ["pipeline.p_scan"], st: "b1" },
+        { k: "self", f: "est", t: "est", l: "pool[slot].copy_from(scan); key = scan_end_time(scan)", r: ["common.sf_copy", "common.sf_end"] },
+        { k: "ret", f: "est", t: "app", l: "Status (đầy → bỏ cũ nhất, n_dropped_scans)", d: { ctr: ["n_dropped_scans"] } },
+        { k: "call", f: "app", t: "est", l: "run_once()", r: ["pipeline.run_once"], st: "b2" },
+        { k: "self", f: "est", t: "est", l: "select_next → kScan; imu_covers(key)?", r: ["pipeline.sel", "pipeline.covers"], st: "d4" },
+        { fr: "alt", l: "key > last_finite_imu_t (IMU chưa phủ)" },
+        { k: "ret", f: "est", t: "app", l: "return: scan và mọi message sau nó chờ" },
+        { el: "phủ" },
+        { k: "call", f: "est", t: "core", l: "on_imu(...) đến mẫu đầu tiên t ≥ t_end (§8)", r: ["pipeline.feedimu", "pipeline.c_imu"], st: "b3" },
+        { k: "call", f: "est", t: "core", l: "on_scan(raw_l)", r: ["pipeline.core"], st: "b4" },
+        { end: 1 },
+        { fr: "alt", l: "t_start ≤ t_start scan trước" },
+        { k: "note", f: "core", t: "core", l: "n_skipped_scans++, log, return", r: ["pipeline.core"], d: { ctr: ["n_skipped_scans"] } },
+        { el: "ImuBuffer không phủ [t_start, t_end]" },
+        { k: "note", f: "core", t: "core", l: "n_skipped_scans++, n_uncovered_scans++, return", r: ["pipeline.core"], d: { ctr: ["n_skipped_scans", "n_uncovered_scans"] } },
+        { el: "hợp lệ" },
+        { k: "call", f: "core", t: "gnss", l: "process_deferred_gnss(): fix trước khi front_ đổi", r: ["pipeline.defer"], st: "b5" },
+        { end: 1 },
+        { k: "call", f: "core", t: "imu", l: "feed_preintegrators(s < t_start), s(t_start) = interpolate(t_start)", r: ["pipeline.feedpre", "pipeline.ibuf"], st: "b6" },
+        { k: "call", f: "core", t: "imu", l: "pred_.predict(front_, g_w) → predicted tại t_start (w)", r: ["imu.pred"], st: "b6" },
+        { k: "ret", f: "imu", t: "core", l: "NavState predicted" },
+        { k: "call", f: "core", t: "odom", l: "integrate_wheel(t_start)", r: ["pipeline.wheel", "odom.integ"], st: "w3" },
+        { k: "call", f: "core", t: "imu", l: "build_imu_trajectory(predicted, t_end, g_w, scratch_, traj)", r: ["pipeline.itraj"], st: "b7" },
+        { k: "ret", f: "imu", t: "core", l: "traj: T_b0_b(t_k), ≤ 128 mục" },
+        { k: "call", f: "core", t: "pre", l: "process(raw_l, traj, pre_out_)", r: ["preprocess.process"], st: "b8" },
+        { k: "self", f: "pre", t: "pre", l: "lọc NaN, |p_l| ∈ [min_range_m, max_range_m]", r: ["preprocess.filter"], d: { yaml: ["preprocess.min_range_m (0,5)", "preprocess.max_range_m (100)"], hot: ["pt", "Có: theo điểm."] } },
+        { k: "self", f: "pre", t: "pre", l: "deskew: p_l(t_start) = T_l0_l(t)·p_l", r: ["preprocess.build", "preprocess.tl0l"], d: { yaml: ["preprocess.deskew_enabled (true)"], hot: ["pt", "Có: theo điểm."] } },
+        { k: "self", f: "pre", t: "pre", l: "voxel downsample_voxel_m (giữ điểm đầu)", r: ["preprocess.vkey", "preprocess.vins"], d: { yaml: ["preprocess.downsample_voxel_m (0,5)"], hot: ["pt", "Có: theo điểm."] } },
+        { k: "ret", f: "pre", t: "core", l: "Status; pre_out_ (l tại t_start)" },
+        { k: "call", f: "core", t: "sm", l: "align(pre_out_, map_, T_w_l_init = predicted.T_w_b·T_b_l)", r: ["scan_match.align"], st: "b10" },
+        { fr: "loop", l: "it = 1 .. scan_match.max_iterations (10), đến khi hội tụ" },
+        { k: "self", f: "sm", t: "sm", l: "build_system: VoxelMap::knn(T_w_l·p_l, knn_k)", r: ["scan_match.corr", "map.knn"], st: "m2" },
+        { k: "self", f: "sm", t: "sm", l: "fit_plane; plane_rms_max_m; passes_planarity / collinearity", r: ["scan_match.fit", "scan_match.plan", "scan_match.coll"], st: "m3" },
+        { k: "self", f: "sm", t: "sm", l: "point_to_plane_residual + Huber w → H, g, Σw r², Σw", r: ["scan_match.res"], st: "m4" },
+        { fr: "opt", l: "degeneracy.enabled" },
+        { k: "self", f: "sm", t: "sm", l: "degeneracy::analyze(H) → nâng λ < eig_threshold → H_reg", r: ["degeneracy.analyze"], st: "m5" },
+        { end: 1 },
+        { k: "self", f: "sm", t: "sm", l: "LLT: H_reg xi = −g", r: ["scan_match.align"], st: "m7" },
+        { fr: "opt", l: "degeneracy.enabled" },
+        { k: "self", f: "sm", t: "sm", l: "project_update(xi, report)", r: ["degeneracy.project"], st: "m8" },
+        { end: 1 },
+        { k: "self", f: "sm", t: "sm", l: "T_w_l ← T_w_l·Exp(xi); |rho| < trans_tol_m, |phi| < rot_tol_rad?", r: ["common.bplus"], st: "m10" },
+        { end: 1 },
+        { k: "self", f: "sm", t: "sm", l: "cov = cov_scale·max(σ_r², floor²)·A⁻¹ (+ relax_covariance)", r: ["scan_match.align", "degeneracy.relax"], st: "m11" },
+        { fr: "alt", l: "too few inliers / singular Hessian / pose không hữu hạn" },
+        { k: "ret", f: "sm", t: "core", l: "Result::error(reason)", r: ["scan_match.align"] },
+        { k: "note", f: "core", t: "core", l: "n_match_failures++; front_ = predicted (dự đoán IMU); return", r: ["pipeline.core"], st: "b10" },
+        { el: "ok" },
+        { k: "ret", f: "sm", t: "core", l: "MatchResult{T_w_l, cov (l, đã nới), H, inliers, converged}", r: ["scan_match.align"] },
+        { end: 1 },
+        { k: "self", f: "core", t: "core", l: "T_w_b = T_w_l·T_l_b; cov_b = lidar_cov_in_body(cov, T_b_l)", r: ["pipeline.lcov"], st: "b11" },
+        { k: "self", f: "core", t: "core", l: "is_new_keyframe(ref_, T_w_b) → false", r: ["pipeline.kpol"], st: "b12" },
+        { fr: "opt", l: "seconds_between(last_prune_t_, t) ≥ map.prune_period_s (5 s)" },
+        { k: "call", f: "core", t: "kfs", l: "VoxelMap::prune(p_w_b)", r: ["map.prune"], st: "b13" },
+        { end: 1 },
+        { k: "self", f: "core", t: "core", l: "reset_prediction(); latest_ = {front_, cov_b, last_kf_id_}", r: ["pipeline.resetp"], st: "b14" },
+        { k: "ret", f: "core", t: "est", l: "" },
+        { k: "async", f: "est", t: "out", l: "latest_state() → dòng est.tum", r: ["pipeline.state", "bench.tum"], st: "o2" },
+        { k: "ret", f: "est", t: "app", l: "" },
+      ] },
+
+    { id: "kf", title: "4. Keyframe",
+      caption: "Sau khi khớp, nếu thân đã đi keyframe_dist_m hoặc xoay keyframe_rot_deg kể từ keyframe trước, EstimatorCore thêm keyframe j vào graph cùng factor IMU, LiDAR, bánh xe và GNSS, gọi optimize(), lấy trạng thái tối ưu, rồi mới đưa đám mây keyframe (giảm mẫu lần hai) vào KeyframeStore và VoxelMap tại pose đã tối ưu. Cuối cùng kiểm tra keyframe cũ nhất trong cửa sổ có bị hiệu chỉnh quá ngưỡng không để dựng lại cache (ADR-016). Thứ tự dưới đây là thứ tự trong estimator_core.cpp.",
+      msgs: [
+        { k: "self", f: "core", t: "core", l: "is_new_keyframe(ref_, T_w_b) → true", r: ["pipeline.kpol"], st: "b12" },
+        { k: "call", f: "core", t: "graph", l: "add_keyframe(t_start, front_) → j", r: ["backend.kf"], st: "k1" },
+        { k: "call", f: "core", t: "imu", l: "kf_.delta()", r: ["imu.delta"] },
+        { k: "ret", f: "imu", t: "core", l: "PreintegratedDelta{dR, dv, dp, dt_s, cov 9x9 [phi,p,v]}" },
+        { k: "call", f: "core", t: "graph", l: "add_imu_factor(i, j, delta)", r: ["backend.f_imu"], st: "k2" },
+        { fr: "opt", l: "degeneracy.enabled" },
+        { k: "call", f: "core", t: "sm", l: "degeneracy::analyze(match.H) → degeneracy_in_body", r: ["degeneracy.analyze", "pipeline.dcov"] },
+        { k: "ret", f: "sm", t: "core", l: "DegeneracyReport (b, chỉ chẩn đoán)" },
+        { end: 1 },
+        { k: "call", f: "core", t: "graph", l: "add_lidar_factor(i, j, T_bi_bj = ref⁻¹·T_w_b, cov_b = Ad(T_b_l) cov_l Adᵀ, report*)", r: ["backend.f_lidar", "pipeline.lcov"], st: "k3" },
+        { k: "call", f: "core", t: "odom", l: "take_delta()", r: ["odom.delta"], st: "w4" },
+        { k: "ret", f: "odom", t: "core", l: "OdomDelta{t0, t1, T_b0_b1, cov o → b}" },
+        { fr: "opt", l: "wheel_odom.enabled" },
+        { fr: "alt", l: "t1 > t0 và odom_delta_in_time(d, t_i, t_j, P)" },
+        { k: "call", f: "core", t: "graph", l: "add_odom_factor(i, j, d)", r: ["backend.f_odom", "pipeline.odt"], st: "k4" },
+        { el: "lệch quá 1,5 chu kỳ mẫu" },
+        { k: "note", f: "core", t: "core", l: "n_odom_rejected++ (CoreCounters), log", r: ["pipeline.odt"] },
+        { end: 1 },
+        { end: 1 },
+        { fr: "opt", l: "gnss.enabled" },
+        { k: "call", f: "core", t: "gnss", l: "collect(t_k, T_w_bk, out): dời p_e_g về t_k", r: ["pipeline.gcol"], st: "k5" },
+        { k: "ret", f: "gnss", t: "core", l: "n fix đã dời (cov giữ nguyên)" },
+        { fr: "loop", l: "mỗi fix đã dời" },
+        { k: "call", f: "core", t: "graph", l: "add_gnss_factor(j, m, T_e_w) → biến E chung (gnss_frame_variable)", r: ["backend.f_gnss", "backend.fac_gnss"], st: "k5" },
+        { end: 1 },
+        { end: 1 },
+        { k: "call", f: "core", t: "graph", l: "optimize()", r: ["backend.opt"], st: "k6" },
+        { k: "self", f: "graph", t: "graph", l: "anchor_orphan_components; ISAM2::update; calculateEstimate", r: ["backend.anch", "backend.opt"] },
+        { fr: "alt", l: "thành công" },
+        { k: "ret", f: "graph", t: "core", l: "Estimate{state j, marginal_cov(j)}", r: ["backend.marg"], st: "k7" },
+        { el: "GTSAM ném / ước lượng không hữu hạn / bản stub" },
+        { k: "self", f: "graph", t: "graph", l: "bỏ factor chờ, rebuild(), đánh dấu mồ côi để tái neo", r: ["backend.rebuild"] },
+        { k: "ret", f: "graph", t: "core", l: "error(\"optimization failed\" | \"built without GTSAM\")" },
+        { k: "note", f: "core", t: "core", l: "log_backend_failure: n_backend_failures++, giữ trạng thái front-end", r: ["pipeline.bfail"] },
+        { end: 1 },
+        { k: "call", f: "core", t: "imu", l: "kf_.reset(front_.bias); integrate(s(t_start))", r: ["imu.reset"], st: "k7" },
+        { k: "call", f: "core", t: "pre", l: "kf_preprocessor_.process(pre_out_) (keyframe_voxel_m, không deskew)", r: ["preprocess.process", "pipeline.kcloud"], st: "k8" },
+        { k: "ret", f: "pre", t: "core", l: "kf_cloud_ (l)" },
+        { k: "call", f: "core", t: "kfs", l: "KeyframeStore::add(j, t, kf_cloud_) (max_keyframes)", r: ["pipeline.kstore"], st: "k9" },
+        { k: "call", f: "core", t: "kfs", l: "VoxelMap::insert(kf_cloud_, ref_·T_b_l) tại pose tối ưu; MapWindow::push", r: ["map.insert", "pipeline.mwin"], st: "k10" },
+        { fr: "opt", l: "optimize() thành công" },
+        { k: "call", f: "core", t: "graph", l: "keyframe_state(id cũ nhất trong cửa sổ)", r: ["backend.kstate"], st: "k11" },
+        { k: "ret", f: "graph", t: "core", l: "NavState tối ưu" },
+        { fr: "alt", l: "pose_moved > map.rebuild_trans_m (0,05 m) hoặc map.rebuild_rot_deg (0,5°)" },
+        { k: "call", f: "core", t: "kfs", l: "VoxelMap::clear()", r: ["map.clear", "pipeline.rebuild"], st: "k11" },
+        { fr: "loop", l: "mỗi keyframe trong cửa sổ (window_keyframes = 50)" },
+        { k: "call", f: "core", t: "kfs", l: "find(id) → insert(cloud_l, T_w_b(k)·T_b_l); set_pose", r: ["pipeline.kstore", "map.insert", "pipeline.mwin"] },
+        { end: 1 },
+        { k: "note", f: "core", t: "core", l: "n_map_rebuilds++ (log)", r: ["pipeline.rebuild"], d: { ctr: ["n_map_rebuilds"] } },
+        { end: 1 },
+        { end: 1 },
+        { fr: "opt", l: "map.prune_period_s đã qua" },
+        { k: "call", f: "core", t: "kfs", l: "VoxelMap::prune(p_w_b)", r: ["map.prune"], st: "b13" },
+        { end: 1 },
+        { k: "self", f: "core", t: "core", l: "reset_prediction(); latest_ = {front_, cov_out, j}", r: ["pipeline.resetp"], st: "b14" },
+        { k: "async", f: "core", t: "out", l: "latest_state() → est.tum", r: ["pipeline.state", "bench.tum"], st: "o2" },
+      ] },
+
+    { id: "gnss", title: "5. Mỗi fix GNSS",
+      caption: "Fix vào hàng đợi aux, được trộn theo m.t, rồi chờ trong vòng 32 phần tử cho đến khi IMU phủ m.t. Khi đó pose thân tại m.t được dự đoán bằng IMU và GnssFusion::on_fix chạy: gate_fix, cổng chi-square (khi đã căn), bộ chống khóa ngoài, aligner T_e_w, rồi hàng chờ keyframe. Fix được nhận vào graph ở keyframe kế tiếp (sơ đồ 4).",
+      msgs: [
+        { k: "call", f: "app", t: "est", l: "push_gnss(m{t, p_e_g (e, m), cov m², status})", r: ["pipeline.p_gnss"], st: "g1" },
+        { k: "ret", f: "est", t: "app", l: "Status (đầy → n_dropped_aux)" },
+        { k: "call", f: "app", t: "est", l: "run_once()", r: ["pipeline.run_once"] },
+        { k: "self", f: "est", t: "est", l: "select_next → kGnss (theo m.t)", r: ["pipeline.sel"] },
+        { k: "call", f: "est", t: "core", l: "on_gnss(m)", r: ["pipeline.c_gnss"], st: "g2" },
+        { fr: "alt", l: "gnss.enabled false hoặc chưa có ước lượng" },
+        { k: "note", f: "core", t: "core", l: "bỏ qua (vẫn đếm n_gnss)", r: ["pipeline.c_gnss"] },
+        { el: "m.t < front_.t (cũ hơn scan đã xử lý)" },
+        { k: "note", f: "core", t: "core", l: "n_gnss_late++, log một lần mỗi chuỗi", r: ["pipeline.c_gnss"], d: { ctr: ["n_gnss_late"] } },
+        { el: "ngược lại" },
+        { k: "self", f: "core", t: "core", l: "gnss_deferred_.push(m) (vòng 32)", r: ["pipeline.c_gnss", "pipeline.bq"], st: "g3" },
+        { fr: "opt", l: "vòng đầy" },
+        { k: "note", f: "core", t: "core", l: "fix cũ nhất bị ghi đè: n_gnss_ring_overflow++", r: ["pipeline.c_gnss"], d: { ctr: ["n_gnss_ring_overflow"] } },
+        { end: 1 },
+        { end: 1 },
+        { k: "call", f: "est", t: "core", l: "on_imu(s) với s.t ≥ m.t (mẫu IMU đến sau)", r: ["pipeline.c_imu"] },
+        { k: "self", f: "core", t: "core", l: "process_deferred_gnss(): imu_.back().t ≥ m.t", r: ["pipeline.defer"], st: "g4" },
+        { k: "call", f: "core", t: "imu", l: "predict_state_at(imu_, pred_, m.t, g_w, scratch_)", r: ["pipeline.pstate"], st: "g5" },
+        { k: "ret", f: "imu", t: "core", l: "T_w_b(m.t) (w)" },
+        { k: "call", f: "core", t: "gnss", l: "on_fix(m, T_w_b_fix, P_w_b = latest_.cov, &outcome)", r: ["pipeline.gfix", "pipeline.fuse"] },
+        { k: "self", f: "gnss", t: "gnss", l: "gate_fix(m, max_cov_m2)", r: ["gnss.gate"], st: "g6" },
+        { fr: "alt", l: "status < 0 / không hữu hạn / phương sai > gnss.max_cov_m2 (25 m²)" },
+        { k: "ret", f: "gnss", t: "core", l: "kGateFix → n_gnss_rejected++ (CoreCounters)", r: ["gnss.gate"] },
+        { el: "đã căn (aligned)" },
+        { k: "self", f: "gnss", t: "gnss", l: "gnss_residual; S = cov + J P Jᵀ; chi_square_gate(r, S, chi2_gate)", r: ["gnss.res", "gnss.chi"], st: "g7" },
+        { fr: "alt", l: "NIS > gnss.chi2_gate và số lần từ chối liên tiếp < max_consecutive_rejects" },
+        { k: "ret", f: "gnss", t: "core", l: "kChiSquare (aligner không được nuôi)", r: ["gnss.chi"] },
+        { el: "từ chối thứ gnss.max_consecutive_rejects (60) liên tiếp" },
+        { k: "self", f: "gnss", t: "gnss", l: "aligner_ = GnssAligner(cfg); aligned_ = false; ++n_realign_", r: ["pipeline.gfix", "gnss.actor"], st: "g8" },
+        { k: "note", f: "core", t: "core", l: "n_gnss_realign = n_realign() (một cảnh báo)", r: ["pipeline.fuse"], d: { ctr: ["n_gnss_realign"] } },
+        { end: 1 },
+        { end: 1 },
+        { k: "self", f: "gnss", t: "gnss", l: "GnssAligner::update(p_e_g, T_w_b, p_b_g)", r: ["gnss.align"], st: "g9" },
+        { fr: "alt", l: "< align_min_pairs (10) cặp hoặc độ trải < align_min_spread_m (1 m)" },
+        { k: "ret", f: "gnss", t: "core", l: "kNotAligned" },
+        { el: "đã có T_e_w" },
+        { k: "self", f: "gnss", t: "gnss", l: "pending_.push({m, T_w_b_fix}) (256)", r: ["pipeline.gfix"], st: "g10" },
+        { k: "ret", f: "gnss", t: "core", l: "kAccepted → chờ collect ở keyframe kế (sơ đồ 4)" },
+        { end: 1 },
+      ] },
+
+    { id: "wheel", title: "6. Mỗi mẫu bánh xe",
+      caption: "Mẫu bánh xe được xếp hàng, ghi chu kỳ quan sát, tích phân tới t_start của mỗi scan, và cắt thành delta ở mỗi keyframe; delta được đổi từ frame o sang b trước khi vào factor.",
+      msgs: [
+        { k: "call", f: "app", t: "est", l: "push_odom(s{t, v_mps, omega_radps})", r: ["pipeline.p_odom"], st: "w1" },
+        { k: "ret", f: "est", t: "app", l: "Status (đầy → n_dropped_aux)" },
+        { k: "call", f: "app", t: "est", l: "run_once()", r: ["pipeline.run_once"] },
+        { k: "call", f: "est", t: "core", l: "on_wheel(s)", r: ["pipeline.c_wheel"], st: "w2" },
+        { k: "self", f: "core", t: "core", l: "wheel_period_ns_ = s.t − t trước; wheel_queue_.push(s)", r: ["pipeline.c_wheel"] },
+        { k: "ret", f: "core", t: "est", l: "" },
+        { k: "call", f: "est", t: "core", l: "on_scan(raw_l) (scan kế tiếp)", r: ["pipeline.core"] },
+        { fr: "loop", l: "mỗi mẫu trong wheel_queue_ với s.t ≤ t_start" },
+        { k: "call", f: "core", t: "odom", l: "integrate_wheel(t_start) → WheelIntegrator::integrate(s)", r: ["pipeline.wheel", "odom.integ"], st: "w3" },
+        { k: "self", f: "odom", t: "odom", l: "SE(2) chính xác trong o: arc_coeffs; cov 3x3", r: ["odom.arc"] },
+        { end: 1 },
+        { fr: "opt", l: "scan này là keyframe" },
+        { k: "call", f: "core", t: "odom", l: "take_delta()", r: ["odom.delta"], st: "w4" },
+        { k: "self", f: "odom", t: "odom", l: "T_b0_b1 = T_b_o·T_o0_o1·T_b_o⁻¹; cov = transform_covariance(cov_o, T_b_o)", r: ["odom.delta", "common.tcov"] },
+        { k: "ret", f: "odom", t: "core", l: "OdomDelta{t0, t1, T_b0_b1, cov [rho, phi] (b)}" },
+        { fr: "alt", l: "wheel_odom.enabled và odom_delta_in_time" },
+        { k: "call", f: "core", t: "graph", l: "add_odom_factor(i, j, d)", r: ["backend.f_odom"], st: "k4" },
+        { el: "tắt / lệch thời gian" },
+        { k: "note", f: "core", t: "core", l: "bỏ (bật mà lệch: n_odom_rejected++)", r: ["pipeline.odt"] },
+        { end: 1 },
+        { end: 1 },
+      ] },
+
+    { id: "eof", title: "7. Kết thúc dữ liệu",
+      caption: "Ở cuối dataset bench gọi flush() một lần: drain không còn cổng phủ IMU, nên scan cuối mà IMU không chạm tới t_end được tiêu thụ không có ước lượng; fix GNSS còn chờ IMU bị đếm. Rồi bench đọc Stats, kiểm tra mọi bản ghi đã được xử lý và ghi est.tum, bench.json.",
+      msgs: [
+        { k: "self", f: "app", t: "app", l: "DatasetReader::next → false (hết dữ liệu)", r: ["io.next"] },
+        { k: "call", f: "app", t: "est", l: "flush()  (Replayer::finish → timed(true))", r: ["pipeline.flush", "bench.fin"], st: "d7" },
+        { k: "self", f: "est", t: "est", l: "drain(require_imu_coverage = false)", r: ["pipeline.drain"] },
+        { fr: "loop", l: "mỗi message còn trong hàng đợi, theo khóa" },
+        { k: "call", f: "est", t: "core", l: "on_imu / on_wheel / on_gnss / on_scan", r: ["pipeline.c_imu", "pipeline.c_wheel", "pipeline.c_gnss", "pipeline.core"] },
+        { fr: "alt", l: "scan mà IMU không tới t_end" },
+        { k: "note", f: "core", t: "core", l: "n_skipped_scans++, n_uncovered_scans++ (không ước lượng)", r: ["pipeline.core"], d: { ctr: ["n_skipped_scans", "n_uncovered_scans"] } },
+        { el: "scan được phủ" },
+        { k: "note", f: "core", t: "core", l: "như sơ đồ 3 / 4", r: ["pipeline.core"] },
+        { end: 1 },
+        { end: 1 },
+        { k: "call", f: "est", t: "core", l: "on_end_of_data()", r: ["pipeline.c_eod"] },
+        { k: "note", f: "core", t: "core", l: "n_gnss_unfused_eof += fix còn chờ", r: ["pipeline.c_eod"], d: { ctr: ["n_gnss_unfused_eof"] } },
+        { k: "ret", f: "est", t: "app", l: "hàng đợi rỗng" },
+        { k: "call", f: "app", t: "est", l: "stats()", r: ["pipeline.stats"] },
+        { k: "ret", f: "est", t: "app", l: "Stats (24 trường, p50/p95 push_scan)" },
+        { k: "self", f: "app", t: "app", l: "all_processed(counts, stats) → exit 0 hoặc 3", r: ["bench.json"] },
+        { k: "async", f: "app", t: "out", l: "est.tum (dòng cuối), bench.json (Stats, scan_process_ms_p50/p95, replay_wall_s, records)", r: ["bench.tum", "bench.json"], st: "o3" },
+      ] },
+
+    { id: "ros", title: "8. ros2_node (dự kiến, chưa nối)", planned: true,
+      caption: "Hôm nay mss_node chỉ đọc tham số config_path, cài RclcppLogger và spin; CI kiểm ros2 launch sống 15 s. Các bước còn lại (nét đứt xám) là thiết kế: callback đổi message ROS sang struct core, đẩy vào Estimator, gọi run_once và xuất Odometry + TF. Quaternion chỉ xuất hiện ở biên, thứ tự Hamilton (w, x, y, z).",
+      msgs: [
+        { k: "self", f: "app", t: "app", l: "rclcpp::init; set_logger(RclcppLogger); declare_parameter(\"config_path\")", r: ["ros2_node.main", "ros2_node.rl"] },
+        { k: "call", f: "app", t: "est", l: "load_config(config_path); Estimator(cfg)", r: ["pipeline.load", "pipeline.ctor"], p: 1 },
+        { fr: "loop", l: "spin: mỗi callback subscription" },
+        { k: "self", f: "app", t: "app", l: "on_lidar(PointCloud2) → ScanFrame (l)", r: ["ros2_node.on_lidar"], p: 1 },
+        { k: "async", f: "app", t: "est", l: "push_scan(scan)", r: ["pipeline.p_scan"], p: 1 },
+        { k: "self", f: "app", t: "app", l: "on_imu(Imu) → ImuSample (b)", r: ["ros2_node.on_imu"], p: 1 },
+        { k: "async", f: "app", t: "est", l: "push_imu(s)", r: ["pipeline.p_imu"], p: 1 },
+        { k: "self", f: "app", t: "app", l: "on_gnss(NavSatFix) → lla_to_enu, cov từ sigma_h_m / sigma_v_m", r: ["ros2_node.on_fix", "gnss.lla"], p: 1 },
+        { k: "async", f: "app", t: "est", l: "push_gnss(m), push_odom(s)", r: ["pipeline.p_gnss", "pipeline.p_odom"], p: 1 },
+        { k: "call", f: "app", t: "est", l: "run_once()", r: ["pipeline.run_once"], p: 1 },
+        { k: "ret", f: "est", t: "app", l: "latest_state()", r: ["pipeline.state"], p: 1 },
+        { k: "async", f: "app", t: "out", l: "publish_state: nav_msgs/Odometry + TF map→imu_link", r: ["ros2_node.pub"], p: 1 },
+        { end: 1 },
+      ] },
+  ],
 };
 
 // ============================================================================
@@ -981,7 +1360,7 @@ function renderHeader() {
 }
 
 // ---------------------------------------------------------------- tabs
-const TABS = ["tong-quan", "chu-ky", "dong-thoi-gian"];
+const TABS = ["tong-quan", "chu-ky", "dong-thoi-gian", "so-do-tuan-tu"];
 function showTab(id, push) {
   if (!TABS.includes(id)) id = "tong-quan";
   for (const t of TABS) document.getElementById(t).hidden = t !== id;
@@ -1243,22 +1622,27 @@ function renderRing(c, svg) {
 
 function selectStage(c, s, k) {
   document.querySelectorAll(`#cyc-${c.id} .stage`).forEach(n => n.classList.toggle("sel", n.dataset.st === s.id));
-  const box = document.getElementById("sd-" + c.id);
-  const fnRows = s.refs.map(r => {
+  const extra = (s.kind === "planned" ? `<span class="badge b-planned">chưa có trong code</span>` : "") + (s.kind === "decision" ? `<span class="badge b-acc">rẽ nhánh</span>` : "");
+  renderCard(document.getElementById("sd-" + c.id), `${c.tag} ${k + 1}`, s, extra);
+}
+
+// Detail card shared by the cycle stages and the sequence messages.
+function renderCard(box, tag, s, extra) {
+  const fnRows = (s.refs || []).map(r => {
     const x = fnOf(r); if (!x || !x.f) return `<div class="hint">${esc(r)}</div>`;
     return `<div class="fn-row ${x.f.real ? "real" : "planned"}"><a class="fnlink" data-mod="${x.m.id}" data-fn="${x.f.id}" href="#tong-quan">${esc(x.m.name)} · ${esc(x.f.name)}</a>
       <span class="badge ${fnBadge(x.f)}">${fnKind(x.f)}</span><div class="fn-sig">${esc(x.f.sig)}</div></div>`;
-  }).join("");
+  }).join("") || `<span class="hint">—</span>`;
   const hot = HOT[s.hot ? s.hot[0] : "none"];
   const row = (k2, v) => `<tr><th>${k2}</th><td>${v}</td></tr>`;
   const ul = arr => arr && arr.length ? `<ul>${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : `<span class="hint">—</span>`;
   const chips = (arr, cls) => arr && arr.length ? arr.map(x => `<span class="${cls}">${esc(x)}</span>`).join("") : `<span class="hint">—</span>`;
-  box.innerHTML = `<div class="sd-head"><span class="cyc-tag">${c.tag} ${k + 1}</span><h3>${esc(s.t)}</h3>
-      <span class="badge ${hot[0]}">${hot[1]}</span>${s.kind === "planned" ? `<span class="badge b-planned">chưa có trong code</span>` : ""}${s.kind === "decision" ? `<span class="badge b-acc">rẽ nhánh</span>` : ""}</div>
+  box.innerHTML = `<div class="sd-head"><span class="cyc-tag">${tag}</span><h3>${esc(s.t)}</h3>
+      ${s.hot ? `<span class="badge ${hot[0]}">${hot[1]}</span>` : ""}${extra || ""}</div>
     <table class="kv">
       ${row("Hàm", fnRows)}
-      ${row("Vào", esc(s.in))}
-      ${row("Ra", esc(s.out))}
+      ${row("Vào", esc(s.in || "—"))}
+      ${row("Ra", esc(s.out || "—"))}
       ${row("Điều kiện / nhánh", ul(s.cond))}
       ${row("Bộ đếm", chips(s.ctr, "ctr"))}
       ${row("Khóa YAML", chips(s.yaml, "yk"))}
@@ -1266,6 +1650,134 @@ function selectStage(c, s, k) {
       ${row("Thời gian đo", s.time ? esc(s.time) : `<span class="hint">chưa đo riêng</span>`)}
     </table>`;
   box.querySelectorAll(".fnlink").forEach(a => a.addEventListener("click", e => { e.preventDefault(); openFn(a.dataset.mod, a.dataset.fn); }));
+}
+
+// ---------------------------------------------------------------- sequence diagrams
+const stageById = Object.fromEntries(DATA.cycles.flatMap(c => c.stages.map((s, k) => [s.id, { s, c, k }])));
+const SEQ_KIND = { call: ["b-done", "gọi đồng bộ"], ret: ["b-planned", "trả về"], async: ["b-io", "đưa vào hàng đợi / bất đồng bộ"], self: ["b-priv", "tự gọi"], note: ["b-stub", "ghi chú / bộ đếm"] };
+
+function renderSequences() {
+  const host = document.getElementById("seqs");
+  host.innerHTML = "";
+  for (const d of DATA.sequences) {
+    const card = document.createElement("div");
+    card.className = "card"; card.id = "seq-" + d.id;
+    card.innerHTML = `<div class="cyc-head"><h2>${esc(d.title)}</h2>${d.planned ? `<span class="badge b-planned">chưa nối trong code</span>` : ""}</div>
+      <p class="hint">${esc(d.caption)}</p>
+      <div class="scroll"><svg class="seq" role="img" aria-label="Sơ đồ tuần tự ${esc(d.title)}"></svg></div>
+      <div class="stage-detail" id="sqd-${d.id}"><div class="hint">Nhấn một message (mũi tên hoặc nhãn) để xem chi tiết.</div></div>`;
+    host.appendChild(card);
+    renderSeq(d, card.querySelector("svg"));
+  }
+}
+
+function renderSeq(d, svg) {
+  const P = DATA.participants, pi = Object.fromEntries(P.map((p, i) => [p.id, i]));
+  const GAP = 152, X0 = 92, HEAD_Y = 8, HEAD_H = 58, BW = 140;
+  const px = id => X0 + pi[id] * GAP;
+  // layout pass
+  let y = HEAD_Y + HEAD_H + 24;
+  const rows = [], frames = [], open = [], bars = [], act = {};
+  for (const m of d.msgs) {
+    if (m.fr) { open.push({ kind: m.fr, label: m.l, y0: y, parts: new Set(), selfp: new Set(), elses: [], depth: open.length }); y += 28; continue; }
+    if (m.el !== undefined) { open[open.length - 1].elses.push({ y: y, label: m.el }); y += 24; continue; }
+    if (m.end) {
+      const f = open.pop(); f.y1 = y + 2; frames.push(f);
+      if (open.length) { const p = open[open.length - 1]; f.parts.forEach(x => p.parts.add(x)); f.selfp.forEach(x => p.selfp.add(x)); }
+      y += 14; continue;
+    }
+    const isSelf = m.k === "self" || m.k === "note";
+    const yy = y + 16;
+    for (const f of open) { f.parts.add(m.f); f.parts.add(m.t); if (isSelf) f.selfp.add(m.f); }
+    if (m.k === "call" && m.f !== m.t) (act[m.t] = act[m.t] || []).push(yy);
+    if (m.k === "ret") { const s = (act[m.f] || []).pop(); if (s !== undefined) bars.push({ p: m.f, y0: s, y1: yy, n: 0 }); }
+    if (m.k === "self") bars.push({ p: m.f, y0: yy + 2, y1: yy + 22, n: 1 });
+    rows.push({ m, y: yy });
+    y += m.k === "self" ? 40 : m.k === "note" ? 34 : 32;
+  }
+  for (const p in act) for (const s of act[p]) bars.push({ p, y0: s, y1: y, n: 0 });
+  const height = y + 20, width = X0 + (P.length - 1) * GAP + 380;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.style.width = width + "px"; svg.style.maxWidth = "none";
+  const defs = el("defs", {}, svg);
+  const mk = (id, closed, col) => { const m = el("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: "auto" }, defs);
+    el("path", closed ? { d: "M0,0 L10,5 L0,10 z", fill: col } : { d: "M0,0 L10,5 L0,10", fill: "none", stroke: col, "stroke-width": 1.5 }, m); };
+  mk("sq-f-" + d.id, true, "var(--fg)"); mk("sq-o-" + d.id, false, "var(--fg)"); mk("sq-p-" + d.id, false, "var(--plan)"); mk("sq-s-" + d.id, true, "var(--accent)");
+  // frames: boxes behind everything, tabs and conditions drawn after the lifelines
+  frames.sort((a, b) => a.depth - b.depth);
+  const fdraw = [];
+  for (const f of frames) {
+    if (!f.parts.size) continue;
+    const idx = [...f.parts].map(q => pi[q]); f.self = [...f.selfp].some(q => pi[q] === Math.max(...idx));
+    const kw = f.kind.length * 8 + 14;
+    const x0 = X0 + Math.min(...idx) * GAP - 66 + f.depth * 7;
+    let x1 = X0 + Math.max(...idx) * GAP + (f.self ? 100 : 66) - f.depth * 7;
+    const textW = Math.max(f.label.length, ...f.elses.map(e => e.label.length + 2)) * 6.3 + kw + 24;
+    x1 = Math.min(Math.max(x1, x0 + textW), width - 4);
+    el("rect", { x: x0, y: f.y0, width: x1 - x0, height: f.y1 - f.y0, class: "sq-frame" }, svg);
+    fdraw.push({ f, x0, x1, kw });
+  }
+  // lifelines + heads
+  P.forEach((p, i) => {
+    const x = X0 + i * GAP;
+    el("line", { x1: x, x2: x, y1: HEAD_Y + HEAD_H, y2: height - 8, class: "sq-life" }, svg);
+    const g = el("g", { class: "sq-head", tabindex: 0, role: "button", "aria-label": p.name }, svg);
+    el("rect", { x: x - BW / 2, y: HEAD_Y, width: BW, height: HEAD_H, rx: 7 }, g);
+    el("text", { x, y: HEAD_Y + 18, class: "sq-head-t", "text-anchor": "middle" }, g).textContent = p.name;
+    (p.sub || []).forEach((s, k) => { el("text", { x, y: HEAD_Y + 33 + k * 13, class: "sq-head-s", "text-anchor": "middle" }, g).textContent = s; });
+    const go = () => { showTab("tong-quan", true); if (selected !== p.mod) select(p.mod); };
+    g.addEventListener("click", go);
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+  });
+  // activation bars
+  for (const b of bars) el("rect", { x: px(b.p) - 5 + b.n * 5, y: b.y0 - 4, width: 10, height: Math.max(8, b.y1 - b.y0 + 8), class: "sq-act" }, svg);
+  for (const { f, x0, x1, kw } of fdraw) {
+    el("path", { d: `M${x0},${f.y0} h${kw} v10 l-6,8 h${-(kw - 6)} z`, class: "sq-frame-tab" }, svg);
+    el("text", { x: x0 + 5, y: f.y0 + 13, class: "sq-frame-kw" }, svg).textContent = f.kind;
+    el("text", { x: x0 + kw + 6, y: f.y0 + 13, class: "sq-frame-cond" }, svg).textContent = "[" + f.label + "]";
+    for (const e of f.elses) {
+      el("line", { x1: x0, x2: x1, y1: e.y, y2: e.y, class: "sq-else" }, svg);
+      el("text", { x: x0 + 8, y: e.y + 15, class: "sq-frame-cond" }, svg).textContent = "[" + e.label + "]";
+    }
+  }
+  // messages
+  rows.forEach(({ m, y: yy }, i) => {
+    const g = el("g", { class: "sq-msg k-" + m.k + (m.p ? " planned" : ""), tabindex: 0, role: "button", "data-i": i, "aria-label": m.l || m.k }, svg);
+    const xa = px(m.f), xb = px(m.t);
+    const label = (m.l || "").length > 92 ? m.l.slice(0, 91) + "…" : (m.l || "");
+    const mid = m.p ? "sq-p-" : m.k === "call" ? "sq-f-" : "sq-o-";
+    if (m.k === "note") {
+      const w = Math.min(Math.max(label.length * 6 + 16, 80), 520);
+      el("rect", { x: xa + 10, y: yy - 13, width: w, height: 22, rx: 4, class: "sq-note" }, g);
+      el("text", { x: xa + 18, y: yy + 2, class: "sq-label" }, g).textContent = label;
+    } else if (m.k === "self") {
+      const x = xa + 5;
+      el("path", { d: `M${x},${yy - 4} h34 v18 h-29`, class: "sq-arrow", "marker-end": `url(#${m.p ? "sq-p-" : "sq-s-"}${d.id})` }, g);
+      el("path", { d: `M${x},${yy - 12} h44 v30 h-44 z`, class: "sq-hit" }, g);
+      el("text", { x: x + 42, y: yy + 6, class: "sq-label" }, g).textContent = label;
+    } else {
+      const dir = xb > xa ? 1 : -1, x1 = xa + dir * 5, x2 = xb - dir * 5;
+      el("path", { d: `M${x1},${yy} L${x2},${yy}`, class: "sq-arrow" + (m.k === "ret" ? " ret" : ""), "marker-end": `url(#${mid}${d.id})` }, g);
+      el("path", { d: `M${x1},${yy - 14} L${x2},${yy - 14} L${x2},${yy + 4} L${x1},${yy + 4} z`, class: "sq-hit" }, g);
+      el("text", { x: Math.min(x1, x2) + 8, y: yy - 5, class: "sq-label" + (m.k === "ret" ? " ret" : "") }, g).textContent = label;
+    }
+    const go = () => selectMsg(d, m, i);
+    g.addEventListener("click", go);
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+  });
+}
+
+function selectMsg(d, m, i) {
+  document.querySelectorAll(`#seq-${d.id} .sq-msg`).forEach(n => n.classList.toggle("sel", n.dataset.i === String(i)));
+  const base = m.st && stageById[m.st] ? stageById[m.st].s : {};
+  const s = Object.assign({}, base, m.d || {}, { t: m.l || SEQ_KIND[m.k][1], refs: m.r || base.refs || [] });
+  if (!m.st && !m.d) { s.in = s.in || "—"; s.out = s.out || "—"; }
+  const P = Object.fromEntries(DATA.participants.map(p => [p.id, p.name]));
+  const kind = SEQ_KIND[m.k];
+  const where = m.f === m.t ? P[m.f] : `${P[m.f]} → ${P[m.t]}`;
+  const extra = `<span class="badge ${kind[0]}">${kind[1]}</span>${m.p ? `<span class="badge b-planned">dự kiến, chưa nối</span>` : ""}` +
+    (m.st && stageById[m.st] ? `<span class="hint">chi tiết từ bước ${stageById[m.st].c.tag} ${stageById[m.st].k + 1}</span>` : "");
+  renderCard(document.getElementById("sqd-" + d.id), `${i + 1} · ${esc(where)}`, s, extra);
 }
 
 // ---------------------------------------------------------------- timeline
@@ -1366,6 +1878,7 @@ initTabs();
 renderOverview();
 renderCycles();
 renderTimeline();
+renderSequences();
 </script>
 </body>
 </html>
