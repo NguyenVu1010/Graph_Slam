@@ -399,6 +399,40 @@ def scan_to_world(
     return p_w, r_w_b @ T_b_l[:3, 3] + p_w_b
 
 
+def neighbour_incidence_cos(xyz: np.ndarray, height: int, width: int) -> np.ndarray:
+    """Incidence cosine ``|n . p| / (|n| |p|)`` per point of an organized cloud, NaN if unknown.
+
+    ``n`` is the cross product of the column (azimuth, wrapping) and row (ring) neighbour
+    differences, as the bridge's grazing model estimates it; a non-finite neighbour makes the point
+    unknown. Dropped points (NaN) are first refilled by linear interpolation along their
+    ring between the nearest returns, so the higher dropout at grazing incidence does not hide the
+    grazing points' normals; no-return points (inf) stay unknown, as in the bridge. The cosine then
+    covers every surface, not only the reference planes, so the grazing share is not biased in a
+    cluttered world.
+    """
+    p = np.asarray(xyz, dtype=float).reshape(height, width, 3).copy()
+    cols = np.arange(width)
+    for row in p:
+        nan = np.isnan(row).any(axis=1)
+        good = np.isfinite(row).all(axis=1)
+        if nan.any() and good.sum() >= 2:
+            for k in range(3):
+                row[nan, k] = np.interp(cols[nan], cols[good], row[good, k], period=width)
+    with np.errstate(invalid="ignore", divide="ignore"):  # inf - inf at no-return points
+        d_col = np.roll(p, -1, axis=1) - np.roll(p, 1, axis=1)
+        d_row = np.empty_like(p)
+        d_row[1:-1] = p[2:] - p[:-2]
+        d_row[0] = p[1] - p[0]
+        d_row[-1] = p[-1] - p[-2]
+        normal = np.cross(d_col, d_row).reshape(-1, 3)
+        p = p.reshape(-1, 3)
+        cos = np.abs(np.einsum("ij,ij->i", normal, p)) / (
+            np.linalg.norm(normal, axis=1) * np.linalg.norm(p, axis=1)
+        )
+    cos[~np.isfinite(cos)] = np.nan
+    return np.clip(cos, 0.0, 1.0)
+
+
 def expected_dropout(cos: np.ndarray, lidar_cfg: dict) -> tuple[float, float]:
     """Declared-model NaN fraction ``(p_exp, g)`` from incidence cosines of surviving points.
 
@@ -421,12 +455,16 @@ def lidar_section(
     n_not_inf: int,
     lidar_cfg: dict,
     pipeline_lidar: dict | None,
+    incidence_cos: np.ndarray | None = None,
 ) -> Section:
+    """``cos``: plane incidence of each residual; ``incidence_cos``: neighbour-normal incidence of
+    the surviving points (``neighbour_incidence_cos``) for the grazing share, else ``cos``."""
     s_decl = float(lidar_cfg["range_sigma_m"])
     use = residuals[cos > _MIN_RAY_COS]
     sigma = estimate_range_sigma(use, s_decl)
     frac = n_nan / n_not_inf if n_not_inf else float("nan")
-    p_exp, g = expected_dropout(cos, lidar_cfg)
+    inc = cos if incidence_cos is None else incidence_cos[np.isfinite(incidence_cos)]
+    p_exp, g = expected_dropout(inc, lidar_cfg)
     rows = [
         Row(
             "range_sigma_m",
@@ -445,7 +483,8 @@ def lidar_section(
             "±20 % rel.",
             _rel_ok(frac, p_exp, _DROPOUT_TOL),
             f"NaN share of non-inf points vs p_exp = {p_exp:.4g} = dropout_p + "
-            f"(dropout_p_grazing - dropout_p)·g + nan_fraction, grazing share g = {g:.3g}",
+            f"(dropout_p_grazing - dropout_p)·g + nan_fraction, grazing share g = {g:.3g}"
+            + (" (neighbour normals, all surfaces)" if incidence_cos is not None else ""),
         ),
     ]
     fig, (a,) = _axes(1, width_in=6.5)

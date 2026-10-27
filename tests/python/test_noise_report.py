@@ -276,3 +276,34 @@ def test_gnss_lever_arm_assumed_zero_without_pipeline_config(
     row = _row(report, "GNSS", "p_b_g_m")
     assert row.measured == "assumed 0 (no --pipeline-config)"
     assert row.ok is None
+
+
+def _floor_scan(height_m: float = 0.6, n_rings: int = 8, width: int = 360) -> np.ndarray:
+    """Organized scan of the floor z = -height_m from rings at -15..-1 deg (all hit the floor)."""
+    elev = np.radians(np.linspace(-15.0, -1.0, n_rings))
+    az = np.linspace(-np.pi, np.pi, width, endpoint=False)
+    r = height_m / np.sin(-elev)  # range to the floor along each ring
+    e, a = np.meshgrid(elev, az, indexing="ij")
+    rr = np.repeat(r[:, None], width, axis=1)
+    xyz = np.stack([rr * np.cos(e) * np.cos(a), rr * np.cos(e) * np.sin(a), rr * np.sin(e)], -1)
+    return xyz.reshape(-1, 3)
+
+
+def test_neighbour_incidence_cos_on_a_floor_survives_dropout() -> None:
+    from mss_eval.noise_measure import neighbour_incidence_cos
+
+    n_rings, width = 8, 360
+    xyz = _floor_scan(n_rings=n_rings, width=width)
+    truth = np.abs(xyz[:, 2]) / np.linalg.norm(xyz, axis=1)  # |n . u| with n = z
+    cos = neighbour_incidence_cos(xyz, n_rings, width)
+    np.testing.assert_allclose(cos, truth, atol=1e-9)
+    rng = np.random.default_rng(3)
+    dropped = rng.random(len(xyz)) < 0.3  # heavy dropout, as at grazing incidence
+    noisy = xyz.copy()
+    noisy[dropped] = np.nan
+    cos_d = neighbour_incidence_cos(noisy, n_rings, width)[~dropped]
+    assert np.isfinite(cos_d).all()
+    np.testing.assert_allclose(cos_d, truth[~dropped], atol=1e-6)
+    inf_scan = xyz.copy()
+    inf_scan[0] = np.inf  # a no-return point stays unknown, and so do its neighbours' normals
+    assert np.isnan(neighbour_incidence_cos(inf_scan, n_rings, width)[0])
