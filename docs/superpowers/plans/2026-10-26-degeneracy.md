@@ -25,9 +25,9 @@ None. Every public signature in `degeneracy.hpp` is implementable as declared.
 - Random tests use fixed seeds (`std::mt19937`, seed given per test).
 - Feature flag: with `enabled = false` nothing is flagged, so `project_update` and `relax_covariance` return their input bit for bit (default behaviour unchanged).
 - Build/test (the only way to compile):
-  `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-degeneracy && tools/wsl/build.sh --no-gtsam --build-dir ~/mss-build/feat-degeneracy-nogtsam --target <test_binary_name>"`; full build + ctest: same without `--target`.
+  `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && tools/wsl/build.sh --no-gtsam --build-dir ~/mss-build/feat-degeneracy-nogtsam --target <test_binary_name>"`; full build + ctest: same without `--target`.
 - Format check before each commit:
-  `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-degeneracy && git ls-files -mo --exclude-standard '*.cpp' '*.hpp' | xargs -r clang-format-18 --dry-run --Werror"` -> no output, exit 0.
+  `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && git ls-files -mo --exclude-standard '*.cpp' '*.hpp' | xargs -r clang-format-18 --dry-run --Werror"` -> no output, exit 0.
 - Commits: Conventional Commits with trailers
   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01DYAqFYL9xp2KFYiPfmqpc4`. Do not push.
 
@@ -191,7 +191,7 @@ Run the build command with `--target test_degeneracy`. Expected: `[  PASSED  ] 1
 - [x] **Step 5: Fixed-size-only check**
 
 `EigenMallocGuard` sees only Eigen code instantiated in the test TU (the library is compiled without `EIGEN_RUNTIME_NO_MALLOC`), and `AllocCounter` does not see `std::malloc`. So the source is also checked mechanically:
-Run: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "grep -nE 'Dynamic|MatrixXd|VectorXd|std::vector|new |cout|throw' /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-degeneracy/core/degeneracy/src/degeneracy.cpp || echo CLEAN"`
+Run: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "grep -nE 'Dynamic|MatrixXd|VectorXd|std::vector|new |cout|throw' <worktree>/core/degeneracy/src/degeneracy.cpp || echo CLEAN"`
 Expected: `CLEAN`.
 
 - [x] **Step 6: Format check, then commit**
@@ -269,7 +269,7 @@ Run the build command without `--target`. Expected: all tests pass and the last 
 
 - [x] **Step 4: clang-tidy on the new source**
 
-Run: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-degeneracy && cmake -B ~/mss-build/feat-degeneracy-nogtsam -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > /dev/null && clang-tidy-18 -p ~/mss-build/feat-degeneracy-nogtsam core/degeneracy/src/degeneracy.cpp"`
+Run: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && cmake -B ~/mss-build/feat-degeneracy-nogtsam -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > /dev/null && clang-tidy-18 -p ~/mss-build/feat-degeneracy-nogtsam core/degeneracy/src/degeneracy.cpp"`
 Expected: no warnings in `core/degeneracy/` (fix any that appear there).
 
 - [x] **Step 5: Format check, then commit**

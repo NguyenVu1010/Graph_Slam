@@ -4,7 +4,7 @@
   <name>mss_ros2</name>
   <version>0.0.1</version>
   <description>Thin ROS 2 adapter for multi-sensor-slam: message to core struct, launch, params.</description>
-  <maintainer email="nquyenvd.mk.fpt@gmail.com">Nguyen VD</maintainer>
+  <maintainer email="maintainers@multi-sensor-slam.invalid">multi-sensor-slam maintainers</maintainer>
   <license>TODO</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

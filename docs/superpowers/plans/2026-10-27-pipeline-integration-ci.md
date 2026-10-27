@@ -23,7 +23,7 @@ None. No public C++ header changes (`bench.json` gains two keys; it is an output
 - Regression rule (ADR-009, CLAUDE.md): a PR fails if E-01 ATE RMSE is more than 20 % worse than `eval/baselines.json`; E-03 must stay within the E-01 threshold (Test_CI_CD); E-02 two runs must give identical trajectories; PF-01 only warns at +20 % p95 (shared runner).
 - `eval/baselines.json` changes only in a dedicated PR labelled `baseline-update` with before/after plots; this PR leaves it unchanged (all `null`).
 - No new dependencies (numpy/scipy/matplotlib/pyyaml/rosbags already in `pyproject.toml`); no evo at run time.
-- C++ changes: `-Wall -Wextra -Wpedantic -Werror`, clang-format-18; build via `tools/wsl/build.sh` (`MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-pipeline-ci && tools/wsl/build.sh --build-dir ~/mss-build/feat-pipeline-ci --target <T>"`; worktree name is the implementer's, adjust the path).
+- C++ changes: `-Wall -Wextra -Wpedantic -Werror`, clang-format-18; build via `tools/wsl/build.sh` (`MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && tools/wsl/build.sh --build-dir ~/mss-build/feat-pipeline-ci --target <T>"`; worktree name is the implementer's, adjust the path).
 - Python tests run on Windows from the worktree: `python -m pytest tests/python/<file> -v` (WSL has no venv/pip).
 - Commits: Conventional Commits (`feat(sim)`, `feat(eval)`, `feat(bench)`, `feat(tools)`, `ci:`), the session's attribution trailers. Do not push.
 - PR description: "ATE: first measurement, no baseline yet (baseline-update PR follows)"; latency: no change to core code.
@@ -194,7 +194,7 @@ def test_writes_only_under_out(tmp_path) -> None          # repo tree unchanged 
 - [x] **Step 3: Implement** per Interfaces and Decisions.
 - [x] **Step 4: Run** the same command and ruff. Expected: PASS, clean.
 - [x] **Step 5: Local run with the real bench** — build `mss_bench` with GTSAM (`--target mss_bench`), then on Windows:
-  `python tools/run_integration.py --bench-cmd "wsl -- /home/nguyenvd/mss-build/feat-pipeline-ci/bench/mss_bench" --path-style wsl --out results/local-<date> --plots`
+  `python tools/run_integration.py --bench-cmd "wsl -- /home/<user>/mss-build/feat-pipeline-ci/bench/mss_bench" --path-style wsl --out results/local-<date> --plots`
   Expected: exit 0, three rows in `summary.md` with "no baseline" notes, finite ATE values, E-02 identical. Keep the numbers for the PR description; `results/` is not committed.
 - [x] **Step 6: Commit**
 ```bash

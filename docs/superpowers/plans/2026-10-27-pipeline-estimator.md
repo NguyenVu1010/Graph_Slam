@@ -35,9 +35,9 @@ The controller rules on these before implementation. Each task states what it do
 - Threads: none. `start()`/`stop()` stay no-ops that log the existing warnings (ADR-005 threads are a later PR).
 - Tests: fixed seeds; every analytic Jacobian vs numerical differentiation, relative error < 1e-6.
 - Build/test only through `tools/wsl/build.sh` (Windows has no toolchain). No-GTSAM command:
-  `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-pipeline && tools/wsl/build.sh --no-gtsam --build-dir ~/mss-build/feat-pipeline-nogtsam --target <T>"`
+  `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && tools/wsl/build.sh --no-gtsam --build-dir ~/mss-build/feat-pipeline-nogtsam --target <T>"`
   GTSAM command (same, without `--no-gtsam`, `--build-dir ~/mss-build/feat-pipeline`). Files stay LF.
-- Format check before each commit: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd /mnt/c/Users/NguyenVD/workspace/graph_slam_wt/feat-pipeline && git diff --name-only --cached --diff-filter=AM -- '*.cpp' '*.hpp' | xargs -r clang-format-18 --dry-run --Werror"` prints nothing.
+- Format check before each commit: `MSYS_NO_PATHCONV=1 wsl -- bash -lc "cd <worktree> && git diff --name-only --cached --diff-filter=AM -- '*.cpp' '*.hpp' | xargs -r clang-format-18 --dry-run --Werror"` prints nothing.
 - Commits: Conventional Commits, scope `pipeline` (or `gnss`/`bench` where the file lives there), the session's attribution trailers. Do not push.
 - PR size: this PR exceeds the 400-line guideline (integration of eight modules); the PR description says so and points reviewers at the per-task commits.
 - PR description: ATE "first real estimate, no baseline yet (Plan B adds E-01..E-03)"; bench numbers (p50/p95/CPU, desktop) from Task 6 Step 7; Pi5 numbers not required (scan matching code unchanged).
