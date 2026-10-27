@@ -212,8 +212,8 @@ git commit -m "feat(tools): E-01..E-03 and PF-01 integration harness against eva
 **Interfaces:**
 - Consumes: Task 4 CLI; image `mss` built by the job; installed bench path inside the image.
 
-- [ ] **Step 1: Find the installed bench path** — `docker build -f docker/deps.Dockerfile -t mss-deps . && docker build -f docker/Dockerfile --build-arg DEPS=mss-deps -t mss .` (in WSL if Docker is available, else read it from the first CI run's log), then `docker run --rm mss ls /ws/install/multi_sensor_slam/bin`. Expected: `mss_bench` listed (from `install(TARGETS mss_bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})`). Use the printed path below.
-- [ ] **Step 2: Add steps to `docker-full`** after the image build:
+- [x] **Step 1: Find the installed bench path** — `docker build -f docker/deps.Dockerfile -t mss-deps . && docker build -f docker/Dockerfile --build-arg DEPS=mss-deps -t mss .` (in WSL if Docker is available, else read it from the first CI run's log), then `docker run --rm mss ls /ws/install/multi_sensor_slam/bin`. Expected: `mss_bench` listed (from `install(TARGETS mss_bench RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})`). Use the printed path below.
+- [x] **Step 2: Add steps to `docker-full`** after the image build:
 ```yaml
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
@@ -230,9 +230,9 @@ git commit -m "feat(tools): E-01..E-03 and PF-01 integration harness against eva
         with: { name: integration-${{ github.run_id }}, path: results/ci-${{ github.run_id }} }
 ```
   Update the job comment: integration runs here because this job already has GTSAM; `integration.yml` follows once `deps-image.yml` publishes the deps image. Results go to the step summary and the artifact (no PR comment: needs a write token on fork PRs; planner's call).
-- [ ] **Step 3: Docs** — README: an "Integration tests" paragraph with the local command from Task 4 Step 5 and the exit codes; `eval/README.md`: ATE CLI, and the baseline policy: the first CI run prints the numbers; a separate PR labelled `baseline-update` copies `ate_rmse_m` (E-01, E-02, E-03) and `p95_latency_ms` from that run's `integration.json` into `eval/baselines.json`, attaching the `traj_xy.png` plots (before = none on the first update, else the previous artifact).
-- [ ] **Step 4: Verify** — `python -m pytest tests/python -q` and ruff clean; YAML parses (`python -c "import yaml,sys; yaml.safe_load(open('.github/workflows/ci.yml'))"`). Expected: PASS. The workflow itself is verified by the PR's CI run: `docker-full` green, step summary shows three rows.
-- [ ] **Step 5: Commit**
+- [x] **Step 3: Docs** — README: an "Integration tests" paragraph with the local command from Task 4 Step 5 and the exit codes; `eval/README.md`: ATE CLI, and the baseline policy: the first CI run prints the numbers; a separate PR labelled `baseline-update` copies `ate_rmse_m` (E-01, E-02, E-03) and `p95_latency_ms` from that run's `integration.json` into `eval/baselines.json`, attaching the `traj_xy.png` plots (before = none on the first update, else the previous artifact).
+- [x] **Step 4: Verify** — `python -m pytest tests/python -q` and ruff clean; YAML parses (`python -c "import yaml,sys; yaml.safe_load(open('.github/workflows/ci.yml'))"`). Expected: PASS. The workflow itself is verified by the PR's CI run: `docker-full` green, step summary shows three rows.
+- [x] **Step 5: Commit**
 ```bash
 git add .github/workflows/ci.yml README.md eval/README.md
 git commit -m "ci: run E-01..E-03 and PF-01 integration in the docker-full job"
