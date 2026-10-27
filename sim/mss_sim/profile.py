@@ -63,6 +63,7 @@ class Kinematics:
 
 @dataclass(frozen=True)
 class OdomNoise:
+    rate_hz: float  # encoder read rate = /wheel/odom rate, whatever the joint-state rate
     ticks_per_rev: int
     speed_sigma_mps: float
     kinematics_true: Kinematics

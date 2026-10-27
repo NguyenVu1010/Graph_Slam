@@ -30,6 +30,7 @@ lidar:
   near_fraction: 0.001
   min_range_m: 0.5
 odom:
+  rate_hz: 50.0                      # encoder read rate; /wheel/odom rate (bridge, offline)
   ticks_per_rev: 4096
   speed_sigma_mps: 0.01
   kinematics_true:
