@@ -5,5 +5,10 @@ find_dependency(Sophus REQUIRED)
 find_dependency(yaml-cpp REQUIRED)
 if(@MSS_WITH_GTSAM@)
   find_dependency(GTSAM REQUIRED)
+  # mss_backend links TBB::tbb when GTSAM uses TBB (ADR-018); GTSAM's config sets
+  # GTSAM_USE_TBB but does not define TBB::tbb.
+  if(GTSAM_USE_TBB)
+    find_dependency(TBB REQUIRED)
+  endif()
 endif()
 include("${CMAKE_CURRENT_LIST_DIR}/mss_coreTargets.cmake")

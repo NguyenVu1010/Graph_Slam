@@ -452,6 +452,8 @@ Config read_config(Reader& r) {
   r.field("backend.prior_bias_gyro_sigma_radps",
           c.backend.prior_bias_gyro_sigma_radps,
           Range::kPositive);
+  // ADR-018: one source of truth (ADR-008), deterministic mode also pins TBB to one thread.
+  c.backend.single_thread = c.deterministic;
 
   r.field("realtime.scan_queue_depth", c.realtime.scan_queue_depth, Range::kPositive);
   r.field("realtime.imu_queue_depth", c.realtime.imu_queue_depth, Range::kPositive);
