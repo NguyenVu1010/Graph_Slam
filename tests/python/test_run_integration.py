@@ -59,12 +59,17 @@ def _fake_bench_cmd(tmp: Path) -> str:
     return shlex.join([Path(sys.executable).as_posix(), script.as_posix()])
 
 
-def _scenario(tmp: Path, prep: bool = True) -> Path:
-    """Copy of sim/scenarios/E-01.yaml in ``tmp``; ``prep=False`` drops the prep block."""
+def _scenario(tmp: Path, prep: bool = True, mutate: bool = True) -> Path:
+    """Copy of sim/scenarios/E-01.yaml in ``tmp``, optionally without prep or prep.mutate."""
     data = yaml.safe_load((_REPO / "sim/scenarios/E-01.yaml").read_text(encoding="utf-8"))
+    name = "scenario"
     if not prep:
         data.pop("prep")
-    path = tmp / ("scenario.yaml" if prep else "scenario_no_prep.yaml")
+        name += "_no_prep"
+    elif not mutate:
+        data["prep"].pop("mutate")
+        name += "_no_mutate"
+    path = tmp / f"{name}.yaml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return path
 
@@ -132,6 +137,27 @@ def test_missing_prep_is_setup_error(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert main([*argv, "--scenario", str(scenario)]) == 2
     assert "scenario E-01: missing prep block" in capsys.readouterr().err
     assert not out.exists()  # rejected before any data is prepared
+
+
+def test_missing_mutate_needs_no_e03(tmp_path: Path) -> None:
+    out = tmp_path / "results"
+    scenario = _scenario(tmp_path, mutate=False)
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out), "--duration-s", "6"]
+    assert main([*argv, "--scenario", str(scenario), "--tests", "E-01"]) == 0
+    res = json.loads((out / "integration.json").read_text(encoding="utf-8"))
+    assert res["data_source"]["mutate"] is None
+    assert not (out / "data" / "mssdata_e03").exists()
+
+
+def test_missing_mutate_with_e03_is_setup_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "results"
+    scenario = _scenario(tmp_path, mutate=False)
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out)]
+    assert main([*argv, "--scenario", str(scenario), "--tests", "E-01,E-03"]) == 2
+    assert "scenario E-01: prep.mutate is required for E-03" in capsys.readouterr().err
+    assert not out.exists()
 
 
 def test_null_baseline_passes_with_note() -> None:
@@ -321,6 +347,6 @@ def test_timeout_kills_the_container(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert res["E-01"]["bench_exit"] == BENCH_TIMEOUT and "timed out" in res["E-01"]["note"]
     name = "mss-bench-run-1-E-01"  # sanitised: the space becomes '-'
     assert marker.read_text() == name
-    assert name in res["E-01"]["note"]
+    assert f"docker kill {name} attempted (see bench.log)" in res["E-01"]["note"]
     log = (out / "E-01" / "bench.log").read_text(encoding="utf-8")
     assert f"--name {name}" in log and "kill" in log

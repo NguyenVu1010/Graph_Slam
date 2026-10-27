@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -69,7 +70,7 @@ class Prep:
     speed_mps: float
     omega_radps: float
     box_half_m: tuple[float, float, float]
-    mutate: PrepMutate
+    mutate: PrepMutate | None  # None: no E-03 data (the harness then refuses E-03)
 
 
 @dataclass(frozen=True)
@@ -113,15 +114,15 @@ def _mapping(value: Any, path: str, keys: set[str], optional: frozenset[str] = f
 
 def _pos(value: Any, path: str) -> float:
     x = _num(value, path)
-    if not x > 0:
-        raise ScenarioError(f"{path}: must be > 0, got {value!r}")
+    if not (math.isfinite(x) and x > 0):
+        raise ScenarioError(f"{path}: must be a finite number > 0, got {value!r}")
     return x
 
 
 def _fraction(value: Any, path: str) -> float:
-    x = _pos(value, path)
-    if x > 1:
-        raise ScenarioError(f"{path}: must be in (0, 1], got {value!r}")
+    x = _num(value, path)
+    if not 0 <= x <= 1:
+        raise ScenarioError(f"{path}: must be in [0, 1], got {value!r}")
     return x
 
 
@@ -131,15 +132,28 @@ def _int(value: Any, path: str, minimum: int) -> int:
     return value
 
 
+def _mutate(raw: Any) -> PrepMutate:
+    keys = {"drop_fraction", "reorder_fraction", "window_ns", "seed"}
+    m = _mapping(raw, "prep.mutate", keys)
+    out = PrepMutate(
+        drop_fraction=_fraction(m["drop_fraction"], "prep.mutate.drop_fraction"),
+        reorder_fraction=_fraction(m["reorder_fraction"], "prep.mutate.reorder_fraction"),
+        window_ns=_int(m["window_ns"], "prep.mutate.window_ns", 1),
+        seed=_int(m["seed"], "prep.mutate.seed", 0),
+    )
+    if out.drop_fraction == 0 and out.reorder_fraction == 0:
+        raise ScenarioError(
+            "prep.mutate: at least one of drop_fraction, reorder_fraction must be > 0"
+        )
+    return out
+
+
 def _prep(raw: Any) -> Prep:
-    keys = {"static_s", "ramp_s", "speed_mps", "omega_radps", "box_half_m", "mutate"}
-    d = _mapping(raw, "prep", keys)
+    keys = {"static_s", "ramp_s", "speed_mps", "omega_radps", "box_half_m"}
+    d = _mapping(raw, "prep", keys, frozenset({"mutate"}))
     box = _list(d["box_half_m"], "prep.box_half_m")
     if len(box) != 3:
         raise ScenarioError(f"prep.box_half_m: expected [x_m, y_m, z_m], got {box!r}")
-    m = _mapping(
-        d["mutate"], "prep.mutate", {"drop_fraction", "reorder_fraction", "window_ns", "seed"}
-    )
     return Prep(
         static_s=_pos(d["static_s"], "prep.static_s"),
         ramp_s=_pos(d["ramp_s"], "prep.ramp_s"),
@@ -150,12 +164,7 @@ def _prep(raw: Any) -> Prep:
             _pos(box[1], "prep.box_half_m[1]"),
             _pos(box[2], "prep.box_half_m[2]"),
         ),
-        mutate=PrepMutate(
-            drop_fraction=_fraction(m["drop_fraction"], "prep.mutate.drop_fraction"),
-            reorder_fraction=_fraction(m["reorder_fraction"], "prep.mutate.reorder_fraction"),
-            window_ns=_int(m["window_ns"], "prep.mutate.window_ns", 1),
-            seed=_int(m["seed"], "prep.mutate.seed", 0),
-        ),
+        mutate=_mutate(d["mutate"]) if "mutate" in d else None,
     )
 
 

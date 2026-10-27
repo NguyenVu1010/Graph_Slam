@@ -16,13 +16,13 @@ is never compared across datasets.
 
 Chain: synthetic bag -> noise bridge with the scenario -> ``bag_to_mssdata.py``; E-03 adds
 ``mutate_bag.py`` (``prep.mutate``; E-01: 5 % drops, 2 % reordering, seed 42) before the
-conversion. Each test replays
-its dataset with ``<bench-cmd> config/default.yaml <mssdata> --overlay <overlay> --out <dir>``
-(killed after ``--timeout-s``, default 10 x the scenario duration). ``{container}`` in the
-command becomes ``mss-bench-<run-id>-<test-id>`` (``<run-id>`` = the ``--out`` directory name);
-a timeout then also runs ``docker kill`` on that name, so the container does not outlive the
-killed ``docker run`` client. and scores ``est.tum``
-against the bridge's ``gt.tum`` with ``mss_eval.ate``.
+conversion (a scenario without ``prep.mutate`` cannot run E-03). Each test replays its dataset
+with ``<bench-cmd> config/default.yaml <mssdata> --overlay <overlay> --out <dir>`` (killed after
+``--timeout-s``, default 10 x the scenario duration) and scores ``est.tum`` against the
+bridge's ``gt.tum`` with ``mss_eval.ate``. ``{container}`` in the command becomes
+``mss-bench-<run-id>-<test-id>`` (``<run-id>`` = the ``--out`` directory name); a timeout then
+also runs ``docker kill`` on that name, so the container does not outlive the killed
+``docker run`` client.
 
 The bench is an external command (it may be ``docker run ... mss_bench`` or ``wsl -- ...``), so
 every path handed to it is absolute; ``--path-style wsl`` maps ``C:\\x`` to ``/mnt/c/x``.
@@ -95,7 +95,7 @@ class SetupError(RuntimeError):
 @dataclass(frozen=True)
 class Prepared:
     mssdata: Path
-    mssdata_e03: Path
+    mssdata_e03: Path | None  # None when the scenario has no prep.mutate (no E-03)
     gt_tum: Path
     overlay: Path
     data_source: dict[str, Any]
@@ -144,18 +144,21 @@ def prepare(scenario: Path, out: Path, duration_s: float | None) -> Prepared:
     bridged = data / "bridged"
     run_bridge(data / "raw", sc, load_profile(sc.profile), bridged, seed=sc.seed)
     convert(bridged / "bag", data / "mssdata", pipeline_config=sc.pipeline_config)
-    report = mutate(
-        bridged / "bag",
-        data / "bag_e03",
-        drop_fraction=prep.mutate.drop_fraction,
-        reorder_fraction=prep.mutate.reorder_fraction,
-        window_ns=prep.mutate.window_ns,
-        seed=prep.mutate.seed,
-    )
-    (data / "mutate_report.json").write_text(
-        json.dumps(asdict(report), indent=2) + "\n", encoding="utf-8"
-    )
-    convert(data / "bag_e03", data / "mssdata_e03", pipeline_config=sc.pipeline_config)
+    mssdata_e03 = None
+    if prep.mutate is not None:
+        report = mutate(
+            bridged / "bag",
+            data / "bag_e03",
+            drop_fraction=prep.mutate.drop_fraction,
+            reorder_fraction=prep.mutate.reorder_fraction,
+            window_ns=prep.mutate.window_ns,
+            seed=prep.mutate.seed,
+        )
+        (data / "mutate_report.json").write_text(
+            json.dumps(asdict(report), indent=2) + "\n", encoding="utf-8"
+        )
+        mssdata_e03 = data / "mssdata_e03"
+        convert(data / "bag_e03", mssdata_e03, pipeline_config=sc.pipeline_config)
     source = {
         "generator": "mss_sim.synth.write_synthetic_raw_bag (synthetic box circle)",
         "scenario": sc.id,
@@ -167,13 +170,11 @@ def prepare(scenario: Path, out: Path, duration_s: float | None) -> Prepared:
         "box_half_m": list(prep.box_half_m),
         "static_s": prep.static_s,
         "ramp_s": prep.ramp_s,
-        "mutate": asdict(prep.mutate),
+        "mutate": None if prep.mutate is None else asdict(prep.mutate),
         "duration_s": sc.duration_s,
         "seed": sc.seed,
     }
-    return Prepared(
-        data / "mssdata", data / "mssdata_e03", bridged / "gt.tum", sc.pipeline_config, source
-    )
+    return Prepared(data / "mssdata", mssdata_e03, bridged / "gt.tum", sc.pipeline_config, source)
 
 
 _WIN_ABS = re.compile(r"^([A-Za-z]):[\\/](.*)$")
@@ -485,6 +486,8 @@ def _setup(args: argparse.Namespace) -> tuple[list[str], list[str], dict]:
         raise SetupError(f"scenario {args.scenario}: {e}") from e
     if sc.prep is None:
         raise SetupError(f"scenario {sc.id}: missing prep block")
+    if "E-03" in tests and sc.prep.mutate is None:
+        raise SetupError(f"scenario {sc.id}: prep.mutate is required for E-03")
     try:
         baselines = json.loads(args.baselines.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
@@ -521,6 +524,7 @@ def _run(args: argparse.Namespace) -> int:
     if "E-02" in tests:
         exits["E-02"] = bench("E-02", prep.mssdata)
     if "E-03" in tests:
+        assert prep.mssdata_e03 is not None  # _setup requires prep.mutate for E-03
         exits["E-03"] = bench("E-03", prep.mssdata_e03)
 
     for test_id in tests:
@@ -546,7 +550,8 @@ def _run(args: argparse.Namespace) -> int:
             row["drops_note"] = drops.note
             verdict = Verdict(verdict.passed and drops.passed, f"{verdict.note}; {drops.note}")
         if exits[test_id] == BENCH_TIMEOUT and any(CONTAINER in t for t in bench_cmd):
-            note = f"{verdict.note}; docker kill {container_name(out / test_id)}"
+            name = container_name(out / test_id)
+            note = f"{verdict.note}; docker kill {name} attempted (see bench.log)"
             verdict = Verdict(verdict.passed, note)
         row.update(
             bench_exit=exits[test_id],

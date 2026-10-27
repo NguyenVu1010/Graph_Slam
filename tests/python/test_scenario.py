@@ -66,12 +66,43 @@ def test_two_element_box_rejected(tmp_path: Path) -> None:
         load_scenario(_write(tmp_path, mutate))
 
 
-def test_zero_drop_fraction_rejected(tmp_path: Path) -> None:
+def test_infinite_speed_rejected(tmp_path: Path) -> None:
     def mutate(d: dict) -> None:
-        d["prep"]["mutate"]["drop_fraction"] = 0
+        d["prep"]["speed_mps"] = float("inf")  # written as YAML .inf
+
+    with pytest.raises(ScenarioError, match=r"prep\.speed_mps: must be a finite number > 0"):
+        load_scenario(_write(tmp_path, mutate))
+
+
+def test_drop_fraction_above_one_rejected(tmp_path: Path) -> None:
+    def mutate(d: dict) -> None:
+        d["prep"]["mutate"]["drop_fraction"] = 1.5
 
     with pytest.raises(ScenarioError, match=r"prep\.mutate\.drop_fraction"):
         load_scenario(_write(tmp_path, mutate))
+
+
+def test_zero_reorder_accepted(tmp_path: Path) -> None:
+    def mutate(d: dict) -> None:
+        d["prep"]["mutate"]["reorder_fraction"] = 0
+
+    prep = load_scenario(_write(tmp_path, mutate)).prep
+    assert prep is not None and prep.mutate is not None
+    assert (prep.mutate.drop_fraction, prep.mutate.reorder_fraction) == (0.05, 0.0)
+
+
+def test_both_fractions_zero_rejected(tmp_path: Path) -> None:
+    def mutate(d: dict) -> None:
+        d["prep"]["mutate"]["drop_fraction"] = 0
+        d["prep"]["mutate"]["reorder_fraction"] = 0
+
+    with pytest.raises(ScenarioError, match=r"prep\.mutate: at least one of drop_fraction"):
+        load_scenario(_write(tmp_path, mutate))
+
+
+def test_mutate_absent_is_none(tmp_path: Path) -> None:
+    sc = load_scenario(_write(tmp_path, lambda d: d["prep"].pop("mutate")))
+    assert sc.prep is not None and sc.prep.mutate is None
 
 
 def test_overlapping_segments_rejected(tmp_path: Path) -> None:

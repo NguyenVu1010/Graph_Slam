@@ -101,14 +101,16 @@ prep:
   speed_mps: 0.5             # cruise speed V
   omega_radps: 0.3           # yaw rate W; circle radius R = V / W
   box_half_m: [8.0, 5.0, 2.0]
-  mutate:                    # E-03 only: mutate_bag.mutate() arguments
+  mutate:                    # E-03 only, optional: mutate_bag.mutate() arguments
     drop_fraction: 0.05
     reorder_fraction: 0.02
     window_ns: 20000000
     seed: 42
 ```
 
-Every value must be > 0 (fractions in (0, 1], `seed` >= 0). These parameters and
+Every value must be a finite number > 0, except in `mutate`: the fractions lie in [0, 1] with
+at least one > 0, and `seed` >= 0. Without `mutate` the harness can run E-01 and E-02 only;
+asking for E-03 is then a setup error (exit 2). These parameters and
 `prep_source` (the scenario path) are written to `integration.json` under `data_source`, so a
 baseline recorded on this data is not silently compared with a different dataset later.
 
