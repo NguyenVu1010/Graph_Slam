@@ -177,16 +177,29 @@ class Graph {
   /// Tests: B-01 (Jacobians), PipelineComponent corridor tests.
   void add_static_gravity_factor(common::KeyId k, const common::Vec3& f_b, const common::Mat3& cov);
 
-  /// Whitened squared residual of the gravity factor at the last optimize() estimate (2 DoF:
-  /// chi-square 2 under its noise), for the pipeline's consistency check (ADR-020).
+  /// Innovation statistic of the gravity factor at the last optimize() estimate, for the
+  /// pipeline's consistency check (ADR-020, backend_factors.md section 6c): e^T S^-1 e with
+  /// e the whitened residual and S = I - J P J^T its covariance (J the whitened Jacobian, P
+  /// the joint marginal covariance of (X_k, B_k)), formed as S^-1 = I + J P_rest J^T with
+  /// P_rest the joint marginal without the factor. Chi-square with 2 DoF (3 for the
+  /// study-only full residual) when the window was at rest: the factor tested against the
+  /// rest of the graph, not its posterior residual. One joint marginal over the graph.
   /// Errors (Result::error): "no gravity factor" (never added, or removed); "gravity factor
-  ///   not optimised"; "built without GTSAM" in the stub. Hot path: no.
-  /// Tests: BackendGraph.StaticGravityFactorRemovedOnRequest.
+  ///   not optimised"; "innovation covariance not positive definite ..." (smallest
+  ///   eigenvalue of S <= 1e-9, or the rest of the graph does not determine (X_k, B_k): the
+  ///   factor is the only information on what it measures, nothing can contradict it);
+  ///   "built without GTSAM" in the stub. Hot path: no.
+  /// Tests: BackendGraph.StaticGravityFactorKnownAnswer, StaticGravityInnovationKnownAnswer,
+  ///   StaticGravityInnovationUncheckedWhenFactorIsOnlyInformation,
+  ///   StaticGravityFactorRemovedOnRequest.
   common::Result<double> static_gravity_chi2() const;
 
   /// Removes the gravity factor from the graph (iSAM2 removeFactorIndices) and from the
-  /// factors kept for a rebuild; the estimate is updated without it. Returns false when there
-  /// is none, or when iSAM2 throws (logged; the factor stays). Stub: false. Hot path: no.
+  /// factors kept for a rebuild; the estimate is updated without it. A factor still pending
+  /// (no optimize() yet) is dropped from the pending set. Returns false when there is none,
+  /// or when iSAM2 throws or gives a non-finite estimate: then iSAM2 is rebuilt from the
+  /// committed factors at the last good estimate and the factor stays (logged). No retry.
+  /// Stub: false. Hot path: no.
   /// Tests: BackendGraph.StaticGravityFactorRemovedOnRequest.
   bool remove_static_gravity_factor();
 

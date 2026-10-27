@@ -79,6 +79,7 @@ common::Result<common::Pose> Graph::gnss_frame_estimate() const {
 namespace detail {
 
 void set_static_gravity_full_residual(bool /*full*/) {}
+void set_static_gravity_posterior_statistic(bool /*on*/) {}
 
 }  // namespace detail
 

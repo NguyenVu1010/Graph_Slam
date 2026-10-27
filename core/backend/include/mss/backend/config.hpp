@@ -20,7 +20,7 @@ struct BackendConfig {
   bool static_gravity_factor = false;
   // Validated (> 0) only when static_gravity_factor is true.
   double static_gravity_sigma_scale = 2.0;              // multiplier on the window std of the mean
-  int static_gravity_check_keyframes = 10;              // keyframes before the consistency check
+  int static_gravity_check_keyframes = 5;               // keyframes before the consistency check
   double static_gravity_chi2_gate = 5.991464547107979;  // chi-square 2 DoF, 0.95
   // ADR-019: T_e_w is one graph variable E shared by every GNSS factor (true) instead of a
   // fixed parameter per factor (false, the previous behaviour). E gets one prior, centred on

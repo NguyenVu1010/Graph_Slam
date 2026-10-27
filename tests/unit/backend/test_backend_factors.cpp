@@ -225,6 +225,31 @@ TEST(BackendFactors, B01_StaticGravityFactorJacobians) {
   }
 }
 
+// Study-only full residual (StudySeams, imu_only_observability.md section 9): the 3x1
+// residual e = f_b - ba + R^T g_w with Jacobians [skew(R^T g_w), 0] and [-I, 0] and noise
+// cov. It is compiled into the backend, so it gets the same B-01 checks.
+TEST(BackendFactors, B01_StaticGravityFactorFullResidualJacobians) {
+  std::mt19937 rng(kSeed);
+  for (int rep = 0; rep < 20; ++rep) {
+    const Pose T_w_b = random_pose(rng);
+    const common::ImuBias b = random_bias(rng);
+    const Vec3 f_b = b.ba - T_w_b.R.transpose() * kGravityW + random_vec3(rng, 0.05);
+    const Mat3 cov = Mat3::Identity() * 1.7e-5 + 0.2e-5 * Mat3::Ones();
+    const StaticGravityFactor f(pose_key(0), bias_key(0), f_b, cov, kGravityW, true);
+    gtsam::Values values;
+    values.insert(pose_key(0), to_gtsam(T_w_b));
+    values.insert(bias_key(0), to_gtsam(b));
+    const Vec3 e = f_b - b.ba + T_w_b.R.transpose() * kGravityW;
+    const gtsam::Vector r = f.unwhitenedError(values);
+    ASSERT_EQ(r.size(), 3);
+    EXPECT_LT((r - e).norm(), 1e-12);
+    const double expected = e.dot(cov.ldlt().solve(e));
+    EXPECT_NEAR(2.0 * f.error(values), expected, 1e-9 * expected);
+    MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f, values);
+    EXPECT_LT(max_relative_jacobian_error(f, values), kRelJacTol) << "rep " << rep;
+  }
+}
+
 // Direction only (section 10b): a different magnitude of f_b at the same direction leaves
 // the residual unchanged (|g| against ba_z is not constrained).
 TEST(BackendFactors, B01_StaticGravityFactorIgnoresMagnitude) {

@@ -21,10 +21,13 @@
 #include <vector>
 
 #include <Eigen/Cholesky>
+#include <Eigen/Eigenvalues>
 #include <gtsam/inference/Symbol.h>
+#include <gtsam/linear/JacobianFactor.h>
 #include <gtsam/linear/LossFunctions.h>
 #include <gtsam/linear/NoiseModel.h>
 #include <gtsam/nonlinear/ISAM2.h>
+#include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/PriorFactor.h>
 #include <gtsam/nonlinear/Values.h>
@@ -55,7 +58,8 @@ using common::NavState;
 using common::Vec3;
 using Vec6 = Eigen::Matrix<double, 6, 1>;
 
-using detail::kLoopCauchyK;  // constants.hpp
+using detail::kLoopCauchyK;                // constants.hpp
+using detail::kMinGravityInnovationEigen;  // constants.hpp
 constexpr double kNsPerS = 1e9;
 constexpr double kMsPerNs = 1e-6;
 // IMU duration tolerance in sample periods (graph.hpp, add_imu_factor).
@@ -123,6 +127,8 @@ bool values_finite(const gtsam::Values& values) {
 // workers spinning). A later Graph with single_thread == false stays limited (logged once).
 // Study seam (study_seams.hpp): the full-residual gravity factor; false in production.
 std::atomic<bool> g_static_gravity_full_residual{false};
+// Study seam (study_seams.hpp): the fix-round-1 posterior statistic; false in production.
+std::atomic<bool> g_static_gravity_posterior_statistic{false};
 
 std::atomic<bool> g_tbb_limited{false};
 std::atomic<bool> g_tbb_limited_warned{false};
@@ -650,6 +656,15 @@ void Graph::add_static_gravity_factor(common::KeyId k,
   m.pending_priors.push_back(m.gravity_factor);
 }
 
+// Innovation statistic of the gravity factor (backend_factors.md section 6c, ADR-020). In
+// whitened units (W the factor square-root information): e = W r at the last estimate,
+// J = W dr/d[X_k, B_k], P the joint marginal covariance of (X_k, B_k) with the factor and
+// P_rest without it. The posterior residual has covariance S = I - J P J^T; to first order
+// e = S nu with nu the innovation against the rest of the graph, and
+//   e^T S^-1 e = nu^T S nu,  chi-square with dim(e) DoF when the window was at rest.
+// S is formed through S^-1 = I + J P_rest J^T (Woodbury: the factor touches only X_k, B_k),
+// not as I - J P J^T: when the factor dominates, that difference cancels to round-off (a
+// unit test measured 1e-3 for a true 1e-14). Runs once per run, off the hot path.
 common::Result<double> Graph::static_gravity_chi2() const {
   const Impl& m = *impl_;
   if (!m.gravity_factor) {
@@ -660,8 +675,55 @@ common::Result<double> Graph::static_gravity_chi2() const {
       return common::Result<double>::error("gravity factor not optimised");
     }
   }
-  // NoiseModelFactor::error = 0.5 |whitened residual|^2.
-  return common::Result<double>::ok(2.0 * m.gravity_factor->error(m.last_estimate));
+  if (g_static_gravity_posterior_statistic.load()) {  // study seam only
+    return common::Result<double>::ok(2.0 * m.gravity_factor->error(m.last_estimate));
+  }
+  const auto jf = boost::dynamic_pointer_cast<gtsam::JacobianFactor>(
+      m.gravity_factor->linearize(m.last_estimate));
+  if (!jf) {
+    return common::Result<double>::error("gravity factor did not linearize to a JacobianFactor");
+  }
+  const gtsam::KeyVector keys = m.gravity_factor->keys();  // [X_k, B_k]
+  const Eigen::Index d = static_cast<Eigen::Index>(jf->rows());
+  Eigen::MatrixXd J(d, 12);
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    J.block(0, 6 * static_cast<Eigen::Index>(i), d, 6) = jf->getA(jf->find(keys[i]));
+  }
+  const Eigen::VectorXd e = -jf->getb();  // JacobianFactor: b = -W r
+  Eigen::MatrixXd P_rest(12, 12);
+  try {
+    gtsam::NonlinearFactorGraph rest;
+    for (const auto& f : m.isam->getFactorsUnsafe()) {
+      if (f && f != m.gravity_factor) {  // removed factors leave empty slots
+        rest.push_back(f);
+      }
+    }
+    const gtsam::Marginals marginals(rest, m.last_estimate);
+    const gtsam::JointMarginal joint = marginals.jointMarginalCovariance(keys);
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+      for (std::size_t j = 0; j < keys.size(); ++j) {
+        P_rest.block<6, 6>(6 * static_cast<Eigen::Index>(i), 6 * static_cast<Eigen::Index>(j)) =
+            joint.at(keys[i], keys[j]);
+      }
+    }
+  } catch (const std::exception& ex) {
+    // The rest of the graph does not determine (X_k, B_k): nothing can contradict the factor.
+    return common::Result<double>::error(
+        std::string("innovation covariance not positive definite (rest of the graph: ") +
+        ex.what() + ")");
+  }
+  const Eigen::MatrixXd JPJt = J * P_rest * J.transpose();
+  const Eigen::MatrixXd S_inv = Eigen::MatrixXd::Identity(d, d) + 0.5 * (JPJt + JPJt.transpose());
+  const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(S_inv);
+  const double min_eig_S = 1.0 / eig.eigenvalues().maxCoeff();
+  if (!eig.eigenvalues().allFinite() || !(eig.eigenvalues().minCoeff() > 0.0) ||
+      !(min_eig_S > kMinGravityInnovationEigen)) {
+    char buf[96];
+    std::snprintf(
+        buf, sizeof(buf), "innovation covariance not positive definite (min eig %.3g)", min_eig_S);
+    return common::Result<double>::error(std::string(buf));
+  }
+  return common::Result<double>::ok(e.dot(S_inv * e));
 }
 
 bool Graph::remove_static_gravity_factor() {
@@ -678,15 +740,28 @@ bool Graph::remove_static_gravity_factor() {
     }
     return out;
   };
-  try {
-    if (m.gravity_index) {
+  // Pending only (before the first optimize()): nothing in iSAM2 to remove.
+  if (m.gravity_index) {
+    std::string failure;
+    gtsam::Values estimate;
+    try {
       m.isam->update(
           gtsam::NonlinearFactorGraph(), gtsam::Values(), gtsam::FactorIndices{*m.gravity_index});
-      m.last_estimate = m.isam->calculateEstimate();
+      estimate = m.isam->calculateEstimate();
+      if (!values_finite(estimate)) {
+        failure = "non-finite estimate";
+      }
+    } catch (const std::exception& e) {
+      failure = e.what();
     }
-  } catch (const std::exception& e) {
-    common::log_error(std::string("backend: removing the gravity factor failed: ") + e.what());
-    return false;
+    if (!failure.empty()) {
+      // iSAM2 may be half-updated: rebuild it from the committed factors, the gravity
+      // factor still among them, at the last good estimate (section 9). The factor stays.
+      common::log_error("backend: removing the gravity factor failed, it stays: " + failure);
+      m.rebuild();
+      return false;
+    }
+    m.last_estimate = estimate;
   }
   m.committed_factors = without(m.committed_factors);
   m.pending_priors = without(m.pending_priors);
@@ -832,6 +907,10 @@ namespace detail {
 
 void set_static_gravity_full_residual(bool full) {
   g_static_gravity_full_residual.store(full);
+}
+
+void set_static_gravity_posterior_statistic(bool on) {
+  g_static_gravity_posterior_statistic.store(on);
 }
 
 }  // namespace detail
