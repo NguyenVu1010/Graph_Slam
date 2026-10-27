@@ -162,3 +162,142 @@ def test_lidar_non_returns_are_inf_in_all_coordinates(tmp_path: Path) -> None:
     assert np.isinf(xyz[miss]).all()  # inf in x, y and z together
     assert miss[:, 0].any()  # column 0 has an exactly-zero y direction component
     assert np.linalg.norm(xyz[~miss], axis=1).max() <= 9.0 + 1e-5
+
+
+# --- Static start, speed ramp and T_b_l (docs/derivations/pipeline.md section 7) ---------
+
+_V, _W, _RADIUS_M, _TRACK_M = 0.5, 0.3, 0.10, 0.40
+_STATIC_S, _RAMP_S = 2.0, 2.0
+_T_B_L = ((0.10, 0.0, 0.50), (0.99984770, 0.0, 0.01745241, 0.0))  # Hamilton (w, x, y, z)
+
+
+def _closed_form(t_s: np.ndarray) -> dict[str, np.ndarray]:
+    """Section 7 motion for V = 0.5, W = 0.3, static 2 s, ramp 2 s; t_s relative to T0."""
+    kappa = _W / _V
+    tau = t_s - _STATIC_S
+    ramp = (tau >= 0) & (tau < _RAMP_S)
+    cruise = tau >= _RAMP_S
+    x = np.pi * tau / _RAMP_S
+    v = np.where(ramp, _V * (1 - np.cos(x)) / 2, 0.0) + np.where(cruise, _V, 0.0)
+    s = np.where(ramp, _V / 2 * (tau - _RAMP_S / np.pi * np.sin(x)), 0.0) + np.where(
+        cruise, _V * _RAMP_S / 2 + _V * (tau - _RAMP_S), 0.0
+    )
+    a_t = np.where(ramp, _V * np.pi / (2 * _RAMP_S) * np.sin(x), 0.0)
+    psi = kappa * s
+    p = np.stack([np.sin(psi), 1 - np.cos(psi), 0 * psi], axis=1) / kappa
+    a_w = a_t[:, None] * np.stack([np.cos(psi), np.sin(psi), 0 * psi], axis=1) + (kappa * v**2)[
+        :, None
+    ] * np.stack([-np.sin(psi), np.cos(psi), 0 * psi], axis=1)
+    a_w[:, 2] += 9.80665  # a_w - g_w with g_w = (0, 0, -9.80665)
+    c, sn = np.cos(psi), np.sin(psi)
+    acc_b = np.stack(
+        [c * a_w[:, 0] + sn * a_w[:, 1], -sn * a_w[:, 0] + c * a_w[:, 1], a_w[:, 2]], 1
+    )
+    return {"v": v, "s": s, "psi": psi, "omega": kappa * v, "p": p, "acc_b": acc_b}
+
+
+@pytest.fixture(scope="module")
+def ramp_bag(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, SynthInfo]:
+    out = tmp_path_factory.mktemp("ramp_bag")
+    info = write_synthetic_raw_bag(
+        out,
+        duration_s=6.0,
+        seed=0,
+        origin_lla=(21.0278, 105.8342, 12.0),
+        static_s=_STATIC_S,
+        ramp_s=_RAMP_S,
+        t_b_l=_T_B_L,
+    )
+    return out / "raw", info
+
+
+def test_static_then_ramp_profile(ramp_bag: tuple[Path, SynthInfo]) -> None:
+    gt_msgs = _read(ramp_bag, "/ground_truth")
+    t_s = (np.array([t for t, _ in gt_msgs], dtype=np.int64) - ramp_bag[1].t0_ns) * 1e-9
+    ref = _closed_form(t_s)
+    pos = np.array(
+        [
+            [m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z]
+            for _, m in gt_msgs
+        ]
+    )
+    q = np.array([[m.pose.pose.orientation.w, m.pose.pose.orientation.z] for _, m in gt_msgs])
+    lin = np.array([m.twist.twist.linear.x for _, m in gt_msgs])
+    ang = np.array([m.twist.twist.angular.z for _, m in gt_msgs])
+    still = t_s < _STATIC_S
+    assert still.sum() == 400
+    assert np.all(pos[still] == 0.0)
+    assert np.all(lin[still] == 0.0) and np.all(ang[still] == 0.0)
+    np.testing.assert_allclose(pos, ref["p"], atol=1e-9)
+    np.testing.assert_allclose(2 * np.arctan2(q[:, 1], q[:, 0]), ref["psi"], atol=1e-9)
+    np.testing.assert_allclose(lin, ref["v"], atol=1e-12)
+    np.testing.assert_allclose(ang, ref["omega"], atol=1e-12)
+
+    joints = _read(ramp_bag, "/joint_states")
+    tj = (np.array([t for t, _ in joints], dtype=np.int64) - ramp_bag[1].t0_ns) * 1e-9
+    rj = _closed_form(tj)
+    vel = np.array([m.velocity for _, m in joints])
+    half = rj["omega"] * _TRACK_M / 2
+    np.testing.assert_allclose(vel[:, 0], (rj["v"] - half) / _RADIUS_M, atol=1e-12)
+    np.testing.assert_allclose(vel[:, 1], (rj["v"] + half) / _RADIUS_M, atol=1e-12)
+    pos_j = np.array([m.position for _, m in joints])
+    half_psi = rj["psi"] * _TRACK_M / 2
+    np.testing.assert_allclose(pos_j[:, 0], (rj["s"] - half_psi) / _RADIUS_M, atol=1e-9)
+    np.testing.assert_allclose(pos_j[:, 1], (rj["s"] + half_psi) / _RADIUS_M, atol=1e-9)
+
+
+def test_static_then_ramp_imu(ramp_bag: tuple[Path, SynthInfo]) -> None:
+    msgs = _read(ramp_bag, "/imu/data")
+    t_s = (np.array([t for t, _ in msgs], dtype=np.int64) - ramp_bag[1].t0_ns) * 1e-9
+    ref = _closed_form(t_s)
+    gyro = np.array(
+        [[m.angular_velocity.x, m.angular_velocity.y, m.angular_velocity.z] for _, m in msgs]
+    )
+    acc = np.array(
+        [
+            [m.linear_acceleration.x, m.linear_acceleration.y, m.linear_acceleration.z]
+            for _, m in msgs
+        ]
+    )
+    sig_g, sig_a = 1.75e-4 * np.sqrt(200.0), 2.9e-3 * np.sqrt(200.0)
+    gyro_ref = np.zeros_like(gyro)
+    gyro_ref[:, 2] = ref["omega"]
+    assert np.abs(gyro - gyro_ref).max() < 5 * sig_g
+    assert np.abs(acc - ref["acc_b"]).max() < 5 * sig_a
+    # The ramp is visible above the noise: tangential acceleration peaks at V pi / (2 ramp_s).
+    assert ref["acc_b"][:, 0].max() > 10 * sig_a / np.sqrt(len(acc))
+
+
+def test_t_b_l_written_and_used(ramp_bag: tuple[Path, SynthInfo]) -> None:
+    ((_, msg),) = _read(ramp_bag, "/tf_static")
+    (tf,) = msg.transforms
+    tr, rot = tf.transform.translation, tf.transform.rotation
+    assert (tf.header.frame_id, tf.child_frame_id) == ("base_link", "lidar_link")
+    assert (tr.x, tr.y, tr.z) == _T_B_L[0]
+    assert (rot.w, rot.x, rot.y, rot.z) == _T_B_L[1]  # ROS fields x y z w, compared as w x y z
+
+    w, x, y, z = _T_B_L[1]
+    r_b_l = np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+    scans = _read(ramp_bag, "/lidar/points")
+    gt = GroundTruth.from_odometry_msgs(m for _, m in _read(ramp_bag, "/ground_truth"))
+    # Scan 0 is in the still phase (T_w_b = I); scan 55 (t = 5.5 s) is in cruise, where a wrong
+    # T_w_l = T_w_b * T_b_l composition (order, or missing R_w_b on p_b_l) would show.
+    for k in (0, 55):
+        t_ns, cloud = scans[k]
+        r_w_b, p_w_b = gt.pose_at(np.array([t_ns], dtype=np.int64))
+        yaw = np.arctan2(r_w_b[0][1, 0], r_w_b[0][0, 0])
+        if k == 55:
+            assert yaw > 0.7 and np.linalg.norm(p_w_b[0]) > 1.0
+        xyz = cloud_to_arrays(cloud).xyz
+        finite = np.isfinite(xyz).all(axis=1)
+        assert finite.sum() > 0
+        p_b = xyz[finite].astype(float) @ r_b_l.T + np.array(_T_B_L[0])
+        p_w = p_b @ r_w_b[0].T + p_w_b[0]
+        dist = np.min([np.abs(p_w @ n - d) for n, d in ramp_bag[1].planes], axis=0)
+        assert dist.max() < 1e-5, (k, dist.max())  # float32 points at up to ~11 m

@@ -81,6 +81,43 @@ python tools/mutate_bag.py <in_bag> <out_bag> --drop 0.05 --reorder 0.02        
 PYTHONPATH=eval python -m mss_eval.noise_report <bag_dir> sim/noise/<profile>.yaml --out results/<run-id>/noise  # declared vs measured noise
 ```
 
+### Integration tests (E-01..E-03, PF-01)
+
+`tools/run_integration.py` synthesises a bag, runs the noise bridge and `bag_to_mssdata.py`
+(E-03: `mutate_bag.py` first), replays each dataset through `mss_bench` and scores `est.tum`
+against the ground truth with `mss_eval.ate`, then compares with `eval/baselines.json`.
+
+The data are a synthetic box circle, not the warehouse lap: a circle of radius
+R = V / W = 0.5 / 0.3 = 1.67 m (5 s still, 2 s speed ramp) inside a 16 x 10 x 4 m box, using the
+seed, duration, origin, noise profile and `T_b_l` of `sim/scenarios/E-01.yaml` and
+`config/sim/warehouse.yaml`. The scenario's `world` and `trajectory` are not used yet. These
+parameters are written to `integration.json` under `data_source`, so a baseline recorded on
+this data is not silently compared with a different dataset later.
+
+Gates: E-01 fails if ATE RMSE is more than 20 % above its baseline; E-02 needs a byte-identical,
+non-empty `est.tum` on a second run; E-03 must not crash (bench exit 0 or 3), must show that the
+drops reached the bench (fewer scans processed than the E-01 dataset holds), and must stay
+within the E-01 threshold; PF-01 only warns when the per-scan p95 latency is 20 % above
+baseline. A `null` baseline passes with a note that prints the measured value. Each bench run
+is killed after `--timeout-s` (default 10 x the scenario duration), which fails that test. The
+bench is any command, so it can run in Docker or WSL; all paths are passed absolute. Locally on
+Windows with the bench built in WSL:
+
+```sh
+PYTHONPATH="sim;eval" python tools/run_integration.py \
+  --bench-cmd "wsl -- env LD_LIBRARY_PATH=/home/<user>/opt/gtsam/lib /home/<user>/mss-build/<build-dir>/bench/mss_bench" \
+  --path-style wsl --out results/local-<date> --plots
+```
+
+(`;` is the Windows `PYTHONPATH` separator; from Git Bash also set `MSYS_NO_PATHCONV=1`.)
+On Linux drop `--path-style wsl` and pass the bench path directly; `--tests E-01,E-02` and
+`--duration-s S` select a subset or shorten the scenario. Outputs (only under `--out`):
+`E-0x/` (bench outputs, `ate.json`, `traj_xy.png`), `integration.json`, `summary.md`, and the
+regenerable bags and datasets in `data/`. Exit codes: 0 every gated check passes, 1 a gated
+check fails, 2 setup error (missing scenario, baselines or bench command, data preparation
+failure, unexpected exception). CI runs it in the `docker-full` job; the summary goes to the job's step summary and
+the results to the `integration-<run-id>` artifact.
+
 ## Configuration
 
 All tunables live in `config/default.yaml` under `mss_node.ros__parameters` (ADR-008), one
