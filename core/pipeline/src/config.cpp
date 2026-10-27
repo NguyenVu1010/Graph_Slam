@@ -468,7 +468,7 @@ Config read_config(Reader& r) {
       "backend.static_gravity_sigma_scale", c.backend.static_gravity_sigma_scale, Range::kPositive);
   r.field("backend.static_gravity_check_keyframes",
           c.backend.static_gravity_check_keyframes,
-          Range::kPositive);
+          Range::kNonNegative);  // 0 = check off
   r.field("backend.static_gravity_chi2_gate", c.backend.static_gravity_chi2_gate, Range::kPositive);
   r.field("backend.gnss_frame_variable", c.backend.gnss_frame_variable);
   r.angle_deg(

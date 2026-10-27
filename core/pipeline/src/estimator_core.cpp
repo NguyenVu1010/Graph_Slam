@@ -546,6 +546,7 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
 
 void EstimatorCore::check_gravity_factor(common::KeyId j) {
   if (!gravity_factor_added_ || gravity_factor_checked_ ||
+      cfg_.backend.static_gravity_check_keyframes == 0 ||  // check off (shipped, ADR-020)
       j < static_cast<common::KeyId>(cfg_.backend.static_gravity_check_keyframes)) {
     return;
   }

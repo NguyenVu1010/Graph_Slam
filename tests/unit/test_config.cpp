@@ -302,12 +302,18 @@ TEST(Config, StaticGravityFactorKey) {
   EXPECT_DOUBLE_EQ(cfg.value().imu.init_max_mean_gyro_radps, 0.15);
   EXPECT_DOUBLE_EQ(cfg.value().imu.init_max_wheel_speed_mps, 0.1);
   EXPECT_DOUBLE_EQ(cfg.value().imu.init_gravity_check_sigma, 3.0);
-  EXPECT_EQ(cfg.value().backend.static_gravity_check_keyframes, 5);
+  // Consistency check shipped off (0); 0 and positive values parse, negative ones do not.
+  EXPECT_EQ(cfg.value().backend.static_gravity_check_keyframes, 0);
+  EXPECT_EQ(mss::backend::BackendConfig{}.static_gravity_check_keyframes, 0);
+  const auto on =
+      parse_config(base, overlay("    backend:\n      static_gravity_check_keyframes: 5\n"));
+  ASSERT_TRUE(on.is_ok()) << on.reason();
+  EXPECT_EQ(on.value().backend.static_gravity_check_keyframes, 5);
   EXPECT_NEAR(cfg.value().backend.static_gravity_chi2_gate, 5.991, 1e-3);
   for (const char* bad_key : {"    imu:\n      init_max_mean_gyro_radps: 0\n",
                               "    imu:\n      init_max_wheel_speed_mps: -1\n",
                               "    imu:\n      init_gravity_check_sigma: 0\n",
-                              "    backend:\n      static_gravity_check_keyframes: 0\n",
+                              "    backend:\n      static_gravity_check_keyframes: -1\n",
                               "    backend:\n      static_gravity_chi2_gate: 0\n"}) {
     EXPECT_FALSE(parse_config(base, overlay(bad_key)).is_ok()) << bad_key;
   }

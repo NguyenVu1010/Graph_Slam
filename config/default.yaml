@@ -155,24 +155,24 @@ mss_node:
       # specific force f_b against ba - R^T g, projected normal to f_b (tilt against
       # horizontal bias, no magnitude), noise = static_gravity_sigma_scale x the window std of
       # the mean (docs/derivations/imu_only_observability.md sections 10-13; ADR-020). Start
-      # stationary: imu.init_max_* gate it, the check below removes it otherwise.
+      # stationary: imu.init_max_* gate it (a steady straight acceleration passes: <= +2.2 %
+      # ATE in the tests, undetectable in a blind corridor).
       # Seeds 42-56 paired with main (off), scale 2 (median, wins/losses): IMU-only corridor
       # with x unobserved, end x err 21.7 -> 1.45 m (14/1) circle, 3.56 -> 2.72 m (10/5)
       # straight (3.9 sigma_DR: misses 3 sigma_DR); along-x RMS 11.6 -> 1.36 m, 1.85 -> 1.34 m;
       # box LiDAR NEES 7.49 -> 8.57 (6/9, 95 % CI of the difference [-0.39, +2.09]); 60 s
-      # corridors within the spread (GNSS 3.03 -> 1.85 m, LiDAR only 24.9 -> 37.5 m, CIs
-      # contain 0). Scale 1: NEES 9.42; scale 3: NEES 7.51 but straight 4.14 m.
+      # corridors within the spread (GNSS 3.03 -> 1.85 m, LiDAR only 24.9 -> 38.3 m, CIs
+      # contain 0). Scale 1: NEES 9.42; scale 3: NEES 7.51 but straight 3.85 m. Check off.
       static_gravity_factor: true
       static_gravity_sigma_scale: 2.0      # dimensionless, > 0
-      # Consistency check (ADR-020): after static_gravity_check_keyframes keyframes (> 0) the
-      # factor is removed from iSAM2 when its innovation statistic against the rest of the
-      # graph exceeds static_gravity_chi2_gate (chi-square 2 DoF at rest if the rest of the
-      # graph is consistent, 0.95: 5.991; measured at rest: 0 of 15 box, 6 of 15 GNSS-corridor
-      # runs, medians unchanged) - the window was not at rest (Stats n_gravity_factor_removed;
-      # not evaluable: n_gravity_factor_unchecked, factor kept). 5, not 10: a 20 s slow start
-      # reaches only 8 to 9 keyframes. Starts in motion: statistic 38 to 233, removed
-      # (imu_only_observability.md section 12; removals at rest per scene in section 10e).
-      static_gravity_check_keyframes: 5
+      # Consistency check (ADR-020), evaluated and OFF (0). With a value > 0 the factor is
+      # removed from iSAM2 after that many keyframes when its innovation statistic against the
+      # rest of the graph exceeds static_gravity_chi2_gate (chi-square 2 DoF, 0.95: 5.991)
+      # (Stats n_gravity_factor_removed; not evaluable: n_gravity_factor_unchecked, kept).
+      # Off because at keyframe 5 it removed the factor at rest in 6 of 15 GNSS-corridor and
+      # 2 of 15 LiDAR-only runs (statistic 14 to 147), overlapping the starts in motion (38 to
+      # 233) (imu_only_observability.md sections 10g and 12).
+      static_gravity_check_keyframes: 0    # 0 = off (shipped); >= 0
       static_gravity_chi2_gate: 5.991464547107979
       # ADR-019: T_e_w is one graph variable shared by all GNSS factors (false: the aligner's
       # T_e_w frozen in each factor, which made the box world 3.7x worse,

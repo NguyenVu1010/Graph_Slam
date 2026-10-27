@@ -35,8 +35,8 @@ void validate(const BackendConfig& cfg, const imu::ImuConfig& imu_cfg, const com
   if (cfg.static_gravity_factor) {  // M-1: only when enabled (ADR-019 precedent)
     require_positive(cfg.static_gravity_sigma_scale, "backend.static_gravity_sigma_scale");
     require_positive(cfg.static_gravity_chi2_gate, "backend.static_gravity_chi2_gate");
-    if (cfg.static_gravity_check_keyframes <= 0) {
-      throw std::invalid_argument("backend.static_gravity_check_keyframes must be > 0");
+    if (cfg.static_gravity_check_keyframes < 0) {  // 0: consistency check off (shipped)
+      throw std::invalid_argument("backend.static_gravity_check_keyframes must be >= 0");
     }
   }
   if (cfg.gnss_frame_variable) {

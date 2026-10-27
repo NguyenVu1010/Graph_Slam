@@ -61,7 +61,7 @@ class Graph {
   ///   any prior sigma `<= 0`, a random walk `<= 0` (a zero sigma cannot enter the bias
   ///   factor; pipeline::load_config also requires > 0), `p_b_g` non-finite, or, when
   ///   `static_gravity_factor` is true, `static_gravity_sigma_scale <= 0`,
-  ///   `static_gravity_chi2_gate <= 0` or `static_gravity_check_keyframes <= 0`.
+  ///   `static_gravity_chi2_gate <= 0` or `static_gravity_check_keyframes < 0`.
   ///   (The keyframe thresholds are applied by the pipeline; Graph validates the whole
   ///   struct it receives.)
   /// Hot path: no. Tests: B-01..B-04 construct it.
