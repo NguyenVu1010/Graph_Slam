@@ -42,6 +42,7 @@
 #include "imu_factor.hpp"
 #include "odom_factor.hpp"
 #include "static_gravity_factor.hpp"
+#include "study_seams.hpp"
 #include "validate.hpp"
 
 namespace mss::backend {
@@ -120,6 +121,9 @@ bool values_finite(const gtsam::Values& values) {
 // tbb::global_control(max_allowed_parallelism, 1) that is never released, so TBB never
 // spawns workers in a deterministic process (a released and re-acquired limit leaves woken
 // workers spinning). A later Graph with single_thread == false stays limited (logged once).
+// Study seam (study_seams.hpp): the full-residual gravity factor; false in production.
+std::atomic<bool> g_static_gravity_full_residual{false};
+
 std::atomic<bool> g_tbb_limited{false};
 std::atomic<bool> g_tbb_limited_warned{false};
 
@@ -175,6 +179,23 @@ struct Graph::Impl {
   bool have_frame = false;
   common::Pose T_e_w_guess;
   std::size_t degenerate_keyframes = 0;
+  // The keyframe-0 gravity factor (section 6c) and its slot in iSAM2 once committed, for
+  // the consistency check (static_gravity_chi2 / remove_static_gravity_factor).
+  gtsam::NonlinearFactor::shared_ptr gravity_factor;
+  std::optional<gtsam::FactorIndex> gravity_index;
+
+  // Records the iSAM2 slot of the gravity factor when `added` (given to update() as `r`)
+  // holds it.
+  void note_gravity_index(const gtsam::NonlinearFactorGraph& added, const gtsam::ISAM2Result& r) {
+    if (!gravity_factor) {
+      return;
+    }
+    for (std::size_t i = 0; i < added.size() && i < r.newFactorsIndices.size(); ++i) {
+      if (added[i] == gravity_factor) {
+        gravity_index = r.newFactorsIndices[i];
+      }
+    }
+  }
 
   [[nodiscard]] bool known(KeyId k) const { return k < guesses.size(); }
 
@@ -272,7 +293,9 @@ struct Graph::Impl {
       return;
     }
     try {
-      isam->update(committed_factors, last_estimate);
+      gravity_index.reset();
+      const gtsam::ISAM2Result r = isam->update(committed_factors, last_estimate);
+      note_gravity_index(committed_factors, r);
     } catch (const std::exception& e) {
       common::log_error(
           std::string("backend: rebuilding iSAM2 failed, all factors queued again: ") + e.what());
@@ -285,6 +308,7 @@ struct Graph::Impl {
       }
       // The IMU start/end flags stay set: the re-queued factors are still accepted IMU
       // factors (they never pass through add_imu_factor again).
+      gravity_index.reset();
       pending_priors.push_back(committed_factors);
       committed_factors = gtsam::NonlinearFactorGraph();
       last_estimate = gtsam::Values();
@@ -606,13 +630,69 @@ void Graph::add_static_gravity_factor(common::KeyId k,
     reject(call, "covariance not positive definite");
     return;
   }
+  if (!(m.cfg.static_gravity_sigma_scale > 0.0)) {
+    reject(call, "backend.static_gravity_sigma_scale not > 0");
+    return;
+  }
+  if (m.gravity_factor) {
+    reject(call, "a gravity factor is already in the graph");
+    return;
+  }
+  const double s2 = m.cfg.static_gravity_sigma_scale * m.cfg.static_gravity_sigma_scale;
+  m.gravity_factor =
+      boost::make_shared<detail::StaticGravityFactor>(detail::pose_key(k),
+                                                      detail::bias_key(k),
+                                                      f_b,
+                                                      s2 * symmetrised<3>(cov),
+                                                      m.g_w,
+                                                      g_static_gravity_full_residual.load());
   // With the keyframe-0 priors: kept when an optimize() fails (section 6c).
-  m.pending_priors.emplace_shared<detail::StaticGravityFactor>(
-      detail::pose_key(k),
-      detail::bias_key(k),
-      f_b,
-      symmetrised<3>(cov) * (m.cfg.static_gravity_sigma_scale * m.cfg.static_gravity_sigma_scale),
-      m.g_w);
+  m.pending_priors.push_back(m.gravity_factor);
+}
+
+common::Result<double> Graph::static_gravity_chi2() const {
+  const Impl& m = *impl_;
+  if (!m.gravity_factor) {
+    return common::Result<double>::error("no gravity factor");
+  }
+  for (const gtsam::Key key : m.gravity_factor->keys()) {
+    if (!m.last_estimate.exists(key)) {
+      return common::Result<double>::error("gravity factor not optimised");
+    }
+  }
+  // NoiseModelFactor::error = 0.5 |whitened residual|^2.
+  return common::Result<double>::ok(2.0 * m.gravity_factor->error(m.last_estimate));
+}
+
+bool Graph::remove_static_gravity_factor() {
+  Impl& m = *impl_;
+  if (!m.gravity_factor) {
+    return false;
+  }
+  const auto without = [&m](const gtsam::NonlinearFactorGraph& g) {
+    gtsam::NonlinearFactorGraph out;
+    for (const auto& f : g) {
+      if (f != m.gravity_factor) {
+        out.push_back(f);
+      }
+    }
+    return out;
+  };
+  try {
+    if (m.gravity_index) {
+      m.isam->update(
+          gtsam::NonlinearFactorGraph(), gtsam::Values(), gtsam::FactorIndices{*m.gravity_index});
+      m.last_estimate = m.isam->calculateEstimate();
+    }
+  } catch (const std::exception& e) {
+    common::log_error(std::string("backend: removing the gravity factor failed: ") + e.what());
+    return false;
+  }
+  m.committed_factors = without(m.committed_factors);
+  m.pending_priors = without(m.pending_priors);
+  m.gravity_factor.reset();
+  m.gravity_index.reset();
+  return true;
 }
 
 void Graph::add_loop_factor(const common::LoopConstraint& lc) {
@@ -661,7 +741,8 @@ common::Result<common::Estimate> Graph::optimize() {
   gtsam::Values estimate;
   if (!graph.empty() || !held.empty()) {
     try {
-      m.isam->update(graph, new_values);
+      const gtsam::ISAM2Result r = m.isam->update(graph, new_values);
+      m.note_gravity_index(graph, r);
       estimate = m.isam->calculateEstimate();
       if (!values_finite(estimate)) {
         failure = "non-finite estimate";
@@ -746,5 +827,13 @@ common::Result<common::Pose> Graph::gnss_frame_estimate() const {
   return common::Result<common::Pose>::ok(
       detail::from_gtsam(m.last_estimate.at<gtsam::Pose3>(detail::frame_key())));
 }
+
+namespace detail {
+
+void set_static_gravity_full_residual(bool full) {
+  g_static_gravity_full_residual.store(full);
+}
+
+}  // namespace detail
 
 }  // namespace mss::backend

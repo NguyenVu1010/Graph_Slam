@@ -68,7 +68,11 @@ class Estimator {
     std::uint64_t n_gnss_unfused_eof = 0;    ///< GNSS fixes after the last IMU sample at flush()
     std::uint64_t n_gnss_realign = 0;  ///< GNSS aligner restarts after gnss.max_consecutive_rejects
     std::uint64_t n_nonfinite_imu = 0;  ///< IMU samples dropped (non-finite acc or gyro)
-    std::uint64_t n_map_points = 0;     ///< points in the VoxelMap cache now (ADR-007)
+    /// keyframe-0 gravity factor not added: the init window failed the rest gate (ADR-020)
+    std::uint64_t n_gravity_factor_gated = 0;
+    /// keyframe-0 gravity factor removed by backend.static_gravity_chi2_gate (ADR-020)
+    std::uint64_t n_gravity_factor_removed = 0;
+    std::uint64_t n_map_points = 0;  ///< points in the VoxelMap cache now (ADR-007)
     /// map points refreshed in place by map.min_point_dist_m since construction (summed
     /// over map rebuilds; ADR-007 amendment)
     std::uint64_t n_map_spacing_replaced = 0;

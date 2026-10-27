@@ -58,9 +58,10 @@ class Graph {
   /// Errors: throws std::invalid_argument when `imu_cfg.rate_hz <= 0`,
   ///   `imu_cfg.gravity_mps2 <= 0`, `keyframe_dist_m <= 0`,
   ///   `keyframe_rot_rad <= 0`, `relinearize_threshold <= 0`, `relinearize_skip <= 0`,
-  ///   any prior sigma `<= 0`, `static_gravity_sigma_scale <= 0`, a random walk `<= 0`
-  ///   (a zero sigma cannot enter the bias
-  ///   factor; pipeline::load_config also requires > 0), or `p_b_g` non-finite.
+  ///   any prior sigma `<= 0`, a random walk `<= 0` (a zero sigma cannot enter the bias
+  ///   factor; pipeline::load_config also requires > 0), `p_b_g` non-finite, or, when
+  ///   `static_gravity_factor` is true, `static_gravity_sigma_scale <= 0`,
+  ///   `static_gravity_chi2_gate <= 0` or `static_gravity_check_keyframes <= 0`.
   ///   (The keyframe thresholds are applied by the pipeline; Graph validates the whole
   ///   struct it receives.)
   /// Hot path: no. Tests: B-01..B-04 construct it.
@@ -175,6 +176,19 @@ class Graph {
   ///   symmetric positive definite: dropped and logged. Hot path: no (once).
   /// Tests: B-01 (Jacobians), PipelineComponent corridor tests.
   void add_static_gravity_factor(common::KeyId k, const common::Vec3& f_b, const common::Mat3& cov);
+
+  /// Whitened squared residual of the gravity factor at the last optimize() estimate (2 DoF:
+  /// chi-square 2 under its noise), for the pipeline's consistency check (ADR-020).
+  /// Errors (Result::error): "no gravity factor" (never added, or removed); "gravity factor
+  ///   not optimised"; "built without GTSAM" in the stub. Hot path: no.
+  /// Tests: BackendGraph.StaticGravityFactorRemovedOnRequest.
+  common::Result<double> static_gravity_chi2() const;
+
+  /// Removes the gravity factor from the graph (iSAM2 removeFactorIndices) and from the
+  /// factors kept for a rebuild; the estimate is updated without it. Returns false when there
+  /// is none, or when iSAM2 throws (logged; the factor stays). Stub: false. Hot path: no.
+  /// Tests: BackendGraph.StaticGravityFactorRemovedOnRequest.
+  bool remove_static_gravity_factor();
 
   /// Adds a loop-closure between-factor (lc.i, lc.j, lc.T_bi_bj, lc.cov in [rho, phi],
   /// frame b_j) wrapped in a robust kernel so a wrong loop cannot drag the graph (B-03).

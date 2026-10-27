@@ -62,6 +62,8 @@ class CoreObserver {
                                      const common::PoseCovariance& /*cov*/) {}
   /// The backend's GNSS frame variable E after a successful optimize() (IMU study).
   virtual void on_frame_estimate(common::Timestamp /*t*/, const common::Pose& /*T_e_w*/) {}
+  /// The gravity factor consistency check ran: its chi-square and whether it was removed.
+  virtual void on_gravity_check(double /*chi2*/, bool /*removed*/) {}
 };
 
 /// Test-only seam (studies): `observer` receives the factor events; with `force_T_e_w` the
@@ -92,21 +94,23 @@ void set_core_test_hooks(const CoreTestHooks* hooks);
 
 /// Diagnostic counters of EstimatorCore, all since construction.
 struct CoreCounters {
-  std::uint64_t n_keyframes = 0;           ///< keyframes added to the graph
-  std::uint64_t n_match_failures = 0;      ///< scans whose scan matching failed
-  std::uint64_t n_skipped_scans = 0;       ///< scans that produced no estimate
-  std::uint64_t n_uncovered_scans = 0;     ///< of those: IMU does not span the scan
-  std::uint64_t n_map_rebuilds = 0;        ///< VoxelMap rebuilds (ADR-016)
-  std::uint64_t n_gnss_factors = 0;        ///< GNSS factors added
-  std::uint64_t n_gnss_rejected = 0;       ///< fixes rejected (gate_fix, chi-square, pose)
-  std::uint64_t n_gnss_late = 0;           ///< fixes older than the last processed scan start
-  std::uint64_t n_gnss_ring_overflow = 0;  ///< deferred fixes overwritten (ring full)
-  std::uint64_t n_gnss_unfused_eof = 0;    ///< deferred fixes left at end of data (no IMU after)
-  std::uint64_t n_gnss_realign = 0;        ///< aligner restarts (gnss.max_consecutive_rejects)
-  std::uint64_t n_nonfinite_imu = 0;       ///< IMU samples dropped (non-finite acc or gyro)
-  std::uint64_t n_odom_factors = 0;        ///< wheel factors added
-  std::uint64_t n_odom_rejected = 0;       ///< wheel deltas dropped by the time check
-  std::uint64_t n_backend_failures = 0;    ///< optimize() errors (stub build: every keyframe)
+  std::uint64_t n_keyframes = 0;             ///< keyframes added to the graph
+  std::uint64_t n_match_failures = 0;        ///< scans whose scan matching failed
+  std::uint64_t n_skipped_scans = 0;         ///< scans that produced no estimate
+  std::uint64_t n_uncovered_scans = 0;       ///< of those: IMU does not span the scan
+  std::uint64_t n_map_rebuilds = 0;          ///< VoxelMap rebuilds (ADR-016)
+  std::uint64_t n_gnss_factors = 0;          ///< GNSS factors added
+  std::uint64_t n_gnss_rejected = 0;         ///< fixes rejected (gate_fix, chi-square, pose)
+  std::uint64_t n_gnss_late = 0;             ///< fixes older than the last processed scan start
+  std::uint64_t n_gnss_ring_overflow = 0;    ///< deferred fixes overwritten (ring full)
+  std::uint64_t n_gnss_unfused_eof = 0;      ///< deferred fixes left at end of data (no IMU after)
+  std::uint64_t n_gnss_realign = 0;          ///< aligner restarts (gnss.max_consecutive_rejects)
+  std::uint64_t n_nonfinite_imu = 0;         ///< IMU samples dropped (non-finite acc or gyro)
+  std::uint64_t n_odom_factors = 0;          ///< wheel factors added
+  std::uint64_t n_odom_rejected = 0;         ///< wheel deltas dropped by the time check
+  std::uint64_t n_backend_failures = 0;      ///< optimize() errors (stub build: every keyframe)
+  std::uint64_t n_gravity_factor_gated = 0;  ///< kf-0 gravity factor not added (rest gate)
+  std::uint64_t n_gravity_factor_removed = 0;  ///< removed by the chi-square check (ADR-020)
   /// VoxelMap spacing replacements counted before the map's last clear() (rebuilds); the
   /// total is this plus VoxelMap::num_spacing_replaced().
   std::uint64_t n_map_spacing_replaced_cleared = 0;
@@ -171,6 +175,8 @@ class EstimatorCore {
   void insert_keyframe_cloud(common::KeyId id, common::Timestamp t);
   // ADR-016 rebuild check after a successful optimize().
   void maybe_rebuild_map();
+  // ADR-020 consistency check of the gravity factor after keyframe `j` was optimised.
+  void check_gravity_factor(common::KeyId j);
   // Prediction preintegrator restarted at front_ (bias) with the boundary sample.
   void reset_prediction();
   void log_backend_failure(const std::string& reason);
@@ -231,15 +237,19 @@ class EstimatorCore {
 
   common::Estimate latest_;
   CoreCounters counters_;
-  CoreObserver* observer_ = nullptr;       // test-only (CoreTestHooks)
-  int keyframe_every_n_scans_ = 0;         // test-only (CoreTestHooks)
-  int scans_since_keyframe_ = 0;           // test-only: matched scans since the last keyframe
-  bool frontend_keeps_own_state_ = false;  // test-only (CoreTestHooks)
-  std::function<common::Pose(common::Timestamp, common::Timestamp)> lidar_oracle_;  // test-only
-  std::function<common::PoseCovariance(common::Timestamp, const common::PoseCovariance&)>
-      lidar_cov_;  // test-only
-  std::function<common::Mat3(const common::Vec3&, const common::Mat3&)>
-      static_gravity_cov_;  // test-only
+  // Test-only seam (CoreTestHooks), read at construction; nullptr in production. The hooks
+  // object must outlive the core (HooksScope in the tests).
+  const CoreTestHooks* hooks_ = nullptr;
+  int scans_since_keyframe_ = 0;  // test-only: matched scans since the last keyframe
+  // Gravity-factor state (ADR-020): added at keyframe 0; checked once.
+  bool gravity_factor_added_ = false;
+  bool gravity_factor_checked_ = false;
+  bool wheel_moved_ = false;                 // a wheel speed above imu.init_max_wheel_speed_mps
+  common::Timestamp last_wheel_motion_t_{};  // time of the last such wheel sample
+
+  [[nodiscard]] CoreObserver* observer() const {
+    return hooks_ != nullptr ? hooks_->observer : nullptr;
+  }
 };
 
 }  // namespace mss::pipeline::detail

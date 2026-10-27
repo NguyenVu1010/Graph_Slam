@@ -37,18 +37,27 @@ Eigen::Matrix2d projected_cov(const StaticGravityFactor::Projection& P, const Ma
   return sym;
 }
 
+gtsam::SharedNoiseModel noise_for(const Vec3& f_b, const Mat3& cov, bool full_residual) {
+  if (full_residual) {
+    return gtsam::noiseModel::Gaussian::Covariance(cov);
+  }
+  return gtsam::noiseModel::Gaussian::Covariance(
+      projected_cov(StaticGravityFactor::projection(f_b), cov));
+}
+
 }  // namespace
 
 StaticGravityFactor::StaticGravityFactor(gtsam::Key x,
                                          gtsam::Key b,
                                          const common::Vec3& f_b,
                                          const common::Mat3& cov_m2ps4,
-                                         const common::Vec3& g_w)
-    : Base(
-          gtsam::noiseModel::Gaussian::Covariance(projected_cov(projection(f_b), cov_m2ps4)), x, b),
+                                         const common::Vec3& g_w,
+                                         bool full_residual)
+    : Base(noise_for(f_b, cov_m2ps4, full_residual), x, b),
       f_b_(f_b),
       g_w_(g_w),
-      P_(projection(f_b)) {}
+      P_(projection(f_b)),
+      full_(full_residual) {}
 
 // Residual and Jacobians: class comment and backend_factors.md section 6c. Right
 // perturbation R <- R Exp(dphi): R^T g -> Exp(-dphi) R^T g = R^T g + skew(R^T g) dphi.
@@ -62,12 +71,23 @@ gtsam::Vector StaticGravityFactor::evaluateError(const gtsam::Pose3& T_w_b,
   if (H_x) {
     Mat36 J = Mat36::Zero();
     J.block<3, 3>(0, 0) = common::skew(g_b);  // [dphi, drho]
-    *H_x = P_ * J;
+    if (full_) {
+      *H_x = J;
+    } else {
+      *H_x = P_ * J;
+    }
   }
   if (H_b) {
     Mat36 J = Mat36::Zero();
     J.block<3, 3>(0, 0) = -Mat3::Identity();  // [dba, dbg]
-    *H_b = P_ * J;
+    if (full_) {
+      *H_b = J;
+    } else {
+      *H_b = P_ * J;
+    }
+  }
+  if (full_) {
+    return e;
   }
   const Eigen::Vector2d r = P_ * e;
   return r;

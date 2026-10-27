@@ -390,6 +390,9 @@ Config read_config(Reader& r) {
   r.field("imu.init_window_s", c.imu.init_window_s);
   r.field("imu.init_max_acc_std_mps2", c.imu.init_max_acc_std_mps2);
   r.field("imu.init_max_gyro_std_radps", c.imu.init_max_gyro_std_radps);
+  r.field("imu.init_max_mean_gyro_radps", c.imu.init_max_mean_gyro_radps, Range::kPositive);
+  r.field("imu.init_max_wheel_speed_mps", c.imu.init_max_wheel_speed_mps, Range::kPositive);
+  r.field("imu.init_gravity_check_sigma", c.imu.init_gravity_check_sigma, Range::kPositive);
 
   r.field("gnss.enabled", c.gnss.enabled);
   r.field("gnss.sigma_h_m", c.gnss.sigma_h_m, Range::kNonNegative);
@@ -463,6 +466,10 @@ Config read_config(Reader& r) {
   r.field("backend.static_gravity_factor", c.backend.static_gravity_factor);
   r.field(
       "backend.static_gravity_sigma_scale", c.backend.static_gravity_sigma_scale, Range::kPositive);
+  r.field("backend.static_gravity_check_keyframes",
+          c.backend.static_gravity_check_keyframes,
+          Range::kPositive);
+  r.field("backend.static_gravity_chi2_gate", c.backend.static_gravity_chi2_gate, Range::kPositive);
   r.field("backend.gnss_frame_variable", c.backend.gnss_frame_variable);
   r.angle_deg(
       "backend.gnss_frame_tilt_sigma_deg", c.backend.gnss_frame_tilt_sigma_rad, Range::kPositive);

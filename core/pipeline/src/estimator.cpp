@@ -345,6 +345,8 @@ Estimator::Stats Estimator::stats() const {
   out.n_gnss_unfused_eof = c.n_gnss_unfused_eof;
   out.n_gnss_realign = c.n_gnss_realign;
   out.n_nonfinite_imu = c.n_nonfinite_imu;
+  out.n_gravity_factor_gated = c.n_gravity_factor_gated;
+  out.n_gravity_factor_removed = c.n_gravity_factor_removed;
   const map::VoxelMap& m = s.core->voxel_map();
   out.n_map_points = m.num_points();
   out.n_map_spacing_replaced = c.n_map_spacing_replaced_cleared + m.num_spacing_replaced();

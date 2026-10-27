@@ -28,11 +28,14 @@ class StaticGravityFactor
   using Projection = Eigen::Matrix<double, 2, 3>;
 
   /// Preconditions: f_b non-zero; cov_m2ps4 symmetric positive definite ((m/s^2)^2).
+  /// `full_residual` (study only, StudySeams): the 3x1 residual e with noise cov, the round-1
+  /// form of imu_only_observability.md section 9; never set in production.
   StaticGravityFactor(gtsam::Key x,
                       gtsam::Key b,
                       const common::Vec3& f_b,
                       const common::Mat3& cov_m2ps4,
-                      const common::Vec3& g_w);
+                      const common::Vec3& g_w,
+                      bool full_residual = false);
 
   /// The rows of P: an orthonormal basis of the plane normal to f_b (unit-length f_b).
   static Projection projection(const common::Vec3& f_b);
@@ -49,6 +52,7 @@ class StaticGravityFactor
   common::Vec3 f_b_;
   common::Vec3 g_w_;
   Projection P_;
+  bool full_ = false;
 };
 
 }  // namespace mss::backend::detail

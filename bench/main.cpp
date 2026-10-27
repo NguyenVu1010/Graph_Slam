@@ -201,6 +201,10 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"n_nonfinite_imu\": %" PRIu64
                ",\n"
+               "  \"n_gravity_factor_gated\": %" PRIu64
+               ",\n"
+               "  \"n_gravity_factor_removed\": %" PRIu64
+               ",\n"
                "  \"n_map_points\": %" PRIu64
                ",\n"
                "  \"n_map_spacing_replaced\": %" PRIu64
@@ -247,6 +251,8 @@ bool write_json(const fs::path& path,
                st.n_gnss_unfused_eof,
                st.n_gnss_realign,
                st.n_nonfinite_imu,
+               st.n_gravity_factor_gated,
+               st.n_gravity_factor_removed,
                st.n_map_points,
                st.n_map_spacing_replaced,
                st.push_scan_us_p50,

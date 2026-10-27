@@ -6,6 +6,7 @@
 
 #include "mss/backend/graph.hpp"
 
+#include "study_seams.hpp"
 #include "validate.hpp"
 
 namespace mss::backend {
@@ -49,6 +50,14 @@ void Graph::add_static_gravity_factor(common::KeyId /*k*/,
                                       const common::Vec3& /*f_b*/,
                                       const common::Mat3& /*cov*/) {}
 
+common::Result<double> Graph::static_gravity_chi2() const {
+  return common::Result<double>::error("built without GTSAM");
+}
+
+bool Graph::remove_static_gravity_factor() {
+  return false;
+}
+
 void Graph::add_loop_factor(const common::LoopConstraint& /*lc*/) {}
 
 common::Result<common::Estimate> Graph::optimize() {
@@ -66,5 +75,11 @@ common::Result<common::NavState> Graph::keyframe_state(common::KeyId /*k*/) cons
 common::Result<common::Pose> Graph::gnss_frame_estimate() const {
   return common::Result<common::Pose>::error("built without GTSAM");
 }
+
+namespace detail {
+
+void set_static_gravity_full_residual(bool /*full*/) {}
+
+}  // namespace detail
 
 }  // namespace mss::backend
