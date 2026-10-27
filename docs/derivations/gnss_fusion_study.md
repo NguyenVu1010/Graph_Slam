@@ -93,6 +93,10 @@ Between the first and the last estimate the yaw moves by 1.9 deg.
   ADR-016 thresholds), the two frames differ, and the difference enters the next LiDAR
   factor.
 
+Applied in PR 4a fix round 1b: `scan_match.cov_scale` 4.7 in `config/default.yaml`. The
+LiDAR-only NEES on the box world is then 7.8 (test `LidarFactorCovarianceConsistent` keeps
+it in [3, 12]); results with it are in section 11.
+
 ## 4. Controls
 
 | Variant (GNSS sigma 0.5 m) | ATE (m) | ATE 4-DoF (m) |
@@ -248,3 +252,43 @@ that processes each scan (keyframe scans include `optimize()`), desktop WSL:
 
 No latency spike from `E`, so no separate relinearisation threshold for it. On the long run
 the fixed `T_e_w` degrades the box world 7x, the frame variable does not.
+
+## 11. Results with `scan_match.cov_scale` 4.7 (fix round 1b)
+
+Regenerated with `GnssFusionStudy` after the covariance change and the lock-out guard
+(`results/gnss-study-r1b`); sections 1 to 10 keep the numbers at `cov_scale` 1.0 that the
+diagnosis was made with. ATE in m, LiDAR NEES in brackets.
+
+| Box world | LiDAR + IMU | GNSS, fixed `T_e_w` | GNSS, perfect `T_e_w` | GNSS, frame variable |
+| --- | --- | --- | --- | --- |
+| GNSS 0.1 m | 0.0090 (7.8) | 0.0249 (97) | 0.0147 (56) | 0.0090 (7.8) |
+| GNSS 0.5 m | 0.0090 (7.8) | 0.0326 (101) | 0.0611 (75) | 0.0090 (8.2) |
+| GNSS 2.0 m | 0.0090 (7.8) | 0.0102 (30) | 0.0318 (40) | 0.0090 (8.6) |
+| GNSS 0.5 m + wheel | 0.0054 (wheel only) | 0.0316 | - | 0.0054 |
+
+The diagnosis is unchanged: with the fixed `T_e_w` the box world is still 2.8 to 3.6x worse,
+the tight-prior control still removes the damage (0.0092 m), and the frame variable is
+1.00x at every sigma.
+
+| Corridor | LiDAR + IMU | fixed `T_e_w` | perfect `T_e_w` | frame variable |
+| --- | --- | --- | --- | --- |
+| 20 s cruise, relax 1e8 | 3.95 | 0.67 | 0.71 | 1.39 |
+| 30 s cruise, relax 1e8 | 9.12 | 0.66 | 0.65 | 1.46 |
+| 60 s cruise, relax 1e8 (test) | 15.36 | 0.67 | 0.51 | 1.82 (216 factors) |
+| 60 s cruise, relax 1e4 | 15.70 | 0.50 | 0.33 | 27.8 |
+| 60 s cruise, relax 10 (shipped) | 11.48 | 12.49 | 11.00 | 12.63 (1.10x, test) |
+
+The corridor stays scenario-sensitive. The frame variable corrects the relax 1e8 corridor 8.4x
+(the component test asserts >= 2x and more than 200 factors), but less than the fixed or the
+perfect `T_e_w`, and at relax 1e4 it diverges (27.8 m, only 74 factors: the chi-square gate
+locks out and the restarts do not recover the IMU-only chain). With the shipped
+`relax_factor` 10 the LiDAR factor claims millimetres along the axis and no `T_e_w` source
+helps; the frame variable stays within 1.2x of LiDAR only (component test). PR 4b replaces
+`relax_factor` with an explicit variance along unobservable directions and will re-measure
+this table.
+
+Lock-out guard in the shipped-relax corridor with a 20 s outage (25 s to 45 s,
+`CorridorOutageRealignsAfterRejects`): without the guard no GNSS factor is added after the
+outage (49 factors, 0 after); with it the aligner restarts once and 6 factors follow
+(55 factors), ATE 12.59 m vs 12.68 m. With `relax_factor` 1e8 and `cov_scale` 4.7 the gate no
+longer locks out in this outage (larger `P`), so the test uses the shipped relax.
