@@ -3,6 +3,7 @@
 // accuracy, allocation-free non-keyframe scans and the robustness cases of the plan's
 // Review Focus list.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -657,6 +658,390 @@ TEST(PipelineComponent, CoreConstructorValidatesBuffers) {
     FAIL() << "expected std::invalid_argument";
   } catch (const std::invalid_argument& e) {
     EXPECT_NE(std::string(e.what()).find("map.window_keyframes"), std::string::npos) << e.what();
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+// GNSS fusion study (docs/derivations/gnss_fusion_study.md), skipped unless
+// MSS_GNSS_STUDY=1 (MSS_GNSS_STUDY_LONG=1 for the 10-minute latency run). Writes
+// results/<run-id>/gnss_study.md (gnss_long_run.md) under the repository; run id from
+// MSS_GNSS_STUDY_RUN_ID (default "gnss-study"). Uses the test-only CoreTestHooks seam: a perfect
+// T_e_w and the factor observer for the NEES and aligner tables.
+
+double wrap_deg(double a_rad) {
+  return std::remainder(a_rad, 2.0 * 3.14159265358979323846) * kRadToDeg;
+}
+
+double yaw_of(const common::Mat3& R) {
+  return std::atan2(R(1, 0), R(0, 0));
+}
+
+// Collects the factor statistics of one run against the box-world truth.
+class StudyObserver final : public detail::CoreObserver {
+ public:
+  explicit StudyObserver(const BoxWorldParams& p) : p_(p), T_e_w_true_(test::box_T_e_w(p)) {}
+
+  void on_lidar_factor(Timestamp t_i,
+                       Timestamp t_j,
+                       const common::Pose& T_bi_bj,
+                       const common::PoseCovariance& cov_b) override {
+    const common::Pose truth =
+        test::box_truth(p_, t_i).T_w_b.inverse() * test::box_truth(p_, t_j).T_w_b;
+    const common::Vec6 e = common::boxminus(T_bi_bj, truth);
+    lidar_nees_ += e.dot(cov_b.ldlt().solve(e));
+    lidar_err_p2_ += e.head<3>().squaredNorm();
+    lidar_tr_p_ += cov_b.topLeftCorner<3, 3>().trace();
+    ++n_lidar_;
+  }
+
+  void on_gnss_factor(Timestamp t_k,
+                      const common::GnssMeasurement& m,
+                      const common::Pose& T_e_w) override {
+    const Vec3 p_w_g = test::box_truth(p_, t_k).T_w_b * p_.p_b_g;
+    const Vec3 r_used = m.p_e_g - T_e_w * p_w_g;
+    const Vec3 r_true = m.p_e_g - T_e_w_true_ * p_w_g;
+    gnss_nees_used_ += r_used.dot(m.cov.ldlt().solve(r_used));
+    gnss_nees_true_ += r_true.dot(m.cov.ldlt().solve(r_true));
+    const double dyaw = wrap_deg(yaw_of(T_e_w.R) - yaw_of(T_e_w_true_.R));
+    frozen_yaw2_ += dyaw * dyaw;
+    ++n_gnss_;
+  }
+
+  void on_fix_accepted(Timestamp t, const common::Pose& T_e_w) override {
+    const double dyaw = wrap_deg(yaw_of(T_e_w.R) - yaw_of(T_e_w_true_.R));
+    const double dp = (T_e_w.p - T_e_w_true_.p).norm();
+    if (!aligned_) {
+      aligned_ = true;
+      first_s_ = static_cast<double>(t.ns - p_.t0_ns) * 1e-9;
+      first_yaw_deg_ = dyaw;
+      first_p_m_ = dp;
+    }
+    last_yaw_deg_ = dyaw;
+    last_p_m_ = dp;
+  }
+
+  [[nodiscard]] std::string summary() const {
+    char buf[512];
+    const double nl = n_lidar_ > 0 ? static_cast<double>(n_lidar_) : 1.0;
+    const double ng = n_gnss_ > 0 ? static_cast<double>(n_gnss_) : 1.0;
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "%.2f | %.4f / %.4f | %.2f / %.2f | %s",
+                  lidar_nees_ / nl,
+                  std::sqrt(lidar_err_p2_ / nl),
+                  std::sqrt(lidar_tr_p_ / nl),
+                  gnss_nees_used_ / ng,
+                  gnss_nees_true_ / ng,
+                  aligned_ ? (std::to_string(first_s_).substr(0, 5) +
+                              " s: " + std::to_string(first_yaw_deg_).substr(0, 6) + " deg, " +
+                              std::to_string(first_p_m_).substr(0, 5) + " m; end " +
+                              std::to_string(last_yaw_deg_).substr(0, 6) + " deg, " +
+                              std::to_string(last_p_m_).substr(0, 5) + " m; frozen yaw RMS " +
+                              std::to_string(std::sqrt(frozen_yaw2_ / ng)).substr(0, 5) + " deg")
+                                 .c_str()
+                           : "-");
+    return buf;
+  }
+
+  [[nodiscard]] double lidar_nees() const {
+    return n_lidar_ > 0 ? lidar_nees_ / static_cast<double>(n_lidar_) : 0.0;
+  }
+
+ private:
+  BoxWorldParams p_;
+  common::Pose T_e_w_true_;
+  double lidar_nees_ = 0.0;
+  double lidar_err_p2_ = 0.0;
+  double lidar_tr_p_ = 0.0;
+  std::size_t n_lidar_ = 0;
+  double gnss_nees_used_ = 0.0;
+  double gnss_nees_true_ = 0.0;
+  double frozen_yaw2_ = 0.0;
+  std::size_t n_gnss_ = 0;
+  bool aligned_ = false;
+  double first_s_ = 0.0;
+  double first_yaw_deg_ = 0.0;
+  double first_p_m_ = 0.0;
+  double last_yaw_deg_ = 0.0;
+  double last_p_m_ = 0.0;
+};
+
+// RMS position error after the best yaw + translation fit of the estimate to the truth
+// (the aligner's closed form, gnss.md section 4): deformation only.
+double ate_4dof(const BoxWorldParams& p, const std::vector<Estimate>& est) {
+  if (est.empty()) {
+    return 1e9;
+  }
+  Vec3 mean_a = Vec3::Zero();
+  Vec3 mean_b = Vec3::Zero();
+  for (const Estimate& x : est) {
+    mean_a += x.state.T_w_b.p;
+    mean_b += test::box_truth(p, x.state.t).T_w_b.p;
+  }
+  const double n = static_cast<double>(est.size());
+  mean_a /= n;
+  mean_b /= n;
+  Eigen::Matrix2d C = Eigen::Matrix2d::Zero();
+  for (const Estimate& x : est) {
+    const Vec3 a = x.state.T_w_b.p - mean_a;
+    const Vec3 b = test::box_truth(p, x.state.t).T_w_b.p - mean_b;
+    C += a.head<2>() * b.head<2>().transpose();
+  }
+  const common::Mat3 R = test::box_rz(std::atan2(C(0, 1) - C(1, 0), C(0, 0) + C(1, 1)));
+  double sum_sq = 0.0;
+  for (const Estimate& x : est) {
+    const Vec3 a = x.state.T_w_b.p - mean_a;
+    const Vec3 b = test::box_truth(p, x.state.t).T_w_b.p - mean_b;
+    sum_sq += (R * a - b).squaredNorm();
+  }
+  return std::sqrt(sum_sq / n);
+}
+
+struct StudyCase {
+  std::string name;
+  bool gnss = false;
+  bool wheel = false;
+  bool perfect = false;         // force the true T_e_w (CoreTestHooks)
+  bool frame_variable = false;  // backend.gnss_frame_variable
+  std::string extra_yaml;       // more sections (not gnss, wheel_odom, backend)
+  std::string backend_keys;     // more lines in the backend section
+};
+
+struct StudyResult {
+  double ate_m = 0.0;
+  double ate4_m = 0.0;
+  Estimator::Stats stats;
+  double lidar_nees = 0.0;
+  std::string factors;
+};
+
+StudyResult study_run(const BoxWorldParams& p,
+                      const fs::path& data,
+                      const fs::path& dir,
+                      const StudyCase& c) {
+  const std::string backend = std::string("    backend:\n      gnss_frame_variable: ") +
+                              (c.frame_variable ? "true" : "false") + "\n" + c.backend_keys;
+  const Config cfg = box_config(p, c.gnss, c.wheel, dir / c.name, backend + c.extra_yaml);
+  StudyObserver obs(p);
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  hooks.force_T_e_w = c.perfect;
+  hooks.T_e_w = test::box_T_e_w(p);
+  detail::set_core_test_hooks(&hooks);
+  const ReplayResult r = replay(data, cfg);
+  detail::set_core_test_hooks(nullptr);
+  StudyResult out;
+  out.ate_m = trajectory_errors(p, r.estimates).ate_m;
+  out.ate4_m = ate_4dof(p, r.estimates);
+  out.stats = r.stats;
+  out.lidar_nees = obs.lidar_nees();
+  out.factors = obs.summary();
+  return out;
+}
+
+class StudyReport {
+ public:
+  explicit StudyReport(const std::string& file) {
+    const char* id = std::getenv("MSS_GNSS_STUDY_RUN_ID");
+    dir_ = fs::path{MSS_REPO_DIR} / "results" / (id != nullptr ? id : "gnss-study");
+    fs::create_directories(dir_);
+    out_.open(dir_ / file);
+  }
+  [[nodiscard]] const fs::path& dir() const { return dir_; }
+  void line(const std::string& s) {
+    out_ << s << "\n";
+    std::printf("%s\n", s.c_str());
+  }
+  void header(const std::string& title) {
+    line("");
+    line("## " + title);
+    line("");
+    line(
+        "| case | GNSS factors | ATE (m) | ATE 4-DoF (m) | rebuilds | LiDAR NEES (exp. 6) | "
+        "LiDAR err / sqrt(tr cov_p) (m) | GNSS NEES used / true (exp. 3) | aligner |");
+    line("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  }
+  void row(const std::string& name, const StudyResult& r) {
+    char buf[256];
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "| %s | %llu | %.4f | %.4f | %llu | ",
+                  name.c_str(),
+                  static_cast<unsigned long long>(r.stats.n_gnss_factors),
+                  r.ate_m,
+                  r.ate4_m,
+                  static_cast<unsigned long long>(r.stats.n_map_rebuilds));
+    line(std::string(buf) + r.factors + " |");
+  }
+
+ private:
+  fs::path dir_;
+  std::ofstream out_;
+};
+
+TEST(PipelineComponent, GnssFusionStudy) {
+  const char* on = std::getenv("MSS_GNSS_STUDY");
+  if (on == nullptr || std::string(on) != "1") {
+    GTEST_SKIP() << "set MSS_GNSS_STUDY=1";
+  }
+  StudyReport rep("gnss_study.md");
+  rep.line("# GNSS fusion study (generated by PipelineComponent.GnssFusionStudy)");
+  const std::string tight = "      prior_pos_sigma_m: 0.001\n      prior_rot_sigma_deg: 0.01\n";
+  const std::string cov5 = "    scan_match:\n      cov_scale: 5.0\n";
+  const std::string rebuild0 =
+      "    map:\n      rebuild_trans_m: 1.0e-6\n      rebuild_rot_deg: 1.0e-6\n";
+
+  rep.header("Box world (sections 1 to 4, 9), fixed T_e_w unless 'frame variable'");
+  for (const double sigma_m : {0.1, 0.5, 2.0}) {
+    BoxWorldParams p;
+    p.gnss_sigma_m = sigma_m;
+    const std::string tag = "s" + std::to_string(sigma_m).substr(0, 3);
+    const fs::path dir = rep.dir() / ("box_" + tag);
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    std::vector<StudyCase> cases;
+    if (sigma_m == 0.5) {
+      cases.push_back({"LiDAR only", false, false, false, false, "", ""});
+      cases.push_back({"LiDAR + wheel", false, true, false, false, "", ""});
+      cases.push_back({"GNSS + wheel, aligner", true, true, false, false, "", ""});
+      cases.push_back({"GNSS + wheel, frame variable", true, true, false, true, "", ""});
+      cases.push_back({"tight prior, LiDAR only", false, false, false, false, "", tight});
+      cases.push_back({"tight prior, aligner", true, false, false, false, "", tight});
+      cases.push_back({"tight prior, perfect", true, false, true, false, "", tight});
+      cases.push_back({"cov_scale 5, LiDAR only", false, false, false, false, cov5, ""});
+      cases.push_back({"cov_scale 5, aligner", true, false, false, false, cov5, ""});
+      cases.push_back({"cov_scale 5, perfect", true, false, true, false, cov5, ""});
+      cases.push_back(
+          {"cov_scale 5 + tight prior, aligner", true, false, false, false, cov5, tight});
+      cases.push_back({"rebuild thresholds ~0, aligner", true, false, false, false, rebuild0, ""});
+      cases.push_back({"rebuild thresholds ~0, perfect", true, false, true, false, rebuild0, ""});
+    }
+    cases.push_back({"GNSS " + tag + ", aligner", true, false, false, false, "", ""});
+    cases.push_back({"GNSS " + tag + ", perfect", true, false, true, false, "", ""});
+    cases.push_back({"GNSS " + tag + ", frame variable", true, false, false, true, "", ""});
+    for (StudyCase& c : cases) {
+      const std::string label = c.name;
+      c.name = tag + "_" + std::to_string(&c - cases.data());
+      rep.row(label + " (" + tag + ")", study_run(p, dir / "data", dir, c));
+    }
+  }
+
+  rep.header("Degenerate corridor (sections 8, 9)");
+  for (const double motion_s : {20.0, 30.0, 60.0}) {
+    BoxWorldParams p = corridor_params();
+    p.motion_s = motion_s;
+    const std::string tag = std::to_string(static_cast<int>(motion_s)) + " s";
+    const fs::path dir = rep.dir() / ("corridor_" + std::to_string(static_cast<int>(motion_s)));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    for (const char* relax : {"10.0", "1.0e4", "1.0e8"}) {
+      if (motion_s != 60.0 && std::string(relax) != "1.0e8") {
+        continue;
+      }
+      const std::string yaml =
+          std::string("    preprocess:\n      max_range_m: 10.0\n") +
+          "    degeneracy:\n      enabled: true\n      relax_factor: " + relax + "\n";
+      const std::vector<StudyCase> cases = {
+          {"lidar", false, false, false, false, yaml, ""},
+          {"aligner", true, false, false, false, yaml, ""},
+          {"perfect", true, false, true, false, yaml, ""},
+          {"framevar", true, false, false, true, yaml, ""},
+      };
+      for (StudyCase c : cases) {
+        const std::string label = tag + ", relax " + relax + ", " + c.name;
+        c.name = std::string("r") + relax + "_" + c.name;
+        rep.row(label, study_run(p, dir / "data", dir, c));
+      }
+    }
+  }
+}
+
+// Review I-7: optimize() cost with the frame variable E connected to every GNSS keyframe,
+// on a 10-minute box-world drive. Per-scan wall time of run_once() (the call that processes
+// a scan; keyframe scans include optimize()).
+TEST(PipelineComponent, GnssFusionStudyLongRun) {
+  const char* on = std::getenv("MSS_GNSS_STUDY_LONG");
+  if (on == nullptr || std::string(on) != "1") {
+    GTEST_SKIP() << "set MSS_GNSS_STUDY_LONG=1";
+  }
+  StudyReport rep("gnss_long_run.md");
+  rep.line("# GNSS long run (generated by PipelineComponent.GnssFusionStudyLongRun)");
+  rep.line("");
+  rep.line(
+      "| case | scans | keyframes | GNSS factors | ATE (m) | p50 (ms) | p99 (ms) | max (ms) |");
+  rep.line("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  BoxWorldParams p;
+  p.motion_s = 600.0;
+  const fs::path dir = rep.dir() / "long";
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  for (const bool frame_variable : {false, true}) {
+    const std::string backend = std::string("    backend:\n      gnss_frame_variable: ") +
+                                (frame_variable ? "true" : "false") + "\n";
+    const Config cfg =
+        box_config(p, true, false, dir / (frame_variable ? "framevar" : "fixed"), backend);
+    auto opened = io::DatasetReader::open(dir / "data", cfg.realtime.max_points_per_scan);
+    ASSERT_TRUE(opened.is_ok()) << opened.reason();
+    io::DatasetReader reader = std::move(opened).value();
+    Estimator est(cfg);
+    ScanFrame scan(cfg.realtime.max_points_per_scan);
+    io::Record rec;
+    std::vector<double> ms;
+    std::vector<Estimate> estimates;
+    Timestamp last{};
+    std::uint64_t n_scans = 0;
+    for (;;) {
+      const auto more = reader.next(rec, scan);
+      if (!more.is_ok() || !more.value()) {
+        break;
+      }
+      switch (rec.kind) {
+        case io::RecordKind::kImu:
+          (void)est.push_imu(rec.imu);
+          break;
+        case io::RecordKind::kGnss:
+          (void)est.push_gnss(rec.gnss);
+          break;
+        case io::RecordKind::kOdom:
+          (void)est.push_odom(rec.odom);
+          break;
+        case io::RecordKind::kLidar:
+          (void)est.push_scan(scan);
+          break;
+        case io::RecordKind::kGt:
+          break;
+      }
+      const auto t0 = std::chrono::steady_clock::now();
+      est.run_once();
+      const auto t1 = std::chrono::steady_clock::now();
+      const Estimate e = est.latest_state();
+      if (e.state.t != Timestamp{} && e.state.t != last) {
+        estimates.push_back(e);
+        last = e.state.t;
+      }
+      const std::uint64_t n = est.stats().n_scans;
+      if (n != n_scans) {
+        n_scans = n;
+        ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+      }
+    }
+    est.flush();
+    std::sort(ms.begin(), ms.end());
+    const auto pct = [&](double q) {
+      return ms[std::min(ms.size() - 1,
+                         static_cast<std::size_t>(q * static_cast<double>(ms.size())))];
+    };
+    const Estimator::Stats st = est.stats();
+    char buf[256];
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "| %s | %zu | %llu | %llu | %.4f | %.3f | %.3f | %.3f |",
+                  frame_variable ? "frame variable" : "fixed T_e_w",
+                  ms.size(),
+                  static_cast<unsigned long long>(st.n_keyframes),
+                  static_cast<unsigned long long>(st.n_gnss_factors),
+                  trajectory_errors(p, estimates).ate_m,
+                  pct(0.5),
+                  pct(0.99),
+                  ms.back());
+    rep.line(buf);
   }
 }
 

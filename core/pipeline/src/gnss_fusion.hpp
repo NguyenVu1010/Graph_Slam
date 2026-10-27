@@ -56,6 +56,12 @@ class GnssFusion {
                       std::array<common::GnssMeasurement, kMaxAuxQueue>& out);
 
   [[nodiscard]] bool aligned() const { return aligned_; }
+  /// Test-only (CoreTestHooks): use `T_e_w` from now on, aligned, without the aligner.
+  void force_T_e_w(const common::Pose& T_e_w) {
+    T_e_w_ = T_e_w;
+    aligned_ = true;
+    forced_ = true;
+  }
   /// Latest aligner estimate (identity until aligned()). Maps w to e.
   [[nodiscard]] const common::Pose& T_e_w() const { return T_e_w_; }
   /// Accepted fixes dropped from the full pending queue so far.
@@ -75,6 +81,7 @@ class GnssFusion {
   double max_cov_m2_;
   double chi2_gate_;
   int consecutive_rejects_ = 0;
+  bool forced_ = false;  // force_T_e_w: the aligner is never run
   std::uint64_t n_realign_ = 0;
   common::Vec3 p_b_g_;
   gnss::GnssAligner aligner_;

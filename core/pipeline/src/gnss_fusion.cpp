@@ -36,7 +36,7 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
     }
     common::Status chi2 = gnss::chi_square_gate(r, s_e, chi2_gate_);
     if (!chi2.is_ok()) {
-      if (++consecutive_rejects_ < cfg_.max_consecutive_rejects) {
+      if (forced_ || ++consecutive_rejects_ < cfg_.max_consecutive_rejects) {
         out = FixOutcome::kChiSquare;
         return chi2;
       }
@@ -51,7 +51,9 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
       consecutive_rejects_ = 0;
     }
   }
-  const common::Result<common::Pose> T = aligner_.update(m.p_e_g, T_w_b_fix, p_b_g_);
+  const common::Result<common::Pose> T = forced_
+                                             ? common::Result<common::Pose>::error("forced T_e_w")
+                                             : aligner_.update(m.p_e_g, T_w_b_fix, p_b_g_);
   if (T.is_ok()) {
     T_e_w_ = T.value();
     aligned_ = true;
