@@ -105,7 +105,7 @@ git commit -m "feat(sim): synthetic bag with static start, speed ramp and config
   - `plot_xy(est_path: Path, gt_path: Path, out_png: Path) -> None` (aligned est over gt, matplotlib Agg).
   - CLI `python -m mss_eval.ate <est.tum> <gt.tum> [--plot out.png]` prints `{"ate_rmse_m": ..., "n_pairs": ..., "n_unmatched": ...}` as one JSON line; exit 2 on error.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 ```python
 def test_ev01_self_is_zero(tmp_path) -> None             # EV-01: ate(x, x).rmse_m < 1e-12
 def test_rigid_offset_removed(tmp_path) -> None          # est = Rz(30 deg) gt + (5, -3, 1): rmse < 1e-9
@@ -117,10 +117,10 @@ def test_associate_nearest_within_tolerance() -> None    # Review Focus 1: est 1
 def test_too_few_pairs_raises(tmp_path) -> None          # 9 pairs, min_pairs 10 -> ValueError
 def test_cli_prints_json(tmp_path) -> None               # subprocess, exit 0, keys present
 ```
-- [ ] **Step 2: Run** `python -m pytest tests/python/test_ate.py -v`. Expected: FAIL (module missing).
-- [ ] **Step 3: Implement** per Interfaces (Umeyama via SVD of the cross-covariance with the reflection fix).
-- [ ] **Step 4: Run** the same command, then ruff. Expected: PASS, clean.
-- [ ] **Step 5: Commit**
+- [x] **Step 2: Run** `python -m pytest tests/python/test_ate.py -v`. Expected: FAIL (module missing).
+- [x] **Step 3: Implement** per Interfaces (Umeyama via SVD of the cross-covariance with the reflection fix).
+- [x] **Step 4: Run** the same command, then ruff. Expected: PASS, clean.
+- [x] **Step 5: Commit**
 ```bash
 git add eval/mss_eval/ate.py tests/python/test_ate.py eval/README.md
 git commit -m "feat(eval): ATE RMSE with SE(3) alignment from TUM files"
