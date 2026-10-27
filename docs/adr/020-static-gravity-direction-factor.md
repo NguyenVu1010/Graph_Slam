@@ -41,10 +41,19 @@ hai đại lượng. Prior nghiêng chặt sẽ ghim sai độ nghiêng khi IMU 
    - `||f| - g| <= imu.init_gravity_check_sigma` (3) x sqrt(phương sai trung bình + prior bias
      acc^2).
 4. **Kiểm tra nhất quán.** Sau keyframe `backend.static_gravity_check_keyframes` (5), nếu
-   chi-square của factor vượt `backend.static_gravity_chi2_gate` (5,991, 2 bậc tự do, 0,95),
-   factor bị gỡ khỏi iSAM2 (`removeFactorIndices`) và khỏi tập dùng để dựng lại, đếm
-   `n_gravity_factor_removed` (Stats, bench.json), ghi một cảnh báo (`Graph::static_gravity_chi2`,
+   thống kê innovation của factor so với phần còn lại của đồ thị (`backend_factors.md` §6c:
+   `e^T S^-1 e`, `S = I - J P J^T`, tính qua `S^-1 = I + J P_rest J^T`) vượt
+   `backend.static_gravity_chi2_gate` (5,991, 2 bậc tự do, 0,95), factor bị gỡ khỏi iSAM2
+   (`removeFactorIndices`) và khỏi tập dùng để dựng lại, đếm `n_gravity_factor_removed`
+   (Stats, bench.json), ghi một cảnh báo (`Graph::static_gravity_chi2`,
    `Graph::remove_static_gravity_factor`, bổ sung).
+   - Không tính được thống kê (trị riêng nhỏ nhất của `S` <= 1e-9, tức factor là thông tin
+     duy nhất về đại lượng nó đo): giữ factor, đếm `n_gravity_factor_unchecked`.
+   - Gỡ thất bại (iSAM2 ném lỗi hoặc ước lượng không hữu hạn): iSAM2 được dựng lại, factor ở
+     lại, ghi cảnh báo, không thử lại (kiểm tra chạy một lần).
+   - Vòng sửa 1 dùng phần dư hậu nghiệm `|W r|^2`: kỳ vọng khi đứng yên là `2 - leverage`, nhỏ
+     hơn 2, nên 5 % chỉ là cận trên của tỉ lệ gỡ nhầm và độ nhạy với cửa sổ đang chuyển động
+     thấp hơn. Thống kê innovation thay thế nó.
 5. `Graph::gnss_frame_estimate()` (bổ sung, chẩn đoán): biến `E = T_e_w` của ADR-019 sau lần
    tối ưu gần nhất.
 
@@ -80,6 +89,11 @@ trung vị. Số nhỏ hơn là tốt hơn.
 - Với các dạng neo độ nghiêng bằng thông tin của cửa sổ (đầy đủ nhiễu x1, chỉ hướng, dạng chọn),
   sai số yaw cuối của `E` có trung vị 2,7 / 3,5 / 3,5 mrad so với 5,3 mrad của main (5 seed).
   Dạng quá lỏng hoặc quá chặt (x10, /10) thì không. Factor không đẩy sai số sang yaw của `E`.
+- **Số lần kiểm tra gỡ factor theo cảnh** (dạng chọn, 15 seed, mọi cảnh khởi động đứng yên;
+  mục 10g): hành lang GNSS 6/15, hành lang chỉ LiDAR 2/15, box 0/15, hành lang tròn 0/15,
+  hành lang thẳng 2/13 (2 lần chạy không tới 5 keyframe); không lần nào "không tính được".
+  Các trung vị trong bảng trên không đổi so với khi tắt kiểm tra; đuôi của hai hành lang 60 s
+  ngắn lại (GNSS max 18,5 xuống 11,3 m; chỉ LiDAR 205 xuống 107 m).
 - E-01 / E-03 (tạo lại bằng `run_integration.py`, main `cc642be`): 2,181 / 2,175 mm so với
   2,227 / 2,139 mm. Factor được thêm và giữ. Bench E-01 không đổi: p50 4,19 / 4,18 ms, p95
   5,61 / 5,88 ms (mục 10f).
@@ -99,16 +113,32 @@ trung vị. Số nhỏ hơn là tốt hơn.
   động đang chuyển động mà bộ khởi tạo vẫn chấp nhận (quay đều, tăng tốc đều) bị cổng đứng yên
   chặn, hoặc bị kiểm tra nhất quán gỡ factor (mục 12):
   - quay 0,25 rad/s: bị chặn;
-  - mở cổng gyro: chi-square 43, bị gỡ;
-  - tăng tốc 6 s / 2 s: chi-square 29 / 207, bị gỡ;
+  - mở cổng gyro: thống kê innovation 106,7, bị gỡ;
+  - tăng tốc 6 s / 2 s: 38,1 / 233, bị gỡ;
   - ATE không kém quá 10 % so với khi tắt factor (đo được: bằng nhau hoặc +2 %).
+- **Giới hạn: các cổng không bảo đảm hết điều kiện đứng yên.** Khởi động khi đang tăng tốc đều
+  theo đường thẳng, trong cảnh không quan sát trục di chuyển, không có odometry bánh xe, thì
+  không thống kê nào phát hiện được:
+  - cổng đứng yên cho qua (gyro gần 0, kiểm tra độ lớn chỉ là bậc hai);
+  - độ nghiêng `a / g` mà cửa sổ đọc là đúng mode rỗng LiDAR không thấy, và bản đồ được dựng với
+    chính độ nghiêng đó, nên phần còn lại của đồ thị đồng ý với nó.
+
+  Không có factor thì lần chạy cũng bắt đầu với cùng độ nghiêng đó (`R_w_b` của bộ khởi tạo lấy
+  từ cùng giá trị trung bình), nên factor không làm trường hợp này tệ hơn nhiều. "Khởi động khi
+  đứng yên" vẫn là điều kiện tiên quyết mà các cổng không bảo đảm hết.
+- **Kiểm tra gỡ factor cả khi đứng yên** khi phần còn lại của đồ thị chưa nhất quán ở keyframe
+  5: 6/15 lần trên hành lang GNSS (thống kê 37 đến 147), cao hơn nhiều so với 5 % của
+  chi-square(2). Nguyên nhân khả dĩ (chưa tách riêng): factor LiDAR quá tự tin (NEES box 8,57
+  so với 6) và biến `E` còn đang căn chỉnh trên đoạn thẳng ngắn. Trung vị không đổi; hai lần
+  chạy hành lang thẳng kém đi 0,6 đến 1,3 m ở điểm cuối (mục 10g).
 - **Factor sửa được:** trôi cuối đường trong hành lang chỉ IMU (tròn: trung vị 21,7 xuống 1,45 m;
   RMS 11,6 xuống 1,36 m).
 - **Factor không sửa được:**
   - Các lệch giữa đường: tỉ số `|x err(t)| / sigma_DR(t)` lớn nhất có trung vị 7,1 và tối đa
     23,8, lúc 9 đến 12 s, cùng sai số nghiêng tạm thời 8 đến 11 mrad.
   - **Khoảng hở đã biết:** hành lang thẳng không đạt 3 sigma_DR (trung vị 2,72 m = 3,9 sigma_DR).
-    Test thành phần ghi cận từ độ phân tán 15 seed.
+    Test thành phần giới hạn trung vị seed 42..44 bằng 2 lần giá trị đo (1,86 / 1,88 m); khi tắt
+    factor các seed đó cho 6,90 / 3,52 m nên test thất bại.
 - Độ nghiêng của dạng chọn còn 2 mrad sau 60 s trên hành lang chỉ LiDAR (5 seed, mục 11); nó bắt
   đầu trôi khi cửa sổ bản đồ quên keyframe đầu. ATE 60 s chỉ LiDAR qua 15 seed: trung vị 37,5 m so
   với 24,9 m của main, trong độ phân tán. Neo lại định kỳ là việc tiếp theo.

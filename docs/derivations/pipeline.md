@@ -168,11 +168,16 @@ the initialisation scan (ADR-020).
 
 Keyframe-0 gravity factor (ADR-020). It is added only when the window also passes the rest
 gate: |mean gyro| <= `imu.init_max_mean_gyro_radps`, no wheel speed above
-`imu.init_max_wheel_speed_mps` inside the window (when `wheel_odom.enabled`), and
+`imu.init_max_wheel_speed_mps` inside the window `[t - init_window_s, t]` (when
+`wheel_odom.enabled`; samples are checked as they are consumed, in time order, so samples
+after `t` already queued do not count), and
 ||f| - g| <= `imu.init_gravity_check_sigma` x sqrt(sigma_mean^2 + prior_bias_acc^2). A
 failure is logged and counted (`Stats::n_gravity_factor_gated`). After keyframe
-`backend.static_gravity_check_keyframes` is optimised, the factor is removed if its chi-square
-exceeds `backend.static_gravity_chi2_gate` (`Stats::n_gravity_factor_removed`, one warning).
+`backend.static_gravity_check_keyframes` is optimised, the factor is removed if its
+innovation statistic (`backend_factors.md` section 6c) exceeds
+`backend.static_gravity_chi2_gate` (`Stats::n_gravity_factor_removed`, one warning). A
+failed removal leaves the factor (warning, no retry); a statistic that cannot be evaluated
+leaves it too (`Stats::n_gravity_factor_unchecked`, one info line).
 
 ## 9. Test-only seam
 
