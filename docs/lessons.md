@@ -1,0 +1,216 @@
+# Lessons learned
+
+Problems met while building this system, in the order they surfaced, with the cause, the fix
+and the rule that would have avoided them. Each entry names the PR, ADR or derivation that
+holds the numbers. The list exists because every one of these problems is generic: a new
+LiDAR-inertial system on a factor graph will meet them again.
+
+Format of an entry: **symptom** → cause → fix → rule.
+
+## 1. Estimation
+
+### 1.1 An unobserved axis drifts far beyond inertial dead reckoning (PR 4d, ADR-020, `derivations/imu_only_observability.md`)
+
+- **Symptom.** In a corridor whose end walls are out of LiDAR range, LiDAR + IMU drifted 5 to
+  97 m along the corridor in 17 to 20 s. Inertial dead reckoning with the same IMU predicts
+  about 0.6 m (1σ). The keyframe count rose with the drift (23 → 28 → 99 keyframes), which
+  is the first visible sign.
+- **Cause.** With world x unobserved, a tilt θ about the horizontal axis normal to x is
+  indistinguishable in the IMU factors from an acceleration g·θ along x. The only absolute
+  tilt anchor was the keyframe-0 prior at 1° (17.5 mrad), while the static initialisation
+  window had measured the tilt to 0.42 mrad. The backend's tilt is written into the map through
+  keyframe insertion and rebuilds, so the map re-anchors the LiDAR to the wrong tilt and the
+  error compounds (tilt reached 150 to 212 mrad in the controls). Front-end feedback,
+  relinearisation, the bias prior and the keyframe rule were tested one by one: amplifiers,
+  not the cause.
+- **Fix.** A gravity-direction factor on keyframe 0 built from the static window's mean
+  specific force and its covariance, tying tilt and horizontal accelerometer bias together
+  the way the window does (a bare tight tilt prior pins the wrong tilt when the IMU has a real
+  bias). Circle end error 21.7 → 1.45 m, straight 3.56 → 2.72 m over 15 seeds.
+- **Rule.** Every absolute anchor placed at initialisation must carry the information the
+  initialiser actually measured, in the same parametrisation. A loose prior on a mode that
+  nothing else observes is not "safe": it is the mode the whole solution will drift along.
+  Instrument the keyframe count; a rising count on a straight run means drift.
+
+### 1.2 A consistency self-check fires at random when the graph's covariances are not calibrated (PR 4d, `derivations/imu_only_observability.md` §10g)
+
+- **Symptom.** A chi-square(2) check meant to remove the gravity factor after a start in
+  motion removed it in 14 % of runs that started at rest (40 % in the GNSS corridor). Its
+  statistic at rest (37 to 147) overlapped its values at true moving starts (38 to 233), so no
+  threshold separates the cases.
+- **Cause.** The rest of the graph is over-confident at the check keyframe (LiDAR NEES 8.6
+  against the expected 6; the GNSS frame variable still aligning). A hypothesis test built on
+  miscalibrated covariances has an unknown false-alarm rate. Using the innovation statistic
+  instead of the posterior residual did not change the rate.
+- **Fix.** The check ships off; the rest gate on the initialisation window (gyro, wheel speed)
+  stays. A wrong gravity factor at a straight-acceleration start costs at most 2 % ATE because
+  the initialiser already uses the same window mean for the initial attitude.
+- **Rule.** Calibrate NEES of every factor before adding any self-check that depends on it.
+  Measure a check's false-alarm rate on at-rest data across many seeds before shipping it.
+  Compare the cost of the failure the check prevents with the cost of its false alarms.
+
+### 1.3 A frame alignment estimated once and frozen becomes a bias (PR #19, ADR-017 → ADR-019, `derivations/gnss_fusion_study.md`)
+
+- **Symptom.** Adding GNSS at 0.5 m sigma made the box-world ATE 3.4 to 3.7× worse than
+  LiDAR-only. The first proposal (withhold GNSS factors until the aligner's spread is large)
+  helped only while it never opened, and in a corridor it delayed alignment until the chain
+  had drifted.
+- **Cause.** The ENU-to-world transform `T_e_w` from the aligner was slightly wrong and fixed;
+  every GNSS factor then pulled the loosely anchored start pose and heading through that
+  wrong frame.
+- **Fix.** `T_e_w` is one `Pose3` variable in the graph shared by all GNSS factors, seeded from
+  the aligner with configurable priors. Box ATE with GNSS 0.0322 → 0.0090 m (1.00× LiDAR-only);
+  E-01 0.0709 → 0.0022 m.
+- **Rule.** Any transform estimated from data at start-up (sensor-to-world frame, extrinsic
+  refinement, time offset) is a variable, not a constant. If it must be frozen, bound its
+  error and show the factors that use it tolerate that error.
+
+### 1.4 A rejection gate with no escape path locks out the sensor for good (PR #19)
+
+- **Symptom.** After a 20 s GNSS outage, every later fix failed the chi-square gate and no
+  GNSS factor was ever added again, because the estimate had drifted and the gate compared
+  new fixes against a drifted prediction.
+- **Fix.** After `gnss.max_consecutive_rejects` consecutive rejections the aligner restarts
+  (counter `n_gnss_realign`). The guard length (60 fixes = 12 s at 5 Hz) is set longer than the
+  longest multipath hold in the simulation (10 s) so biased fixes are not re-admitted.
+- **Rule.** Every gate needs a documented way back in, and the way back in must be argued
+  against the longest plausible run of genuinely bad measurements.
+
+### 1.5 Factor covariances are over-confident until measured (PR #19, `scan_match.cov_scale`)
+
+- **Symptom.** LiDAR scan-to-map NEES was 28 against an expected 6.
+- **Fix.** `cov_scale` 4.7, chosen from the measured NEES (28 → 7.8); a test keeps NEES in
+  [3, 12]. Both main and later branches still leave that band on some seeds, so the band is a
+  guard, not a proof.
+- **Rule.** Report NEES per factor type on a known-answer scene before fusing it with anything
+  else. Treat a scan-to-map covariance (absolute information) re-used as a relative factor with
+  suspicion.
+
+### 1.6 Degeneracy detection is defeated by small spurious information (PR 4b, `derivations/degeneracy.md`, `scan_match.md`)
+
+- **Symptom.** Eigenvalue-ratio detection needed scene-specific thresholds (Schur relative
+  mode needed a ratio of 0.03 with a 1.3× margin and produced roll false positives). A
+  sigma-based criterion could not flag the corridor axis because 1.15 % of the information
+  along it leaks from wall–floor and wall–ceiling edge neighbourhoods, which is enough for a
+  3.8 mm posterior standard deviation.
+- **Rule.** A direction is only "unobserved" if the leak is below the noise floor; measure the
+  leak (information along the axis as a fraction of the dominant axis) before designing the
+  detector. Prefer absolute sigma thresholds over ratios, and expect the map's edge
+  neighbourhoods to supply false information.
+
+### 1.7 Map storage policy creates registration bias (PR #20, ADR-007 amendment, `derivations/map.md`)
+
+- **Symptom.** A 9.5 mm / 0.08° bias in the S-02 known-answer test at the shipped
+  configuration.
+- **Cause.** A ring of 20 points per 0.5 m voxel filled from consecutive scans at nearby poses
+  puts 32 candidate points into 20 slots on faces at voxel boundaries, producing two nearly
+  collinear point columns on two faces; a 5-NN neighbourhood of such columns is exactly
+  coplanar with a diagonal normal.
+- **Fix.** Minimum point spacing in a voxel (replace-nearest), evaluated and kept as an
+  option: it removes the bias (0.38 mm) and 29 % of map points but costs E-01 LiDAR-only ATE
+  in the first sparse seconds.
+- **Rule.** A map is a sampling policy. Test the map's point distribution on a planar face and
+  an edge before tuning the matcher.
+
+### 1.8 A gate that looks good on a noise-free simulator is not evidence (PR #20)
+
+- **Symptom.** A planarity gate at ratio 0.01 improved E-01 from 2.20 to 0.95 mm on the
+  noise-free simulator and removed 90 % of the corridor-axis leak.
+- **Cause.** At 1 cm range noise about half of all planar 5-NN patches fail the same gate
+  (Monte-Carlo); on a replay with default extrinsics ATE went 14.8 → 24.0 mm and p95 latency
+  6.1 → 11.5 ms.
+- **Rule.** Evaluate every geometric gate with the sensor noise model on, and prefer a
+  noise-aware form (`λ_min > ρ·λ_mid + n·(k·σ_range)²`) over a pure ratio.
+
+### 1.9 Library Jacobian approximations fail at large residuals (PR 4e, ADR-015 note)
+
+- **Symptom.** In a control run with the LiDAR constraint removed along one axis the estimate
+  ended at +5772 m while the marginal sigma claimed 14 m.
+- **Cause.** GTSAM's `BetweenFactor<Pose3>` approximates the `Logmap` derivative unless the
+  library is built with `GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR`. The approximation is fine for
+  millimetre residuals and wrong for metre residuals, which is exactly when the covariance
+  matters most.
+- **Fix.** A custom relative-pose factor using the exact right-perturbation Jacobians already
+  tested in the odometry module.
+- **Rule.** Check every analytic Jacobian against numerical differences at small and at large
+  residuals. Read the build flags of a dependency before trusting its defaults.
+
+### 1.10 Failure paths in the optimiser must re-anchor (PR #11)
+
+- **Symptom.** A failed `optimize()` left an island of keyframes with no prior, and a NaN
+  initial guess reached the optimiser.
+- **Fix.** Pose prior on orphaned keyframes after a failed optimisation; all inputs sanitised
+  (`values_finite`) before and after every update, including after factor removal.
+- **Rule.** Each `optimize()` failure path gets a test, and the graph after any removal or
+  rebuild is checked for connectivity and finiteness.
+
+### 1.11 End error hides mid-run excursions (PR 4d)
+
+- **Symptom.** The IMU-only circle ends within 1.45 m but reaches 24× the dead-reckoning sigma
+  at 9 to 12 s before the map pulls it back.
+- **Rule.** Report RMS and maximum ratio over the run, not only the end error.
+
+### 1.12 Single-seed tests are fragile both ways (PRs #19, 4d)
+
+- **Symptom.** Five seeds happened to be the baseline's five best; a single-seed NEES band
+  was left by both the baseline and the candidate on other seeds; corridor ATE tails are
+  heavy (median 3.0 m, mean 9.3 m, max 27.9 m over 15 seeds).
+- **Rule.** Decide defaults on 15 or more paired seeds with wins/losses and a bootstrap CI of
+  the median difference. A bound taken from the worst seed is a regression guard, not evidence
+  for a feature; say which in the test comment.
+
+### 1.13 Tilt wanders once the map window forgets the early keyframes (PR 4d, open)
+
+- **Symptom.** With the gravity factor on, the backend tilt error is 1.5 to 2.9 mrad for the
+  first 40 s and grows afterwards; each LiDAR factor's tilt error is 5 to 8 mrad.
+- **Status.** Periodic gravity re-anchoring at static windows is the planned follow-up; the
+  current test corridors never stop, so it cannot yet be evaluated.
+- **Rule.** Decide how every absolute quantity (gravity direction, heading, scale) is
+  re-anchored over time, not only at start.
+
+## 2. Simulation and evaluation
+
+### 2.1 Coupled calibration errors (PR #21, ADR-011 §3)
+
+- **Symptom.** The planned wheel-calibration errors gave a yaw drift of 9.1°/rev instead of
+  the stated 0.9°/rev.
+- **Cause.** Yaw scale is `(r_b/r_t)(track_t/track_b)`: radius and track errors couple, and
+  the first arithmetic ignored the radius factor. The implementer caught it.
+- **Rule.** Write the formula next to every simulated error, verify it with a consistency test
+  (`test_sim03_consistency` ties `config/sim/*.yaml` to `sim/noise/default.yaml`), and have the
+  person who implements a number re-derive it.
+
+### 2.2 Determinism needs the whole stack (PR #17, ADR-018)
+
+- **Symptom.** `deterministic: true` did not give bit-identical runs: GTSAM uses TBB.
+- **Fix.** A process-lifetime `tbb::global_control` limiting parallelism to 1 when the backend
+  is configured single-threaded; the exported CMake config declares the TBB dependency.
+- **Rule.** List every library that spawns threads and show the bit-identical test passes
+  with each one constrained.
+
+### 2.3 Hot-path allocations arrive through the side door (PR #13)
+
+- **Symptom.** A heap allocation on the GNSS path and an epoch mismatch (pose at fix time
+  versus pose at the latest keyframe) were found in review, not by tests.
+- **Rule.** Allocation tests per message path, and a test that the measurement is paired with
+  the state at the measurement's time.
+
+## 3. Process
+
+- **Parked findings become main's defects.** Items parked after review (the BetweenFactor
+  Jacobian, the IMU-only drift) were later load-bearing for other PRs. Rule since PR #16:
+  every finding and known limitation is fixed before merge, or the owner decides explicitly.
+- **Diagnosis before fix.** Each estimation fix above was preceded by a committed study
+  (`MSS_*_STUDY=1` harness) that isolated one candidate per experiment. The fix proposed in
+  the brief was wrong twice (alignment gate, tight tilt prior); the study showed why.
+- **Defaults by evidence, flags by default.** Every change ships behind a key that defaults to
+  the previous behaviour, then the evaluation sets the default, with the numbers next to the
+  key.
+- **Keep the integration gate honest.** E-01..E-03 run on every PR with the scenario overlay;
+  baselines change only in a dedicated PR with before/after plots.
+- **Repository hygiene.** No personal data or machine paths in tracked files (found in
+  `package.xml` maintainers and plan documents); scenario constants belong to the scenario
+  YAML, not to a script.
+- **Parallel branches.** Squash merges of parallel module branches conflict on shared
+  CMake lists; rebase with union resolution, de-duplicate, build, then force-push, and re-open
+  the PR if CI does not trigger.

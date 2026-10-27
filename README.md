@@ -4,7 +4,7 @@ LiDAR-inertial SLAM on a factor graph with GNSS and wheel-odometry factors. C++1
 without ROS, a thin ROS 2 Jazzy adapter, Gazebo Harmonic simulation, and a latency
 benchmark that runs on a Raspberry Pi 5.
 
-Working rules: `CLAUDE.md`. Conventions: `docs/conventions.md`. Decisions: `docs/adr/`.
+Working rules: `CLAUDE.md`. Conventions: `docs/conventions.md`. Decisions: `docs/adr/`. Problems met and the rules they taught: `docs/lessons.md`.
 
 ## Layout
 
