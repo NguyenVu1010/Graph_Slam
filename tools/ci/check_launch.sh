@@ -31,6 +31,8 @@ status="${PIPESTATUS[0]}"
 set -e
 
 if [ "$status" -ne 124 ]; then
+  # --kill-after reaches only ros2 launch (--foreground), so a hung mss_node could be orphaned.
+  pkill -KILL -x mss_node || true
   echo "LAUNCH CHECK FAILED: ros2 launch exited with $status before ${run_s} s (124 = still running)" >&2
   exit 1
 fi
