@@ -21,7 +21,7 @@ mss_node:
     wheel_odom:
       enabled: true
       wheel_radius_m: 0.101   # believed, not true (0.10)
-      track_m: 0.394          # believed, not true (0.40)
+      track_m: 0.399          # believed, not true (0.40)
       speed_sigma_mps: 0.02
     lidar:
       range_sigma_m: 0.03
