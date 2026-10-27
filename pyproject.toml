@@ -27,6 +27,10 @@ extend-exclude = ["docs"]
 select = ["E", "F", "W", "I", "UP", "B", "ANN"]
 ignore = ["ANN401"]
 
+[tool.ruff.lint.isort]
+# ROS 2 launch packages; sim/launch/ (launch files, not a package) must not make them first-party.
+known-third-party = ["launch", "launch_ros"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 pythonpath = ["eval", "sim", "tools"]

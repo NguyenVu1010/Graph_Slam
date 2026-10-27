@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 
 import yaml
+from launch import LaunchContext, LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
@@ -31,8 +32,6 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-
-from launch import LaunchContext, LaunchDescription
 
 REPO = Path(__file__).resolve().parents[2]
 SIM_TIME = {"use_sim_time": True}
