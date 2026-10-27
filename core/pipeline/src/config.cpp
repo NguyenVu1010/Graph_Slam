@@ -394,6 +394,7 @@ Config read_config(Reader& r) {
   r.field("gnss.align_min_pairs", c.gnss.align_min_pairs, Range::kAtLeastOne);
   r.field("gnss.align_min_spread_m", c.gnss.align_min_spread_m, Range::kPositive);
   r.field("gnss.chi2_gate", c.gnss.chi2_gate, Range::kPositive);
+  r.field("gnss.max_consecutive_rejects", c.gnss.max_consecutive_rejects, Range::kAtLeastOne);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);
@@ -452,6 +453,12 @@ Config read_config(Reader& r) {
   r.field("backend.prior_bias_gyro_sigma_radps",
           c.backend.prior_bias_gyro_sigma_radps,
           Range::kPositive);
+  r.field("backend.gnss_frame_variable", c.backend.gnss_frame_variable);
+  r.angle_deg(
+      "backend.gnss_frame_tilt_sigma_deg", c.backend.gnss_frame_tilt_sigma_rad, Range::kPositive);
+  r.angle_deg(
+      "backend.gnss_frame_yaw_sigma_deg", c.backend.gnss_frame_yaw_sigma_rad, Range::kPositive);
+  r.field("backend.gnss_frame_pos_sigma_m", c.backend.gnss_frame_pos_sigma_m, Range::kPositive);
   // ADR-018: one source of truth (ADR-008), deterministic mode also pins TBB to one thread.
   c.backend.single_thread = c.deterministic;
 

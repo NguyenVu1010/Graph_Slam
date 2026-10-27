@@ -32,6 +32,11 @@ void validate(const BackendConfig& cfg, const imu::ImuConfig& imu_cfg, const com
   require_positive(cfg.prior_vel_sigma_mps, "backend.prior_vel_sigma_mps");
   require_positive(cfg.prior_bias_acc_sigma_mps2, "backend.prior_bias_acc_sigma_mps2");
   require_positive(cfg.prior_bias_gyro_sigma_radps, "backend.prior_bias_gyro_sigma_radps");
+  if (cfg.gnss_frame_variable) {
+    require_positive(cfg.gnss_frame_tilt_sigma_rad, "backend.gnss_frame_tilt_sigma_rad");
+    require_positive(cfg.gnss_frame_yaw_sigma_rad, "backend.gnss_frame_yaw_sigma_rad");
+    require_positive(cfg.gnss_frame_pos_sigma_m, "backend.gnss_frame_pos_sigma_m");
+  }
   if (!p_b_g.allFinite()) {
     throw std::invalid_argument("frames.p_b_g must be finite");
   }
