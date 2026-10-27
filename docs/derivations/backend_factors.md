@@ -24,9 +24,11 @@ Permutation rules at the boundary (code: `core/backend/src/conversions.hpp`):
     Jacobian cols J_g = J_m P          (a residual differentiated w.r.t. xi_g = P xi_m)
 
 Rows need no permutation when a factor whitens its own residual: the residual order of a
-custom factor is internal to it, and only `e^T Sigma^-1 e` reaches the optimiser. A
-`BetweenFactor<Pose3>` residual is GTSAM-ordered `[phi, rho]`, so its noise is
-`P Sigma_m P^T` (checked by `BackendConversions.CovariancePermutationMatchesGtsamWhitening`).
+custom factor is internal to it, and only `e^T Sigma^-1 e` reaches the optimiser. The
+relative-pose factors (section 5, all three forms) return their residual in GTSAM order
+`[rotation, translation]` (for `between` and `se3_exact` the `BetweenFactor<Pose3>` error),
+so their noise is `P Sigma_m P^T` (checked by
+`BackendConversions.CovariancePermutationMatchesGtsamWhitening`).
 
 ## 2. Priors on keyframe 0 (and the IMU-gap re-anchor, §9)
 
@@ -94,29 +96,135 @@ whose Log moves by `-Jri R_j^T R_i dphi`. `B_i` gyro bias: `dR'^T <- Exp(-u) dR'
 rejects a random walk `<= 0` with `std::invalid_argument`: a zero sigma is a hard constraint
 that the iSAM2 Cholesky factorisation cannot handle.
 
-## 5. LiDAR and loop factors
+## 5. LiDAR and loop factors (`backend.relative_factor`, PR 4e: decision pending)
 
-`BetweenFactor<Pose3>(X_i, X_j, Z = T_bi_bj)`, GTSAM error `Logmap(Z^-1 T_i^-1 T_j)` in
-`[phi, rho]` = `P` times the header's mss residual; noise
-`noiseModel::Gaussian::Covariance(P cov P^T)`. GTSAM differentiates only `Between()`, not
-the `Logmap` of the error, so its Jacobian omits `Jr^-1(e)`: it is exact at zero error and
-approximate (relative error of order `|e|`) elsewhere. This is GTSAM's standard behaviour and
-is the same for iSAM2 and the batch optimiser (B-04); B-01 checks it at zero error.
-The approximation changes the Gauss-Newton step, so its fixed point differs from the true MAP
-estimate only by terms of relative order `|e|^2`: negligible for consistent LiDAR edges
-(residuals at sigma level) and for loops, whose large residuals the Cauchy kernel
-down-weights. If LiDAR covariances become very tight, two exact alternatives exist: build
-GTSAM with `GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR`, or use a custom between factor that
-reuses `odom::relative_pose_residual` (exact `Jr^-1`) the way `OdomBetweenFactor` does.
+Variables `X_i = T_w_bi`, `X_j = T_w_bj`; measurement `Z = T_bi_bj` (scan matching or loop
+closure) with `cov`, the 6x6 `[rho, phi]` covariance of the right perturbation of `Z` in
+`b_j`. For LiDAR it is the scan matcher's covariance (degeneracy relaxation already applied),
+converted from `l` to `b` by the pipeline with the adjoint of `T_b_l`. Three forms are
+selectable; `between` is the default (the behaviour before PR 4e) and the two exact forms are
+evaluated options until the owner's ruling (ADR-015, PR 4e note). All three return a
+GTSAM-ordered residual `[rotation, translation]` and use the same noise,
+`noiseModel::Gaussian::Covariance(P cov P^T)` (`permute_cov`), so the whitened cost is
+`r^T cov^-1 r` with `r` in mss order.
 
-Loop: the same factor with `noiseModel::Robust::Create(mEstimator::Cauchy::Create(k),
-Gaussian::Covariance(P cov P^T))`. GTSAM reweights on the whitened norm `|e|` with weight
-`w = 1 / (1 + (|e| / k)^2)`. `k = kLoopCauchyK = sqrt(chi2_6(0.95)) = sqrt(12.5916) = 3.5485`:
-a loop inside the 95 % gate of its own covariance keeps a weight above 0.5. A
-`backend.loop_cauchy_k` YAML key comes with the loop module.
+**`between`: `gtsam::BetweenFactor<Pose3>`.** Error `Logmap(Z^-1 T_i^-1 T_j)` in `[phi, rho]`
+= `P r_m` with the SE(3) residual `r_m` below. Its Jacobian is that of `Between()` only: it
+omits the factor `Jr^-1(e)` of the `Logmap` (the derivative of `Local(Z, .)`), unless GTSAM is
+built with `GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR`, which the pinned GTSAM 4.2 is not. Exact at
+zero error, wrong by a relative `O(|e|)` elsewhere (`Jr^-1(e) = I + ad(e) / 2 + ...`, and `ad`
+contains `skew(rho)`, so metres of translation residual count fully): at 5 m / 30 deg the
+relative Jacobian error exceeds 0.1 (`B01_BetweenFactorJacobianApproximateAtLargeResidual`).
 
-Degeneracy report: diagnostics only (one debug log line per degenerate keyframe, with the
-running count); the factor is unchanged.
+**`se3_exact`: `detail::Se3RelativePoseFactor`.** The same residual with exact Jacobians, from
+`odom::relative_pose_residual` (O-01, `wheel_odom.md` sections 4 and 5), right perturbation
+`T <- T Exp(xi_m)`, `[rho, phi]`:
+
+    r_m = Log(Z^-1 T_i^-1 T_j)
+    J_r_xi_j = Jr^-1(r_m)
+    J_r_xi_i = -Jr^-1(r_m) Ad(T_j^-1 T_i)
+
+`J_r_xi_j` follows from `T_j <- T_j Exp(xi)`: `Log(E Exp(xi)) = r_m + Jr^-1(r_m) xi + O(|xi|^2)`,
+`E = Z^-1 T_i^-1 T_j`. `J_r_xi_i` from `T_i^-1 <- Exp(-xi) T_i^-1` and
+`Exp(-xi) T_i^-1 T_j = T_i^-1 T_j Exp(-Ad(T_j^-1 T_i) xi)`. GTSAM order: `e = P r_m` and, with
+the Pose3 chart `xi_g = [dphi, drho] = P xi_m` (section 1), `H_x_i = P J_r_xi_i P`,
+`H_x_j = P J_r_xi_j P`. Equal to GTSAM's exact `between` x `between` x `Logmap` chain to 1e-9
+(`B01_Se3RelativePoseFactorMatchesGtsamExactChain`).
+
+**`decoupled`: `detail::DecoupledRelativePoseFactor`.** Translation and rotation of `E` as
+separate residuals (the SO(3) x R3 chart of `E` instead of the SE(3) `Log`), with
+`t_rel = R_i^T (p_j - p_i)`:
+
+    r_phi = Log(R_Z^T R_i^T R_j)                 (rad)
+    r_p   = R_Z^T (t_rel - p_Z)                  (m, in the frame of Z's end, b_j)
+
+To first order in the noise it equals the SE(3) residual (so `cov` applies unchanged); the two
+differ by the BCH term `0.5 [rho, phi]` when a residual has both a large translation and a
+rotation part. Jacobians, columns `[dphi, drho]` of `T_w_bi` and of `T_w_bj`,
+`Jri = Jr^-1(r_phi)`:
+
+    X_i:  d r_phi = [ -Jri R_j^T R_i  ,  0      ]
+          d r_p   = [ R_Z^T skew(t_rel), -R_Z^T  ]
+    X_j:  d r_phi = [ Jri ,  0                   ]
+          d r_p   = [ 0   ,  R_Z^T R_i^T R_j     ]
+
+From `R_i^T <- Exp(-dphi) R_i^T` (so `t_rel <- t_rel + skew(t_rel) dphi` and the rotation
+residual moves by `-Jri R_j^T R_i dphi`), `p_i <- p_i + R_i drho` (`t_rel <- t_rel - drho`),
+`R_j <- R_j Exp(dphi)` (`Jri`) and `p_j <- p_j + R_j drho` (`t_rel <- t_rel + R_i^T R_j drho`).
+
+Both exact forms pass `EXPECT_CORRECT_FACTOR_JACOBIANS` and the numerical check (< 1e-6) at small
+residuals and at 30 deg / 5 m (`B01_Se3RelativePoseFactorJacobians`,
+`B01_DecoupledRelativePoseFactorJacobians`). Cost per evaluation: `se3_exact` one SE(3)
+`Jr^-1` (6x6) and one adjoint; `decoupled` one SO(3) `Jr^-1` (3x3); once per factor and
+linearisation (E-01 bench below).
+
+**Unobserved axis.** A LiDAR factor with no information along an axis (PR 4b's "unobserved"
+covariance, `cov + s^2 d d^T` with `s` = 1 km) carries residuals of tens to hundreds of metres
+along `d` at a negligible cost. With `between` the omitted `ad(e) / 2` couples them into the
+rotation columns with a gain of that size, and iSAM2 takes one Gauss-Newton step per keyframe,
+so the wrong step is not iterated away. With `se3_exact` the step is right, but the SE(3)
+residual itself couples a large translation residual along `d` into the observed components
+through `V(phi)^-1` (BCH `0.5 [rho, phi]`), which the model then treats as information.
+`decoupled` has no such coupling. Which model matches real scan-matcher errors is the question
+the evaluation below informs; the front end's error along a free axis is a pure translation.
+
+Loop: the same factor of the configured form with `noiseModel::Robust::Create(
+mEstimator::Cauchy::Create(k), Gaussian::Covariance(P cov P^T))`. GTSAM reweights on the
+whitened norm `|e|` with weight `w = 1 / (1 + (|e| / k)^2)`.
+`k = kLoopCauchyK = sqrt(chi2_6(0.95)) = sqrt(12.5916) = 3.5485`: a loop inside the 95 % gate of
+its own covariance keeps a weight above 0.5. A `backend.loop_cauchy_k` YAML key comes with the
+loop module. Degeneracy report: diagnostics only (one debug log line per degenerate keyframe,
+with the running count); the factor is unchanged.
+
+### 5a. Evaluation (PR 4e, decision pending)
+
+Synthetic consistency (`BackendComponent/UnobservedAxis.*`, 50 seeds x 24 keyframes on a
+circle, a noisy IMU chain, LiDAR factors with `(1 km)^2` along world x, one optimize() per
+keyframe; each form under noise drawn from its own model): world-x NEES of each new keyframe,
+expectation 1: `se3_exact` 0.85, `decoupled` 0.92; `between` under the SE(3) noise: the graph
+becomes indeterminant at seed 1000, keyframe 17 (control).
+
+Acceptance control (`PipelineComponent.RelativeFactorSeeds`, seed 42, deg on, x removed, no
+backend feedback, gravity factor off; `imu_only_observability.md` "Exploratory controls"):
+backend last-keyframe x error (marginal sigma).
+
+| form | circle | straight |
+| --- | --- | --- |
+| between (default) | +5772.3 m (14.05): 411 sigma | +11.37 m (20.90): 0.54 sigma |
+| se3_exact | -28.23 m (1.75): 16 sigma | +7.47 m (24.28): 0.31 sigma |
+| decoupled | -8.71 m (24.46): 0.36 sigma | +4.36 m (24.48): 0.18 sigma |
+
+`se3_exact` removes the divergence but is over-confident on the circle (its sigma drops from 14
+to 1.75 m); `decoupled` stays within its sigma in both scenes.
+
+Shipped configuration, seeds 42..56 paired against `between` (median (max) | wins / losses |
+95 % bootstrap CI of the median difference, form - between; lower is better; box NEES
+expectation 6). `scan_match.cov_scale` 4.7 was calibrated with `between`; the box NEES of the
+exact forms stays within 7.8 +/- 1 at 4.7, so no recalibrated rows were needed.
+
+| metric | between | se3_exact | decoupled |
+| --- | --- | --- | --- |
+| 60 s corridor + GNSS, ATE (m) | 1.85 (18.54) | 2.58 (26.41) \| 4/11 \| [-0.06, +1.02] | 3.37 (23.56) \| 6/9 \| [-0.09, +2.03] |
+| 60 s corridor, LiDAR + IMU, ATE (m) | 38.34 (205.39) | 41.14 (152.24) \| 8/7 \| [-5.88, +20.07] | 45.06 (149.52) \| 7/8 \| [-12.07, +11.67] |
+| box LiDAR factor NEES | 8.57 (12.47) | 8.58 (12.47) \| 5/10 \| [-0.00, +0.01] | 8.47 (12.49) \| 5/10 \| [-0.00, +0.02] |
+| 20 s circle x free, \|end x err\| (m) | 1.45 (7.02) | 2.60 (13.63) \| 6/9 \| [-0.65, +1.71] | 2.30 (7.37) \| 6/9 \| [-0.21, +1.01] |
+| 20 s circle x free, along-x RMS (m) | 1.36 (2.84) | 1.33 (5.81) \| 8/7 \| [-0.91, +1.13] | 1.68 (3.25) \| 6/9 \| [-0.84, +1.35] |
+| 20 s straight x free, \|end x err\| (m) | 2.72 (6.28) | 3.26 (5.90) \| 6/9 \| [-0.39, +0.40] | 3.38 (8.18) \| 5/10 \| [-0.26, +0.82] |
+
+Every CI contains 0. These IMU-only and corridor scenes are chaotic: the same decoupled form
+evaluated with a different floating-point order of the same products (an earlier env-gated
+build) gave a circle median of 3.30 m instead of 2.30 m. `CorridorImuOnlyAlongAxisWithin
+DeadReckoning` (seeds 42..44, default `between`) circle end errors: between -1.29 / +0.38 /
+-1.45 m, se3_exact -13.63 / -2.60 / -7.33 m (its median 7.33 m would fail the 3 sigma_DR 2.11 m
+limit), decoupled +2.30 / -0.78 / -0.08 m.
+
+E-01..E-03 (scenario overlay): ATE 2.181 / 2.181 / 2.175 mm (between, `est.tum` md5 equal to
+main), 2.189 / 2.189 / 2.176 mm (se3_exact), 2.185 / 2.185 / 2.179 mm (decoupled). E-01 bench,
+median of 5 (scan p50 / p95, replay wall, CPU): main 4.83 / 6.57 ms, 4.54 s, 3.05 s; between
+4.84 / 6.35 ms, 4.46 s, 3.03 s; se3_exact 4.74 / 6.50 ms, 4.23 s, 3.01 s; decoupled 4.75 / 6.53
+ms, 4.34 s, 3.04 s (optimize() is not timed separately; no measurable cost).
+
+Decision pending (ADR-015, PR 4e note).
 
 ## 6. GNSS position factor (`detail::GnssPositionFactor`)
 
@@ -321,7 +429,10 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §3 zero residual at the prediction | B-01 `BackendFactors.B01_ImuFactorZeroAtPrediction` |
 | §6 GNSS Jacobian and sign | B-01 `BackendFactors.B01_GnssFactorJacobians`, `BackendFactors.B01_GnssFactorZeroWhenConsistent` |
 | §7 rank-3 odom whitening and Jacobians | B-01 `BackendFactors.B01_OdomFactorRotatedSingularCov`, `BackendFactors.B01_OdomFactorZeroCovRejected` |
-| §5 permuted noise and Cauchy wrap (at zero error; `sqrt(w)` scaling at 0.1) | B-01 `BackendFactors.B01_BetweenAndRobustLoopJacobians` |
+| §5 exact Jacobians of `se3_exact` and `decoupled` (numerical < 1e-6 and `EXPECT_CORRECT_FACTOR_JACOBIANS`, small and 30 deg / 5 m residuals; known residual and whitened error); `se3_exact` = GTSAM's exact `Logmap` chain and the `between` error; `between` control at the large residual | B-01 `BackendFactors.B01_Se3RelativePoseFactorJacobians`, `BackendFactors.B01_DecoupledRelativePoseFactorJacobians`, `BackendFactors.B01_Se3RelativePoseFactorMatchesGtsamExactChain`, `BackendFactors.B01_BetweenFactorJacobianApproximateAtLargeResidual` |
+| §5 Cauchy wrap of both exact forms (numerical at zero error; `sqrt(w)` scaling at 0.1 and at the large residual) | B-01 `BackendFactors.B01_RelativePoseRobustLoopJacobians` |
+| §5 estimate consistent with its marginal along an unobserved axis, per form (each under its own noise model); `between` control | `BackendComponent/UnobservedAxis.EstimateConsistentWithMarginal/{se3_exact,decoupled}`, `BackendComponent.UnobservedAxisBetweenFactorControlIsInconsistent` |
+| §5 `backend.relative_factor` parsing | `Config.RelativeFactorKey` |
 | §2, §8 priors and marginal order | `BackendGraph.MarginalCovIsMssOrder` |
 | §5 pose graph | B-02 `BackendGraph.B02_SquareLoopNoiseFreeConvergesExactly`, `BackendGraph.B02_SquareLoopNoisyWithinMarginalBounds` |
 | §3, §4 IMU chain and time check | `BackendGraph.ImuChainRecoversTrajectory`, `BackendGraph.ImuTimeCheckRejectsMismatch` |
