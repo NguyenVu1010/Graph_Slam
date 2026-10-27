@@ -184,6 +184,32 @@ TEST(Config, ScanMatchResidualSigmaFloor) {
   EXPECT_TRUE(mentions(cfg.reason(), "scan_match.min_residual_sigma_m")) << cfg.reason();
 }
 
+TEST(Config, ScanMatchPlanarityGateRange) {
+  const auto ok = load_config(kDefault);
+  ASSERT_TRUE(ok.is_ok()) << ok.reason();
+  EXPECT_GE(ok.value().scan_match.plane_min_eig_ratio, 0.0);
+  for (const char* bad : {"-0.1", "1.0"}) {
+    const auto cfg = parse_config(
+        read_file(kDefault),
+        overlay(std::string("    scan_match:\n      plane_min_eig_ratio: ") + bad + "\n"));
+    ASSERT_FALSE(cfg.is_ok()) << bad;
+    EXPECT_TRUE(mentions(cfg.reason(), "scan_match.plane_min_eig_ratio")) << cfg.reason();
+  }
+}
+
+TEST(Config, ScanMatchCollinearityGateRange) {
+  const auto ok = load_config(kDefault);
+  ASSERT_TRUE(ok.is_ok()) << ok.reason();
+  EXPECT_GE(ok.value().scan_match.min_mid_eig_ratio, 0.0);
+  for (const char* bad : {"-0.1", "1.0"}) {
+    const auto cfg = parse_config(
+        read_file(kDefault),
+        overlay(std::string("    scan_match:\n      min_mid_eig_ratio: ") + bad + "\n"));
+    ASSERT_FALSE(cfg.is_ok()) << bad;
+    EXPECT_TRUE(mentions(cfg.reason(), "scan_match.min_mid_eig_ratio")) << cfg.reason();
+  }
+}
+
 // ADR-018: backend.single_thread is not a YAML key; it follows `deterministic` (ADR-008).
 TEST(Config, DeterministicSetsBackendSingleThread) {
   const std::string base = read_file(kDefault);

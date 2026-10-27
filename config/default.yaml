@@ -96,6 +96,21 @@ mss_node:
       trans_tol_m: 1.0e-3        # convergence: translation update norm, m
       max_corr_dist_m: 1.0       # reject correspondences farther than this, m
       plane_rms_max_m: 0.05      # reject neighbourhoods whose plane fit RMS exceeds this, m
+      # Plane-fit gates (ADR-007 amendment, scan_match.md section 3), dimensionless in [0, 1),
+      # 0 = off; evaluated, off by default. planarity: reject lambda_min > ratio * lambda_mid
+      # (two faces across an edge). On noise-free sim data 0.01 gave E-01 2.20 -> 0.95 mm, but
+      # the ratio compares range noise with patch spread: at 1 cm noise about half of planar
+      # 5-NN patches are rejected at 0.01. On the ov_plain replay (non-ideal map) 0.01 gave
+      # ATE 14.8 -> 24.0 mm and scan p95 6.1 -> 11.5 ms (0.05: 14.5 mm, 5.5 ms). Its corridor
+      # axis-leak cut (1.1 -> 0.10 %) is conditioning only: fused corridor ATE 1.8 -> 5.2 m.
+      # To enable it on real data, use a noise-aware form such as
+      # lambda_min > rho * lambda_mid + n * (k * sigma_range)^2.
+      plane_min_eig_ratio: 0.0
+      # collinearity: reject lambda_mid <= ratio * lambda_max (lines, thin strips). Off: at 0.2
+      # it removes the S-02 edge bias (0.28 mm) but rejects the thin wall strips of a 5 m wide
+      # corridor (LiDAR-only drift 11.5 -> 241 m with planarity 0.05) and, with planarity
+      # 0.05, fails the no-GTSAM NEES bound (2.83 < 3) and CorridorDriftCorrectedByGnss.
+      min_mid_eig_ratio: 0.0
       robust_huber_delta_m: 0.1  # Huber kernel threshold on point-to-plane residual, m
       min_inliers: 100           # fewer inliers than this -> match fails
       # Multiplier on the inverse-Hessian covariance (dimensionless). 4.7: with 1.0 the LiDAR

@@ -104,7 +104,7 @@ void merge_overlay(YAML::Node base,
   }
 }
 
-enum class Range { kAny, kPositive, kNonNegative, kAtLeastOne };
+enum class Range { kAny, kPositive, kNonNegative, kAtLeastOne, kUnitHalfOpen };
 
 template <typename T>
 bool in_range(T value, Range range) {
@@ -117,6 +117,8 @@ bool in_range(T value, Range range) {
       return value >= T{0};
     case Range::kAtLeastOne:
       return value >= T{1};
+    case Range::kUnitHalfOpen:
+      return value >= T{0} && value < T{1};
   }
   return false;
 }
@@ -131,6 +133,8 @@ const char* range_text(Range range) {
       return "must be >= 0";
     case Range::kAtLeastOne:
       return "must be >= 1";
+    case Range::kUnitHalfOpen:
+      return "must be in [0, 1)";
   }
   return "";
 }
@@ -428,6 +432,8 @@ Config read_config(Reader& r) {
   r.field("scan_match.trans_tol_m", c.scan_match.trans_tol_m);
   r.field("scan_match.max_corr_dist_m", c.scan_match.max_corr_dist_m);
   r.field("scan_match.plane_rms_max_m", c.scan_match.plane_rms_max_m);
+  r.field("scan_match.plane_min_eig_ratio", c.scan_match.plane_min_eig_ratio, Range::kUnitHalfOpen);
+  r.field("scan_match.min_mid_eig_ratio", c.scan_match.min_mid_eig_ratio, Range::kUnitHalfOpen);
   r.field("scan_match.robust_huber_delta_m", c.scan_match.robust_huber_delta_m);
   r.field("scan_match.min_inliers", c.scan_match.min_inliers);
   r.field("scan_match.cov_scale", c.scan_match.cov_scale);

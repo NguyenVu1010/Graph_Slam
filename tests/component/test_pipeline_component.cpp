@@ -292,7 +292,9 @@ CorridorRun run_corridor(const BoxWorldParams& p,
 }
 
 // GNSS must help where the LiDAR drifts: LiDAR + IMU drifts by metres; GNSS (0.5 m, 5 Hz)
-// must halve the ATE.
+// must halve the ATE. The relative bound loosens when the LiDAR-only run gets worse, so the
+// fused ATE also has an absolute guard: <= 1.2 x the 1.820 m measured on main 0d1df78
+// (with scan_match.plane_min_eig_ratio 0.01 it was 5.2 m, map.md / scan_match.md).
 TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
   const BoxWorldParams p = corridor_params();
   const fs::path dir = test_dir();
@@ -302,6 +304,8 @@ TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
   EXPECT_GE(lidar_only.ate_m, 0.3);
   if (kWithGtsam) {  // the stub backend adds no factor: nothing to correct with
     EXPECT_LE(with_gnss.ate_m, 0.5 * lidar_only.ate_m);
+    constexpr double kMainFusedAteM = 1.820;  // m, CorridorDriftCorrectedByGnss on 0d1df78
+    EXPECT_LE(with_gnss.ate_m, 1.2 * kMainFusedAteM);
     // About 300 fixes after the first estimate; a chi-square lock-out shows up here.
     EXPECT_GT(with_gnss.stats.n_gnss_factors, 200U);
   }
