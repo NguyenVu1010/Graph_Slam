@@ -1125,10 +1125,10 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
     return std::string("    backend:\n      static_gravity_factor: true\n") +
            "      static_gravity_sigma_scale: " + s + "\n";
   };
-  // The full residual has 3 DoF: its check uses the 3-DoF 0.95 quantile (N-8).
+  // The consistency check ships off (static_gravity_check_keyframes 0); the "check at 5"
+  // rows evaluate it. The full residual has 3 DoF: its check uses the 3-DoF 0.95 quantile.
+  const std::string check5 = "      static_gravity_check_keyframes: 5\n";
   const std::string gate3 = "      static_gravity_chi2_gate: 7.814727903251178\n";
-  // No check (the round-2 code path): the check keyframe is never reached.
-  const std::string no_check = "      static_gravity_check_keyframes: 1000000\n";
   struct Variant {
     std::string name;
     std::string yaml;
@@ -1137,15 +1137,18 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
   };
   const std::vector<Variant> variants = {
       {"main (factor off)", off},
-      {"full residual, window sigma (study seam)", scale("1.0") + gate3, true},
+      {"full residual, window sigma (study seam)", scale("1.0"), true},
       {"shipped form, scale 1", scale("1.0")},
       {"shipped form, scale 1.5", scale("1.5")},
-      {"shipped form, scale 2 (default)", scale("2.0")},
+      {"shipped form, scale 2 (shipped, check off)", scale("2.0")},
       {"shipped form, scale 3", scale("3.0")},
-      {"scale 1, no check (round 2)", scale("1.0") + no_check},
-      {"scale 1, posterior statistic (fix round 1)", scale("1.0"), false, true},
-      {"scale 2, no check (round 2)", scale("2.0") + no_check},
-      {"scale 2, posterior statistic (fix round 1)", scale("2.0"), false, true},
+      {"full residual, check at 5 (gate 7.815)", scale("1.0") + check5 + gate3, true},
+      {"scale 1, check at 5", scale("1.0") + check5},
+      {"scale 2, check at 5 (innovation)", scale("2.0") + check5},
+      {"scale 2, check at 5, posterior statistic (fix round 1)",
+       scale("2.0") + check5,
+       false,
+       true},
   };
   const char* first_env = std::getenv("MSS_IMU_R2_FIRST");
   const char* last_env = std::getenv("MSS_IMU_R2_LAST");
@@ -1345,6 +1348,77 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
     rep.line("  - straight end / RMS: " + joined(s.straight_end, "%+.2f") + " / " +
              joined(s.straight_rms, "%.2f"));
     rep.line("  - circle max |x|/sigma_DR: " + s.circle_max_detail);
+  }
+}
+
+// Fix round 3 of PR 4d (imu_only_observability.md section 10g): why the consistency check
+// removes the factor at rest in the 60 s GNSS corridor (6 of 15 seeds). Scale 2, check at
+// keyframe 5, 15 seeds: (a) GNSS off in the same scene (is E aligning the cause?);
+// (b) scan_match.cov_scale raised so the box LiDAR NEES is about 6 (is LiDAR
+// over-confidence the cause?), with and without GNSS. The box NEES at that cov_scale is
+// measured too.
+TEST(PipelineComponent, ImuStaticGravityCheckIsolation) {
+  const char* on = std::getenv("MSS_IMU_STUDY");
+  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_IMU_STUDY=1 (GTSAM build)";
+  }
+  StudyReport rep("imu_check_isolation.md", "MSS_IMU_STUDY_RUN_ID", "imu-study");
+  rep.line("# Consistency check at rest: isolation (ImuStaticGravityCheckIsolation)");
+  // 4.7 (shipped) x 8.57 / 6: the shipped box NEES median scaled to 6 (NEES ~ 1 / cov_scale).
+  const char* scale_env = std::getenv("MSS_IMU_ISO_COV_SCALE");
+  const std::string cov_scale = scale_env != nullptr ? scale_env : "6.7";
+  const std::string check =
+      "    backend:\n      static_gravity_factor: true\n      static_gravity_sigma_scale: 2.0\n"
+      "      static_gravity_check_keyframes: 5\n";
+  const std::string scaled = "    scan_match:\n      cov_scale: " + cov_scale + "\n" + check;
+  struct Row {
+    std::string name;
+    bool gnss;
+    std::string yaml;
+  };
+  const std::vector<Row> rows = {
+      {"GNSS on, cov_scale 4.7 (shipped scene)", true, check},
+      {"(a) GNSS off, cov_scale 4.7", false, check},
+      {"(b) GNSS on, cov_scale " + cov_scale, true, scaled},
+      {"(a)+(b) GNSS off, cov_scale " + cov_scale, false, scaled},
+  };
+  std::vector<std::string> lines(rows.size());
+  std::vector<std::uint64_t> removed(rows.size(), 0);
+  std::vector<std::vector<double>> ate(rows.size());
+  std::vector<double> nees;
+  for (std::uint32_t seed = 42; seed < 57; ++seed) {
+    BoxWorldParams pc = corridor_params();
+    pc.seed = seed;
+    const fs::path dc = rep.dir() / "iso" / ("corridor_" + std::to_string(seed));
+    ASSERT_TRUE(test::write_box_dataset(dc / "data", pc).is_ok());
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const Round2Run r = round2_run(
+          pc, dc / "data", dc / ("r" + std::to_string(i)), true, rows[i].gnss, rows[i].yaml, {});
+      removed[i] += r.gravity_removed;
+      ate[i].push_back(r.ate_m);
+      lines[i] += " " + std::to_string(seed) + ": " + r.gravity_check + ";";
+    }
+    BoxWorldParams pb;
+    pb.seed = seed;
+    const fs::path db = rep.dir() / "iso" / ("box_" + std::to_string(seed));
+    ASSERT_TRUE(test::write_box_dataset(db / "data", pb).is_ok());
+    nees.push_back(round2_run(pb, db / "data", db / "scaled", false, false, scaled, {}).nees6);
+  }
+  rep.line("");
+  rep.line("Box LiDAR NEES at cov_scale " + cov_scale + " (scale 2, 15 seeds): median " +
+           joined({median_of(nees)}, "%.2f") + ", per seed " + joined(nees, "%.1f"));
+  rep.line("");
+  rep.line("| scene | removed (of 15) | ATE median (max) (m) |");
+  rep.line("| --- | --- | --- |");
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    rep.line("| " + rows[i].name + " | " + std::to_string(removed[i]) + " | " +
+             joined({median_of(ate[i])}, "%.2f") + " (" +
+             joined({*std::max_element(ate[i].begin(), ate[i].end())}, "%.2f") + ") |");
+  }
+  rep.line("");
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    rep.line("- " + rows[i].name + ":" + lines[i]);
+    rep.line("  - ATE: " + joined(ate[i], "%.2f"));
   }
 }
 

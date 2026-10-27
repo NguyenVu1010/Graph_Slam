@@ -910,9 +910,9 @@ TEST(PipelineComponent, CorridorImuOnlyAlongAxisWithinDeadReckoning) {
       EXPECT_LT(r.lateral_rms_m, 0.01) << seed;
       EXPECT_GT(r.keyframes, 5U) << seed;
       EXPECT_LT(r.keyframes, 40U) << seed;  // the 1 m rule does not fire on a drift along x
-      // At rest: the consistency check runs and keeps the factor (innovation 0.3 to 3.8).
+      // At rest: the rest gate passes, the factor is added and kept (check off, shipped).
+      EXPECT_EQ(r.gravity_gated, 0U) << seed;
       EXPECT_EQ(r.gravity_removed, 0U) << seed;
-      EXPECT_EQ(r.gravity_unchecked, 0U) << seed;
       end_err_m.push_back(std::abs(r.end_x_m));
       rms_m.push_back(r.along_rms_m);
     }
@@ -950,8 +950,9 @@ TEST(PipelineComponent, CorridorWithWheelAlongAxisMillimetres) {
 // ---------------------------------------------------------------------------------------
 // ADR-020 rest precondition (imu_only_observability.md section 12): the keyframe-0 gravity
 // factor reads the init window as "body at rest". A start in motion that the initializer
-// still accepts (constant per-axis readings) must not make the estimate worse: the rest
-// gate does not add the factor, or the chi-square check removes it.
+// still accepts (constant per-axis readings) must not make the estimate much worse: the rest
+// gate does not add the factor (turn), or the factor costs little because the initializer's
+// R_w_b reads the same mean (straight acceleration). The consistency check is off (shipped).
 
 struct StartRun {
   double ate_m = 0.0;
@@ -1015,55 +1016,101 @@ StartRun start_run(const BoxWorldParams& p,
 
 const char* const kGravityOffYaml = "    backend:\n      static_gravity_factor: false\n";
 
-// Box circle from t = 0 (no still phase): a 0.25 rad/s turn, constant in b, so the window is
-// accepted. The rest gate rejects it (|mean gyro| 0.25 > 0.15 rad/s); with the gyro bound
-// opened, the factor is added and the check must remove it (innovation statistic 106.7).
-TEST(PipelineComponent, GravityFactorTurningStartGatedOrRemoved) {
-  if (!kWithGtsam) {
-    GTEST_SKIP() << "needs the GTSAM backend";
-  }
+const char* const kGravityCheckOnYaml =
+    "    backend:\n      static_gravity_check_keyframes: 5\n";  // evaluated knob, off shipped
+
+BoxWorldParams turning_start_params() {
   BoxWorldParams p;
   p.static_s = 0.0;
   p.ramp_s = 0.0;
+  return p;
+}
+
+// Straight run accelerating from t = 0 over `ramp_s` (no still phase).
+BoxWorldParams ramp_start_params(double ramp_s) {
+  BoxWorldParams p;
+  p.static_s = 0.0;
+  p.ramp_s = ramp_s;
+  p.motion_s = 20.0 - ramp_s;
+  p.yaw_rate_radps = 1e-4;  // rad/s: an almost straight run
+  p.box_half_m.x() = 30.0;  // m: the run stays inside the box
+  return p;
+}
+
+// Shipped config. Box circle from t = 0 (no still phase): a 0.25 rad/s turn, constant in b,
+// so the initializer accepts the window. The rest gate rejects it (|mean gyro| 0.25 > 0.15
+// rad/s): no factor, the same estimate as with the factor off.
+TEST(PipelineComponent, GravityFactorTurningStartGated) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend";
+  }
+  const BoxWorldParams p = turning_start_params();
   const fs::path dir = test_dir();
   ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
   const StartRun off = start_run(p, dir / "data", dir / "off", kGravityOffYaml);
   const StartRun on = start_run(p, dir / "data", dir / "on", "");
-  const StartRun open = start_run(
-      p, dir / "data", dir / "gate_open", "    imu:\n      init_max_mean_gyro_radps: 1.0\n");
   ASSERT_GT(off.estimates, 100U);
   EXPECT_EQ(on.gated, 1U);
   EXPECT_LE(on.ate_m, off.ate_m * 1.0001);
-  EXPECT_EQ(open.gated, 0U);
-  EXPECT_EQ(open.removed, 1U);
-  EXPECT_TRUE(open.check_ran);
-  EXPECT_EQ(open.outcome, detail::GravityCheckOutcome::kRemoved);
-  EXPECT_LE(open.ate_m, off.ate_m * 1.1);
 }
 
-// Straight runs accelerating from t = 0 (no still phase), the gyro reading ~0, so the rest
-// gate passes. The window's mean holds the forward acceleration a, read as a tilt a / g:
-// - 6 s ramp (mean a about 0.06 m/s^2 over the window, innovation statistic 38.1 at the
-//   check); the check after backend.static_gravity_check_keyframes removes the factor;
-// - 2 s ramp (mean a 0.25 m/s^2, innovation statistic 233): removed.
-// The estimate must not get worse than without the factor (measured: 0.1025 vs 0.1043 m,
-// 0.5575 vs 0.5465 m).
-TEST(PipelineComponent, GravityFactorAcceleratingStartNotWorse) {
+// Shipped config (consistency check off). Straight runs accelerating from t = 0, the gyro
+// reading ~0, so the rest gate passes and the factor is added and kept although the window
+// holds the forward acceleration a, read as a tilt a / g (6 s ramp: mean a about 0.06 m/s^2
+// in the window; 2 s ramp: 0.25 m/s^2). The cost is small because the initializer's R_w_b
+// comes from the same window mean: the run starts with that tilt with or without the factor.
+// Measured ATE, factor off -> kept: 6 s 0.1043 -> 0.1028 m (-1.4 %), 2 s 0.5465 -> 0.5584 m
+// (+2.2 %). Bound: +5 %.
+TEST(PipelineComponent, GravityFactorAcceleratingStartKeptCostsLittle) {
   if (!kWithGtsam) {
     GTEST_SKIP() << "needs the GTSAM backend";
   }
   for (const double ramp_s : {6.0, 2.0}) {
-    BoxWorldParams p;
-    p.static_s = 0.0;
-    p.ramp_s = ramp_s;
-    p.motion_s = 20.0 - ramp_s;
-    p.yaw_rate_radps = 1e-4;  // rad/s: an almost straight run
-    p.box_half_m.x() = 30.0;  // m: the run stays inside the box
+    const BoxWorldParams p = ramp_start_params(ramp_s);
     const fs::path dir = test_dir() / ("ramp_" + std::to_string(static_cast<int>(ramp_s)));
     ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
     const StartRun off = start_run(p, dir / "data", dir / "off", kGravityOffYaml);
     const StartRun on = start_run(p, dir / "data", dir / "on", "");
     ASSERT_GT(off.estimates, 100U);
+    EXPECT_EQ(on.gated, 0U) << ramp_s;
+    EXPECT_EQ(on.removed, 0U) << ramp_s;
+    EXPECT_FALSE(on.check_ran) << ramp_s;
+    EXPECT_LE(on.ate_m, off.ate_m * 1.05) << ramp_s;
+  }
+}
+
+// The consistency check as an evaluated knob (backend.static_gravity_check_keyframes: 5,
+// off in the shipped config, ADR-020): it removes the factor at the moving starts above.
+// Innovation statistic at the check: turning start with the gyro bound opened 106.7, 6 s ramp
+// 38.1, 2 s ramp 233 (removed; ATE 1.0006, 0.1025, 0.5575 m against 1.0017, 0.1043, 0.5465 m
+// with the factor off). At rest it also removes the factor where the rest of the graph is
+// inconsistent at keyframe 5 (imu_only_observability.md section 10g), so it ships off.
+TEST(PipelineComponent, GravityFactorCheckRemovesMovingStarts) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend";
+  }
+  {
+    const BoxWorldParams p = turning_start_params();
+    const fs::path dir = test_dir() / "turn";
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const StartRun off = start_run(p, dir / "data", dir / "off", kGravityOffYaml);
+    const StartRun open = start_run(
+        p,
+        dir / "data",
+        dir / "gate_open",
+        std::string("    imu:\n      init_max_mean_gyro_radps: 1.0\n") + kGravityCheckOnYaml);
+    EXPECT_EQ(open.gated, 0U);
+    EXPECT_EQ(open.removed, 1U);
+    EXPECT_TRUE(open.check_ran);
+    EXPECT_EQ(open.outcome, detail::GravityCheckOutcome::kRemoved);
+    EXPECT_LE(open.ate_m, off.ate_m * 1.1);
+  }
+  for (const double ramp_s : {6.0, 2.0}) {
+    const BoxWorldParams p = ramp_start_params(ramp_s);
+    const fs::path dir = test_dir() / ("ramp_" + std::to_string(static_cast<int>(ramp_s)));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const StartRun off = start_run(p, dir / "data", dir / "off", kGravityOffYaml);
+    const StartRun on = start_run(p, dir / "data", dir / "on", kGravityCheckOnYaml);
     EXPECT_EQ(on.gated, 0U) << ramp_s;
     EXPECT_EQ(on.removed, 1U) << ramp_s;
     EXPECT_EQ(on.unchecked, 0U) << ramp_s;
