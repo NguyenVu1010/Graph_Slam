@@ -433,3 +433,19 @@ GNSS / LiDAR tilt interplay of the 60 s corridor understood (E's tight tilt prio
 on the aligner's gravity-aligned guess) before the factor can be turned on. The regression
 test `CorridorImuOnlyAlongAxisWithinDeadReckoning` enables the factor by overlay and bounds
 the end error by `3 sigma_DR` (2.11 m at 17.9 s; measured 0.90 m; main: 224 m).
+
+### Integration and bench (flag off, shipped)
+
+E-01..E-03 data of the integration harness (synthetic box circle, R = 1.67 m, 60 s, seed 42),
+`mss_bench` with `config/sim/warehouse.yaml`, ATE by `mss_eval.ate`; main = `94b9f16`:
+
+| test | main ATE (m) | branch ATE (m) | branch with `static_gravity_factor` (m) |
+| --- | --- | --- | --- |
+| E-01 | 0.002199 | 0.002199 (`est.tum` byte-identical to main) | 0.002116 |
+| E-02 | byte-identical rerun | byte-identical rerun | - |
+| E-03 | 0.002105 | 0.002105 | 0.002097 |
+
+E-01 bench, median of 5 (desktop, WSL, interleaved runs), main / branch: scan p50 4.373 /
+4.295 ms, p95 5.957 / 5.928 ms, `replay_wall_s` 2.606 / 2.546 s, CPU 100 / 99 %. The per-scan
+path gains one null-pointer test (the study observer) and one branch (the study keyframe
+rule); the factor is added once, at keyframe 0.
