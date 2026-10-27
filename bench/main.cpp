@@ -10,7 +10,8 @@
 //   DIR/est.tum     one line per scan that produced an estimate, from latest_state(); none
 //                   before the IMU static initialisation (imu.init_window_s of still data)
 //   DIR/bench.json  Estimator::Stats, replay wall time, record counts per stream and the
-//                   per-scan processing latency (scan_process_ms_p50/p95, PF-01)
+//                   per-scan processing latency (scan_process_ms_p50/p95, PF-01, from
+//                   n_latency_samples samples; n_latency_dropped did not fit the buffer)
 // and prints a summary table on stdout.
 // Exit codes: 0 success; 2 usage, config, dataset, estimator-init or output error (reason
 // on stderr); 3 the replay finished but some records were not processed (dropped or
@@ -113,6 +114,8 @@ struct Counts {
 struct ScanLatency {
   double p50_ms = 0.0;
   double p95_ms = 0.0;
+  std::uint64_t n_samples = 0;  // samples behind the percentiles
+  std::uint64_t n_dropped = 0;  // samples discarded past the reserved capacity
 };
 
 // Nearest-rank percentile on a sorted, non-empty vector: sorted[ceil(q * n) - 1] with
@@ -200,6 +203,10 @@ bool write_json(const fs::path& path,
                "  \"push_scan_us_p95\": %.3f,\n"
                "  \"scan_process_ms_p50\": %.6f,\n"
                "  \"scan_process_ms_p95\": %.6f,\n"
+               "  \"n_latency_samples\": %" PRIu64
+               ",\n"
+               "  \"n_latency_dropped\": %" PRIu64
+               ",\n"
                "  \"replay_wall_s\": %.6f,\n"
                "  \"records\": {\n"
                "    \"imu\": %" PRIu64
@@ -237,6 +244,8 @@ bool write_json(const fs::path& path,
                st.push_scan_us_p95,
                lat.p50_ms,
                lat.p95_ms,
+               lat.n_samples,
+               lat.n_dropped,
                replay_wall_s,
                c.imu,
                c.gnss,
@@ -291,8 +300,11 @@ void print_table(const fs::path& dataset,
 //
 // PF-01 latency: every run_once()/flush() call is timed (steady_clock); a call that raised
 // Stats::n_scans adds one sample per processed scan, its wall time divided by the number of
-// scans. The sample buffer is reserved once for the dataset's scan count, so the replay
-// loop does not allocate. Diagnostics only: the estimate does not depend on it.
+// scans. Estimator::stats() (which sorts its own latency buffer) is read only while a
+// successfully pushed scan is still unprocessed, so it adds no work to the other calls. The
+// sample buffer is reserved once for the dataset's scan count, so the replay loop does not
+// allocate; samples past it are counted, not stored. Diagnostics only: the estimate does
+// not depend on it.
 class Replayer {
  public:
   Replayer(mss::pipeline::Estimator& est,
@@ -331,7 +343,9 @@ class Replayer {
       case RecordKind::kLidar:
         ++counts_.lidar;
         drain_if(true);
-        (void)est_.push_scan(scan);
+        if (est_.push_scan(scan).is_ok()) {
+          ++n_pushed_scans_;  // a dropped scan is never processed, so it is not pending
+        }
         drain_if(true);
         break;
       case RecordKind::kGt:
@@ -351,6 +365,8 @@ class Replayer {
   // Nearest-rank p50 / p95 of the per-scan samples; zeros when no scan was processed.
   [[nodiscard]] ScanLatency latency() const {
     ScanLatency out;
+    out.n_samples = scan_ms_.size();
+    out.n_dropped = n_latency_dropped_;
     if (scan_ms_.empty()) {
       return out;
     }
@@ -374,8 +390,10 @@ class Replayer {
   }
 
   // run_once() (or flush() at the end of the dataset) with the PF-01 per-scan timing.
+  // Stats::n_scans changes only inside run_once()/flush(), so n_scans_seen_ (its value after
+  // the last read) is the count before this call; stats() is read only when a pushed scan
+  // is still pending.
   void timed(bool at_end) {
-    const std::uint64_t before = est_.stats().n_scans;
     const auto t0 = std::chrono::steady_clock::now();
     if (at_end) {
       est_.flush();
@@ -383,14 +401,22 @@ class Replayer {
       est_.run_once();
     }
     const std::chrono::duration<double, std::milli> dt = std::chrono::steady_clock::now() - t0;
+    if (n_pushed_scans_ <= n_scans_seen_) {
+      return;  // nothing pending: this call cannot have processed a scan
+    }
     const std::uint64_t after = est_.stats().n_scans;
-    if (after <= before) {
+    if (after <= n_scans_seen_) {
       return;
     }
-    const std::uint64_t n = after - before;
+    const std::uint64_t n = after - n_scans_seen_;
+    n_scans_seen_ = after;
     const double per_scan_ms = dt.count() / static_cast<double>(n);
-    for (std::uint64_t k = 0; k < n && scan_ms_.size() < scan_ms_.capacity(); ++k) {
-      scan_ms_.push_back(per_scan_ms);  // never grows past the reserved capacity
+    for (std::uint64_t k = 0; k < n; ++k) {
+      if (scan_ms_.size() < scan_ms_.capacity()) {
+        scan_ms_.push_back(per_scan_ms);  // never grows past the reserved capacity
+      } else {
+        ++n_latency_dropped_;
+      }
     }
   }
 
@@ -413,6 +439,9 @@ class Replayer {
   mss::common::Timestamp last_written_{};
   Counts counts_;
   std::vector<double> scan_ms_;  // ms per processed scan (PF-01), reserved in the constructor
+  std::uint64_t n_latency_dropped_ = 0;  // samples that did not fit scan_ms_
+  std::uint64_t n_pushed_scans_ = 0;     // scans accepted by push_scan()
+  std::uint64_t n_scans_seen_ = 0;       // Stats::n_scans at the last read
 };
 
 bool all_processed(const Counts& c, const mss::pipeline::Estimator::Stats& st) {

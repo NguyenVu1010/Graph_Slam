@@ -203,6 +203,9 @@ TEST(BenchReplay, ReplaysSyntheticDataset) {
   const double p95 = json_number(json, "scan_process_ms_p95");
   EXPECT_GE(p50, 0.0) << json;
   EXPECT_GE(p95, p50) << json;
+  // One sample per processed scan, all inside the buffer reserved from index.json.
+  EXPECT_NE(json.find("\"n_latency_samples\": 10,"), std::string::npos) << json;
+  EXPECT_NE(json.find("\"n_latency_dropped\": 0,"), std::string::npos) << json;
 }
 
 // 3 s of IMU / GNSS / wheel before the first scan: more than the IMU (400) and aux (32)
