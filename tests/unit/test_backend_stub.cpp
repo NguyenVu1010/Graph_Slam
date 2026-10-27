@@ -49,6 +49,11 @@ TEST(BackendStub, OptimizeReturnsBuiltWithoutGtsam) {
   EXPECT_EQ(s.reason(), "built without GTSAM");
   const common::PoseCovariance cov = g.marginal_cov(0);
   EXPECT_TRUE(cov.array().isNaN().all());
+  // PR 4d additions: the frame variable and the gravity factor are absent in the stub.
+  g.add_static_gravity_factor(0, common::Vec3(0.0, 0.0, 9.8), common::Mat3::Identity());
+  EXPECT_EQ(g.gnss_frame_estimate().reason(), "built without GTSAM");
+  EXPECT_EQ(g.static_gravity_chi2().reason(), "built without GTSAM");
+  EXPECT_FALSE(g.remove_static_gravity_factor());
 }
 
 }  // namespace

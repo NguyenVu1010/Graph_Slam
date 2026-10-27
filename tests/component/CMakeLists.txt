@@ -26,3 +26,11 @@ target_include_directories(test_pipeline_component PRIVATE
   ${CMAKE_SOURCE_DIR}/tests/unit ${CMAKE_SOURCE_DIR}/core/pipeline/src)
 target_compile_definitions(test_pipeline_component PRIVATE
   MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)
+
+# IMU-only observability study (docs/derivations/imu_only_observability.md): skipped unless
+# MSS_IMU_STUDY=1; shares the pipeline helpers (pipeline_test_support.hpp).
+mss_add_test(test_imu_only_study test_imu_only_study.cpp)
+target_include_directories(test_imu_only_study PRIVATE ${CMAKE_SOURCE_DIR}/core/pipeline/src
+  ${CMAKE_SOURCE_DIR}/core/backend/src)  # study_seams.hpp only (no GTSAM types)
+target_compile_definitions(test_imu_only_study PRIVATE
+  MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)

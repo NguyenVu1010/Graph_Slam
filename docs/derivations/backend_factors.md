@@ -157,6 +157,109 @@ Why the frame is a variable: `gnss_fusion_study.md`. Tests: `B01_GnssFrameFactor
 (numerical differentiation and `EXPECT_CORRECT_FACTOR_JACOBIANS`, random `E` including
 tilt), `GnssFrameVariableAbsorbsAlignmentError` (known answer).
 
+## 6c. Static-window gravity-direction factor (`detail::StaticGravityFactor`, PR 4d, ADR-020)
+
+Variables `X_0 = T_w_b` (keyframe 0) and `B_0`. Measurement `f_b`: the mean accelerometer
+reading of the static initialisation window (`imu::InitState::acc_mean_b`, m/s^2, in b);
+`C` = the covariance of that mean (`acc_mean_cov`: per axis
+`max(s_k^2, acc_noise_density^2 rate_hz) / n`, `s_k^2` the sample variance over the `n`
+window samples), scaled by `backend.static_gravity_sigma_scale^2` in `Graph`. At rest the
+specific force is `f = ba - R_w_b^T g_w`. The full residual
+
+    e = f_b - (ba - R_w_b^T g_w)                                  (3x1, m/s^2)
+
+is projected on the plane normal to `f_b`, so only the direction is kept (the magnitude,
+`|g|` against `ba_z`, is dropped; `imu_only_observability.md` section 10b):
+
+    r = P e   (2x1),   P = [e1^T; e2^T],   (e1, e2, u = f_b / |f_b|) orthonormal
+
+with `e1 = normalize(u x a)`, `a` the coordinate axis least aligned with `u`, and
+`e2 = u x e1` (`StaticGravityFactor::projection`). Right perturbation `R <- R Exp(dphi)`:
+`R^T g -> Exp(-dphi) R^T g = R^T g + skew(R^T g) dphi`, hence, in GTSAM column order
+`[dphi, drho]` for the pose and `[dba, dbg]` for `ConstantBias` (additive):
+
+    J_r_x = P [skew(R_w_b^T g_w), 0_3],      J_r_b = P [-I_3, 0_3]
+
+Noise `Gaussian::Covariance(P C P^T)` (`P` constant: built from the measurement). The
+factor constrains the combination `g dtheta_h - dba_h` (tilt and horizontal accelerometer
+bias); it does not split tilt from bias, which a static window cannot. It goes with the
+keyframe-0 priors (kept when an `optimize()` fails). The pipeline adds it when
+`backend.static_gravity_factor` is true, keyframe 0 is the scan at which the
+initialisation passed (otherwise the window no longer describes keyframe 0) and the window
+passes the rest gate of `imu_only_observability.md` section 12 (`imu.init_max_mean_gyro_radps`,
+`imu.init_max_wheel_speed_mps`, `imu.init_gravity_check_sigma`; a failure is logged and
+counted in `Stats::n_gravity_factor_gated`). A zero or non-finite `f_b`, a covariance that is
+not SPD, or `static_gravity_sigma_scale <= 0` is rejected.
+
+The window is used twice: the keyframe-0 rotation prior is centred on the initializer's
+`R_w_b`, computed from the same `acc_mean`. The prior's tilt information (1 / (17.5
+mrad)^2) is about 0.2 % of the factor's at the shipped noise (1 / (0.84 mrad)^2), so the
+double count is negligible.
+
+Consistency check (ADR-020; evaluated and shipped off, `backend.static_gravity_check_keyframes:
+0`): with a value > 0, after that keyframe is optimised, `Graph::static_gravity_chi2()` returns the factor's **innovation statistic**
+against the rest of the graph. In whitened units (`W` the factor's square-root
+information), with `e = W r` at the estimate, `J = W dr/d[X_k, B_k]`, `P` the joint marginal
+covariance of `(X_k, B_k)` with the factor and `P_rest` without it:
+
+    S = Cov(e) = I - J P J^T,      S^-1 = I + J P_rest J^T  (Woodbury: the factor touches
+                                                             only X_k, B_k)
+    statistic = e^T S^-1 e = nu^T (I + J P_rest J^T)^-1 nu   (to first order)
+
+with `nu` the residual at the estimate without the factor. It is chi-square with 2 DoF (3
+for the study-only full residual) when the window was at rest and the rest of the graph is
+consistent with its own covariance; then the gate's 5 % is the false-removal rate. Measured
+at rest the rate is higher where the rest of the graph is not consistent at the check
+keyframe (`imu_only_observability.md` 10g: 6 of 15 GNSS-corridor runs, none in the box world). The fix-round-1 statistic `|e|^2` (the posterior residual, after the
+factor has pulled tilt and bias) has expected value `2 - leverage` at rest, below 2: its
+false-removal rate is below 5 % and its power against a window in motion lower (the
+`StaticGravityInnovationKnownAnswer` case: posterior 2.3, innovation 20). `S` is formed as
+`(I + J P_rest J^T)^-1`, not by the subtraction, which cancels to round-off when the
+factor dominates (a test measured 1e-3 for a true 1e-14). `P_rest` is one
+`gtsam::Marginals` of the iSAM2 factors without the gravity factor, at the estimate: once
+per run, off the hot path.
+
+The keyframe-0 rotation prior is centred on the initializer's `R_w_b`, from the same window
+mean, so it is not independent of the factor: it pulls `nu` toward 0. Its tilt information is
+0.2 % of the factor's (above), so the statistic is biased low by about that much.
+
+If `S`'s smallest eigenvalue is at most `kMinGravityInnovationEigen` = 1e-9
+(`constants.hpp`), or the rest of the graph does not determine `(X_k, B_k)`, the factor is
+the only information on what it measures and nothing can contradict it: the statistic is
+not evaluated, the factor stays, and the pipeline counts `Stats::n_gravity_factor_unchecked`.
+Measured with the check on (`imu_only_observability.md` 10g): 0.013 to 0.66.
+
+Above `backend.static_gravity_chi2_gate` (5.991, 0.95)
+`Graph::remove_static_gravity_factor()` removes it from iSAM2 (`ISAM2::update` with
+`removeFactorIndices`, the slot recorded from `ISAM2Result::newFactorsIndices` when it was
+committed or rebuilt) and from the factors kept for a rebuild; a factor still pending is
+dropped from the pending set. If iSAM2 throws or the new estimate is not finite, iSAM2 is
+rebuilt from the committed factors at the last good estimate (section 9) and the factor
+stays: `remove_static_gravity_factor()` returns false, the pipeline logs a warning and
+does not retry (the check runs once), and only a successful removal counts in
+`Stats::n_gravity_factor_removed`. The observer (`CoreObserver::on_gravity_check`) gets the
+statistic and the outcome (kept, removed, removal failed, unchecked).
+
+Study seams (`study_seams.hpp`, `test_imu_only_study.cpp` only; production never calls
+them): `detail::set_static_gravity_full_residual` restores the round-1 3x1 residual (its
+check uses the 3-DoF gate 7.815 in the study), and
+`detail::set_static_gravity_posterior_statistic` restores the fix-round-1 posterior
+statistic.
+
+Tests: `BackendFactors.B01_StaticGravityFactorJacobians` (`EXPECT_CORRECT_FACTOR_JACOBIANS`
+and relative error < 1e-6 against central differences; residual equals `P e`, `P P^T = I`,
+`P f_b = 0`), `B01_StaticGravityFactorFullResidualJacobians` (the same for the study-only
+3x1 residual), `B01_StaticGravityFactorZeroAtRest`, `B01_StaticGravityFactorIgnoresMagnitude`,
+`BackendGraph.StaticGravityFactorKnownAnswer` (keyframe 0 guessed 10 mrad off: the optimised
+tilt and its marginal against the closed form), `StaticGravityInnovationKnownAnswer`
+(innovation statistic against its closed form, posterior below the gate and innovation
+above), `StaticGravityInnovationUncheckedWhenFactorIsOnlyInformation`,
+`StaticGravityFactorRemovedOnRequest` (also a failed optimize after the removal, and a
+removal before the first optimize),
+`OptimizeFailureDropsPendingFactorsKeepsKeyframes` (kept after a failed optimize),
+`RejectsBadCovariances` (including `f_b = 0`), `BackendStub.*` (stub errors),
+`ImuInitializer.WindowMeanAndCovarianceOfTheMean`.
+
 ## 7. Wheel-odometry factor (`detail::OdomBetweenFactor`)
 
 Variables `X_i, X_j`. `r_m, J_m_i, J_m_j` come from

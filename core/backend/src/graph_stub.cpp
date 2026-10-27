@@ -6,6 +6,7 @@
 
 #include "mss/backend/graph.hpp"
 
+#include "study_seams.hpp"
 #include "validate.hpp"
 
 namespace mss::backend {
@@ -45,6 +46,18 @@ void Graph::add_odom_factor(common::KeyId /*i*/,
                             common::KeyId /*j*/,
                             const common::OdomDelta& /*odom*/) {}
 
+void Graph::add_static_gravity_factor(common::KeyId /*k*/,
+                                      const common::Vec3& /*f_b*/,
+                                      const common::Mat3& /*cov*/) {}
+
+common::Result<double> Graph::static_gravity_chi2() const {
+  return common::Result<double>::error("built without GTSAM");
+}
+
+bool Graph::remove_static_gravity_factor() {
+  return false;
+}
+
 void Graph::add_loop_factor(const common::LoopConstraint& /*lc*/) {}
 
 common::Result<common::Estimate> Graph::optimize() {
@@ -58,5 +71,16 @@ common::PoseCovariance Graph::marginal_cov(common::KeyId /*k*/) const {
 common::Result<common::NavState> Graph::keyframe_state(common::KeyId /*k*/) const {
   return common::Result<common::NavState>::error("built without GTSAM");
 }
+
+common::Result<common::Pose> Graph::gnss_frame_estimate() const {
+  return common::Result<common::Pose>::error("built without GTSAM");
+}
+
+namespace detail {
+
+void set_static_gravity_full_residual(bool /*full*/) {}
+void set_static_gravity_posterior_statistic(bool /*on*/) {}
+
+}  // namespace detail
 
 }  // namespace mss::backend

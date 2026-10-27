@@ -281,6 +281,44 @@ TEST(Config, GnssGateKeysValidated) {
   EXPECT_TRUE(mentions(gate.reason(), "gnss.chi2_gate: must be > 0 (got -1)")) << gate.reason();
 }
 
+// PR 4d: the static-window gravity factor ships on with sigma scale 2 (evaluated, config
+// comment); the flag parses as a bool and the scale must be > 0.
+TEST(Config, StaticGravityFactorKey) {
+  const auto cfg = load_config(kDefault);
+  ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+  EXPECT_TRUE(cfg.value().backend.static_gravity_factor);
+  EXPECT_DOUBLE_EQ(cfg.value().backend.static_gravity_sigma_scale, 2.0);
+  const std::string base = read_file(kDefault);
+  const auto off =
+      parse_config(base, overlay("    backend:\n      static_gravity_factor: false\n"));
+  ASSERT_TRUE(off.is_ok()) << off.reason();
+  const auto bad = parse_config(base, overlay("    backend:\n      static_gravity_factor: 3.5\n"));
+  EXPECT_FALSE(bad.is_ok());
+  const auto zero =
+      parse_config(base, overlay("    backend:\n      static_gravity_sigma_scale: 0\n"));
+  ASSERT_FALSE(zero.is_ok());
+  EXPECT_TRUE(mentions(zero.reason(), "backend.static_gravity_sigma_scale")) << zero.reason();
+  // ADR-020 rest gate (imu.*) and consistency check (backend.*): shipped values, > 0.
+  EXPECT_DOUBLE_EQ(cfg.value().imu.init_max_mean_gyro_radps, 0.15);
+  EXPECT_DOUBLE_EQ(cfg.value().imu.init_max_wheel_speed_mps, 0.1);
+  EXPECT_DOUBLE_EQ(cfg.value().imu.init_gravity_check_sigma, 3.0);
+  // Consistency check shipped off (0); 0 and positive values parse, negative ones do not.
+  EXPECT_EQ(cfg.value().backend.static_gravity_check_keyframes, 0);
+  EXPECT_EQ(mss::backend::BackendConfig{}.static_gravity_check_keyframes, 0);
+  const auto on =
+      parse_config(base, overlay("    backend:\n      static_gravity_check_keyframes: 5\n"));
+  ASSERT_TRUE(on.is_ok()) << on.reason();
+  EXPECT_EQ(on.value().backend.static_gravity_check_keyframes, 5);
+  EXPECT_NEAR(cfg.value().backend.static_gravity_chi2_gate, 5.991, 1e-3);
+  for (const char* bad_key : {"    imu:\n      init_max_mean_gyro_radps: 0\n",
+                              "    imu:\n      init_max_wheel_speed_mps: -1\n",
+                              "    imu:\n      init_gravity_check_sigma: 0\n",
+                              "    backend:\n      static_gravity_check_keyframes: -1\n",
+                              "    backend:\n      static_gravity_chi2_gate: 0\n"}) {
+    EXPECT_FALSE(parse_config(base, overlay(bad_key)).is_ok()) << bad_key;
+  }
+}
+
 // ADR-019: the GNSS frame variable and its prior sigmas (degrees in YAML, radians in code).
 TEST(Config, GnssFrameVariableKeys) {
   const auto cfg = load_config(kDefault);

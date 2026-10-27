@@ -173,6 +173,34 @@ TEST(ImuInitializer, StdUsesSampleStdPerAxis) {
   EXPECT_TRUE(r.is_ok()) << r.reason();
 }
 
+// Window statistics for the static-gravity factor (backend_factors.md section 6c): the mean
+// reading, and per axis max(sample variance, acc_noise_density^2 rate_hz) / n.
+TEST(ImuInitializer, WindowMeanAndCovarianceOfTheMean) {
+  std::vector<ImuSample> w = static_window(tilted_rotation(), Vec3::Zero());
+  for (std::size_t k = 0; k < w.size(); ++k) {
+    w[k].acc_b.x() += (k % 2 == 0) ? 0.049 : -0.049;  // sample variance above the floor
+  }
+  ImuConfig cfg = default_imu_config();
+  cfg.acc_noise_density = 1.0e-3;  // m/s^2/sqrt(Hz): floor 2e-4 (m/s^2)^2 per sample
+  ImuInitializer init(cfg);
+  const common::Result<InitState> r = init.try_init(Span<const ImuSample>(w));
+  ASSERT_TRUE(r.is_ok()) << r.reason();
+  const double n = static_cast<double>(w.size());
+  EXPECT_LT((r.value().acc_mean_b - mean_acc(w)).norm(), 1e-12);
+  double var_x = 0.0;
+  for (const ImuSample& s : w) {
+    var_x += (s.acc_b.x() - mean_acc(w).x()) * (s.acc_b.x() - mean_acc(w).x());
+  }
+  var_x /= n - 1.0;
+  const double floor = cfg.acc_noise_density * cfg.acc_noise_density * cfg.rate_hz;
+  ASSERT_GT(var_x, floor);
+  const Mat3& C = r.value().acc_mean_cov;
+  EXPECT_NEAR(C(0, 0), var_x / n, 1e-15);
+  EXPECT_NEAR(C(1, 1), floor / n, 1e-15);  // y, z noise-free: the floor
+  EXPECT_NEAR(C(2, 2), floor / n, 1e-15);
+  EXPECT_EQ(C(0, 1), 0.0);
+}
+
 TEST(ImuInitializer, DoesNotAllocate) {
   const Vec3 bg(0.01, -0.02, 0.005);
   const std::vector<ImuSample> good = static_window(tilted_rotation(), bg);
