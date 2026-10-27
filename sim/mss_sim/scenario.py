@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -27,6 +28,7 @@ _TOP = {
     "gnss_zones",
     "topics",
 }
+_OPTIONAL = frozenset({"prep"})
 
 
 class ScenarioError(ValueError):
@@ -50,6 +52,28 @@ class GnssZone:
 
 
 @dataclass(frozen=True)
+class PrepMutate:
+    """``mutate_bag.mutate`` arguments that turn the E-01 bag into the E-03 bag."""
+
+    drop_fraction: float
+    reorder_fraction: float
+    window_ns: int
+    seed: int
+
+
+@dataclass(frozen=True)
+class Prep:
+    """Synthetic data for the integration harness (ADR-011 part A, section 5)."""
+
+    static_s: float
+    ramp_s: float
+    speed_mps: float
+    omega_radps: float
+    box_half_m: tuple[float, float, float]
+    mutate: PrepMutate | None  # None: no E-03 data (the harness then refuses E-03)
+
+
+@dataclass(frozen=True)
 class Scenario:
     id: str
     world: str
@@ -62,6 +86,7 @@ class Scenario:
     gnss: list[GnssSegment]
     gnss_zones: list[GnssZone]
     topics: list[str]
+    prep: Prep | None = None
 
 
 def _num(value: Any, path: str) -> float:
@@ -76,15 +101,71 @@ def _str(value: Any, path: str) -> str:
     return value
 
 
-def _mapping(value: Any, path: str, keys: set[str]) -> dict:
+def _mapping(value: Any, path: str, keys: set[str], optional: frozenset[str] = frozenset()) -> dict:
     if not isinstance(value, dict):
         raise ScenarioError(f"{path}: expected a mapping")
     for key in sorted(keys - value.keys()):
         raise ScenarioError(f"{path}.{key}: missing")
     for key in value:
-        if key not in keys:
+        if key not in keys and key not in optional:
             raise ScenarioError(f"{path}.{key}: unknown key")
     return value
+
+
+def _pos(value: Any, path: str) -> float:
+    x = _num(value, path)
+    if not (math.isfinite(x) and x > 0):
+        raise ScenarioError(f"{path}: must be a finite number > 0, got {value!r}")
+    return x
+
+
+def _fraction(value: Any, path: str) -> float:
+    x = _num(value, path)
+    if not 0 <= x <= 1:
+        raise ScenarioError(f"{path}: must be in [0, 1], got {value!r}")
+    return x
+
+
+def _int(value: Any, path: str, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ScenarioError(f"{path}: expected an integer >= {minimum}, got {value!r}")
+    return value
+
+
+def _mutate(raw: Any) -> PrepMutate:
+    keys = {"drop_fraction", "reorder_fraction", "window_ns", "seed"}
+    m = _mapping(raw, "prep.mutate", keys)
+    out = PrepMutate(
+        drop_fraction=_fraction(m["drop_fraction"], "prep.mutate.drop_fraction"),
+        reorder_fraction=_fraction(m["reorder_fraction"], "prep.mutate.reorder_fraction"),
+        window_ns=_int(m["window_ns"], "prep.mutate.window_ns", 1),
+        seed=_int(m["seed"], "prep.mutate.seed", 0),
+    )
+    if out.drop_fraction == 0 and out.reorder_fraction == 0:
+        raise ScenarioError(
+            "prep.mutate: at least one of drop_fraction, reorder_fraction must be > 0"
+        )
+    return out
+
+
+def _prep(raw: Any) -> Prep:
+    keys = {"static_s", "ramp_s", "speed_mps", "omega_radps", "box_half_m"}
+    d = _mapping(raw, "prep", keys, frozenset({"mutate"}))
+    box = _list(d["box_half_m"], "prep.box_half_m")
+    if len(box) != 3:
+        raise ScenarioError(f"prep.box_half_m: expected [x_m, y_m, z_m], got {box!r}")
+    return Prep(
+        static_s=_pos(d["static_s"], "prep.static_s"),
+        ramp_s=_pos(d["ramp_s"], "prep.ramp_s"),
+        speed_mps=_pos(d["speed_mps"], "prep.speed_mps"),
+        omega_radps=_pos(d["omega_radps"], "prep.omega_radps"),
+        box_half_m=(
+            _pos(box[0], "prep.box_half_m[0]"),
+            _pos(box[1], "prep.box_half_m[1]"),
+            _pos(box[2], "prep.box_half_m[2]"),
+        ),
+        mutate=_mutate(d["mutate"]) if "mutate" in d else None,
+    )
 
 
 def _mode(value: Any, path: str) -> GnssMode:
@@ -145,7 +226,7 @@ def _zones(raw: Any) -> list[GnssZone]:
 def load_scenario(path: Path) -> Scenario:
     """Load and validate a scenario YAML. Referenced files are resolved but need not exist."""
     data = yaml.safe_load(Path(path).read_text())
-    data = _mapping(data, "<root>", _TOP)
+    data = _mapping(data, "<root>", _TOP, _OPTIONAL)
     seed = data["seed"]
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ScenarioError(f"seed: expected an integer, got {seed!r}")
@@ -175,4 +256,5 @@ def load_scenario(path: Path) -> Scenario:
         gnss=_segments(data["gnss"]),
         gnss_zones=_zones(data["gnss_zones"]),
         topics=topics,
+        prep=_prep(data["prep"]) if "prep" in data else None,
     )
