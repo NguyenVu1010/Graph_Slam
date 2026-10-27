@@ -160,6 +160,14 @@ GNSS fusion keys: `gnss.align_min_pairs` (accepted fixes before the w->e alignme
 quantile 7.81). `imu.init_max_acc_std_mps2` must exceed the per-sample accelerometer noise
 `acc_noise_density * sqrt(rate_hz)` by about 3x, or the static initialisation never passes.
 
+`deterministic: true` (the default) runs the estimator on one thread with a fixed seed so a
+replay reproduces bit for bit. It also sets `backend.single_thread` (not a YAML key), which
+caps TBB at one thread while the backend `Graph` lives, so GTSAM's iSAM2 does not run on
+worker threads (ADR-018; process-wide while the Graph lives). The cost is a slower
+`optimize()` on large graphs: about 10 % on a 300-keyframe test graph, within run-to-run noise
+on the E-01 bench replay, with lower CPU use. With `deterministic: false` TBB keeps its
+default parallelism.
+
 ## Before committing
 
 `pre-commit install` once; it runs clang-format and ruff. CI additionally builds with
