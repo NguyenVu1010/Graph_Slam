@@ -58,3 +58,40 @@ def test_pipeline_uses_believed_kinematics(scenario: Path) -> None:
     assert get(cfg, "frames.p_b_g_m") == ADR_P_B_G_M
     assert get(cfg, "frames.T_b_l.translation_m") == ADR_T_B_L_TRANSLATION_M
     assert get(cfg, "frames.T_b_l.quaternion_wxyz") == ADR_T_B_L_QUATERNION_WXYZ
+
+
+VARIANTS = [
+    (scenario, name, overlay)
+    for scenario in SCENARIOS
+    for name, overlay in load_scenario(scenario).pipeline_config_variants.items()
+]
+
+
+@pytest.mark.parametrize(
+    ("scenario", "name", "overlay"), VARIANTS, ids=lambda v: getattr(v, "name", str(v))
+)
+def test_variant_overlays_are_consistent(scenario: Path, name: str, overlay: Path) -> None:
+    """Every extra overlay of a scenario (e.g. E-04 degeneracy on) passes the same SIM-03 checks."""
+    prof = load_profile(REPO / load_scenario(scenario).profile)
+    cfg = load_pipeline_config(REPO / "config/default.yaml", overlay)
+    for key_cfg, val_sim in pairs(prof):
+        ratio = get(cfg, key_cfg) / val_sim
+        assert 1.0 <= ratio <= prof.inflation_max, f"{name} {key_cfg}: ratio {ratio}"
+    believed = prof.odom.kinematics_believed
+    assert get(cfg, "wheel_odom.wheel_radius_m") == believed.wheel_radius_m
+    assert get(cfg, "wheel_odom.track_m") == believed.track_m
+    assert get(cfg, "frames.p_b_g_m") == ADR_P_B_G_M
+    assert get(cfg, "frames.T_b_l.translation_m") == ADR_T_B_L_TRANSLATION_M
+    assert get(cfg, "frames.T_b_l.quaternion_wxyz") == ADR_T_B_L_QUATERNION_WXYZ
+
+
+def test_e04_has_a_degeneracy_on_variant() -> None:
+    sc = load_scenario(REPO / "sim/scenarios/E-04.yaml")
+    base = load_pipeline_config(REPO / "config/default.yaml", sc.pipeline_config)
+    on = load_pipeline_config(
+        REPO / "config/default.yaml", sc.pipeline_config_variants["degeneracy_on"]
+    )
+    assert get(base, "degeneracy.enabled") is False
+    assert get(on, "degeneracy.enabled") is True
+    base["degeneracy"]["enabled"] = True
+    assert base == on  # the two runs differ only by the flag
