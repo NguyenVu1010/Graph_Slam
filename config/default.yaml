@@ -75,6 +75,11 @@ mss_node:
     map:
       voxel_m: 0.5               # map voxel edge, m (ADR-007)
       max_points_per_voxel: 20   # points kept per voxel
+      # Spacing radius inside a voxel, m; a closer new point replaces the nearest stored one;
+      # 0 = off (ADR-007 amendment, evaluation in map.md). Memory and speed option: at
+      # 0 / 0.05 / 0.1 / 0.2 m E-01 ATE 0.95 / 0.87 / 0.91 / 1.27 mm (shipped gates), S-02 edge
+      # bias 9.5 / 9.5 / 0.38 / 421 mm (gates off); 0.1 m: about 30 % fewer map points.
+      min_point_dist_m: 0.0
       knn_k: 5                   # neighbours used to fit a plane
       prune_radius_m: 100.0      # voxels farther than this from the body are removed, m
       prune_period_s: 5.0        # how often pruning runs, s

@@ -197,6 +197,20 @@ TEST(Config, DeterministicSetsBackendSingleThread) {
   EXPECT_FALSE(off.value().backend.single_thread);
 }
 
+TEST(Config, MapMinPointDistValidated) {
+  const auto ok = load_config(kDefault);
+  ASSERT_TRUE(ok.is_ok()) << ok.reason();
+  EXPECT_GE(ok.value().map.min_point_dist_m, 0.0);
+  const std::string base = read_file(kDefault);
+  const auto off = parse_config(base, overlay("    map:\n      min_point_dist_m: 0.0\n"));
+  ASSERT_TRUE(off.is_ok()) << off.reason();
+  EXPECT_EQ(off.value().map.min_point_dist_m, 0.0);
+  const auto bad = parse_config(base, overlay("    map:\n      min_point_dist_m: -0.1\n"));
+  ASSERT_FALSE(bad.is_ok());
+  EXPECT_TRUE(mentions(bad.reason(), "map.min_point_dist_m: must be >= 0 (got -0.1)"))
+      << bad.reason();
+}
+
 TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   const auto cfg = load_config(kDefault);
   ASSERT_TRUE(cfg.is_ok()) << cfg.reason();

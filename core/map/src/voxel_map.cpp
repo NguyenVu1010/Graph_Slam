@@ -53,6 +53,10 @@ VoxelMap::VoxelMap(const MapConfig& cfg) : cfg_(cfg) {
   if (!(std::isfinite(cfg.prune_radius_m) && cfg.prune_radius_m > 0.0)) {
     reject("prune_radius_m", "finite and > 0", cfg.prune_radius_m);
   }
+  if (!(std::isfinite(cfg.min_point_dist_m) && cfg.min_point_dist_m >= 0.0)) {
+    reject("min_point_dist_m", "finite and >= 0", cfg.min_point_dist_m);
+  }
+  min_point_dist2_m2_ = cfg.min_point_dist_m * cfg.min_point_dist_m;
   const auto n = static_cast<std::size_t>(cfg.max_points_per_voxel);
   if (n > std::numeric_limits<std::size_t>::max() / 3 / cfg.max_voxels) {
     reject("max_points_per_voxel",
@@ -112,6 +116,24 @@ std::uint32_t VoxelMap::find_voxel(std::int32_t kx, std::int32_t ky, std::int32_
   return slots_[find_slot(kx, ky, kz)].voxel;
 }
 
+std::int32_t VoxelMap::nearest_within(
+    const float* pts, std::int32_t count, float x, float y, float z) const {
+  std::int32_t best = -1;
+  double best_d2 = min_point_dist2_m2_;
+  for (std::int32_t s = 0; s < count; ++s) {
+    const float* p = pts + static_cast<std::size_t>(s) * 3;
+    const double ex = static_cast<double>(p[0]) - static_cast<double>(x);
+    const double ey = static_cast<double>(p[1]) - static_cast<double>(y);
+    const double ez = static_cast<double>(p[2]) - static_cast<double>(z);
+    const double d2 = ex * ex + ey * ey + ez * ez;
+    if (d2 < best_d2) {  // strict: the lowest slot wins a tie
+      best_d2 = d2;
+      best = s;
+    }
+  }
+  return best;
+}
+
 void VoxelMap::insert(const common::ScanFrame& scan, const common::Pose& T_w_l) {
   const common::Span<const float> xyz = scan.xyz();
   const auto n_per_voxel = static_cast<std::size_t>(cfg_.max_points_per_voxel);
@@ -139,9 +161,19 @@ void VoxelMap::insert(const common::ScanFrame& scan, const common::Pose& T_w_l) 
       ++num_voxels_;
     }
     VoxelMeta& meta = voxels_[v];
-    float* dst = &points_[((static_cast<std::size_t>(v) * n_per_voxel) +
-                           static_cast<std::size_t>(meta.head)) *
-                          3];
+    float* const pts = &points_[static_cast<std::size_t>(v) * n_per_voxel * 3];
+    if (min_point_dist2_m2_ > 0.0) {
+      const std::int32_t near = nearest_within(pts, meta.count, fx, fy, fz);
+      if (near >= 0) {  // refresh in place: same slot, count and head unchanged
+        float* rep = pts + static_cast<std::size_t>(near) * 3;
+        rep[0] = fx;
+        rep[1] = fy;
+        rep[2] = fz;
+        ++spacing_replaced_;
+        continue;
+      }
+    }
+    float* dst = pts + static_cast<std::size_t>(meta.head) * 3;
     dst[0] = fx;
     dst[1] = fy;
     dst[2] = fz;
@@ -237,6 +269,7 @@ void VoxelMap::clear() {
   num_voxels_ = 0;
   num_points_ = 0;
   dropped_ = 0;
+  spacing_replaced_ = 0;
 }
 
 void VoxelMap::prune(const common::Vec3& p_w_b) {
@@ -269,6 +302,10 @@ std::size_t VoxelMap::num_voxels() const {
 
 std::size_t VoxelMap::num_dropped() const {
   return dropped_;
+}
+
+std::size_t VoxelMap::num_spacing_replaced() const {
+  return spacing_replaced_;
 }
 
 std::size_t VoxelMap::num_points() const {

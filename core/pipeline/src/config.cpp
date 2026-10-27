@@ -412,6 +412,7 @@ Config read_config(Reader& r) {
 
   r.field("map.voxel_m", c.map.voxel_m, Range::kPositive);
   r.field("map.max_points_per_voxel", c.map.max_points_per_voxel, Range::kPositive);
+  r.field("map.min_point_dist_m", c.map.min_point_dist_m, Range::kNonNegative);
   r.field("map.knn_k", c.map.knn_k, Range::kPositive);
   r.field("map.prune_radius_m", c.map.prune_radius_m, Range::kPositive);
   r.field("map.prune_period_s", c.map.prune_period_s, Range::kPositive);
