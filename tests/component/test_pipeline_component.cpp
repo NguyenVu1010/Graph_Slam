@@ -204,7 +204,7 @@ ReplayResult run_box_world(bool gnss_and_wheel,
   std::printf(
       "[ box world ] gtsam %d gnss+wheel %d: ATE %.4f m, max yaw %.3f deg, %zu estimates, "
       "%llu keyframes, %llu match failures, %llu gnss factors, %llu odom factors, "
-      "%llu rebuilds\n",
+      "%llu rebuilds, %llu map points, %llu spacing replaced\n",
       kWithGtsam ? 1 : 0,
       gnss_and_wheel ? 1 : 0,
       e.ate_m,
@@ -214,7 +214,10 @@ ReplayResult run_box_world(bool gnss_and_wheel,
       static_cast<unsigned long long>(r.stats.n_match_failures),
       static_cast<unsigned long long>(r.stats.n_gnss_factors),
       static_cast<unsigned long long>(r.stats.n_odom_factors),
-      static_cast<unsigned long long>(r.stats.n_map_rebuilds));
+      static_cast<unsigned long long>(r.stats.n_map_rebuilds),
+      static_cast<unsigned long long>(r.stats.n_map_points),
+      static_cast<unsigned long long>(r.stats.n_map_spacing_replaced));
+  EXPECT_GT(r.stats.n_map_points, 0U);
   if (gnss_and_wheel) {
     EXPECT_GT(r.stats.n_odom_factors, 0U);
     EXPECT_GT(r.stats.n_gnss_factors, 0U);
@@ -398,6 +401,29 @@ TEST(PipelineComponent, BoxWorldGnssOnlyDoesNotDegrade) {
     EXPECT_GT(on.stats.n_gnss_factors, 0U) << sigma_m;
     EXPECT_LE(ate_on_m, 1.2 * ate_off_m) << sigma_m;
   }
+}
+
+// Stats map counters: spacing off never replaces; spacing on (0.1 m) refreshes map points
+// from later keyframes, so the count grows, and the map holds fewer points.
+TEST(PipelineComponent, MapSpacingCountersInStats) {
+  const BoxWorldParams p;
+  const fs::path dir = test_dir();
+  Config cfg = box_config(p, false, false, dir);
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  cfg.map.min_point_dist_m = 0.0;
+  const Estimator::Stats off = replay(dir / "data", cfg).stats;
+  cfg.map.min_point_dist_m = 0.1;
+  const Estimator::Stats on = replay(dir / "data", cfg).stats;
+  std::printf(
+      "[ map counters ] off: %llu points, %llu replaced; 0.1 m: %llu points, %llu replaced\n",
+      static_cast<unsigned long long>(off.n_map_points),
+      static_cast<unsigned long long>(off.n_map_spacing_replaced),
+      static_cast<unsigned long long>(on.n_map_points),
+      static_cast<unsigned long long>(on.n_map_spacing_replaced));
+  EXPECT_GT(off.n_map_points, 0U);
+  EXPECT_EQ(off.n_map_spacing_replaced, 0U);
+  EXPECT_GT(on.n_map_spacing_replaced, 0U);
+  EXPECT_LT(on.n_map_points, off.n_map_points);
 }
 
 // I-1: GNSS stamps 2.5 ms off the 5 ms IMU grid are deferred until the IMU covers them and

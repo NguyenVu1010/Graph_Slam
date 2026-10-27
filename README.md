@@ -52,7 +52,10 @@ stdout. `est.tum` has one line per scan that produced an estimate; there are non
 IMU static initialisation, which needs `imu.init_window_s` of still IMU data before a scan.
 Besides the record and drop counts, `bench.json` reports `n_keyframes`, `n_match_failures`,
 `n_skipped_scans` (scans without an estimate), `n_uncovered_scans` (of those, no IMU up to
-the scan end at end of data), `n_map_rebuilds`, `n_gnss_factors` and `n_odom_factors`. Exit codes: 0 success; 2 usage, config, dataset or output error; 3 the replay finished
+the scan end at end of data), `n_map_rebuilds`, `n_gnss_factors`, `n_odom_factors`,
+`n_map_points` (VoxelMap points at the end) and `n_map_spacing_replaced` (points refreshed in
+place by `map.min_point_dist_m`, summed over rebuilds; every rebuild re-inserts the keyframe
+window, so it grows with `n_map_rebuilds` and is not a map-quality figure). Exit codes: 0 success; 2 usage, config, dataset or output error; 3 the replay finished
 but some records were not processed (dropped or rejected, see `bench.json`). Format:
 `docs/mssdata_format.md`, decision: `docs/adr/014-bench-dataset-format.md`.
 

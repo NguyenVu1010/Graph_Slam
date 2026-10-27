@@ -206,6 +206,9 @@ TEST(BenchReplay, ReplaysSyntheticDataset) {
   // One sample per processed scan, all inside the buffer reserved from index.json.
   EXPECT_NE(json.find("\"n_latency_samples\": 10,"), std::string::npos) << json;
   EXPECT_NE(json.find("\"n_latency_dropped\": 0,"), std::string::npos) << json;
+  // Map counters (additive fields): the map holds points; spacing counts are >= 0.
+  EXPECT_GE(json_number(json, "n_map_points"), 0.0) << json;
+  EXPECT_GE(json_number(json, "n_map_spacing_replaced"), 0.0) << json;
 }
 
 // 3 s of IMU / GNSS / wheel before the first scan: more than the IMU (400) and aux (32)
