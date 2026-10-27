@@ -33,6 +33,14 @@ namespace mss::pipeline::detail {
 /// dropped and counted in n_gnss_ring_overflow.
 constexpr std::size_t kMaxDeferredGnss = 32;
 
+/// Outcome of the keyframe-0 gravity factor's consistency check (ADR-020).
+enum class GravityCheckOutcome {
+  kKept,           ///< statistic <= backend.static_gravity_chi2_gate
+  kRemoved,        ///< above the gate, removed (n_gravity_factor_removed)
+  kRemovalFailed,  ///< above the gate, removal failed: the factor stays (warning, no retry)
+  kUnchecked,      ///< statistic not evaluated, factor kept (n_gravity_factor_unchecked)
+};
+
 /// Test-only observer of the factors EstimatorCore adds (the GNSS fusion study,
 /// tests/component/test_pipeline_component.cpp `GnssFusionStudy`). Called on the estimator
 /// thread, only at keyframes and accepted fixes; never set in production.
@@ -62,8 +70,9 @@ class CoreObserver {
                                      const common::PoseCovariance& /*cov*/) {}
   /// The backend's GNSS frame variable E after a successful optimize() (IMU study).
   virtual void on_frame_estimate(common::Timestamp /*t*/, const common::Pose& /*T_e_w*/) {}
-  /// The gravity factor consistency check ran: its chi-square and whether it was removed.
-  virtual void on_gravity_check(double /*chi2*/, bool /*removed*/) {}
+  /// The gravity factor consistency check ran: its innovation statistic (NaN when unchecked)
+  /// and the outcome.
+  virtual void on_gravity_check(double /*chi2*/, GravityCheckOutcome /*outcome*/) {}
 };
 
 /// Test-only seam (studies): `observer` receives the factor events; with `force_T_e_w` the
@@ -110,7 +119,8 @@ struct CoreCounters {
   std::uint64_t n_odom_rejected = 0;         ///< wheel deltas dropped by the time check
   std::uint64_t n_backend_failures = 0;      ///< optimize() errors (stub build: every keyframe)
   std::uint64_t n_gravity_factor_gated = 0;  ///< kf-0 gravity factor not added (rest gate)
-  std::uint64_t n_gravity_factor_removed = 0;  ///< removed by the chi-square check (ADR-020)
+  std::uint64_t n_gravity_factor_removed = 0;    ///< removed by the chi-square check (ADR-020)
+  std::uint64_t n_gravity_factor_unchecked = 0;  ///< check not evaluated, factor kept (ADR-020)
   /// VoxelMap spacing replacements counted before the map's last clear() (rebuilds); the
   /// total is this plus VoxelMap::num_spacing_replaced().
   std::uint64_t n_map_spacing_replaced_cleared = 0;
@@ -164,6 +174,7 @@ class EstimatorCore {
   void prune_imu(common::Timestamp t);
   // Integrates buffered wheel samples with t <= `t`.
   void integrate_wheel(common::Timestamp t);
+  void consume_wheel(const common::WheelSample& s);  // integrate one sample, track motion
   // First scan after initialisation: keyframe 0.
   void first_keyframe(common::Timestamp t, const common::NavState& predicted);
   // Adds keyframe j for the matched scan at `t` (front_ holds the matched state).
@@ -244,8 +255,11 @@ class EstimatorCore {
   // Gravity-factor state (ADR-020): added at keyframe 0; checked once.
   bool gravity_factor_added_ = false;
   bool gravity_factor_checked_ = false;
-  bool wheel_moved_ = false;                 // a wheel speed above imu.init_max_wheel_speed_mps
-  common::Timestamp last_wheel_motion_t_{};  // time of the last such wheel sample
+  // Time of the last consumed wheel sample (taken from wheel_queue_, so in time order) with
+  // a speed above imu.init_max_wheel_speed_mps; set when wheel_moved_.
+  bool wheel_moved_ = false;
+  common::Timestamp last_wheel_motion_t_{};
+  bool init_wheel_moved_ = false;  // such a sample in [init_t_ - window, init_t_]
 
   [[nodiscard]] CoreObserver* observer() const {
     return hooks_ != nullptr ? hooks_->observer : nullptr;

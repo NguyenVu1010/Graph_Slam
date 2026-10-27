@@ -1,6 +1,7 @@
 #include "estimator_core.hpp"
 
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -144,23 +145,29 @@ void EstimatorCore::on_wheel(const common::WheelSample& s) {
   }
   have_wheel_ = true;
   last_wheel_t_ = s.t;
-  if (std::abs(s.v_mps) > cfg_.imu.init_max_wheel_speed_mps) {  // gravity rest gate (ADR-020)
-    wheel_moved_ = true;
-    last_wheel_motion_t_ = s.t;
-  }
   if (wheel_queue_.size() == wheel_queue_.capacity()) {
     common::WheelSample oldest;
     wheel_queue_.pop(oldest);
-    (void)wheel_.integrate(oldest);
+    consume_wheel(oldest);
   }
   wheel_queue_.push(s);
+}
+
+void EstimatorCore::consume_wheel(const common::WheelSample& s) {
+  // Gravity rest gate (ADR-020): consumed in time order, so at the init scan (after
+  // integrate_wheel(init_t_)) this is the last moving sample at or before init_t_.
+  if (std::abs(s.v_mps) > cfg_.imu.init_max_wheel_speed_mps) {
+    wheel_moved_ = true;
+    last_wheel_motion_t_ = s.t;
+  }
+  (void)wheel_.integrate(s);
 }
 
 void EstimatorCore::integrate_wheel(common::Timestamp t) {
   while (!wheel_queue_.empty() && wheel_queue_.front().t <= t) {
     common::WheelSample s;
     wheel_queue_.pop(s);
-    (void)wheel_.integrate(s);
+    consume_wheel(s);
   }
 }
 
@@ -322,6 +329,9 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
     (void)kf_.integrate(boundary_);
     pred_last_t_ = t;
     integrate_wheel(t);
+    // Samples up to t are consumed now; later ones, already queued, do not count.
+    init_wheel_moved_ = wheel_moved_ && last_wheel_motion_t_.ns >= t.ns - init_window_ns_ &&
+                        last_wheel_motion_t_.ns <= t.ns;
     (void)wheel_.take_delta();
     predicted = front_;
     common::log_info("imu initialised");
@@ -413,8 +423,7 @@ void EstimatorCore::first_keyframe(common::Timestamp t, const common::NavState& 
   if (cfg_.backend.static_gravity_factor) {
     // The window statistics describe the body at rest at init_t_ (ADR-020): only valid when
     // keyframe 0 is that scan and the rest gate passes (imu_only_observability.md 12).
-    const bool wheel_moved = cfg_.wheel_odom.enabled && wheel_moved_ &&
-                             last_wheel_motion_t_.ns >= init_t_.ns - init_window_ns_;
+    const bool wheel_moved = cfg_.wheel_odom.enabled && init_wheel_moved_;
     const char* rest_failure =
         t == init_t_ ? gravity_rest_failure(
                            init_, cfg_.imu, cfg_.backend.prior_bias_acc_sigma_mps2, wheel_moved)
@@ -540,20 +549,30 @@ void EstimatorCore::check_gravity_factor(common::KeyId j) {
       j < static_cast<common::KeyId>(cfg_.backend.static_gravity_check_keyframes)) {
     return;
   }
-  gravity_factor_checked_ = true;
+  gravity_factor_checked_ = true;  // once: a failed removal is not retried (ADR-020)
   const common::Result<double> chi2 = graph_.static_gravity_chi2();
+  GravityCheckOutcome outcome = GravityCheckOutcome::kKept;
   if (!chi2.is_ok()) {
-    return;
-  }
-  const bool remove = chi2.value() > cfg_.backend.static_gravity_chi2_gate;
-  if (remove && graph_.remove_static_gravity_factor()) {
-    ++counters_.n_gravity_factor_removed;
-    common::log_warn(
-        "static gravity factor removed: its residual failed backend.static_gravity_chi2_gate "
-        "(the init window was not at rest)");
+    outcome = GravityCheckOutcome::kUnchecked;
+    ++counters_.n_gravity_factor_unchecked;
+    common::log_info("static gravity factor kept unchecked: " + chi2.reason());
+  } else if (chi2.value() > cfg_.backend.static_gravity_chi2_gate) {
+    if (graph_.remove_static_gravity_factor()) {
+      outcome = GravityCheckOutcome::kRemoved;
+      ++counters_.n_gravity_factor_removed;
+      common::log_warn(
+          "static gravity factor removed: its innovation failed "
+          "backend.static_gravity_chi2_gate (the init window was not at rest)");
+    } else {
+      outcome = GravityCheckOutcome::kRemovalFailed;
+      common::log_warn(
+          "static gravity factor failed backend.static_gravity_chi2_gate but its removal "
+          "failed: the factor stays (not retried)");
+    }
   }
   if (observer() != nullptr) {
-    observer()->on_gravity_check(chi2.value(), remove);
+    observer()->on_gravity_check(
+        chi2.is_ok() ? chi2.value() : std::numeric_limits<double>::quiet_NaN(), outcome);
   }
 }
 

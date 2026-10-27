@@ -876,9 +876,13 @@ TEST(PipelineComponent, LidarFactorCovarianceConsistent) {
 //   factor 21.7 m); along-x RMS <= 3.0 m, the worst RMS of the 15 seeds (2.84 m, median
 //   1.36 m; without the factor median 11.6 m): mid-run excursions of up to 24 sigma_DR(t)
 //   remain, with transient tilt errors of 8 to 11 mrad (ADR-020 known gap);
-// - straight: |end x err| <= 6.3 m and along-x RMS <= 3.1 m, the worst of the 15 seeds
-//   (medians 2.72 m = 3.9 sigma_DR, which misses the brief's 3 sigma_DR, and 1.34 m;
-//   without the factor 3.56 m and 1.85 m).
+// - straight: |end x err| <= 1.86 m and along-x RMS <= 1.88 m, 2x the measured medians of
+//   seeds 42..44 with the shipped factor (0.93 m and 0.94 m; per seed 0.93 / 0.47 / 2.72 m
+//   and 0.61 / 1.34 / 0.94 m). Without the factor the same seeds give 6.90 m and 3.52 m, so
+//   both halves fail with the factor off. Over 15 seeds the straight medians are 2.72 m
+//   = 3.9 sigma_DR (misses the brief's 3 sigma_DR, ADR-020 known gap) and 1.34 m; without
+//   the factor 3.56 m and 1.85 m. The circle half is the stronger on / off distinction
+//   (without the factor its medians over these seeds are 84.8 m and 34.7 m).
 // Lateral error at the LiDAR level (< 1 cm) on every seed.
 TEST(PipelineComponent, CorridorImuOnlyAlongAxisWithinDeadReckoning) {
   if (!kWithGtsam) {
@@ -906,6 +910,9 @@ TEST(PipelineComponent, CorridorImuOnlyAlongAxisWithinDeadReckoning) {
       EXPECT_LT(r.lateral_rms_m, 0.01) << seed;
       EXPECT_GT(r.keyframes, 5U) << seed;
       EXPECT_LT(r.keyframes, 40U) << seed;  // the 1 m rule does not fire on a drift along x
+      // At rest: the consistency check runs and keeps the factor (innovation 0.3 to 3.8).
+      EXPECT_EQ(r.gravity_removed, 0U) << seed;
+      EXPECT_EQ(r.gravity_unchecked, 0U) << seed;
       end_err_m.push_back(std::abs(r.end_x_m));
       rms_m.push_back(r.along_rms_m);
     }
@@ -918,8 +925,8 @@ TEST(PipelineComponent, CorridorImuOnlyAlongAxisWithinDeadReckoning) {
         3.0 * sigma_dr_m,
         rms_m[1]);
     if (straight) {
-      EXPECT_LE(end_err_m[1], 6.3);
-      EXPECT_LE(rms_m[1], 3.1);
+      EXPECT_LE(end_err_m[1], 1.86);  // m, 2 x 0.93 (seeds 42..44, shipped)
+      EXPECT_LE(rms_m[1], 1.88);      // m, 2 x 0.94
     } else {
       EXPECT_LE(end_err_m[1], 3.0 * sigma_dr_m);
       EXPECT_LE(rms_m[1], 3.0);
@@ -950,18 +957,29 @@ struct StartRun {
   double ate_m = 0.0;
   std::uint64_t gated = 0;
   std::uint64_t removed = 0;
+  std::uint64_t unchecked = 0;
   std::size_t estimates = 0;
   double chi2 = -1.0;  // gravity-factor consistency check (-1: not run)
+  bool check_ran = false;
+  detail::GravityCheckOutcome outcome = detail::GravityCheckOutcome::kKept;
 };
 
-// Records the chi-square of the gravity factor's consistency check.
+// Records the innovation statistic and outcome of the gravity factor's consistency check.
 class GravityCheckObserver final : public detail::CoreObserver {
  public:
-  void on_gravity_check(double chi2, bool /*removed*/) override { chi2_ = chi2; }
+  void on_gravity_check(double chi2, detail::GravityCheckOutcome outcome) override {
+    chi2_ = chi2;
+    outcome_ = outcome;
+    ran_ = true;
+  }
   [[nodiscard]] double chi2() const { return chi2_; }
+  [[nodiscard]] detail::GravityCheckOutcome outcome() const { return outcome_; }
+  [[nodiscard]] bool ran() const { return ran_; }
 
  private:
   double chi2_ = -1.0;
+  detail::GravityCheckOutcome outcome_ = detail::GravityCheckOutcome::kKept;
+  bool ran_ = false;
 };
 
 StartRun start_run(const BoxWorldParams& p,
@@ -977,16 +995,20 @@ StartRun start_run(const BoxWorldParams& p,
   out.ate_m = trajectory_errors(p, r.estimates).ate_m;
   out.gated = r.stats.n_gravity_factor_gated;
   out.removed = r.stats.n_gravity_factor_removed;
+  out.unchecked = r.stats.n_gravity_factor_unchecked;
   out.estimates = r.estimates.size();
   out.chi2 = obs.chi2();
+  out.check_ran = obs.ran();
+  out.outcome = obs.outcome();
   std::printf(
-      "[ moving start ] %s: ATE %.4f m, %zu estimates, gated %llu, removed %llu, check chi2 "
-      "%.2f\n",
+      "[ moving start ] %s: ATE %.4f m, %zu estimates, gated %llu, removed %llu, unchecked "
+      "%llu, check innovation chi2 %.2f\n",
       dir.filename().string().c_str(),
       out.ate_m,
       out.estimates,
       static_cast<unsigned long long>(out.gated),
       static_cast<unsigned long long>(out.removed),
+      static_cast<unsigned long long>(out.unchecked),
       out.chi2);
   return out;
 }
@@ -995,7 +1017,7 @@ const char* const kGravityOffYaml = "    backend:\n      static_gravity_factor: 
 
 // Box circle from t = 0 (no still phase): a 0.25 rad/s turn, constant in b, so the window is
 // accepted. The rest gate rejects it (|mean gyro| 0.25 > 0.15 rad/s); with the gyro bound
-// opened, the factor is added and the chi-square check must remove it.
+// opened, the factor is added and the check must remove it (innovation statistic 106.7).
 TEST(PipelineComponent, GravityFactorTurningStartGatedOrRemoved) {
   if (!kWithGtsam) {
     GTEST_SKIP() << "needs the GTSAM backend";
@@ -1014,14 +1036,16 @@ TEST(PipelineComponent, GravityFactorTurningStartGatedOrRemoved) {
   EXPECT_LE(on.ate_m, off.ate_m * 1.0001);
   EXPECT_EQ(open.gated, 0U);
   EXPECT_EQ(open.removed, 1U);
+  EXPECT_TRUE(open.check_ran);
+  EXPECT_EQ(open.outcome, detail::GravityCheckOutcome::kRemoved);
   EXPECT_LE(open.ate_m, off.ate_m * 1.1);
 }
 
 // Straight runs accelerating from t = 0 (no still phase), the gyro reading ~0, so the rest
 // gate passes. The window's mean holds the forward acceleration a, read as a tilt a / g:
-// - 6 s ramp (mean a about 0.06 m/s^2 over the window, chi-square 28.9 at the check);
-//   the check after backend.static_gravity_check_keyframes removes the factor;
-// - 2 s ramp (mean a 0.25 m/s^2, chi-square 207): removed.
+// - 6 s ramp (mean a about 0.06 m/s^2 over the window, innovation statistic 38.1 at the
+//   check); the check after backend.static_gravity_check_keyframes removes the factor;
+// - 2 s ramp (mean a 0.25 m/s^2, innovation statistic 233): removed.
 // The estimate must not get worse than without the factor (measured: 0.1025 vs 0.1043 m,
 // 0.5575 vs 0.5465 m).
 TEST(PipelineComponent, GravityFactorAcceleratingStartNotWorse) {
@@ -1042,6 +1066,8 @@ TEST(PipelineComponent, GravityFactorAcceleratingStartNotWorse) {
     ASSERT_GT(off.estimates, 100U);
     EXPECT_EQ(on.gated, 0U) << ramp_s;
     EXPECT_EQ(on.removed, 1U) << ramp_s;
+    EXPECT_EQ(on.unchecked, 0U) << ramp_s;
+    EXPECT_EQ(on.outcome, detail::GravityCheckOutcome::kRemoved) << ramp_s;
     EXPECT_LE(on.ate_m, off.ate_m * 1.1) << ramp_s;
   }
 }

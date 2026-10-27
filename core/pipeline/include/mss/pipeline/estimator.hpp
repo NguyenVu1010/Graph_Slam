@@ -72,6 +72,9 @@ class Estimator {
     std::uint64_t n_gravity_factor_gated = 0;
     /// keyframe-0 gravity factor removed by backend.static_gravity_chi2_gate (ADR-020)
     std::uint64_t n_gravity_factor_removed = 0;
+    /// keyframe-0 gravity factor kept without a check: the innovation statistic could not be
+    /// evaluated (innovation covariance not positive definite, or no estimate) (ADR-020)
+    std::uint64_t n_gravity_factor_unchecked = 0;
     std::uint64_t n_map_points = 0;  ///< points in the VoxelMap cache now (ADR-007)
     /// map points refreshed in place by map.min_point_dist_m since construction (summed
     /// over map rebuilds; ADR-007 amendment)

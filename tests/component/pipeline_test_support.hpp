@@ -379,7 +379,8 @@ struct AxisRun {
   double t_at_max_s = 0.0;
   double tilt_at_max_rad = 0.0;
   std::uint64_t keyframes = 0;
-  std::uint64_t gravity_removed = 0;  // n_gravity_factor_removed
+  std::uint64_t gravity_removed = 0;    // n_gravity_factor_removed
+  std::uint64_t gravity_unchecked = 0;  // n_gravity_factor_unchecked
 };
 
 inline AxisRun corridor_axis_run(const BoxWorldParams& p,
@@ -425,6 +426,7 @@ inline AxisRun corridor_axis_run(const BoxWorldParams& p,
   }
   out.keyframes = r.stats.n_keyframes;
   out.gravity_removed = r.stats.n_gravity_factor_removed;
+  out.gravity_unchecked = r.stats.n_gravity_factor_unchecked;
   std::printf(
       "[ corridor axis ] %s: end x %+.3f m, along-x RMS %.4f m, lateral RMS %.4f m, max "
       "|x|/sigma_DR %.1f at T %.1f s (tilt %.2f mrad), %llu keyframes\n",

@@ -11,7 +11,7 @@ namespace mss::pipeline::detail {
 /// passes, else the reason (a string literal):
 /// - |mean gyro| (= s.bias.bg) > imu.init_max_mean_gyro_radps;
 /// - `wheel_moved`: a wheel speed above imu.init_max_wheel_speed_mps inside the window
-///   (the caller passes false when wheel odometry is off);
+///   [init_t - init_window_s, init_t] (the caller passes false when wheel odometry is off);
 /// - ||f| - g| > imu.init_gravity_check_sigma * sqrt(u^T C u + prior_bias_acc_sigma^2),
 ///   f = s.acc_mean_b, u = f / |f|, C = s.acc_mean_cov, g = imu.gravity_mps2.
 /// Units: rad/s, m/s, m/s^2. No allocation. Tests: PipelineInternals.GravityRestGate*.
