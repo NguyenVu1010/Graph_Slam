@@ -45,6 +45,10 @@ void Graph::add_odom_factor(common::KeyId /*i*/,
                             common::KeyId /*j*/,
                             const common::OdomDelta& /*odom*/) {}
 
+void Graph::add_static_gravity_factor(common::KeyId /*k*/,
+                                      const common::Vec3& /*f_b*/,
+                                      const common::Mat3& /*cov*/) {}
+
 void Graph::add_loop_factor(const common::LoopConstraint& /*lc*/) {}
 
 common::Result<common::Estimate> Graph::optimize() {

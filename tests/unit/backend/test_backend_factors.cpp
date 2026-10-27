@@ -25,6 +25,7 @@
 #include "graph_scenarios.hpp"
 #include "imu_factor.hpp"
 #include "odom_factor.hpp"
+#include "static_gravity_factor.hpp"
 
 namespace mss::backend::detail {
 namespace {
@@ -193,6 +194,41 @@ TEST(BackendFactors, B01_GnssFrameFactorMatchesFixedFactor) {
   values.insert(pose_key(0), to_gtsam(s.T_w_b));
   values.insert(frame_key(), to_gtsam(s.T_e_w));
   EXPECT_LT((f.unwhitenedError(values) - fixed.unwhitenedError(values)).norm(), 1e-12);
+}
+
+// Section 6c: static-window specific-force factor on (T_w_b, B). Random attitude and bias,
+// measurement off the model by a random vector so the residual is not zero.
+TEST(BackendFactors, B01_StaticGravityFactorJacobians) {
+  std::mt19937 rng(kSeed);
+  for (int rep = 0; rep < 20; ++rep) {
+    const Pose T_w_b = random_pose(rng);
+    const common::ImuBias b = random_bias(rng);
+    const Vec3 f_b = b.ba - T_w_b.R.transpose() * kGravityW + random_vec3(rng, 0.05);
+    const Mat3 cov = Mat3::Identity() * 1.7e-5 + 0.2e-5 * Mat3::Ones();
+    const StaticGravityFactor f(pose_key(0), bias_key(0), f_b, cov, kGravityW);
+    gtsam::Values values;
+    values.insert(pose_key(0), to_gtsam(T_w_b));
+    values.insert(bias_key(0), to_gtsam(b));
+    ASSERT_GT(f.unwhitenedError(values).norm(), 1e-4);
+    const Vec3 r = f.unwhitenedError(values);
+    const double expected = r.dot(cov.ldlt().solve(r));
+    EXPECT_NEAR(2.0 * f.error(values), expected, 1e-9 * expected);
+    MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f, values);
+    EXPECT_LT(max_relative_jacobian_error(f, values), kRelJacTol) << "rep " << rep;
+  }
+}
+
+// At rest the measured specific force is ba - R^T g_w: zero residual.
+TEST(BackendFactors, B01_StaticGravityFactorZeroAtRest) {
+  std::mt19937 rng(kSeed);
+  const Pose T_w_b = random_pose(rng);
+  const common::ImuBias b = random_bias(rng);
+  const Vec3 f_b = b.ba - T_w_b.R.transpose() * kGravityW;
+  const StaticGravityFactor f(pose_key(0), bias_key(0), f_b, Mat3::Identity() * 1e-5, kGravityW);
+  gtsam::Values values;
+  values.insert(pose_key(0), to_gtsam(T_w_b));
+  values.insert(bias_key(0), to_gtsam(b));
+  EXPECT_LT(f.unwhitenedError(values).norm(), 1e-12);
 }
 
 TEST(BackendFactors, B01_OdomFactorRotatedSingularCov) {

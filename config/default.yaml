@@ -139,6 +139,14 @@ mss_node:
       prior_vel_sigma_mps: 0.1             # first-keyframe prior on velocity, m/s
       prior_bias_acc_sigma_mps2: 0.1       # first-keyframe prior on accelerometer bias, m/s^2
       prior_bias_gyro_sigma_radps: 0.01    # first-keyframe prior on gyroscope bias, rad/s
+      # Keyframe 0 also gets the mean specific force of the static init window (residual
+      # f_b - (ba - R^T g), covariance of the mean), which ties tilt and accelerometer bias
+      # (docs/derivations/imu_only_observability.md section 9). Evaluated, off: corridor with
+      # x unobserved (20 s, seeds 42-46, median end x err) circle 85 -> 0.90 m, straight
+      # 4.3 -> 1.9 m; but LiDAR factor NEES on the box world 7.8 -> 10.8, the 60 s GNSS
+      # corridor 0.64 -> 4.2 m median ATE (seed 42: 1.82 -> 5.2 m, over the 2.18 m guard of
+      # CorridorDriftCorrectedByGnss). Box world ATE unchanged (9.0 / 9.4 mm).
+      static_gravity_factor: false
       # ADR-019: T_e_w is one graph variable shared by all GNSS factors (false: the aligner's
       # T_e_w frozen in each factor, which made the box world 3.7x worse,
       # docs/derivations/gnss_fusion_study.md). Its prior, centred on the aligner's first

@@ -427,6 +427,13 @@ TEST(BackendGraph, RejectsBadCovariances) {
   }
   {
     CapturingLogger log;
+    g.add_static_gravity_factor(1, Vec3(0.0, 0.0, 9.8), Mat3::Zero());
+    g.add_static_gravity_factor(7, Vec3(0.0, 0.0, 9.8), Mat3::Identity());  // unknown keyframe
+    g.add_static_gravity_factor(1, Vec3(std::nan(""), 0.0, 9.8), Mat3::Identity());
+    EXPECT_EQ(log.warnings.size(), 3U);
+  }
+  {
+    CapturingLogger log;
     g.add_lidar_factor(0, 1, rel, Mat6::Identity() * 1e-4, nullptr);
     EXPECT_TRUE(log.warnings.empty());
     const common::Result<Estimate> r = g.optimize();

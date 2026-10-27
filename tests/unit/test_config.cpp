@@ -281,6 +281,19 @@ TEST(Config, GnssGateKeysValidated) {
   EXPECT_TRUE(mentions(gate.reason(), "gnss.chi2_gate: must be > 0 (got -1)")) << gate.reason();
 }
 
+// PR 4d: the static-window gravity factor flag ships off (evaluated, config comment) and
+// parses as a bool.
+TEST(Config, StaticGravityFactorKey) {
+  const auto cfg = load_config(kDefault);
+  ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+  EXPECT_FALSE(cfg.value().backend.static_gravity_factor);
+  const std::string base = read_file(kDefault);
+  const auto on = parse_config(base, overlay("    backend:\n      static_gravity_factor: true\n"));
+  ASSERT_TRUE(on.is_ok()) << on.reason();
+  const auto bad = parse_config(base, overlay("    backend:\n      static_gravity_factor: 3.5\n"));
+  EXPECT_FALSE(bad.is_ok());
+}
+
 // ADR-019: the GNSS frame variable and its prior sigmas (degrees in YAML, radians in code).
 TEST(Config, GnssFrameVariableKeys) {
   const auto cfg = load_config(kDefault);

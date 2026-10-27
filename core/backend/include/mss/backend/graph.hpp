@@ -159,6 +159,21 @@ class Graph {
   /// Tests: O-01, O-02, B-01.
   void add_odom_factor(common::KeyId i, common::KeyId j, const common::OdomDelta& odom);
 
+  /// Adds the static-window specific-force factor on keyframe `k` (pose and bias):
+  /// residual `f_b - (ba - R_w_b^T g_w)` (3-vector, m/s^2), covariance `cov`, with
+  /// `g_w = [0, 0, -imu_cfg.gravity_mps2]` (docs/derivations/backend_factors.md section
+  /// 6c). `f_b` is the mean accelerometer reading of a window in which the body was at
+  /// rest and `cov` the covariance of that mean (imu::InitState::acc_mean_b /
+  /// acc_mean_cov). It constrains the tilt and the horizontal accelerometer bias together,
+  /// the information the window carries (imu_only_observability.md section 9). Kept with
+  /// the keyframe-0 priors (survives a failed optimize()).
+  /// Frames: f_b in b of keyframe k. Units: m/s^2, (m/s^2)^2.
+  /// Preconditions: keyframe `k` added; the body at rest at its time.
+  /// Errors: unknown keyframe, non-finite input or a covariance that is not symmetric
+  ///   positive definite: dropped and logged. Hot path: no (once).
+  /// Tests: B-01 (Jacobians), PipelineComponent corridor tests.
+  void add_static_gravity_factor(common::KeyId k, const common::Vec3& f_b, const common::Mat3& cov);
+
   /// Adds a loop-closure between-factor (lc.i, lc.j, lc.T_bi_bj, lc.cov in [rho, phi],
   /// frame b_j) wrapped in a robust kernel so a wrong loop cannot drag the graph (B-03).
   /// Preconditions: lc.i < lc.j, both added.

@@ -41,6 +41,7 @@
 #include "gnss_factor.hpp"
 #include "imu_factor.hpp"
 #include "odom_factor.hpp"
+#include "static_gravity_factor.hpp"
 #include "validate.hpp"
 
 namespace mss::backend {
@@ -586,6 +587,28 @@ void Graph::add_odom_factor(common::KeyId i, common::KeyId j, const common::Odom
     return;
   }
   m.pending_factors.push_back(f->clone());
+}
+
+void Graph::add_static_gravity_factor(common::KeyId k,
+                                      const common::Vec3& f_b,
+                                      const common::Mat3& cov) {
+  Impl& m = *impl_;
+  const std::string call = "add_static_gravity_factor(" + std::to_string(k) + ")";
+  if (!m.known(k)) {
+    reject(call, "unknown keyframe");
+    return;
+  }
+  if (!f_b.allFinite()) {
+    reject(call, "non-finite input");
+    return;
+  }
+  if (!is_spd<3>(cov)) {
+    reject(call, "covariance not positive definite");
+    return;
+  }
+  // With the keyframe-0 priors: kept when an optimize() fails (section 6c).
+  m.pending_priors.emplace_shared<detail::StaticGravityFactor>(
+      detail::pose_key(k), detail::bias_key(k), f_b, symmetrised<3>(cov), m.g_w);
 }
 
 void Graph::add_loop_factor(const common::LoopConstraint& lc) {

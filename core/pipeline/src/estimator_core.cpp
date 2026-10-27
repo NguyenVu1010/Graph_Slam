@@ -312,6 +312,8 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
     front_.t = t;
     front_.T_w_b.R = init.value().R_w_b;
     front_.bias = init.value().bias;
+    init_ = init.value();
+    init_t_ = t;
     g_w_ = init.value().g_w;
     pred_.reset(front_.bias);
     kf_.reset(front_.bias);
@@ -407,6 +409,15 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
 
 void EstimatorCore::first_keyframe(common::Timestamp t, const common::NavState& predicted) {
   const common::KeyId id = graph_.add_keyframe(t, predicted);
+  if (cfg_.backend.static_gravity_factor) {
+    // The window statistics describe the body at rest at init_t_ (imu_only_observability.md
+    // section 9): only valid when keyframe 0 is that scan.
+    if (t == init_t_) {
+      graph_.add_static_gravity_factor(id, init_.acc_mean_b, init_.acc_mean_cov);
+    } else {
+      common::log_info("static gravity factor skipped: keyframe 0 is not the init scan");
+    }
+  }
   front_ = predicted;
   common::PoseCovariance cov = prior_cov(cfg_.backend);
   const common::Result<common::Estimate> opt = graph_.optimize();

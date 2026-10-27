@@ -186,6 +186,11 @@ estimates `T_e_w` as one graph variable shared by all GNSS factors, with a prior
 `backend.gnss_frame_tilt_sigma_deg` (tight, keeps it 4-DoF), `backend.gnss_frame_yaw_sigma_deg`
 and `backend.gnss_frame_pos_sigma_m` (loose). `imu.init_max_acc_std_mps2` must exceed the per-sample accelerometer noise
 `acc_noise_density * sqrt(rate_hz)` by about 3x, or the static initialisation never passes.
+`backend.static_gravity_factor` (PR 4d, default off, evaluated in
+`docs/derivations/imu_only_observability.md` section 9) adds the mean specific force of the
+static initialisation window as a factor on keyframe 0's pose and bias, which anchors the
+tilt (and so the drift along a corridor axis the LiDAR cannot see) to what the window
+measured; it fixes the IMU-only corridor but degrades the 60 s GNSS corridor, so it ships off.
 
 Plane-fit gates and map spacing (ADR-007 amendment), all evaluated and off by default (the
 shipped behaviour is bit-identical to main): `scan_match.plane_min_eig_ratio` (`[0, 1)`)

@@ -208,6 +208,8 @@ class EstimatorCore {
   common::ImuSample boundary_;       // interpolated sample at the last scan start
   common::NavState front_;           // front-end state at last_scan_t_
   common::Pose ref_;                 // reference pose of the last keyframe (pipeline.md s4)
+  imu::InitState init_;              // static-window statistics (static_gravity_factor)
+  common::Timestamp init_t_{};       // scan start at which the initialisation passed
   common::KeyId last_kf_id_ = 0;
   common::Timestamp last_kf_t_{};
   common::Timestamp last_prune_t_{};

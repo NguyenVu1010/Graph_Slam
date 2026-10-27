@@ -12,6 +12,13 @@ struct InitState {
   common::Vec3 g_w = common::Vec3::Zero();        ///< m/s^2, gravity in w: [0, 0, -gravity_mps2]
   common::ImuBias bias;                           ///< bg = mean gyro (rad/s); ba = 0 (m/s^2)
   common::Mat3 R_w_b = common::Mat3::Identity();  ///< initial body attitude, yaw = 0
+  /// Mean accelerometer reading of the window (m/s^2, in b): the specific force at rest,
+  /// `ba - R_w_b^T g_w` (the static-gravity factor of backend_factors.md section 6c).
+  common::Vec3 acc_mean_b = common::Vec3::Zero();
+  /// Covariance of acc_mean_b, (m/s^2)^2: diag(max(s_k^2, acc_noise_density^2 rate_hz)) / n,
+  /// s_k^2 the sample variance of axis k over the n samples (the believed white noise as a
+  /// floor).
+  common::Mat3 acc_mean_cov = common::Mat3::Zero();
 };
 
 /// Static-window initialisation of gravity direction, gyro bias and attitude.
@@ -36,7 +43,8 @@ class ImuInitializer {
   /// `R_w_b = Ry(pitch) * Rx(roll)` (ZYX with yaw = 0), `roll = atan2(a_y, a_z)`,
   /// `pitch = atan2(-a_x, hypot(a_y, a_z))`, so R_w_b * a points along +z of w
   /// (specific force at rest points up);
-  /// g_w = [0, 0, -cfg.gravity_mps2].
+  /// g_w = [0, 0, -cfg.gravity_mps2]; acc_mean_b = a and acc_mean_cov as documented in
+  /// InitState (the window statistics for backend::Graph::add_static_gravity_factor).
   /// Frames: samples in b; result as documented in InitState (w gravity-aligned, z up).
   /// Units: s, m/s^2, rad/s.
   /// Preconditions: none checked beyond the errors below.

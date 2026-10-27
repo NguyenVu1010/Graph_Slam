@@ -5,7 +5,7 @@ LiDAR range, LiDAR + IMU only (no wheel, no GNSS), the estimate along the corrid
 drifted 5.5 m with degeneracy off and 12 to 97 m with some degeneracy settings (PRs 4b, 4c),
 10 to 40 sigma above inertial dead reckoning. Sections 1 to 7 are the diagnosis (controlled
 experiments, one candidate at a time); section 8 states the mechanism; section 9 is the fix
-adopted (after PR 4d Task 2).
+evaluated (PR 4d Task 2).
 
 ## Setup
 
@@ -337,3 +337,99 @@ specific force `f = ba - R^T g_w`, so a real horizontal accelerometer bias `b` m
 initial tilt wrong by `b / g`, and a tight tilt prior would pin that wrong tilt (the sim
 noise profile draws biases of 0.3 m/s^2 sigma). The fix (section 9) therefore adds the
 static window's measurement itself to the graph.
+
+## 9. Fix: the static-window gravity factor (evaluated, shipped off)
+
+The static window measures the specific force `f = ba - R_w_b^T g_w` with the covariance of
+its mean (4.1e-3 m/s^2 per axis here). The keyframe-0 priors replaced that measurement by an
+independent 1 deg tilt prior and a 0.1 m/s^2 bias prior, which is where the 17.5 mrad of
+freedom of section 8 comes from. `backend.static_gravity_factor` adds the measurement itself
+as a factor on keyframe 0's pose and bias (`backend_factors.md` section 6c): it ties the
+tilt and the horizontal bias together as the window does, so it stays correct with a real
+bias, where a tight tilt prior would pin the wrong tilt (`b / g`). The pipeline passes the
+initializer's window statistics (`imu::InitState::acc_mean_b`, `acc_mean_cov`) when keyframe
+0 is the initialisation scan. The keyframe-0 priors are unchanged.
+
+Seed 42, the study tables of sections 2 to 7 with the factor on (the other rows are
+unchanged; full table in `results/<run-id>/imu_study.md`):
+
+| scene | case | end x err (m) | end / sigma_DR | keyframes | LiDAR factor 6-DoF NEES | backend last KF x err (sigma) (m) |
+| --- | --- | --- | --- | --- | --- | --- |
+| circle | deg off | -2.58 (main -4.36) | 3.7 | 24 | 1620 | -2.58 (0.135) |
+| circle | deg on | +0.12 (main -0.04) | 0.2 | 23 | 8.1 | +0.11 (0.136) |
+| circle | deg on, x free | +0.90 (main +224) | 1.3 | 23 | 44.5 | +0.78 (1.20) |
+| circle | deg on, x removed | +1.86 (main +316) | 2.6 | 23 | 43.1 | +1.70 (2.03) |
+| straight | deg on | -0.29 (main -0.06) | 0.4 | 8 | 4.7 | -0.27 (0.118) |
+| straight | deg on, x free | -1.94 (main +3.56) | 2.8 | 7 | 42.4 | -1.67 (0.665) |
+| straight | deg on, x removed | -0.44 (main -7.50) | 0.6 | 8 | 1.3 | -0.39 (2.10) |
+| circle, bias (0.05, 0.03, 0) m/s^2 | deg on | -4.76 (main -4.97, tilt prior -6.59) | 6.8 | 23 | 382 | -4.49 (0.136) |
+| circle, bias (0.05, 0.03, 0) m/s^2 | deg on, x free | -5.21 (main -19.7, tilt prior -9.49) | 7.4 | 23 | 205 | -5.09 (1.09) |
+
+Keyframes every 5 scans stay bad with the factor (deg on 21.9 m circle): that failure is
+the spurious information of section 6, not the tilt.
+
+Five seeds (42 to 46, IMU and GNSS noise; `PipelineComponent.ImuOnlyObservabilityFixEvaluation`,
+`results/<run-id>/imu_fix_eval.md`), against the prior variants of section 8 and a zero-velocity
+prior (keyframe 0 ends a window the initializer accepted as static):
+
+| scene | metric | variant | median (m) | max (m) | per seed (m) |
+| --- | --- | --- | --- | --- | --- |
+| 20 s circle corridor, LiDAR + IMU, x free | end x err | main (no factor) | 84.816 | 224.329 | +224.329 -13.437 -84.816 +150.183 -28.051 |
+| 20 s circle corridor, LiDAR + IMU, x free | end x err | static gravity factor | 0.903 | 7.410 | +0.903 -0.107 -0.106 +7.410 -2.795 |
+| 20 s circle corridor, LiDAR + IMU, x free | end x err | tight kf0 priors | 0.408 | 1.414 | +0.408 +0.210 +0.447 -0.089 -1.414 |
+| 20 s circle corridor, LiDAR + IMU, x free | end x err | factor + tight priors | 0.296 | 1.160 | +0.473 +0.215 +0.296 +0.202 -1.160 |
+| 20 s circle corridor, LiDAR + IMU, x free | end x err | factor + velocity prior 0.01 m/s | 0.498 | 5.060 | -0.498 -0.170 -2.172 +5.060 +0.381 |
+| 20 s straight corridor, LiDAR + IMU, x free | end x err | main (no factor) | 4.284 | 14.657 | +3.556 -6.904 +14.657 -4.284 +1.582 |
+| 20 s straight corridor, LiDAR + IMU, x free | end x err | static gravity factor | 1.939 | 4.552 | -1.939 +1.171 +1.812 +4.552 +3.109 |
+| 20 s straight corridor, LiDAR + IMU, x free | end x err | tight kf0 priors | 0.453 | 1.209 | -0.373 -1.209 +0.187 -0.453 -0.855 |
+| 20 s straight corridor, LiDAR + IMU, x free | end x err | factor + tight priors | 0.465 | 1.009 | -0.033 -0.465 -0.372 +0.482 -1.009 |
+| 20 s straight corridor, LiDAR + IMU, x free | end x err | factor + velocity prior 0.01 m/s | 1.047 | 1.344 | -1.344 -0.469 +1.128 +1.047 -0.964 |
+| 60 s corridor (CorridorDriftCorrectedByGnss), LiDAR + IMU | ATE | main (no factor) | 21.560 | 51.565 | +15.357 +21.560 +19.421 +51.565 +24.631 |
+| 60 s corridor (CorridorDriftCorrectedByGnss), LiDAR + IMU | ATE | static gravity factor | 28.449 | 56.102 | +56.102 +6.448 +17.401 +28.449 +39.406 |
+| 60 s corridor (CorridorDriftCorrectedByGnss), LiDAR + IMU | ATE | tight kf0 priors | 23.938 | 60.153 | +19.895 +31.970 +23.283 +23.938 +60.153 |
+| 60 s corridor (CorridorDriftCorrectedByGnss), LiDAR + IMU | ATE | factor + tight priors | 16.679 | 29.256 | +4.485 +14.118 +16.679 +29.256 +18.892 |
+| 60 s corridor (CorridorDriftCorrectedByGnss), LiDAR + IMU | ATE | factor + velocity prior 0.01 m/s | 22.671 | 45.811 | +22.671 +10.455 +40.803 +45.811 +11.230 |
+| 60 s corridor (CorridorDriftCorrectedByGnss), + GNSS 0.5 m | ATE | main (no factor) | 0.636 | 7.574 | +1.820 +7.574 +0.636 +0.627 +0.587 |
+| 60 s corridor (CorridorDriftCorrectedByGnss), + GNSS 0.5 m | ATE | static gravity factor | 4.153 | 5.225 | +5.225 +0.745 +3.041 +4.153 +4.656 |
+| 60 s corridor (CorridorDriftCorrectedByGnss), + GNSS 0.5 m | ATE | tight kf0 priors | 0.587 | 4.668 | +0.546 +0.402 +0.587 +4.668 +0.825 |
+| 60 s corridor (CorridorDriftCorrectedByGnss), + GNSS 0.5 m | ATE | factor + tight priors | 0.798 | 4.061 | +0.798 +0.561 +2.175 +4.061 +0.564 |
+| 60 s corridor (CorridorDriftCorrectedByGnss), + GNSS 0.5 m | ATE | factor + velocity prior 0.01 m/s | 1.951 | 3.034 | +0.761 +0.416 +1.951 +2.583 +3.034 |
+| box world, LiDAR + IMU (shipped degeneracy off) | ATE | main (no factor) | 0.009 | 0.011 | +0.009 +0.009 +0.009 +0.011 +0.010 |
+| box world, LiDAR + IMU (shipped degeneracy off) | ATE | static gravity factor | 0.009 | 0.011 | +0.009 +0.009 +0.009 +0.011 +0.011 |
+| box world, LiDAR + IMU (shipped degeneracy off) | ATE | tight kf0 priors | 0.009 | 0.011 | +0.009 +0.009 +0.009 +0.011 +0.010 |
+| box world, LiDAR + IMU (shipped degeneracy off) | ATE | factor + tight priors | 0.009 | 0.011 | +0.009 +0.009 +0.009 +0.010 +0.011 |
+| box world, LiDAR + IMU (shipped degeneracy off) | ATE | factor + velocity prior 0.01 m/s | 0.010 | 0.011 | +0.009 +0.010 +0.009 +0.011 +0.011 |
+| 20 s circle corridor, x free, acc bias (0.05, 0.03, 0) m/s^2 | end x err | main (no factor) | 10.359 | 31.015 | -19.738 +5.649 +10.359 -31.015 +0.810 |
+| 20 s circle corridor, x free, acc bias (0.05, 0.03, 0) m/s^2 | end x err | static gravity factor | 5.213 | 9.905 | -5.213 -4.042 -9.905 +0.718 -5.778 |
+| 20 s circle corridor, x free, acc bias (0.05, 0.03, 0) m/s^2 | end x err | tight kf0 priors | 7.513 | 8.263 | -8.263 -7.693 -7.513 -6.533 -6.184 |
+| 20 s circle corridor, x free, acc bias (0.05, 0.03, 0) m/s^2 | end x err | factor + tight priors | 5.562 | 7.226 | -5.210 -3.908 -5.562 -6.120 -7.226 |
+| 20 s circle corridor, x free, acc bias (0.05, 0.03, 0) m/s^2 | end x err | factor + velocity prior 0.01 m/s | 3.811 | 7.737 | -7.737 -1.169 +4.384 +2.322 -3.811 |
+
+Decision: **`backend.static_gravity_factor` ships false** (the previous behaviour). It does
+what the diagnosis asks on the scenes it was built for: the IMU-only corridor with x
+unobserved goes from a median of 85 m to 0.90 m (circle) and 4.3 m to 1.9 m (straight), and
+with a 0.06 m/s^2 bias from 10.4 m to 5.2 m, where the tight priors (7.5 m) pin the wrong
+tilt. But it is not better everywhere, so the flag rule (CLAUDE.md, DoD 3) keeps it off:
+
+- the 60 s GNSS corridor gets worse in median, 0.64 -> 4.15 m (seed 42: 1.82 -> 5.23 m, over
+  the 2.18 m guard of `CorridorDriftCorrectedByGnss`), although its worst seed improves
+  (7.57 -> 5.23 m);
+- the LiDAR factor NEES on the box world rises from 7.8 to 10.8 (bound 12, test
+  `LidarFactorCovarianceConsistent`); box-world ATE is unchanged (9.0 / 9.4 mm);
+- across seeds the circle still has one 7.4 m run (seed 45) and the straight corridor 4.6 m
+  (seed 45): the factor removes the initial-tilt freedom, not the slower tilt random walk of
+  the LiDAR chain, which dominates the 60 s corridor (LiDAR only 15 to 56 m in every
+  variant, tilt errors of 1 to 20 mrad over the run).
+
+With the zero-velocity prior (`backend.prior_vel_sigma_mps` 0.01) the factor is better on
+the 20 s corridors (0.50 / 1.05 m) and on the biased scene (3.8 m), and the 60 s GNSS
+corridor improves in mean and maximum (2.25 -> 1.75 m, 7.57 -> 3.03 m) but not in median
+(0.64 -> 1.95 m); the box-world NEES reaches 11.95 and `CorridorOutageRealignsAfterRejects`
+loses its factors after the outage (0 instead of 11). Not shipped either.
+
+What remains open (follow-up): the tilt about the horizontal axis normal to an unobserved
+direction is anchored only by keyframe 0 and the LiDAR chain; a consistent fix needs the
+GNSS / LiDAR tilt interplay of the 60 s corridor understood (E's tight tilt prior is centred
+on the aligner's gravity-aligned guess) before the factor can be turned on. The regression
+test `CorridorImuOnlyAlongAxisWithinDeadReckoning` enables the factor by overlay and bounds
+the end error by `3 sigma_DR` (2.11 m at 17.9 s; measured 0.90 m; main: 224 m).

@@ -157,6 +157,32 @@ Why the frame is a variable: `gnss_fusion_study.md`. Tests: `B01_GnssFrameFactor
 (numerical differentiation and `EXPECT_CORRECT_FACTOR_JACOBIANS`, random `E` including
 tilt), `GnssFrameVariableAbsorbsAlignmentError` (known answer).
 
+## 6c. Static-window gravity factor (`detail::StaticGravityFactor`, PR 4d)
+
+Variables `X_0 = T_w_b` (keyframe 0) and `B_0`. Measurement `f_b`: the mean accelerometer
+reading of the static initialisation window (`imu::InitState::acc_mean_b`, m/s^2, in b),
+covariance `C` = the covariance of that mean (`acc_mean_cov`: per axis
+`max(s_k^2, acc_noise_density^2 rate_hz) / n`, `s_k^2` the sample variance over the `n`
+window samples). At rest the specific force is `f = ba - R_w_b^T g_w`, so
+
+    r = f_b - (ba - R_w_b^T g_w)                                  (3x1, m/s^2)
+
+Right perturbation `R <- R Exp(dphi)`: `R^T g -> Exp(-dphi) R^T g = R^T g + skew(R^T g) dphi`,
+hence, in GTSAM column order `[dphi, drho]` for the pose and `[dba, dbg]` for
+`ConstantBias` (additive):
+
+    J_r_x = [skew(R_w_b^T g_w), 0_3],      J_r_b = [-I_3, 0_3]
+
+Noise `Gaussian::Covariance(C)`. The factor constrains the combination `g dtheta_h - dba_h`
+(tilt and horizontal accelerometer bias) to `sqrt(C)` = 4.1e-3 m/s^2 with the default
+noise, plus `|g|` against `ba_z`; it does not split tilt from bias, which a static window
+cannot. It goes with the keyframe-0 priors (kept when an `optimize()` fails). The pipeline
+adds it when `backend.static_gravity_factor` is true and keyframe 0 is the scan at which the
+initialisation passed (otherwise the window no longer describes keyframe 0; logged). Tests:
+`BackendFactors.B01_StaticGravityFactorJacobians` (`EXPECT_CORRECT_FACTOR_JACOBIANS` and
+relative error < 1e-6 against central differences), `B01_StaticGravityFactorZeroAtRest`,
+`BackendGraph.RejectsBadCovariances`, `ImuInitializer.WindowMeanAndCovarianceOfTheMean`.
+
 ## 7. Wheel-odometry factor (`detail::OdomBetweenFactor`)
 
 Variables `X_i, X_j`. `r_m, J_m_i, J_m_j` come from
