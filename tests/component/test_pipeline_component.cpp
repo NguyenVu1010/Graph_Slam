@@ -1554,15 +1554,19 @@ TEST(PipelineComponent, ImuOnlyObservabilityStudy) {
   // The keyframe-0 priors tightened to what the static initialisation measured
   // (section 5): roll / pitch 0.02 deg (0.35 mrad, init tilt sigma 0.42 mrad), acc bias
   // 0.004 m/s^2 (q_a / sqrt(T_init)), velocity 0.01 m/s (static window).
-  const std::string tilt = "    backend:\n      prior_rot_sigma_deg: 0.02\n";
-  const std::string tight =
-      "    backend:\n      prior_rot_sigma_deg: 0.02\n      prior_bias_acc_sigma_mps2: 0.004\n"
-      "      prior_vel_sigma_mps: 0.01\n";
-  const std::string frozen_bias =
-      "    backend:\n      prior_bias_acc_sigma_mps2: 1.0e-4\n"
-      "    imu:\n      acc_random_walk: 1.0e-7\n";
-  const auto relin = [](const char* v) {
-    return std::string("    backend:\n      relinearize_threshold: ") + v + "\n";
+  // Diagnosis rows run without the fix (static_gravity_factor false, the main behaviour).
+  const std::string pin = "    backend:\n      static_gravity_factor: false\n";
+  const std::string tilt = pin + "      prior_rot_sigma_deg: 0.02\n";
+  const std::string tight = pin +
+                            "      prior_rot_sigma_deg: 0.02\n      prior_bias_acc_sigma_mps2: "
+                            "0.004\n      prior_vel_sigma_mps: 0.01\n";
+  // Section 9: the fix, the static-window specific-force factor on keyframe 0.
+  const std::string gravity = "    backend:\n      static_gravity_factor: true\n";
+  const std::string frozen_bias = pin +
+                                  "      prior_bias_acc_sigma_mps2: 1.0e-4\n"
+                                  "    imu:\n      acc_random_walk: 1.0e-7\n";
+  const auto relin = [&pin](const char* v) {
+    return pin + "      relinearize_threshold: " + v + "\n";
   };
   std::string bias_rows;
   for (const bool straight : {false, true}) {
@@ -1585,16 +1589,18 @@ TEST(PipelineComponent, ImuOnlyObservabilityStudy) {
     int idx = 0;
     for (const Setting& s : settings) {
       std::vector<ImuStudyCase> cases = {
-          {"baseline", s.yaml, 0, false, true},
-          {"no backend feedback", s.yaml, 0, true, false},
+          {"baseline", s.yaml + pin, 0, false, true},
+          {"no backend feedback", s.yaml + pin, 0, true, false},
           {"bias frozen", s.yaml + frozen_bias, 0, false, true},
           {"relin 0.01", s.yaml + relin("0.01"), 0, false, false},
           {"relin 1.0", s.yaml + relin("1.0"), 0, false, false},
-          {"KF every 20 scans", s.yaml, 20, false, false},
-          {"KF every 5 scans", s.yaml, 5, false, false},
-          {"oracle measurement", s.yaml, 0, false, false, true},
+          {"KF every 20 scans", s.yaml + pin, 20, false, false},
+          {"KF every 5 scans", s.yaml + pin, 5, false, false},
+          {"oracle measurement", s.yaml + pin, 0, false, false, true},
           {"tilt prior 0.02 deg", s.yaml + tilt, 0, false, false},
           {"tight kf0 priors", s.yaml + tight, 0, false, true},
+          {"static gravity factor", s.yaml + gravity, 0, false, true},
+          {"static gravity factor, KF every 5 scans", s.yaml + gravity, 5, false, false},
       };
       for (ImuStudyCase& c : cases) {
         c.name = s.name + ", " + c.name;
@@ -1611,8 +1617,39 @@ TEST(PipelineComponent, ImuOnlyObservabilityStudy) {
         {"deg on, x free, thr 1e4", deg_on + free8 + "      eig_threshold: 1.0e4\n", false},
     };
     for (const Setting& s : spurious) {
-      for (ImuStudyCase c : {ImuStudyCase{"baseline", s.yaml, 0, false, false},
-                             ImuStudyCase{"no backend feedback", s.yaml, 0, true, false}}) {
+      for (ImuStudyCase c : {ImuStudyCase{"baseline", s.yaml + pin, 0, false, false},
+                             ImuStudyCase{"no backend feedback", s.yaml + pin, 0, true, false}}) {
+        c.name = s.name + ", " + c.name;
+        rep.line(imu_study_run(p, dir / "data", dir / ("c" + std::to_string(idx++)), c, nullptr));
+      }
+    }
+  }
+  // Section 9: a constant accelerometer bias (0.05, 0.03, 0) m/s^2 in b, which the static
+  // window cannot tell from tilt: a tight tilt prior pins the wrong tilt, the factor does not.
+  {
+    BoxWorldParams p = imu_corridor_params(false);
+    p.acc_bias_b = Vec3(0.05, 0.03, 0.0);
+    const fs::path dir = rep.dir() / "circle_biased";
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    rep.line("");
+    rep.line("## Corridor, circle, accelerometer bias (0.05, 0.03, 0) m/s^2 in b");
+    rep.line("");
+    rep.line(
+        "| case | along-x RMS (m) | end x err (m) | end / sigma_DR | lateral-y RMS (m) | "
+        "keyframes | match failures | matcher x corr RMS (m) | median H info x (1/m^2) | "
+        "LiDAR factor x: NEES (exp. 1) | err RMS (m) | median sigma (m) | LiDAR factor NEES "
+        "6-DoF (exp. 6) | median tilt of weakest H dir from x (rad) | last KF x err (sigma) "
+        "(m) | last KF v_x err (m/s) | last KF ba_b x / y (m/s^2) |");
+    rep.line(
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
+        "--- | --- | --- |");
+    int idx = 0;
+    for (const Setting& s : {settings[1], settings[2]}) {
+      for (ImuStudyCase c :
+           {ImuStudyCase{"baseline", s.yaml + pin, 0, false, false},
+            ImuStudyCase{"tilt prior 0.02 deg", s.yaml + tilt, 0, false, false},
+            ImuStudyCase{"tight kf0 priors", s.yaml + tight, 0, false, false},
+            ImuStudyCase{"static gravity factor", s.yaml + gravity, 0, false, false}}) {
         c.name = s.name + ", " + c.name;
         rep.line(imu_study_run(p, dir / "data", dir / ("c" + std::to_string(idx++)), c, nullptr));
       }
@@ -1630,6 +1667,198 @@ TEST(PipelineComponent, ImuOnlyObservabilityStudy) {
     const std::size_t end = bias_rows.find('\n', start);
     rep.line(bias_rows.substr(start, end - start));
     start = end + 1;
+  }
+}
+
+// ---------------------------------------------------------------------------------------
+// PR 4d (imu_only_observability.md section 9): the corridor of the study (box-world circle,
+// x walls out of range), LiDAR + IMU only, with the LiDAR factor carrying no information
+// along the corridor axis (degeneracy on, relax_factor 1e8: the "unobserved" semantics), so
+// only the IMU carries world x.
+
+struct AxisRun {
+  double end_x_m = 0.0;      // published estimate at the last scan, x error
+  double along_rms_m = 0.0;  // RMS x error of every published estimate
+  double lateral_rms_m = 0.0;
+  double T_s = 0.0;  // s, time of the last estimate after the static initialisation
+  std::uint64_t keyframes = 0;
+};
+
+// The fix under evaluation (imu_only_observability.md section 9), off by default.
+const char* const kGravityFactorYaml = "    backend:\n      static_gravity_factor: true\n";
+
+AxisRun corridor_axis_run(const BoxWorldParams& p,
+                          const fs::path& data,
+                          const fs::path& dir,
+                          bool wheel,
+                          const std::string& extra_yaml) {
+  const Config cfg =
+      box_config(p,
+                 false,
+                 wheel,
+                 dir,
+                 "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n" + extra_yaml);
+  const ReplayResult r = replay(data, cfg);
+  AxisRun out;
+  double sx = 0.0;
+  double sy = 0.0;
+  for (const Estimate& x : r.estimates) {
+    const Vec3 d = x.state.T_w_b.p - test::box_truth(p, x.state.t).T_w_b.p;
+    sx += d.x() * d.x();
+    sy += d.y() * d.y();
+  }
+  const double n = std::max(1.0, static_cast<double>(r.estimates.size()));
+  out.along_rms_m = std::sqrt(sx / n);
+  out.lateral_rms_m = std::sqrt(sy / n);
+  if (!r.estimates.empty()) {
+    const Estimate& e = r.estimates.back();
+    out.end_x_m = e.state.T_w_b.p.x() - test::box_truth(p, e.state.t).T_w_b.p.x();
+    out.T_s = static_cast<double>(e.state.t.ns - p.t0_ns) * 1e-9 - cfg.imu.init_window_s;
+  }
+  out.keyframes = r.stats.n_keyframes;
+  std::printf(
+      "[ corridor axis ] %s: end x %+.3f m, along-x RMS %.4f m, lateral RMS %.4f m, "
+      "%llu keyframes\n",
+      dir.filename().string().c_str(),
+      out.end_x_m,
+      out.along_rms_m,
+      out.lateral_rms_m,
+      static_cast<unsigned long long>(out.keyframes));
+  return out;
+}
+
+// End error along x <= 3 sigma_DR, the dead-reckoning sigma per axis after T:
+//   sigma_DR = hypot(q_a T^1.5 / sqrt(3), 0.5 q_a / sqrt(T_init) T^2)
+// (velocity random walk, static-init tilt; q_a = BoxWorldParams::acc_noise_density):
+// 0.70 m at T = 17.9 s. Lateral error at the LiDAR level (< 1 cm). Measured with
+// backend.static_gravity_factor on (overlay; the shipped default is off, see
+// config/default.yaml): +0.90 m end, 2 mm lateral; without it the
+// estimate diverges (+224 m, study section 2).
+TEST(PipelineComponent, CorridorImuOnlyAlongAxisWithinDeadReckoning) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend (IMU factors in the graph)";
+  }
+  const BoxWorldParams p = imu_corridor_params(false);
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const AxisRun r = corridor_axis_run(p, dir / "data", dir / "imu_only", false, kGravityFactorYaml);
+  const double sigma_dr_m = dr_sigma_m(p.acc_noise_density, 2.0, r.T_s);
+  std::printf("[ corridor axis ] sigma_DR %.3f m at T %.1f s, end / sigma_DR %.2f\n",
+              sigma_dr_m,
+              r.T_s,
+              std::abs(r.end_x_m) / sigma_dr_m);
+  EXPECT_GT(r.T_s, 17.0);
+  EXPECT_LE(std::abs(r.end_x_m), 3.0 * sigma_dr_m);
+  EXPECT_LT(r.lateral_rms_m, 0.01);
+  EXPECT_GT(r.keyframes, 15U);
+  EXPECT_LT(r.keyframes, 40U);  // the 1 m rule does not fire on a drift along x
+}
+
+// The same corridor with wheel odometry: the wheel speed observes the axis.
+TEST(PipelineComponent, CorridorWithWheelAlongAxisMillimetres) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend (wheel factor in the graph)";
+  }
+  const BoxWorldParams p = imu_corridor_params(false);
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const AxisRun r = corridor_axis_run(p, dir / "data", dir / "wheel", true, kGravityFactorYaml);
+  EXPECT_LE(r.along_rms_m, 0.005);
+  EXPECT_LT(r.lateral_rms_m, 0.01);
+}
+
+// Section 9 evaluation (MSS_IMU_STUDY=1): the fix and the prior variants over 5 seeds
+// (42..46, IMU and GNSS noise) on five scenes; one row per scene and variant with the
+// median and the maximum of |metric| over the seeds. Writes imu_fix_eval.md.
+TEST(PipelineComponent, ImuOnlyObservabilityFixEvaluation) {
+  const char* on = std::getenv("MSS_IMU_STUDY");
+  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_IMU_STUDY=1 (GTSAM build)";
+  }
+  StudyReport rep("imu_fix_eval.md", "MSS_IMU_STUDY_RUN_ID", "imu-study");
+  rep.line("# IMU-only observability: fix evaluation over seeds 42..46");
+  rep.line("");
+  rep.line("| scene | metric | variant | median (m) | max (m) | per seed (m) |");
+  rep.line("| --- | --- | --- | --- | --- | --- |");
+  const std::string relax = "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n";
+  const std::string pin = "    backend:\n      static_gravity_factor: false\n";
+  const std::string fac = "    backend:\n      static_gravity_factor: true\n";
+  const std::string tight =
+      "      prior_rot_sigma_deg: 0.02\n      prior_bias_acc_sigma_mps2: 0.004\n"
+      "      prior_vel_sigma_mps: 0.01\n";
+  const std::vector<std::pair<std::string, std::string>> variants = {
+      {"main (no factor)", pin},
+      {"static gravity factor", fac},
+      {"tight kf0 priors", pin + tight},
+      {"factor + tight priors", fac + tight},
+      {"factor + velocity prior 0.01 m/s", fac + "      prior_vel_sigma_mps: 0.01\n"},
+  };
+  struct Scene {
+    std::string name;
+    std::string metric;
+  };
+  const std::vector<Scene> scenes = {
+      {"20 s circle corridor, LiDAR + IMU, x free", "end x err"},
+      {"20 s straight corridor, LiDAR + IMU, x free", "end x err"},
+      {"60 s corridor (CorridorDriftCorrectedByGnss), LiDAR + IMU", "ATE"},
+      {"60 s corridor (CorridorDriftCorrectedByGnss), + GNSS 0.5 m", "ATE"},
+      {"box world, LiDAR + IMU (shipped degeneracy off)", "ATE"},
+      {"20 s circle corridor, x free, acc bias (0.05, 0.03, 0) m/s^2", "end x err"},
+  };
+  for (std::size_t si = 0; si < scenes.size(); ++si) {
+    std::vector<std::vector<double>> vals(variants.size());
+    for (std::uint32_t seed = 42; seed < 47; ++seed) {
+      BoxWorldParams p;
+      if (si < 2 || si == 5) {
+        p = imu_corridor_params(si == 1);
+        if (si == 5) {
+          p.acc_bias_b = Vec3(0.05, 0.03, 0.0);
+        }
+      } else if (si < 4) {
+        p = corridor_params();
+      }
+      p.seed = seed;
+      const fs::path dir =
+          rep.dir() / "fix_eval" / ("s" + std::to_string(si) + "_" + std::to_string(seed));
+      ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+      for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+        const fs::path vdir = dir / ("v" + std::to_string(vi));
+        const std::string& backend = variants[vi].second;
+        double v = 0.0;
+        if (si < 2 || si == 5) {
+          v = corridor_axis_run(p, dir / "data", vdir, false, backend).end_x_m;
+        } else if (si < 4) {
+          v = run_corridor(p, dir / "data", vdir, si == 3, "", kCorridorRelaxYaml + backend).ate_m;
+        } else {
+          v = trajectory_errors(
+                  p, replay(dir / "data", box_config(p, false, false, vdir, backend)).estimates)
+                  .ate_m;
+        }
+        vals[vi].push_back(v);
+      }
+    }
+    for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+      std::vector<double> a;
+      std::string per;
+      for (const double v : vals[vi]) {
+        a.push_back(std::abs(v));
+        char b[32];
+        std::snprintf(b, sizeof(b), "%s%+.3f", per.empty() ? "" : " ", v);
+        per += b;
+      }
+      std::sort(a.begin(), a.end());
+      char buf[512];
+      std::snprintf(buf,
+                    sizeof(buf),
+                    "| %s | %s | %s | %.3f | %.3f | %s |",
+                    scenes[si].name.c_str(),
+                    scenes[si].metric.c_str(),
+                    variants[vi].first.c_str(),
+                    a[a.size() / 2],
+                    a.back(),
+                    per.c_str());
+      rep.line(buf);
+    }
   }
 }
 
