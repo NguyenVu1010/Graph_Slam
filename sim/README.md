@@ -131,6 +131,30 @@ Noise report: every gated row passes for E-01 and E-04 (IMU sigma within 6 %, GN
 slip tuning): odom drift 12.5 % of distance and 31 deg/rev in the E-01 lap, 1.0 % on the
 straight E-04 run.
 
+#### Pipeline on the Gazebo bag
+
+`tools/run_integration.py --bridged <record_scenario out_dir>` replaces the synthetic data by a
+recorded bridge output (ENU origin = scenario `origin_lla`); the rest of the chain
+(`bag_to_mssdata.py`, `mss_bench`, `mss_eval.ate`) takes the Gazebo bag unchanged. Bench:
+WSL build of this branch (`tools/wsl/build.sh --target mss_bench`), desktop, 2026-10-28.
+
+```
+python tools/run_integration.py --bridged results/<E-01 run> --scenario sim/scenarios/E-01.yaml     --bench-cmd "wsl -- env LD_LIBRARY_PATH=<gtsam lib> <build>/bench/mss_bench"     --path-style wsl --out results/<run-id> --plots
+```
+
+| Run | ATE RMSE [m] (pairs) | scans | p50 / p95 scan [ms] | keyframes | GNSS factors | odom factors |
+| --- | --- | --- | --- | --- | --- | --- |
+| E-01 (warehouse lap) | 0.170 (642) | 664 | 6.83 / 17.18 | 42 | 203 | 41 |
+| E-02 (E-01 again) | 0.170, `est.tum` byte-identical | 664 | 6.89 / 17.07 | 42 | 203 | 41 |
+| E-03 (E-01 bag, 5 % drops) | 0.222 (608) | 629 | 7.23 / 17.60 | 42 | 201 | 41 |
+| E-04 corridor, degeneracy off | 10.04 (705) | 727 | 4.49 / 7.42 | 24 | 120 | 23 |
+| E-04 corridor, degeneracy on | 1.27 (705) | 727 | 4.77 / 7.77 | 55 | 234 | 54 |
+
+All runs: bench exit 0, 0 match failures, 22 (E-03: 21) skipped and 2 (1) uncovered scans,
+`n_gnss_late` / `n_gnss_ring_overflow` / `n_gnss_unfused_eof` 0, `n_gnss_realign` 0 (E-04 off:
+1), `n_gravity_factor_gated` / `_removed` / `_unchecked` 0. These are not baselines:
+`eval/baselines.json` changes only in a `baseline-update` PR.
+
 ## Mutating a bag (E-03)
 
 `tools/mutate_bag.py` derives the robustness bag from a bridged one (packet loss and reordering
