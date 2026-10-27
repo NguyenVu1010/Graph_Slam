@@ -19,6 +19,7 @@
 
 #include <gtest/gtest.h>
 
+#include "mss/common/lie.hpp"
 #include "mss/common/scan_frame.hpp"
 #include "mss/common/timestamp.hpp"
 #include "mss/common/types.hpp"
@@ -370,8 +371,15 @@ struct AxisRun {
   double end_x_m = 0.0;      // published estimate at the last scan, x error
   double along_rms_m = 0.0;  // RMS x error of every published estimate
   double lateral_rms_m = 0.0;
-  double T_s = 0.0;  // s, time of the last estimate after the static initialisation
+  double T_s = 0.0;            // s, time of the last estimate after the static initialisation
+  double init_window_s = 0.0;  // s, imu.init_window_s of the run's config
+  // max over estimates with T >= 2 s of |x err(t)| / sigma_DR(t) (dr_sigma_m), its time after
+  // the initialisation and the published tilt error then (about w x / y, norm, rad).
+  double max_ratio = 0.0;
+  double t_at_max_s = 0.0;
+  double tilt_at_max_rad = 0.0;
   std::uint64_t keyframes = 0;
+  std::uint64_t gravity_removed = 0;  // n_gravity_factor_removed
 };
 
 inline AxisRun corridor_axis_run(const BoxWorldParams& p,
@@ -387,12 +395,25 @@ inline AxisRun corridor_axis_run(const BoxWorldParams& p,
                  "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n" + extra_yaml);
   const ReplayResult r = replay(data, cfg);
   AxisRun out;
+  out.init_window_s = cfg.imu.init_window_s;
   double sx = 0.0;
   double sy = 0.0;
   for (const Estimate& x : r.estimates) {
-    const Vec3 d = x.state.T_w_b.p - test::box_truth(p, x.state.t).T_w_b.p;
+    const common::NavState truth = test::box_truth(p, x.state.t);
+    const Vec3 d = x.state.T_w_b.p - truth.T_w_b.p;
     sx += d.x() * d.x();
     sy += d.y() * d.y();
+    const double T = static_cast<double>(x.state.t.ns - p.t0_ns) * 1e-9 - cfg.imu.init_window_s;
+    if (T >= 2.0) {
+      const double ratio =
+          std::abs(d.x()) / dr_sigma_m(p.acc_noise_density, cfg.imu.init_window_s, T);
+      if (ratio > out.max_ratio) {
+        out.max_ratio = ratio;
+        out.t_at_max_s = T;
+        out.tilt_at_max_rad =
+            common::so3_log(x.state.T_w_b.R * truth.T_w_b.R.transpose()).head<2>().norm();
+      }
+    }
   }
   const double n = std::max(1.0, static_cast<double>(r.estimates.size()));
   out.along_rms_m = std::sqrt(sx / n);
@@ -403,13 +424,17 @@ inline AxisRun corridor_axis_run(const BoxWorldParams& p,
     out.T_s = static_cast<double>(e.state.t.ns - p.t0_ns) * 1e-9 - cfg.imu.init_window_s;
   }
   out.keyframes = r.stats.n_keyframes;
+  out.gravity_removed = r.stats.n_gravity_factor_removed;
   std::printf(
-      "[ corridor axis ] %s: end x %+.3f m, along-x RMS %.4f m, lateral RMS %.4f m, "
-      "%llu keyframes\n",
+      "[ corridor axis ] %s: end x %+.3f m, along-x RMS %.4f m, lateral RMS %.4f m, max "
+      "|x|/sigma_DR %.1f at T %.1f s (tilt %.2f mrad), %llu keyframes\n",
       dir.filename().string().c_str(),
       out.end_x_m,
       out.along_rms_m,
       out.lateral_rms_m,
+      out.max_ratio,
+      out.t_at_max_s,
+      out.tilt_at_max_rad * 1e3,
       static_cast<unsigned long long>(out.keyframes));
   return out;
 }

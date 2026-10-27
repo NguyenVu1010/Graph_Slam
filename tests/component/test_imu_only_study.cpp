@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -37,6 +38,7 @@
 #include "box_world.hpp"
 #include "estimator_core.hpp"
 #include "pipeline_test_support.hpp"
+#include "study_seams.hpp"
 
 #ifndef MSS_TEST_WITH_GTSAM
 #error "MSS_TEST_WITH_GTSAM must be defined (tests/component/CMakeLists.txt)"
@@ -663,6 +665,27 @@ struct Round2Run {
   std::vector<std::pair<Timestamp, common::Pose>> frames;
 };
 
+// Study seam (backend study_seams.hpp): the round-1 full 3x1 residual for the scope when
+// `full`; a scope with `full` false changes nothing (an enclosing scope stays in force).
+class FullResidualScope {
+ public:
+  explicit FullResidualScope(bool full) : full_(full) {
+    if (full_) {
+      backend::detail::set_static_gravity_full_residual(true);
+    }
+  }
+  ~FullResidualScope() {
+    if (full_) {
+      backend::detail::set_static_gravity_full_residual(false);
+    }
+  }
+  FullResidualScope(const FullResidualScope&) = delete;
+  FullResidualScope& operator=(const FullResidualScope&) = delete;
+
+ private:
+  bool full_;
+};
+
 // `corridor`: the 60 s corridor overlay (max_range 10 m, degeneracy relax 1e8), with GNSS
 // when `gnss`; else the box world with the plain overlay.
 Round2Run round2_run(const BoxWorldParams& p,
@@ -671,7 +694,8 @@ Round2Run round2_run(const BoxWorldParams& p,
                      bool corridor,
                      bool gnss,
                      const std::string& backend_yaml,
-                     const CovFn& gcov) {
+                     const CovFn& gcov,
+                     bool full_residual = false) {
   const std::string extra = corridor ? std::string("    preprocess:\n      max_range_m: 10.0\n") +
                                            kCorridorRelaxYaml + backend_yaml
                                      : backend_yaml;
@@ -680,6 +704,7 @@ Round2Run round2_run(const BoxWorldParams& p,
   detail::CoreTestHooks hooks;
   hooks.observer = &obs;
   hooks.static_gravity_cov = gcov;
+  const FullResidualScope full(full_residual);
   const HooksScope scope(&hooks);
   const ReplayResult r = replay(data, cfg);
   Round2Run out;
@@ -736,18 +761,20 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
   // 10d: the static window's tilt sigma (0.42 mrad = 0.024 deg) as the keyframe-0 rotation
   // prior, no factor (it applies to yaw too: the yaw of w is a gauge).
   const std::string tilt_prior = off + "      prior_rot_sigma_deg: 0.024\n";
+  // `full`: the round-1 full 3x1 residual through the study seam (FullResidualScope).
   struct Variant {
     std::string name;
     std::string yaml;
     CovFn cov;
+    bool full = false;
   };
   const std::vector<Variant> variants = {
       {"main (factor off)", off, {}},
-      {"factor, window sigma", fac, {}},
-      {"factor, sigma / 10", fac, scaled(0.01)},
-      {"factor, sigma x 3", fac, scaled(9.0)},
-      {"factor, sigma x 10", fac, scaled(100.0)},
-      {"factor, direction only", fac, direction_only},
+      {"full residual, window sigma", fac, {}, true},
+      {"full residual, sigma / 10", fac, scaled(0.01), true},
+      {"full residual, sigma x 3", fac, scaled(9.0), true},
+      {"full residual, sigma x 10", fac, scaled(100.0), true},
+      {"direction only, window sigma", fac, direction_only},
       {"tilt prior 0.42 mrad, no factor", tilt_prior, {}},
       {"shipped default (direction only, scale 2)", "", {}},
   };
@@ -797,16 +824,16 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
       if (vi == 0) {
         ASSERT_TRUE(test::write_box_dataset(dc / "data", pc).is_ok());
       }
-      const Round2Run rc =
-          round2_run(pc, dc / "data", dc / ("v" + std::to_string(vi)), true, true, v.yaml, v.cov);
+      const Round2Run rc = round2_run(
+          pc, dc / "data", dc / ("v" + std::to_string(vi)), true, true, v.yaml, v.cov, v.full);
       BoxWorldParams pb;
       pb.seed = seed;
       const fs::path db = rep.dir() / "round2" / ("box_" + std::to_string(seed));
       if (vi == 0) {
         ASSERT_TRUE(test::write_box_dataset(db / "data", pb).is_ok());
       }
-      const Round2Run rb =
-          round2_run(pb, db / "data", db / ("v" + std::to_string(vi)), false, false, v.yaml, v.cov);
+      const Round2Run rb = round2_run(
+          pb, db / "data", db / ("v" + std::to_string(vi)), false, false, v.yaml, v.cov, v.full);
       ate.push_back(rc.ate_m);
       nees.push_back(rb.nees6);
       box_ate.push_back(rb.ate_m * 1e3);
@@ -914,7 +941,8 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
                                      true,
                                      false,
                                      variants[vi].yaml,
-                                     variants[vi].cov);
+                                     variants[vi].cov,
+                                     variants[vi].full);
       const double marks[4] = {10.0, 20.0, 40.0, 60.0};
       for (std::size_t m = 0; m < 4; ++m) {
         double best = 1e9;
@@ -949,9 +977,70 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
   }
 }
 
-// Section 10e: the candidate forms over 15 seeds (42..56) on the four scenes that decide:
-// the 60 s GNSS corridor (ATE), the box-world LiDAR NEES, and the 20 s IMU-only corridors
-// with x unobserved (end x error, circle and straight).
+// Section 10e / 12: the candidate forms over 15 seeds (42..56) on every scene that decides:
+// the 60 s corridor with GNSS (ATE) and LiDAR only (ATE), the box-world LiDAR NEES, and the
+// 20 s IMU-only corridors with x unobserved (end x error, along-x RMS, max |x|/sigma_DR(t)).
+// Per variant: medians and maxima; against main, paired per-seed wins / losses and a 95 %
+// bootstrap CI (2000 resamples of the 15 seed pairs, fixed seed) of the median difference.
+// MSS_IMU_R2_FIRST / MSS_IMU_R2_LAST select a subset of the variants (default all).
+
+struct SeedScores {
+  std::vector<double> gnss_ate, lidar_ate, nees, circle_end, circle_rms, circle_ratio, straight_end,
+      straight_rms, straight_ratio;
+  std::uint64_t removed = 0;      // gravity factors removed by the chi-square check, all scenes
+  std::string circle_max_detail;  // per seed: t of the max ratio and the tilt then
+};
+
+// 95 % bootstrap CI of median(a_i - b_i) over paired seeds (2000 resamples, seed 7).
+std::pair<double, double> bootstrap_median_diff(const std::vector<double>& a,
+                                                const std::vector<double>& b) {
+  std::mt19937 rng(7U);
+  std::uniform_int_distribution<std::size_t> pick(0, a.size() - 1);
+  std::vector<double> medians;
+  std::vector<double> d(a.size());
+  for (int k = 0; k < 2000; ++k) {
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      const std::size_t j = pick(rng);
+      d[i] = a[j] - b[j];
+    }
+    medians.push_back(median_of(d));
+  }
+  std::sort(medians.begin(), medians.end());
+  return {medians[50], medians[1949]};
+}
+
+// "median a / median b | wins/losses | CI": wins = seeds where a < b (lower is better).
+std::string paired(const std::vector<double>& a, const std::vector<double>& b, bool abs_value) {
+  std::vector<double> x = a;
+  std::vector<double> y = b;
+  if (abs_value) {
+    for (double& v : x) {
+      v = std::abs(v);
+    }
+    for (double& v : y) {
+      v = std::abs(v);
+    }
+  }
+  int wins = 0;
+  int losses = 0;
+  for (std::size_t i = 0; i < x.size(); ++i) {
+    wins += x[i] < y[i] ? 1 : 0;
+    losses += x[i] > y[i] ? 1 : 0;
+  }
+  const std::pair<double, double> ci = bootstrap_median_diff(x, y);
+  char buf[160];
+  std::snprintf(buf,
+                sizeof(buf),
+                "%.2f (max %.2f) | %d/%d | [%+.2f, %+.2f]",
+                median_of(x),
+                *std::max_element(x.begin(), x.end()),
+                wins,
+                losses,
+                ci.first,
+                ci.second);
+  return buf;
+}
+
 TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
   const char* on = std::getenv("MSS_IMU_STUDY");
   if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
@@ -959,53 +1048,24 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
   }
   StudyReport rep("imu_round2_seeds.md", "MSS_IMU_STUDY_RUN_ID", "imu-study");
   rep.line("# Static-gravity factor forms over seeds 42..56 (ImuStaticGravityRound2Seeds)");
-  rep.line("");
-  rep.line(
-      "| variant | GNSS corridor ATE median / mean / max (m) | box NEES median / max (exp. 6) | "
-      "circle x free end err median / max (m) | straight x free end err median / max (m) |");
-  rep.line("| --- | --- | --- | --- | --- |");
   const std::string off = "    backend:\n      static_gravity_factor: false\n";
-  // Scale 1: hook-scaled noise is relative to the window std of the mean (round-1 rows).
-  const std::string fac =
-      "    backend:\n      static_gravity_factor: true\n      static_gravity_sigma_scale: 1.0\n";
-  const CovFn direction_only = [](const Vec3& f, const common::Mat3& c) -> common::Mat3 {
-    const Vec3 u = f.normalized();
-    const common::Mat3 out = c + 1.0e6 * u * u.transpose();
-    return out;
-  };
-  const CovFn x10 = [](const Vec3&, const common::Mat3& c) -> common::Mat3 {
-    const common::Mat3 out = 100.0 * c;
-    return out;
+  const auto scale = [](const char* s) {
+    return std::string("    backend:\n      static_gravity_factor: true\n") +
+           "      static_gravity_sigma_scale: " + s + "\n";
   };
   struct Variant {
     std::string name;
     std::string yaml;
-    CovFn cov;
+    bool full = false;
   };
   const std::vector<Variant> variants = {
-      {"main (factor off)", off, {}},
-      {"factor, window sigma", fac, {}},
-      {"factor, sigma x 10", fac, x10},
-      {"factor, direction only", fac, direction_only},
-      {"factor, direction only, sigma x 3",
-       fac,
-       [](const Vec3& f, const common::Mat3& c) -> common::Mat3 {
-         const Vec3 u = f.normalized();
-         const common::Mat3 out = 9.0 * c + 1.0e6 * u * u.transpose();
-         return out;
-       }},
-      {"factor, sigma x 3",
-       fac,
-       [](const Vec3&, const common::Mat3& c) -> common::Mat3 {
-         const common::Mat3 out = 9.0 * c;
-         return out;
-       }},
-      {"tilt prior 0.42 mrad, no factor", off + "      prior_rot_sigma_deg: 0.024\n", {}},
-      {"shipped form, scale 1.5", "    backend:\n      static_gravity_sigma_scale: 1.5\n", {}},
-      {"shipped form, scale 2", "    backend:\n      static_gravity_sigma_scale: 2.0\n", {}},
-      {"shipped form, scale 3", "    backend:\n      static_gravity_sigma_scale: 3.0\n", {}},
+      {"main (factor off)", off},
+      {"full residual, window sigma (study seam)", scale("1.0"), true},
+      {"shipped form, scale 1", scale("1.0")},
+      {"shipped form, scale 1.5", scale("1.5")},
+      {"shipped form, scale 2 (default)", scale("2.0")},
+      {"shipped form, scale 3", scale("3.0")},
   };
-  // MSS_IMU_R2_FIRST / MSS_IMU_R2_LAST: run a subset of the variants (default all).
   const char* first_env = std::getenv("MSS_IMU_R2_FIRST");
   const char* last_env = std::getenv("MSS_IMU_R2_LAST");
   const std::size_t v_first = first_env != nullptr ? std::stoul(first_env) : 0;
@@ -1014,11 +1074,17 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
   for (std::uint32_t s = 42; s < 57; ++s) {
     seeds.push_back(s);
   }
-  for (std::size_t vi = v_first; vi <= v_last && vi < variants.size(); ++vi) {
+  std::vector<SeedScores> scores(variants.size());
+  for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+    if (vi != 0 && (vi < v_first || vi > v_last)) {
+      continue;  // main always runs: it is the paired reference
+    }
     const Variant& v = variants[vi];
-    std::vector<double> gnss, nees, circle, straight;
+    SeedScores& sc = scores[vi];
+    const FullResidualScope full(v.full);
     for (const std::uint32_t seed : seeds) {
       const std::string tag = std::to_string(seed);
+      const std::string vd = "v" + std::to_string(vi);
       BoxWorldParams pc = corridor_params();
       pc.seed = seed;
       const fs::path dc = rep.dir() / "round2s" / ("corridor_" + tag);
@@ -1031,44 +1097,226 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
       BoxWorldParams p2 = imu_corridor_params(true);
       p2.seed = seed;
       const fs::path d2 = rep.dir() / "round2s" / ("straight_" + tag);
-      if (vi == v_first) {
+      if (vi == 0) {
         ASSERT_TRUE(test::write_box_dataset(dc / "data", pc).is_ok());
         ASSERT_TRUE(test::write_box_dataset(db / "data", pb).is_ok());
         ASSERT_TRUE(test::write_box_dataset(d1 / "data", p1).is_ok());
         ASSERT_TRUE(test::write_box_dataset(d2 / "data", p2).is_ok());
       }
-      const std::string vd = "v" + std::to_string(vi);
-      gnss.push_back(round2_run(pc, dc / "data", dc / vd, true, true, v.yaml, v.cov).ate_m);
-      nees.push_back(round2_run(pb, db / "data", db / vd, false, false, v.yaml, v.cov).nees6);
-      detail::CoreTestHooks hooks;
-      hooks.static_gravity_cov = v.cov;
-      const HooksScope scope(&hooks);
-      circle.push_back(
-          std::abs(corridor_axis_run(p1, d1 / "data", d1 / vd, false, v.yaml).end_x_m));
-      straight.push_back(
-          std::abs(corridor_axis_run(p2, d2 / "data", d2 / vd, false, v.yaml).end_x_m));
+      sc.gnss_ate.push_back(round2_run(pc, dc / "data", dc / vd, true, true, v.yaml, {}).ate_m);
+      sc.lidar_ate.push_back(
+          round2_run(pc, dc / "data", dc / ("l" + vd), true, false, v.yaml, {}).ate_m);
+      sc.nees.push_back(round2_run(pb, db / "data", db / vd, false, false, v.yaml, {}).nees6);
+      const AxisRun c = corridor_axis_run(p1, d1 / "data", d1 / vd, false, v.yaml);
+      const AxisRun s = corridor_axis_run(p2, d2 / "data", d2 / vd, false, v.yaml);
+      sc.circle_end.push_back(c.end_x_m);
+      sc.circle_rms.push_back(c.along_rms_m);
+      sc.circle_ratio.push_back(c.max_ratio);
+      sc.straight_end.push_back(s.end_x_m);
+      sc.straight_rms.push_back(s.along_rms_m);
+      sc.straight_ratio.push_back(s.max_ratio);
+      sc.removed += c.gravity_removed + s.gravity_removed;
+      char b[96];
+      std::snprintf(b,
+                    sizeof(b),
+                    "%s%u: %.1f at %.1f s, tilt %.2f mrad",
+                    sc.circle_max_detail.empty() ? "" : "; ",
+                    seed,
+                    c.max_ratio,
+                    c.t_at_max_s,
+                    c.tilt_at_max_rad * 1e3);
+      sc.circle_max_detail += b;
     }
-    double mean = 0.0;
-    for (const double a : gnss) {
-      mean += a / static_cast<double>(gnss.size());
+  }
+  const SeedScores& m = scores[0];
+  rep.line("");
+  rep.line(
+      "Cells: median (max) | wins / losses against main over the 15 paired seeds | 95 % "
+      "bootstrap CI of the median paired difference (variant - main). Lower is better.");
+  const auto table = [&](const char* title, auto get, bool abs_value) {
+    rep.line("");
+    rep.line(std::string("## ") + title);
+    rep.line("");
+    rep.line("| variant | median (max) | wins / losses | CI of median diff |");
+    rep.line("| --- | --- | --- | --- |");
+    for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+      if (get(scores[vi]).empty()) {
+        continue;
+      }
+      rep.line("| " + variants[vi].name + " | " + paired(get(scores[vi]), get(m), abs_value) +
+               " |");
     }
-    char buf[512];
+  };
+  table("60 s corridor + GNSS, ATE (m)", [](const SeedScores& s) { return s.gnss_ate; }, false);
+  table(
+      "60 s corridor, LiDAR + IMU, ATE (m)",
+      [](const SeedScores& s) { return s.lidar_ate; },
+      false);
+  table("Box world LiDAR factor NEES (exp. 6)", [](const SeedScores& s) { return s.nees; }, false);
+  table(
+      "20 s circle x free, |end x err| (m)",
+      [](const SeedScores& s) { return s.circle_end; },
+      true);
+  table(
+      "20 s circle x free, along-x RMS (m)",
+      [](const SeedScores& s) { return s.circle_rms; },
+      false);
+  table(
+      "20 s circle x free, max |x err(t)| / sigma_DR(t)",
+      [](const SeedScores& s) { return s.circle_ratio; },
+      false);
+  table(
+      "20 s straight x free, |end x err| (m)",
+      [](const SeedScores& s) { return s.straight_end; },
+      true);
+  table(
+      "20 s straight x free, along-x RMS (m)",
+      [](const SeedScores& s) { return s.straight_rms; },
+      false);
+  table(
+      "20 s straight x free, max |x err(t)| / sigma_DR(t)",
+      [](const SeedScores& s) { return s.straight_ratio; },
+      false);
+  rep.line("");
+  rep.line("## Per seed, and where the circle's largest excursion is");
+  rep.line("");
+  for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+    const SeedScores& s = scores[vi];
+    if (s.gnss_ate.empty()) {
+      continue;
+    }
+    rep.line("- " + variants[vi].name + " (gravity factor removed by the check in " +
+             std::to_string(s.removed) + " of 30 IMU-only runs):");
+    rep.line("  - GNSS ATE: " + joined(s.gnss_ate, "%.2f"));
+    rep.line("  - LiDAR-only ATE: " + joined(s.lidar_ate, "%.2f"));
+    rep.line("  - box NEES: " + joined(s.nees, "%.1f"));
+    rep.line("  - circle end / RMS: " + joined(s.circle_end, "%+.2f") + " / " +
+             joined(s.circle_rms, "%.2f"));
+    rep.line("  - straight end / RMS: " + joined(s.straight_end, "%+.2f") + " / " +
+             joined(s.straight_rms, "%.2f"));
+    rep.line("  - circle max |x|/sigma_DR: " + s.circle_max_detail);
+  }
+}
+
+// M-4 of the PR 4d review: where the E-01 per-scan p95 changes with the gravity factor.
+// MSS_IMU_LATENCY_DATA = an mssdata directory (the E-01 dataset of run_integration.py),
+// MSS_IMU_LATENCY_OVERLAY = the scenario overlay (config/sim/warehouse.yaml). Replays it 5
+// times per variant, interleaved, timing run_once() per processed scan, split into keyframe
+// and non-keyframe scans (Stats::n_keyframes grew); medians over the repetitions.
+TEST(PipelineComponent, ImuStaticGravityLatencySplit) {
+  const char* data_env = std::getenv("MSS_IMU_LATENCY_DATA");
+  const char* overlay_env = std::getenv("MSS_IMU_LATENCY_OVERLAY");
+  if (data_env == nullptr || overlay_env == nullptr || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_IMU_LATENCY_DATA and MSS_IMU_LATENCY_OVERLAY (GTSAM build)";
+  }
+  StudyReport rep("imu_latency_split.md", "MSS_IMU_STUDY_RUN_ID", "imu-study");
+  std::string overlay_text;
+  {
+    std::ifstream in(overlay_env);
+    overlay_text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }
+  struct Variant {
+    std::string name;
+    bool factor;
+  };
+  const std::vector<Variant> variants = {{"factor off (main behaviour)", false},
+                                         {"factor on (shipped)", true}};
+  // [variant][rep] -> {kf p50, kf p95, non-kf p50, non-kf p95, all p95, keyframes, iSAM2 ms}
+  std::vector<std::vector<std::vector<double>>> res(variants.size());
+  for (int repn = 0; repn < 5; ++repn) {
+    for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+      const fs::path ov = rep.dir() / ("latency_overlay_" + std::to_string(vi) + ".yaml");
+      {
+        std::ofstream f(ov);
+        f << overlay_text << "    backend:\n      static_gravity_factor: "
+          << (variants[vi].factor ? "true" : "false") << "\n";
+      }
+      const auto cfg = load_config(kDefault, ov);
+      ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+      auto opened = io::DatasetReader::open(data_env, cfg.value().realtime.max_points_per_scan);
+      ASSERT_TRUE(opened.is_ok()) << opened.reason();
+      io::DatasetReader reader = std::move(opened).value();
+      Estimator est(cfg.value());
+      ScanFrame scan(cfg.value().realtime.max_points_per_scan);
+      io::Record rec;
+      std::vector<double> kf_ms;
+      std::vector<double> other_ms;
+      std::uint64_t n_scans = 0;
+      std::uint64_t n_kf = 0;
+      for (;;) {
+        const auto more = reader.next(rec, scan);
+        if (!more.is_ok() || !more.value()) {
+          break;
+        }
+        switch (rec.kind) {
+          case io::RecordKind::kImu:
+            (void)est.push_imu(rec.imu);
+            break;
+          case io::RecordKind::kGnss:
+            (void)est.push_gnss(rec.gnss);
+            break;
+          case io::RecordKind::kOdom:
+            (void)est.push_odom(rec.odom);
+            break;
+          case io::RecordKind::kLidar:
+            (void)est.push_scan(scan);
+            break;
+          case io::RecordKind::kGt:
+            break;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        est.run_once();
+        const auto t1 = std::chrono::steady_clock::now();
+        const Estimator::Stats st = est.stats();
+        if (st.n_scans != n_scans) {
+          n_scans = st.n_scans;
+          const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+          (st.n_keyframes != n_kf ? kf_ms : other_ms).push_back(ms);
+          n_kf = st.n_keyframes;
+        }
+      }
+      est.flush();
+      const auto pct = [](std::vector<double> v, double q) {
+        std::sort(v.begin(), v.end());
+        return v.empty() ? 0.0
+                         : v[std::min(v.size() - 1,
+                                      static_cast<std::size_t>(q * static_cast<double>(v.size())))];
+      };
+      std::vector<double> all = kf_ms;
+      all.insert(all.end(), other_ms.begin(), other_ms.end());
+      res[vi].push_back({pct(kf_ms, 0.5),
+                         pct(kf_ms, 0.95),
+                         pct(other_ms, 0.5),
+                         pct(other_ms, 0.95),
+                         pct(all, 0.95),
+                         static_cast<double>(kf_ms.size())});
+    }
+  }
+  rep.line("# E-01 per-scan latency split (ImuStaticGravityLatencySplit), median of 5");
+  rep.line("");
+  rep.line(
+      "| variant | keyframe scans | keyframe p50 / p95 (ms) | non-keyframe p50 / p95 (ms) | all "
+      "p95 (ms) |");
+  rep.line("| --- | --- | --- | --- | --- |");
+  for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+    std::vector<double> col[6];
+    for (const auto& r : res[vi]) {
+      for (int k = 0; k < 6; ++k) {
+        col[k].push_back(r[static_cast<std::size_t>(k)]);
+      }
+    }
+    char buf[256];
     std::snprintf(buf,
                   sizeof(buf),
-                  "| %s | %.2f / %.2f / %.2f | %.2f / %.2f | %.2f / %.2f | %.2f / %.2f |",
-                  v.name.c_str(),
-                  median_of(gnss),
-                  mean,
-                  *std::max_element(gnss.begin(), gnss.end()),
-                  median_of(nees),
-                  *std::max_element(nees.begin(), nees.end()),
-                  median_of(circle),
-                  *std::max_element(circle.begin(), circle.end()),
-                  median_of(straight),
-                  *std::max_element(straight.begin(), straight.end()));
+                  "| %s | %.0f | %.3f / %.3f | %.3f / %.3f | %.3f |",
+                  variants[vi].name.c_str(),
+                  median_of(col[5]),
+                  median_of(col[0]),
+                  median_of(col[1]),
+                  median_of(col[2]),
+                  median_of(col[3]),
+                  median_of(col[4]));
     rep.line(buf);
-    rep.line("|   per seed | " + joined(gnss, "%.2f") + " | " + joined(nees, "%.1f") + " | " +
-             joined(circle, "%.2f") + " | " + joined(straight, "%.2f") + " |");
   }
 }
 

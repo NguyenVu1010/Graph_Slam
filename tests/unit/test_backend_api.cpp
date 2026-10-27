@@ -69,6 +69,7 @@ TEST(BackendApi, ConstructorRejectsInvalidConfig) {
   b.prior_bias_gyro_sigma_radps = 0.0;
   expect_throw(b, default_imu_config(), p_b_g);
   b = default_backend_config();
+  b.static_gravity_factor = true;  // validated only when enabled (M-1)
   b.static_gravity_sigma_scale = 0.0;
   expect_throw(b, default_imu_config(), p_b_g);
   b = default_backend_config();

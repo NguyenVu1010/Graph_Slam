@@ -26,7 +26,6 @@ inline BackendConfig default_backend_config() {
   cfg.prior_vel_sigma_mps = 0.1;
   cfg.prior_bias_acc_sigma_mps2 = 0.1;
   cfg.prior_bias_gyro_sigma_radps = 0.01;
-  cfg.static_gravity_sigma_scale = 2.0;
   return cfg;
 }
 

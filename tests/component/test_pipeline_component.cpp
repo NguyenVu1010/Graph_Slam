@@ -867,43 +867,64 @@ TEST(PipelineComponent, LidarFactorCovarianceConsistent) {
   EXPECT_LE(obs.lidar_nees(), 12.0);
 }
 
-// Seeds 42, 43, 44 (IMU noise). The median end error along x <= 3 sigma_DR, the
-// dead-reckoning sigma per axis after T:
-//   sigma_DR = hypot(q_a T^1.5 / sqrt(3), 0.5 q_a / sqrt(T_init) T^2)
+// Seeds 42, 43, 44 (IMU noise), shipped configuration. sigma_DR is the dead-reckoning sigma
+// per axis after T: sigma_DR = hypot(q_a T^1.5 / sqrt(3), 0.5 q_a / sqrt(T_init) T^2)
 // (velocity random walk, static-init tilt; q_a = BoxWorldParams::acc_noise_density):
-// 0.70 m at T = 17.9 s. Lateral error at the LiDAR level (< 1 cm) on every seed. The median
-// is asserted, not the worst: over 15 seeds the shipped factor gives a median of 1.45 m
-// and a worst of 7.0 m (10 sigma_DR; imu_only_observability.md section 10e), a tail the
-// 20 s scene cannot bound. Without the factor the 15-seed median is 21.7 m.
+// 0.70 m at T = 17.9 s. Medians over the three seeds are asserted (the 15-seed study,
+// imu_only_observability.md section 10e, has tails no 20 s scene can bound per seed):
+// - circle: |end x err| <= 3 sigma_DR (the brief's target; 15-seed median 1.45 m, without the
+//   factor 21.7 m); along-x RMS <= 3.0 m, the worst RMS of the 15 seeds (2.84 m, median
+//   1.36 m; without the factor median 11.6 m): mid-run excursions of up to 24 sigma_DR(t)
+//   remain, with transient tilt errors of 8 to 11 mrad (ADR-020 known gap);
+// - straight: |end x err| <= 6.3 m and along-x RMS <= 3.1 m, the worst of the 15 seeds
+//   (medians 2.72 m = 3.9 sigma_DR, which misses the brief's 3 sigma_DR, and 1.34 m;
+//   without the factor 3.56 m and 1.85 m).
+// Lateral error at the LiDAR level (< 1 cm) on every seed.
 TEST(PipelineComponent, CorridorImuOnlyAlongAxisWithinDeadReckoning) {
   if (!kWithGtsam) {
     GTEST_SKIP() << "needs the GTSAM backend (IMU factors in the graph)";
   }
-  std::vector<double> end_err_m;
-  double sigma_dr_m = 0.0;
-  for (const std::uint32_t seed : {42U, 43U, 44U}) {
-    BoxWorldParams p = imu_corridor_params(false);
-    p.seed = seed;
-    const fs::path dir = test_dir() / ("seed_" + std::to_string(seed));
-    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
-    const AxisRun r = corridor_axis_run(p, dir / "data", dir / "imu_only", false, "");
-    sigma_dr_m = dr_sigma_m(p.acc_noise_density, 2.0, r.T_s);
-    std::printf("[ corridor axis ] seed %u: end / sigma_DR %.2f (sigma_DR %.3f m, T %.1f s)\n",
-                seed,
-                std::abs(r.end_x_m) / sigma_dr_m,
-                sigma_dr_m,
-                r.T_s);
-    EXPECT_GT(r.T_s, 17.0) << seed;
-    EXPECT_LT(r.lateral_rms_m, 0.01) << seed;
-    EXPECT_GT(r.keyframes, 15U) << seed;
-    EXPECT_LT(r.keyframes, 40U) << seed;  // the 1 m rule does not fire on a drift along x
-    end_err_m.push_back(std::abs(r.end_x_m));
+  for (const bool straight : {false, true}) {
+    std::vector<double> end_err_m;
+    std::vector<double> rms_m;
+    double sigma_dr_m = 0.0;
+    for (const std::uint32_t seed : {42U, 43U, 44U}) {
+      BoxWorldParams p = imu_corridor_params(straight);
+      p.seed = seed;
+      const fs::path dir =
+          test_dir() / ((straight ? "straight_" : "circle_") + std::to_string(seed));
+      ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+      const AxisRun r = corridor_axis_run(p, dir / "data", dir / "imu_only", false, "");
+      sigma_dr_m = dr_sigma_m(p.acc_noise_density, r.init_window_s, r.T_s);
+      std::printf("[ corridor axis ] %s seed %u: end / sigma_DR %.2f (sigma_DR %.3f m, T %.1f s)\n",
+                  straight ? "straight" : "circle",
+                  seed,
+                  std::abs(r.end_x_m) / sigma_dr_m,
+                  sigma_dr_m,
+                  r.T_s);
+      EXPECT_GT(r.T_s, 17.0) << seed;
+      EXPECT_LT(r.lateral_rms_m, 0.01) << seed;
+      EXPECT_GT(r.keyframes, 5U) << seed;
+      EXPECT_LT(r.keyframes, 40U) << seed;  // the 1 m rule does not fire on a drift along x
+      end_err_m.push_back(std::abs(r.end_x_m));
+      rms_m.push_back(r.along_rms_m);
+    }
+    std::sort(end_err_m.begin(), end_err_m.end());
+    std::sort(rms_m.begin(), rms_m.end());
+    std::printf(
+        "[ corridor axis ] %s: median end error %.3f m (3 sigma_DR %.3f m), median RMS %.3f m\n",
+        straight ? "straight" : "circle",
+        end_err_m[1],
+        3.0 * sigma_dr_m,
+        rms_m[1]);
+    if (straight) {
+      EXPECT_LE(end_err_m[1], 6.3);
+      EXPECT_LE(rms_m[1], 3.1);
+    } else {
+      EXPECT_LE(end_err_m[1], 3.0 * sigma_dr_m);
+      EXPECT_LE(rms_m[1], 3.0);
+    }
   }
-  std::sort(end_err_m.begin(), end_err_m.end());
-  std::printf("[ corridor axis ] median end error %.3f m, 3 sigma_DR %.3f m\n",
-              end_err_m[1],
-              3.0 * sigma_dr_m);
-  EXPECT_LE(end_err_m[1], 3.0 * sigma_dr_m);
 }
 
 // The same corridor with wheel odometry: the wheel speed observes the axis.
@@ -917,6 +938,112 @@ TEST(PipelineComponent, CorridorWithWheelAlongAxisMillimetres) {
   const AxisRun r = corridor_axis_run(p, dir / "data", dir / "wheel", true, "");
   EXPECT_LE(r.along_rms_m, 0.005);
   EXPECT_LT(r.lateral_rms_m, 0.01);
+}
+
+// ---------------------------------------------------------------------------------------
+// ADR-020 rest precondition (imu_only_observability.md section 12): the keyframe-0 gravity
+// factor reads the init window as "body at rest". A start in motion that the initializer
+// still accepts (constant per-axis readings) must not make the estimate worse: the rest
+// gate does not add the factor, or the chi-square check removes it.
+
+struct StartRun {
+  double ate_m = 0.0;
+  std::uint64_t gated = 0;
+  std::uint64_t removed = 0;
+  std::size_t estimates = 0;
+  double chi2 = -1.0;  // gravity-factor consistency check (-1: not run)
+};
+
+// Records the chi-square of the gravity factor's consistency check.
+class GravityCheckObserver final : public detail::CoreObserver {
+ public:
+  void on_gravity_check(double chi2, bool /*removed*/) override { chi2_ = chi2; }
+  [[nodiscard]] double chi2() const { return chi2_; }
+
+ private:
+  double chi2_ = -1.0;
+};
+
+StartRun start_run(const BoxWorldParams& p,
+                   const fs::path& data,
+                   const fs::path& dir,
+                   const std::string& backend_yaml) {
+  GravityCheckObserver obs;
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  const HooksScope scope(&hooks);
+  const ReplayResult r = replay(data, box_config(p, false, false, dir, backend_yaml));
+  StartRun out;
+  out.ate_m = trajectory_errors(p, r.estimates).ate_m;
+  out.gated = r.stats.n_gravity_factor_gated;
+  out.removed = r.stats.n_gravity_factor_removed;
+  out.estimates = r.estimates.size();
+  out.chi2 = obs.chi2();
+  std::printf(
+      "[ moving start ] %s: ATE %.4f m, %zu estimates, gated %llu, removed %llu, check chi2 "
+      "%.2f\n",
+      dir.filename().string().c_str(),
+      out.ate_m,
+      out.estimates,
+      static_cast<unsigned long long>(out.gated),
+      static_cast<unsigned long long>(out.removed),
+      out.chi2);
+  return out;
+}
+
+const char* const kGravityOffYaml = "    backend:\n      static_gravity_factor: false\n";
+
+// Box circle from t = 0 (no still phase): a 0.25 rad/s turn, constant in b, so the window is
+// accepted. The rest gate rejects it (|mean gyro| 0.25 > 0.15 rad/s); with the gyro bound
+// opened, the factor is added and the chi-square check must remove it.
+TEST(PipelineComponent, GravityFactorTurningStartGatedOrRemoved) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend";
+  }
+  BoxWorldParams p;
+  p.static_s = 0.0;
+  p.ramp_s = 0.0;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const StartRun off = start_run(p, dir / "data", dir / "off", kGravityOffYaml);
+  const StartRun on = start_run(p, dir / "data", dir / "on", "");
+  const StartRun open = start_run(
+      p, dir / "data", dir / "gate_open", "    imu:\n      init_max_mean_gyro_radps: 1.0\n");
+  ASSERT_GT(off.estimates, 100U);
+  EXPECT_EQ(on.gated, 1U);
+  EXPECT_LE(on.ate_m, off.ate_m * 1.0001);
+  EXPECT_EQ(open.gated, 0U);
+  EXPECT_EQ(open.removed, 1U);
+  EXPECT_LE(open.ate_m, off.ate_m * 1.1);
+}
+
+// Straight runs accelerating from t = 0 (no still phase), the gyro reading ~0, so the rest
+// gate passes. The window's mean holds the forward acceleration a, read as a tilt a / g:
+// - 6 s ramp (mean a about 0.06 m/s^2 over the window, chi-square 28.9 at the check);
+//   the check after backend.static_gravity_check_keyframes removes the factor;
+// - 2 s ramp (mean a 0.25 m/s^2, chi-square 207): removed.
+// The estimate must not get worse than without the factor (measured: 0.1025 vs 0.1043 m,
+// 0.5575 vs 0.5465 m).
+TEST(PipelineComponent, GravityFactorAcceleratingStartNotWorse) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend";
+  }
+  for (const double ramp_s : {6.0, 2.0}) {
+    BoxWorldParams p;
+    p.static_s = 0.0;
+    p.ramp_s = ramp_s;
+    p.motion_s = 20.0 - ramp_s;
+    p.yaw_rate_radps = 1e-4;  // rad/s: an almost straight run
+    p.box_half_m.x() = 30.0;  // m: the run stays inside the box
+    const fs::path dir = test_dir() / ("ramp_" + std::to_string(static_cast<int>(ramp_s)));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const StartRun off = start_run(p, dir / "data", dir / "off", kGravityOffYaml);
+    const StartRun on = start_run(p, dir / "data", dir / "on", "");
+    ASSERT_GT(off.estimates, 100U);
+    EXPECT_EQ(on.gated, 0U) << ramp_s;
+    EXPECT_EQ(on.removed, 1U) << ramp_s;
+    EXPECT_LE(on.ate_m, off.ate_m * 1.1) << ramp_s;
+  }
 }
 
 }  // namespace

@@ -435,7 +435,8 @@ TEST(BackendGraph, RejectsBadCovariances) {
     g.add_static_gravity_factor(1, Vec3(0.0, 0.0, 9.8), Mat3::Zero());
     g.add_static_gravity_factor(7, Vec3(0.0, 0.0, 9.8), Mat3::Identity());  // unknown keyframe
     g.add_static_gravity_factor(1, Vec3(std::nan(""), 0.0, 9.8), Mat3::Identity());
-    EXPECT_EQ(log.warnings.size(), 3U);
+    g.add_static_gravity_factor(1, Vec3::Zero(), Mat3::Identity());  // zero specific force
+    EXPECT_EQ(log.warnings.size(), 4U);
   }
   {
     CapturingLogger log;
@@ -453,6 +454,9 @@ TEST(BackendGraph, OptimizeFailureDropsPendingFactorsKeepsKeyframes) {
   const test::Scenario s = test::square_loop(false, 0);
   Graph g(default_backend_config(), default_imu_config(), p_b_g);
   g.add_keyframe(s.truth[0].t, s.truth[0]);
+  // ADR-020: the keyframe-0 gravity factor rides with the priors and survives the failure.
+  const Vec3 g_w(0.0, 0.0, -default_imu_config().gravity_mps2);
+  g.add_static_gravity_factor(0, -(s.truth[0].T_w_b.R.transpose() * g_w), Mat3::Identity() * 1e-5);
   g.add_keyframe(s.truth[1].t, s.truth[1]);
   common::GnssMeasurement m;
   m.p_e_g = s.truth[1].T_w_b * p_b_g + Vec3(1.0, 0.0, 0.0);  // T_e_w = identity, 1 m off
@@ -470,6 +474,67 @@ TEST(BackendGraph, OptimizeFailureDropsPendingFactorsKeepsKeyframes) {
   // The GNSS factor was dropped: keyframe 1 follows the LiDAR edge exactly.
   EXPECT_LT(pose_error(r.value().state.T_w_b, s.truth[1].T_w_b), 1e-6);
   EXPECT_TRUE(r.value().cov.allFinite());
+  const common::Result<double> chi2 = g.static_gravity_chi2();
+  ASSERT_TRUE(chi2.is_ok()) << chi2.reason();
+  EXPECT_LT(chi2.value(), 1e-6);  // consistent with the truth
+}
+
+// ADR-020 known answer: keyframe 0 alone, guessed 10 mrad off in roll, true bias 0, the
+// gravity factor measured at the true attitude. The factor fixes g*theta - ba (theta the
+// roll error), the priors centred on the guess (rotation sigma_r) and on ba = 0 (sigma_b)
+// share the rest: theta = theta_0 / (1 + g^2 sigma_r^2 / sigma_b^2) to first order, and the
+// roll marginal is 1 / sqrt(1 / sigma_r^2 + g^2 / (sigma_b^2 + s^2 sigma_f^2)).
+TEST(BackendGraph, StaticGravityFactorKnownAnswer) {
+  const BackendConfig cfg = default_backend_config();
+  const imu::ImuConfig imu_cfg = default_imu_config();
+  Graph g(cfg, imu_cfg, Vec3::Zero());
+  const double g_mps2 = imu_cfg.gravity_mps2;
+  const double theta0_rad = 0.01;
+  NavState guess;
+  guess.T_w_b.R = common::so3_exp(Vec3(theta0_rad, 0.0, 0.0));  // truth: level, ba = 0
+  g.add_keyframe(guess.t, guess);
+  const double var_f = 1.7e-5;  // (m/s^2)^2 per axis, the window's covariance of the mean
+  g.add_static_gravity_factor(0, Vec3(0.0, 0.0, g_mps2), Mat3::Identity() * var_f);
+  for (int k = 0; k < 3; ++k) {
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+  const common::Result<NavState> x = g.keyframe_state(0);
+  ASSERT_TRUE(x.is_ok());
+  const double theta_rad = common::so3_log(x.value().T_w_b.R).x();
+  const double sr2 = cfg.prior_rot_sigma_rad * cfg.prior_rot_sigma_rad;
+  const double sb2 = cfg.prior_bias_acc_sigma_mps2 * cfg.prior_bias_acc_sigma_mps2 +
+                     cfg.static_gravity_sigma_scale * cfg.static_gravity_sigma_scale * var_f;
+  const double expected_rad = theta0_rad / (1.0 + g_mps2 * g_mps2 * sr2 / sb2);
+  EXPECT_NEAR(theta_rad, expected_rad, 2e-4);  // rad, first order in theta0
+  const double sigma_rad = 1.0 / std::sqrt(1.0 / sr2 + g_mps2 * g_mps2 / sb2);
+  EXPECT_NEAR(std::sqrt(g.marginal_cov(0)(3, 3)), sigma_rad, 0.05 * sigma_rad);
+  // The window and the bias agree: the factor's residual is small.
+  const common::Result<double> chi2 = g.static_gravity_chi2();
+  ASSERT_TRUE(chi2.is_ok());
+  EXPECT_LT(chi2.value(), 1.0);
+}
+
+// ADR-020 consistency check: a window that was not at rest (a 0.2 m/s^2 horizontal
+// acceleration read as tilt) against a tight bias prior gives a large chi-square; the
+// factor is removed from iSAM2 and from the rebuild set, and the graph still optimises.
+TEST(BackendGraph, StaticGravityFactorRemovedOnRequest) {
+  BackendConfig cfg = default_backend_config();
+  cfg.prior_bias_acc_sigma_mps2 = 1e-4;
+  cfg.prior_rot_sigma_rad = 1e-4;
+  Graph g(cfg, default_imu_config(), Vec3::Zero());
+  NavState x0;
+  g.add_keyframe(x0.t, x0);
+  g.add_static_gravity_factor(0, Vec3(0.2, 0.0, 9.80665), Mat3::Identity() * 1.7e-5);
+  ASSERT_TRUE(g.optimize().is_ok());
+  const common::Result<double> chi2 = g.static_gravity_chi2();
+  ASSERT_TRUE(chi2.is_ok());
+  EXPECT_GT(chi2.value(), 5.991);
+  EXPECT_TRUE(g.remove_static_gravity_factor());
+  EXPECT_FALSE(g.static_gravity_chi2().is_ok());
+  EXPECT_FALSE(g.remove_static_gravity_factor());
+  const common::Result<Estimate> r = g.optimize();
+  ASSERT_TRUE(r.is_ok()) << r.reason();
+  EXPECT_LT(common::so3_log(r.value().state.T_w_b.R).norm(), 1e-6);  // back on the priors
 }
 
 TEST(BackendGraph, MarginalCovIsMssOrder) {
