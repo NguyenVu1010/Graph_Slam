@@ -8,13 +8,16 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from run_integration import (
+    BENCH_TIMEOUT,
     REORDER_NOTE,
     judge,
     judge_e03_drops,
     judge_latency,
     main,
+    run_bench,
     to_bench_path,
 )
 
@@ -56,6 +59,21 @@ def _fake_bench_cmd(tmp: Path) -> str:
     return shlex.join([Path(sys.executable).as_posix(), script.as_posix()])
 
 
+def _scenario(tmp: Path, prep: bool = True, mutate: bool = True) -> Path:
+    """Copy of sim/scenarios/E-01.yaml in ``tmp``, optionally without prep or prep.mutate."""
+    data = yaml.safe_load((_REPO / "sim/scenarios/E-01.yaml").read_text(encoding="utf-8"))
+    name = "scenario"
+    if not prep:
+        data.pop("prep")
+        name += "_no_prep"
+    elif not mutate:
+        data["prep"].pop("mutate")
+        name += "_no_mutate"
+    path = tmp / f"{name}.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
 def _git_status() -> str | None:
     if shutil.which("git") is None:
         return None
@@ -75,7 +93,8 @@ def e2e(tmp_path_factory: pytest.TempPathFactory) -> tuple[int, Path, str | None
     tmp = tmp_path_factory.mktemp("integration")
     before = _git_status()
     out = tmp / "results"
-    code = main(["--bench-cmd", _fake_bench_cmd(tmp), "--out", str(out), "--duration-s", "8"])
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp), "--out", str(out), "--duration-s", "8"]
+    code = main([*argv, "--scenario", str(_scenario(tmp))])
     return code, out, before, _git_status()
 
 
@@ -95,6 +114,13 @@ def test_end_to_end_with_fake_bench(e2e: tuple[int, Path, str | None, str | None
     assert src["box_half_m"] == [8.0, 5.0, 2.0] and src["duration_s"] == 8.0
     assert (src["static_s"], src["ramp_s"], src["seed"]) == (5.0, 2.0, 42)
     assert src["scenario_world_trajectory_used"] is False
+    assert src["prep_source"].endswith("scenario.yaml")
+    assert src["mutate"] == {
+        "drop_fraction": 0.05,
+        "reorder_fraction": 0.02,
+        "window_ns": 20_000_000,
+        "seed": 42,
+    }
     assert "E-03 processed" in res["E-03"]["note"]
     for test_id in ("E-01", "E-02", "E-03"):
         assert (out / test_id / "est.tum").is_file()
@@ -102,6 +128,36 @@ def test_end_to_end_with_fake_bench(e2e: tuple[int, Path, str | None, str | None
         assert (out / test_id / "bench.log").is_file()
     assert (out / "data" / "mssdata" / "index.json").is_file()
     assert (out / "data" / "mssdata_e03" / "index.json").is_file()
+
+
+def test_missing_prep_is_setup_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    out = tmp_path / "results"
+    scenario = _scenario(tmp_path, prep=False)
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out)]
+    assert main([*argv, "--scenario", str(scenario)]) == 2
+    assert "scenario E-01: missing prep block" in capsys.readouterr().err
+    assert not out.exists()  # rejected before any data is prepared
+
+
+def test_missing_mutate_needs_no_e03(tmp_path: Path) -> None:
+    out = tmp_path / "results"
+    scenario = _scenario(tmp_path, mutate=False)
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out), "--duration-s", "6"]
+    assert main([*argv, "--scenario", str(scenario), "--tests", "E-01"]) == 0
+    res = json.loads((out / "integration.json").read_text(encoding="utf-8"))
+    assert res["data_source"]["mutate"] is None
+    assert not (out / "data" / "mssdata_e03").exists()
+
+
+def test_missing_mutate_with_e03_is_setup_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "results"
+    scenario = _scenario(tmp_path, mutate=False)
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out)]
+    assert main([*argv, "--scenario", str(scenario), "--tests", "E-01,E-03"]) == 2
+    assert "scenario E-01: prep.mutate is required for E-03" in capsys.readouterr().err
+    assert not out.exists()
 
 
 def test_null_baseline_passes_with_note() -> None:
@@ -248,3 +304,49 @@ def test_unexpected_exception_is_setup_error(
     monkeypatch.setattr(run_integration, "prepare", boom)
     out = tmp_path / "results"
     assert main(["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out)]) == 2
+
+
+_SLEEPER = "import time; time.sleep(5)"
+
+
+def _kill_recorder(marker: Path) -> list[str]:
+    """Stand-in for ``docker kill``: writes the container name it is given into ``marker``."""
+    code = "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])"
+    return [sys.executable, "-c", code, str(marker)]
+
+
+def test_timeout_without_container_kills_nothing(tmp_path: Path) -> None:
+    marker = tmp_path / "killed.txt"
+    cmd = [sys.executable, "-c", _SLEEPER]
+    data = tmp_path / "data"
+    data.mkdir()
+    code = run_bench(
+        cmd,
+        _REPO / "config/default.yaml",
+        data,
+        _REPO / "config/sim/warehouse.yaml",
+        tmp_path / "E-01",
+        "native",
+        0.5,
+        kill_cmd=_kill_recorder(marker),
+    )
+    assert code == BENCH_TIMEOUT
+    assert not marker.exists()
+
+
+def test_timeout_kills_the_container(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import run_integration
+
+    marker = tmp_path / "killed.txt"
+    monkeypatch.setattr(run_integration, "DOCKER_KILL", tuple(_kill_recorder(marker)))
+    cmd = shlex.join([Path(sys.executable).as_posix(), "-c", _SLEEPER, "--name", "{container}"])
+    out = tmp_path / "run 1"
+    argv = ["--bench-cmd", cmd, "--out", str(out), "--duration-s", "6", "--tests", "E-01"]
+    assert main([*argv, "--scenario", str(_scenario(tmp_path)), "--timeout-s", "0.5"]) == 1
+    res = json.loads((out / "integration.json").read_text(encoding="utf-8"))
+    assert res["E-01"]["bench_exit"] == BENCH_TIMEOUT and "timed out" in res["E-01"]["note"]
+    name = "mss-bench-run-1-E-01"  # sanitised: the space becomes '-'
+    assert marker.read_text() == name
+    assert f"docker kill {name} attempted (see bench.log)" in res["E-01"]["note"]
+    log = (out / "E-01" / "bench.log").read_text(encoding="utf-8")
+    assert f"--name {name}" in log and "kill" in log
