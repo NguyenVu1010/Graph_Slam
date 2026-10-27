@@ -320,6 +320,11 @@ TEST(BackendGraph, GnssFrameVariableAbsorbsAlignmentError) {
     for (KeyId k = 0; k < 4; ++k) {
       max_err_m = std::max(max_err_m, (state_or_fail(g, k).T_w_b.p - s.truth[k].T_w_b.p).norm());
     }
+    const common::Result<Pose> E = g.gnss_frame_estimate();
+    EXPECT_EQ(E.is_ok(), frame_variable);
+    if (E.is_ok()) {
+      EXPECT_LT((E.value().p - T_e_w.p).norm(), 0.05);  // m, the offset guess was 1.4 m off
+    }
     return max_err_m;
   };
   EXPECT_LT(run(true), 5e-3);

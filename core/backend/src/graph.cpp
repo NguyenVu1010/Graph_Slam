@@ -734,4 +734,13 @@ common::Result<common::NavState> Graph::keyframe_state(common::KeyId k) const {
   return common::Result<common::NavState>::ok(m.state_of(k, m.last_estimate));
 }
 
+common::Result<common::Pose> Graph::gnss_frame_estimate() const {
+  const Impl& m = *impl_;
+  if (!m.last_estimate.exists(detail::frame_key())) {
+    return common::Result<common::Pose>::error("no frame variable");
+  }
+  return common::Result<common::Pose>::ok(
+      detail::from_gtsam(m.last_estimate.at<gtsam::Pose3>(detail::frame_key())));
+}
+
 }  // namespace mss::backend

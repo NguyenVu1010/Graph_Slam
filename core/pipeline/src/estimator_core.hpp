@@ -60,6 +60,8 @@ class CoreObserver {
   virtual void on_keyframe_optimized(common::Timestamp /*t*/,
                                      const common::NavState& /*x*/,
                                      const common::PoseCovariance& /*cov*/) {}
+  /// The backend's GNSS frame variable E after a successful optimize() (IMU study).
+  virtual void on_frame_estimate(common::Timestamp /*t*/, const common::Pose& /*T_e_w*/) {}
 };
 
 /// Test-only seam (studies): `observer` receives the factor events; with `force_T_e_w` the
@@ -79,6 +81,8 @@ struct CoreTestHooks {
   std::function<common::Pose(common::Timestamp, common::Timestamp)> lidar_oracle;
   /// Study: when set, the LiDAR factor covariance is lidar_cov(t_j, cov_b).
   std::function<common::PoseCovariance(common::Timestamp, const common::PoseCovariance&)> lidar_cov;
+  /// Study: when set, the static-gravity factor covariance is static_gravity_cov(f_b, cov).
+  std::function<common::Mat3(const common::Vec3&, const common::Mat3&)> static_gravity_cov;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).
@@ -234,6 +238,8 @@ class EstimatorCore {
   std::function<common::Pose(common::Timestamp, common::Timestamp)> lidar_oracle_;  // test-only
   std::function<common::PoseCovariance(common::Timestamp, const common::PoseCovariance&)>
       lidar_cov_;  // test-only
+  std::function<common::Mat3(const common::Vec3&, const common::Mat3&)>
+      static_gravity_cov_;  // test-only
 };
 
 }  // namespace mss::pipeline::detail

@@ -219,6 +219,12 @@ class Graph {
   /// Hot path: no. Tests: B-02, B-03, B-04.
   common::Result<common::NavState> keyframe_state(common::KeyId k) const;
 
+  /// The GNSS frame variable E = T_e_w (ADR-019) as of the last successful optimize().
+  /// Errors (Result::error): "no frame variable" before the first GNSS factor with
+  /// backend.gnss_frame_variable, or when it is false; "built without GTSAM" in the stub.
+  /// Hot path: no. Tests: BackendGraph.GnssFrameVariableAbsorbsAlignmentError.
+  common::Result<common::Pose> gnss_frame_estimate() const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

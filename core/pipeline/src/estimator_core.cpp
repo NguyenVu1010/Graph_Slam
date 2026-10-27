@@ -98,6 +98,7 @@ EstimatorCore::EstimatorCore(const Config& cfg)
     frontend_keeps_own_state_ = g_test_hooks->frontend_keeps_own_state;
     lidar_oracle_ = g_test_hooks->lidar_oracle;
     lidar_cov_ = g_test_hooks->lidar_cov;
+    static_gravity_cov_ = g_test_hooks->static_gravity_cov;
     if (g_test_hooks->force_T_e_w) {
       fusion_.force_T_e_w(g_test_hooks->T_e_w);
     }
@@ -413,7 +414,10 @@ void EstimatorCore::first_keyframe(common::Timestamp t, const common::NavState& 
     // The window statistics describe the body at rest at init_t_ (imu_only_observability.md
     // section 9): only valid when keyframe 0 is that scan.
     if (t == init_t_) {
-      graph_.add_static_gravity_factor(id, init_.acc_mean_b, init_.acc_mean_cov);
+      const common::Mat3 cov = static_gravity_cov_  // test-only override (CoreTestHooks)
+                                   ? static_gravity_cov_(init_.acc_mean_b, init_.acc_mean_cov)
+                                   : init_.acc_mean_cov;
+      graph_.add_static_gravity_factor(id, init_.acc_mean_b, cov);
     } else {
       common::log_info("static gravity factor skipped: keyframe 0 is not the init scan");
     }
@@ -493,6 +497,10 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   if (optimised) {
     if (observer_ != nullptr) {
       observer_->on_keyframe_optimized(t, opt.value().state, opt.value().cov);
+      const common::Result<common::Pose> E = graph_.gnss_frame_estimate();
+      if (E.is_ok()) {
+        observer_->on_frame_estimate(t, E.value());
+      }
     }
     if (!frontend_keeps_own_state_) {  // test-only (CoreTestHooks)
       front_ = opt.value().state;

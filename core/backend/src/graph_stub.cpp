@@ -63,4 +63,8 @@ common::Result<common::NavState> Graph::keyframe_state(common::KeyId /*k*/) cons
   return common::Result<common::NavState>::error("built without GTSAM");
 }
 
+common::Result<common::Pose> Graph::gnss_frame_estimate() const {
+  return common::Result<common::Pose>::error("built without GTSAM");
+}
+
 }  // namespace mss::backend
