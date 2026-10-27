@@ -374,9 +374,6 @@ struct AxisRun {
   std::uint64_t keyframes = 0;
 };
 
-// The fix under evaluation (imu_only_observability.md section 9), off by default.
-inline const char* const kGravityFactorYaml = "    backend:\n      static_gravity_factor: true\n";
-
 inline AxisRun corridor_axis_run(const BoxWorldParams& p,
                                  const fs::path& data,
                                  const fs::path& dir,

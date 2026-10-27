@@ -210,12 +210,34 @@ TEST(BackendFactors, B01_StaticGravityFactorJacobians) {
     values.insert(pose_key(0), to_gtsam(T_w_b));
     values.insert(bias_key(0), to_gtsam(b));
     ASSERT_GT(f.unwhitenedError(values).norm(), 1e-4);
-    const Vec3 r = f.unwhitenedError(values);
-    const double expected = r.dot(cov.ldlt().solve(r));
+    // 2x1 residual: the full residual projected normal to f_b; noise P cov P^T.
+    const StaticGravityFactor::Projection P = StaticGravityFactor::projection(f_b);
+    const Vec3 e = f_b - b.ba + T_w_b.R.transpose() * kGravityW;
+    const Eigen::Vector2d r = f.unwhitenedError(values);
+    EXPECT_LT((r - P * e).norm(), 1e-12);
+    EXPECT_LT((P * P.transpose() - Eigen::Matrix2d::Identity()).norm(), 1e-12);
+    EXPECT_LT((P * f_b).norm(), 1e-9);
+    const Eigen::Matrix2d C2 = P * cov * P.transpose();
+    const double expected = r.dot(C2.ldlt().solve(r));
     EXPECT_NEAR(2.0 * f.error(values), expected, 1e-9 * expected);
     MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f, values);
     EXPECT_LT(max_relative_jacobian_error(f, values), kRelJacTol) << "rep " << rep;
   }
+}
+
+// Direction only (section 10b): a different magnitude of f_b at the same direction leaves
+// the residual unchanged (|g| against ba_z is not constrained).
+TEST(BackendFactors, B01_StaticGravityFactorIgnoresMagnitude) {
+  std::mt19937 rng(kSeed);
+  const Pose T_w_b = random_pose(rng);
+  const common::ImuBias b = random_bias(rng);
+  const Vec3 f_b = b.ba - T_w_b.R.transpose() * kGravityW;
+  const StaticGravityFactor f(
+      pose_key(0), bias_key(0), 1.01 * f_b, Mat3::Identity() * 1e-5, kGravityW);
+  gtsam::Values values;
+  values.insert(pose_key(0), to_gtsam(T_w_b));
+  values.insert(bias_key(0), to_gtsam(b));
+  EXPECT_LT(f.unwhitenedError(values).norm(), 1e-12);
 }
 
 // At rest the measured specific force is ba - R^T g_w: zero residual.

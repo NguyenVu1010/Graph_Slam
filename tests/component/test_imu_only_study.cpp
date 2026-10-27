@@ -565,7 +565,9 @@ TEST(PipelineComponent, ImuOnlyObservabilityFixEvaluation) {
   rep.line("| --- | --- | --- | --- | --- | --- |");
   const std::string relax = "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n";
   const std::string pin = "    backend:\n      static_gravity_factor: false\n";
-  const std::string fac = "    backend:\n      static_gravity_factor: true\n";
+  // Scale 1: hook-scaled noise is relative to the window std of the mean (round-1 rows).
+  const std::string fac =
+      "    backend:\n      static_gravity_factor: true\n      static_gravity_sigma_scale: 1.0\n";
   const std::string tight =
       "      prior_rot_sigma_deg: 0.02\n      prior_bias_acc_sigma_mps2: 0.004\n"
       "      prior_vel_sigma_mps: 0.01\n";
@@ -728,7 +730,9 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
     return out;
   };
   const std::string off = "    backend:\n      static_gravity_factor: false\n";
-  const std::string fac = "    backend:\n      static_gravity_factor: true\n";
+  // Scale 1: hook-scaled noise is relative to the window std of the mean (round-1 rows).
+  const std::string fac =
+      "    backend:\n      static_gravity_factor: true\n      static_gravity_sigma_scale: 1.0\n";
   // 10d: the static window's tilt sigma (0.42 mrad = 0.024 deg) as the keyframe-0 rotation
   // prior, no factor (it applies to yaw too: the yaw of w is a gauge).
   const std::string tilt_prior = off + "      prior_rot_sigma_deg: 0.024\n";
@@ -745,6 +749,7 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
       {"factor, sigma x 10", fac, scaled(100.0)},
       {"factor, direction only", fac, direction_only},
       {"tilt prior 0.42 mrad, no factor", tilt_prior, {}},
+      {"shipped default (direction only, scale 2)", "", {}},
   };
   const std::vector<std::uint32_t> seeds = {42, 43, 44, 45, 46};
 
@@ -845,7 +850,8 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
   rep.line("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   const BoxWorldParams p42 = corridor_params();
   const common::Pose T_true = test::box_T_e_w(p42);
-  for (const std::size_t vi : {std::size_t{0}, std::size_t{1}, std::size_t{5}, std::size_t{6}}) {
+  for (const std::size_t vi :
+       {std::size_t{0}, std::size_t{1}, std::size_t{5}, std::size_t{6}, std::size_t{7}}) {
     const Round2Run& rc = series[vi];
     double next_s = 10.0;
     for (std::size_t k = 0; k < rc.keyframes.size(); ++k) {
@@ -895,7 +901,7 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
       "| variant | kf tilt err median at 10 / 20 / 40 / 60 s (mrad) | LiDAR factor tilt err RMS "
       "per axis (mrad) | factors | rms sqrt(N) (mrad) | ATE median (m) |");
   rep.line("| --- | --- | --- | --- | --- | --- |");
-  for (const std::size_t vi : {std::size_t{0}, std::size_t{1}, std::size_t{5}}) {
+  for (const std::size_t vi : {std::size_t{0}, std::size_t{1}, std::size_t{5}, std::size_t{7}}) {
     std::vector<std::vector<double>> at(4);
     std::vector<double> ate, rms, nf;
     for (const std::uint32_t seed : seeds) {
@@ -959,7 +965,9 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
       "circle x free end err median / max (m) | straight x free end err median / max (m) |");
   rep.line("| --- | --- | --- | --- | --- |");
   const std::string off = "    backend:\n      static_gravity_factor: false\n";
-  const std::string fac = "    backend:\n      static_gravity_factor: true\n";
+  // Scale 1: hook-scaled noise is relative to the window std of the mean (round-1 rows).
+  const std::string fac =
+      "    backend:\n      static_gravity_factor: true\n      static_gravity_sigma_scale: 1.0\n";
   const CovFn direction_only = [](const Vec3& f, const common::Mat3& c) -> common::Mat3 {
     const Vec3 u = f.normalized();
     const common::Mat3 out = c + 1.0e6 * u * u.transpose();
@@ -993,6 +1001,9 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
          return out;
        }},
       {"tilt prior 0.42 mrad, no factor", off + "      prior_rot_sigma_deg: 0.024\n", {}},
+      {"shipped form, scale 1.5", "    backend:\n      static_gravity_sigma_scale: 1.5\n", {}},
+      {"shipped form, scale 2", "    backend:\n      static_gravity_sigma_scale: 2.0\n", {}},
+      {"shipped form, scale 3", "    backend:\n      static_gravity_sigma_scale: 3.0\n", {}},
   };
   // MSS_IMU_R2_FIRST / MSS_IMU_R2_LAST: run a subset of the variants (default all).
   const char* first_env = std::getenv("MSS_IMU_R2_FIRST");

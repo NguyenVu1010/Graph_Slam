@@ -69,6 +69,9 @@ TEST(BackendApi, ConstructorRejectsInvalidConfig) {
   b.prior_bias_gyro_sigma_radps = 0.0;
   expect_throw(b, default_imu_config(), p_b_g);
   b = default_backend_config();
+  b.static_gravity_sigma_scale = 0.0;
+  expect_throw(b, default_imu_config(), p_b_g);
+  b = default_backend_config();
   b.gnss_frame_variable = true;  // ADR-019: its prior sigmas are then required (> 0)
   b.gnss_frame_tilt_sigma_rad = 1e-4;
   b.gnss_frame_yaw_sigma_rad = 0.5;

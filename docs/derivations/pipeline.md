@@ -163,5 +163,5 @@ last one at or before `t - init_window_s` to the first one at or after `t`, so t
 spans at least `init_window_s` whatever the sample phase. Until it succeeds no estimate is
 published (`latest_state().state.t == Timestamp{}`). The window mean and the covariance of
 that mean (`imu::InitState::acc_mean_b`, `acc_mean_cov`) feed the optional keyframe-0 gravity
-factor (`backend.static_gravity_factor`, `backend_factors.md` section 6c) when keyframe 0 is
-the initialisation scan.
+factor (`backend.static_gravity_factor`, default on, `backend_factors.md` section 6c) when keyframe 0 is
+the initialisation scan (ADR-020).

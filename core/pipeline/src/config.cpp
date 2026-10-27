@@ -461,6 +461,8 @@ Config read_config(Reader& r) {
           c.backend.prior_bias_gyro_sigma_radps,
           Range::kPositive);
   r.field("backend.static_gravity_factor", c.backend.static_gravity_factor);
+  r.field(
+      "backend.static_gravity_sigma_scale", c.backend.static_gravity_sigma_scale, Range::kPositive);
   r.field("backend.gnss_frame_variable", c.backend.gnss_frame_variable);
   r.angle_deg(
       "backend.gnss_frame_tilt_sigma_deg", c.backend.gnss_frame_tilt_sigma_rad, Range::kPositive);

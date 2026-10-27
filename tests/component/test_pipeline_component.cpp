@@ -872,9 +872,9 @@ TEST(PipelineComponent, LidarFactorCovarianceConsistent) {
 //   sigma_DR = hypot(q_a T^1.5 / sqrt(3), 0.5 q_a / sqrt(T_init) T^2)
 // (velocity random walk, static-init tilt; q_a = BoxWorldParams::acc_noise_density):
 // 0.70 m at T = 17.9 s. Lateral error at the LiDAR level (< 1 cm) on every seed. The median
-// is asserted, not the worst: over 15 seeds the worst end error is 3 to 10 sigma_DR in
-// every variant (imu_only_observability.md section 10e), a tail the 20 s scene cannot
-// bound. Values in the derivation; without the gravity factor the median is 84.8 m.
+// is asserted, not the worst: over 15 seeds the shipped factor gives a median of 1.45 m
+// and a worst of 7.0 m (10 sigma_DR; imu_only_observability.md section 10e), a tail the
+// 20 s scene cannot bound. Without the factor the 15-seed median is 21.7 m.
 TEST(PipelineComponent, CorridorImuOnlyAlongAxisWithinDeadReckoning) {
   if (!kWithGtsam) {
     GTEST_SKIP() << "needs the GTSAM backend (IMU factors in the graph)";
@@ -886,8 +886,7 @@ TEST(PipelineComponent, CorridorImuOnlyAlongAxisWithinDeadReckoning) {
     p.seed = seed;
     const fs::path dir = test_dir() / ("seed_" + std::to_string(seed));
     ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
-    const AxisRun r =
-        corridor_axis_run(p, dir / "data", dir / "imu_only", false, kGravityFactorYaml);
+    const AxisRun r = corridor_axis_run(p, dir / "data", dir / "imu_only", false, "");
     sigma_dr_m = dr_sigma_m(p.acc_noise_density, 2.0, r.T_s);
     std::printf("[ corridor axis ] seed %u: end / sigma_DR %.2f (sigma_DR %.3f m, T %.1f s)\n",
                 seed,
@@ -915,7 +914,7 @@ TEST(PipelineComponent, CorridorWithWheelAlongAxisMillimetres) {
   const BoxWorldParams p = imu_corridor_params(false);
   const fs::path dir = test_dir();
   ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
-  const AxisRun r = corridor_axis_run(p, dir / "data", dir / "wheel", true, kGravityFactorYaml);
+  const AxisRun r = corridor_axis_run(p, dir / "data", dir / "wheel", true, "");
   EXPECT_LE(r.along_rms_m, 0.005);
   EXPECT_LT(r.lateral_rms_m, 0.01);
 }

@@ -281,17 +281,23 @@ TEST(Config, GnssGateKeysValidated) {
   EXPECT_TRUE(mentions(gate.reason(), "gnss.chi2_gate: must be > 0 (got -1)")) << gate.reason();
 }
 
-// PR 4d: the static-window gravity factor flag ships off (evaluated, config comment) and
-// parses as a bool.
+// PR 4d: the static-window gravity factor ships on with sigma scale 2 (evaluated, config
+// comment); the flag parses as a bool and the scale must be > 0.
 TEST(Config, StaticGravityFactorKey) {
   const auto cfg = load_config(kDefault);
   ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
-  EXPECT_FALSE(cfg.value().backend.static_gravity_factor);
+  EXPECT_TRUE(cfg.value().backend.static_gravity_factor);
+  EXPECT_DOUBLE_EQ(cfg.value().backend.static_gravity_sigma_scale, 2.0);
   const std::string base = read_file(kDefault);
-  const auto on = parse_config(base, overlay("    backend:\n      static_gravity_factor: true\n"));
-  ASSERT_TRUE(on.is_ok()) << on.reason();
+  const auto off =
+      parse_config(base, overlay("    backend:\n      static_gravity_factor: false\n"));
+  ASSERT_TRUE(off.is_ok()) << off.reason();
   const auto bad = parse_config(base, overlay("    backend:\n      static_gravity_factor: 3.5\n"));
   EXPECT_FALSE(bad.is_ok());
+  const auto zero =
+      parse_config(base, overlay("    backend:\n      static_gravity_sigma_scale: 0\n"));
+  ASSERT_FALSE(zero.is_ok());
+  EXPECT_TRUE(mentions(zero.reason(), "backend.static_gravity_sigma_scale")) << zero.reason();
 }
 
 // ADR-019: the GNSS frame variable and its prior sigmas (degrees in YAML, radians in code).

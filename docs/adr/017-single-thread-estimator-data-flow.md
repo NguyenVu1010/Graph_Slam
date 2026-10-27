@@ -55,17 +55,8 @@ Sau các PR module của giai đoạn 1, mọi module (`imu`, `preprocess`, `sca
 
 ## Bổ sung (PR 4d, 2026-10-27): thông tin của cửa sổ tĩnh vào keyframe 0
 
-Chẩn đoán `docs/derivations/imu_only_observability.md`: trong hành lang mà LiDAR không quan sát
-trục x, độ nghiêng quanh trục ngang vuông góc với x chỉ được neo bởi prior của keyframe 0
-(`backend.prior_rot_sigma_deg` 1 độ = 17,5 mrad), lỏng hơn 42 lần so với cái cửa sổ tĩnh đo được
-(0,42 mrad); trọng lực rò `g theta` dọc x và ước lượng trôi 224 đến 316 m trong 20 s. Quyết định 4
-được mở rộng: `ImuInitializer` trả thêm trung bình gia tốc của cửa sổ (`InitState::acc_mean_b`) và
-hiệp phương sai của trung bình đó (`acc_mean_cov`), và khi `backend.static_gravity_factor` bật,
-pipeline thêm factor `f_b - (ba - R^T g)` lên pose và bias của keyframe 0
-(`Graph::add_static_gravity_factor`, `backend_factors.md` §6c) nếu keyframe 0 chính là scan khởi
-tạo. Factor buộc tổ hợp nghiêng / bias ngang như cửa sổ tĩnh đo, không tách hai đại lượng (prior
-nghiêng chặt sẽ ghim sai độ nghiêng khi IMU có bias thật). Cờ mặc định tắt: đã đánh giá, sửa được
-hành lang chỉ có IMU dọc trục (trung vị 85 m -> 0,90 m) nhưng làm hành lang GNSS 60 s kém đi
-(trung vị 0,64 -> 4,15 m) và NEES LiDAR trên box world 7,8 -> 10,8. Thay đổi giao diện (bổ sung):
-`imu::InitState` thêm hai trường, `backend::Graph` thêm `add_static_gravity_factor`,
-`BackendConfig` thêm `static_gravity_factor`.
+Quyết định 4 được mở rộng bởi ADR-020: `ImuInitializer` trả thêm trung bình gia tốc của cửa sổ và
+hiệp phương sai của trung bình đó (`InitState::acc_mean_b`, `acc_mean_cov`), và pipeline thêm
+factor hướng trọng lực lên keyframe 0 (`backend.static_gravity_factor`, mặc định bật, nhiễu x2)
+khi keyframe 0 chính là scan khởi tạo. Lý do và số liệu: ADR-020,
+`docs/derivations/imu_only_observability.md`.

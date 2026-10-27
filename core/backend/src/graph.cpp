@@ -598,8 +598,8 @@ void Graph::add_static_gravity_factor(common::KeyId k,
     reject(call, "unknown keyframe");
     return;
   }
-  if (!f_b.allFinite()) {
-    reject(call, "non-finite input");
+  if (!f_b.allFinite() || !(f_b.norm() > 0.0)) {
+    reject(call, "non-finite or zero specific force");
     return;
   }
   if (!is_spd<3>(cov)) {
@@ -608,7 +608,11 @@ void Graph::add_static_gravity_factor(common::KeyId k,
   }
   // With the keyframe-0 priors: kept when an optimize() fails (section 6c).
   m.pending_priors.emplace_shared<detail::StaticGravityFactor>(
-      detail::pose_key(k), detail::bias_key(k), f_b, symmetrised<3>(cov), m.g_w);
+      detail::pose_key(k),
+      detail::bias_key(k),
+      f_b,
+      symmetrised<3>(cov) * (m.cfg.static_gravity_sigma_scale * m.cfg.static_gravity_sigma_scale),
+      m.g_w);
 }
 
 void Graph::add_loop_factor(const common::LoopConstraint& lc) {
