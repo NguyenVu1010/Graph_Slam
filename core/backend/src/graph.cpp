@@ -7,6 +7,7 @@
 #endif
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +29,10 @@
 #include <gtsam/nonlinear/PriorFactor.h>
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/slam/BetweenFactor.h>
+
+#ifdef GTSAM_USE_TBB
+#include <tbb/global_control.h>
+#endif
 
 #include "mss/common/logger.hpp"
 
@@ -108,6 +113,35 @@ bool values_finite(const gtsam::Values& values) {
     }
   }
   return true;
+}
+
+// ADR-018: process-lifetime TBB limit. The first single-thread Graph creates a
+// tbb::global_control(max_allowed_parallelism, 1) that is never released, so TBB never
+// spawns workers in a deterministic process (a released and re-acquired limit leaves woken
+// workers spinning). A later Graph with single_thread == false stays limited (logged once).
+std::atomic<bool> g_tbb_limited{false};
+std::atomic<bool> g_tbb_limited_warned{false};
+
+void apply_tbb_limit(bool single_thread) {
+  if (!single_thread) {
+    if (g_tbb_limited.load() && !g_tbb_limited_warned.exchange(true)) {
+      common::log_warn(
+          "backend: TBB already limited to 1 thread by an earlier deterministic Graph");
+    }
+    return;
+  }
+#ifdef GTSAM_USE_TBB
+  // Function-local static: created once (thread-safe), intentionally leaked so it is never
+  // released, not even during static destruction at exit.
+  static const auto* const limit =
+      new tbb::global_control(tbb::global_control::max_allowed_parallelism, 1);
+  static_cast<void>(limit);
+  if (!g_tbb_limited.exchange(true)) {
+    common::log_info("backend: TBB limited to 1 thread (deterministic)");
+  }
+#else
+  common::log_info("backend: single_thread has no effect, GTSAM is built without TBB");
+#endif
 }
 
 }  // namespace
@@ -312,6 +346,7 @@ struct Graph::Impl {
 Graph::Graph(const BackendConfig& cfg, const imu::ImuConfig& imu_cfg, const common::Vec3& p_b_g) {
   detail::validate(cfg, imu_cfg, p_b_g);
   impl_ = std::make_unique<Impl>();
+  apply_tbb_limit(cfg.single_thread);  // before the ISAM2 is created (ADR-018)
   impl_->cfg = cfg;
   impl_->imu_cfg = imu_cfg;
   impl_->p_b_g = p_b_g;

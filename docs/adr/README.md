@@ -25,5 +25,6 @@ Bắt buộc có ADR trước khi: thêm phụ thuộc, đổi build system, đ�
 | [015](015-imu-factor-custom-preintegration.md) | IMU vào graph bằng factor preintegration 9x9 tự viết (thay câu `CombinedImuFactor` của ADR-004), loop dùng kernel Cauchy | Chấp nhận |
 | [016](016-map-correction-after-loop-closure.md) | Sửa bản đồ sau loop closure: kho keyframe là nguồn sự thật, `VoxelMap` là cache dựng lại được (`clear()`, khoá `map.window_keyframes`…) | Chấp nhận |
 | [017](017-single-thread-estimator-data-flow.md) | Luồng dữ liệu estimator đơn luồng: `EstimatorCore` sau hàng đợi, cắt IMU bằng mẫu nội suy, chuyển trước mẫu IMU phủ cuối scan, chỉ keyframe vào bản đồ | Đề xuất |
+| [018](018-backend-determinism-tbb.md) | `deterministic: true` giới hạn TBB của backend về một luồng (`BackendConfig::single_thread`, `tbb::global_control` giữ đến hết tiến trình) | Đề xuất |
 
 Trạng thái: Đề xuất → Chấp nhận → Thay thế. ADR-013 ghi lại bố cục đã scaffold và đang chạy trong CI, nên ở trạng thái chấp nhận; ADR-001 đến 004 cần duyệt lại để chuyển sang chấp nhận (việc còn mở trong `docs/spec.md`).
