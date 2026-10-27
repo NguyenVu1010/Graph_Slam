@@ -1,0 +1,35 @@
+# Simulated differential-drive robot (ADR-011 sections 2 and 4). Rendered into SDF by
+# tools/gen_sim_assets.py together with sim/models/robot.sdf.j2. Units are in the key names.
+# Wheel radius and track are NOT here: they come from odom.kinematics_true of the noise profile.
+# Sensor noise and rates come from the noise profile; extrinsics from the pipeline overlay.
+model_name: robot
+body:
+  mass_kg: 20.0
+  size_m: [0.60, 0.30, 0.20]       # x (length), y (width), z (height) of the body box
+  center_z_m: 0.05                 # box centre above the body (IMU) origin, m
+wheel:
+  mass_kg: 1.0
+  width_m: 0.04
+  mu: 1.0                          # contact friction; DART takes min(wheel, floor) = floor mu
+  joint_damping_nms_per_rad: 0.1   # rolling resistance, N.m.s/rad (section 4)
+  joint_friction_nm: 0.2           # N.m (section 4)
+  motor_torque_limit_nm: 5.0       # joint effort limit, N.m
+caster:
+  radius_m: 0.05
+  offset_x_m: 0.22                 # front caster at +x, rear at -x, from the body origin
+drive:                             # DiffDrive limits (section 2)
+  max_linear_velocity_mps: 1.0
+  max_linear_acceleration_mps2: 0.5
+  max_angular_velocity_radps: 1.0
+  max_angular_acceleration_radps2: 1.0   # not set by the ADR; bounds the turn-in jerk
+wheel_slip:                        # placeholder: the next PR tunes these against the odom drift targets
+  slip_compliance_longitudinal: 0.0
+  slip_compliance_lateral: 0.0
+lidar:                             # gpu_lidar (section 2); min range and period come from the profile
+  beams: 16
+  vertical_fov_deg: 30.0           # +-15 deg
+  horizontal_samples: 720
+  max_range_m: 100.0
+  range_resolution_m: 0.01
+ground_truth_rate_hz: 200.0        # OdometryPublisher on the body (IMU) link, no noise
+spawn_clearance_m: 0.002           # spawn height above wheel contact, m
