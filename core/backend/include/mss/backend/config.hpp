@@ -1,10 +1,12 @@
 #pragma once
 
+#include <cstdint>
+
 namespace mss::backend {
 
 // Form of the LiDAR and loop relative-pose factors (docs/derivations/backend_factors.md
 // section 5; ADR-015 PR 4e note, decision pending). YAML: backend.relative_factor.
-enum class RelativeFactor {
+enum class RelativeFactor : std::uint8_t {
   kBetween,   // "between": gtsam::BetweenFactor<Pose3>, approximate Jacobian (previous behaviour)
   kSe3Exact,  // "se3_exact": the same residual Log(Z^-1 T_i^-1 T_j), exact Jacobians
   kDecoupled  // "decoupled": translation and rotation residuals separate, exact Jacobians

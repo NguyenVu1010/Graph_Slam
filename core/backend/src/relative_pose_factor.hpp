@@ -31,7 +31,7 @@ class Se3RelativePoseFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3, gtsa
   Se3RelativePoseFactor(gtsam::Key x_i,
                         gtsam::Key x_j,
                         const common::Pose& T_bi_bj,
-                        const gtsam::SharedNoiseModel& noise);
+                        gtsam::SharedNoiseModel noise);
 
   [[nodiscard]] gtsam::Vector evaluateError(
       const gtsam::Pose3& T_w_bi,
@@ -63,7 +63,7 @@ class DecoupledRelativePoseFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3
   DecoupledRelativePoseFactor(gtsam::Key x_i,
                               gtsam::Key x_j,
                               const common::Pose& T_bi_bj,
-                              const gtsam::SharedNoiseModel& noise);
+                              gtsam::SharedNoiseModel noise);
 
   [[nodiscard]] gtsam::Vector evaluateError(
       const gtsam::Pose3& T_w_bi,

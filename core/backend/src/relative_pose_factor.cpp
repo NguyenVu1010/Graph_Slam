@@ -1,5 +1,7 @@
 #include "relative_pose_factor.hpp"
 
+#include <utility>
+
 #include "mss/common/lie.hpp"
 #include "mss/odom/odom_residual.hpp"
 
@@ -15,8 +17,8 @@ using common::Vec6;
 Se3RelativePoseFactor::Se3RelativePoseFactor(gtsam::Key x_i,
                                              gtsam::Key x_j,
                                              const common::Pose& T_bi_bj,
-                                             const gtsam::SharedNoiseModel& noise)
-    : Base(noise, x_i, x_j), T_bi_bj_(T_bi_bj) {}
+                                             gtsam::SharedNoiseModel noise)
+    : Base(std::move(noise), x_i, x_j), T_bi_bj_(T_bi_bj) {}
 
 // Residual e = P r_m, r_m = Log(Z^-1 T_w_bi^-1 T_w_bj) ([rho, phi], exact, odom O-01).
 // Variables T_w_bi, T_w_bj, right perturbation; GTSAM tangent xi_g = [dphi, drho] = P xi_m.
@@ -49,8 +51,8 @@ gtsam::NonlinearFactor::shared_ptr Se3RelativePoseFactor::clone() const {
 DecoupledRelativePoseFactor::DecoupledRelativePoseFactor(gtsam::Key x_i,
                                                          gtsam::Key x_j,
                                                          const common::Pose& T_bi_bj,
-                                                         const gtsam::SharedNoiseModel& noise)
-    : Base(noise, x_i, x_j), T_bi_bj_(T_bi_bj) {}
+                                                         gtsam::SharedNoiseModel noise)
+    : Base(std::move(noise), x_i, x_j), T_bi_bj_(T_bi_bj) {}
 
 // Residual r_phi = Log(R_Z^T R_i^T R_j), r_p = R_Z^T (R_i^T (p_j - p_i) - p_Z); variables
 // T_w_bi, T_w_bj with the right perturbation [dphi, drho] (R <- R Exp(dphi),
