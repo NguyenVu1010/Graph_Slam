@@ -1113,6 +1113,91 @@ std::string paired(const std::vector<double>& a, const std::vector<double>& b, b
   return buf;
 }
 
+// One seed of one variant on the five scenes of ImuStaticGravityRound2Seeds (section 10e):
+// appends to `sc`. `write_data`: write the seed's datasets first (the reference variant).
+// `vd`: the variant's run directory name.
+void score_seed(StudyReport& rep,
+                const std::string& yaml,
+                std::uint32_t seed,
+                const std::string& vd,
+                bool write_data,
+                SeedScores& sc) {
+  const std::string tag = std::to_string(seed);
+  BoxWorldParams pc = corridor_params();
+  pc.seed = seed;
+  const fs::path dc = rep.dir() / "round2s" / ("corridor_" + tag);
+  BoxWorldParams pb;
+  pb.seed = seed;
+  const fs::path db = rep.dir() / "round2s" / ("box_" + tag);
+  BoxWorldParams p1 = imu_corridor_params(false);
+  p1.seed = seed;
+  const fs::path d1 = rep.dir() / "round2s" / ("circle_" + tag);
+  BoxWorldParams p2 = imu_corridor_params(true);
+  p2.seed = seed;
+  const fs::path d2 = rep.dir() / "round2s" / ("straight_" + tag);
+  if (write_data) {
+    ASSERT_TRUE(test::write_box_dataset(dc / "data", pc).is_ok());
+    ASSERT_TRUE(test::write_box_dataset(db / "data", pb).is_ok());
+    ASSERT_TRUE(test::write_box_dataset(d1 / "data", p1).is_ok());
+    ASSERT_TRUE(test::write_box_dataset(d2 / "data", p2).is_ok());
+  }
+  const Round2Run rg = round2_run(pc, dc / "data", dc / vd, true, true, yaml, {});
+  const Round2Run rl = round2_run(pc, dc / "data", dc / ("l" + vd), true, false, yaml, {});
+  const Round2Run rb = round2_run(pb, db / "data", db / vd, false, false, yaml, {});
+  sc.gnss_ate.push_back(rg.ate_m);
+  sc.lidar_ate.push_back(rl.ate_m);
+  sc.nees.push_back(rb.nees6);
+  ImuStudyObserver oc(p1);
+  ImuStudyObserver os(p2);
+  AxisRun c;
+  AxisRun s;
+  {
+    detail::CoreTestHooks hooks;
+    hooks.observer = &oc;
+    const HooksScope scope(&hooks);
+    c = corridor_axis_run(p1, d1 / "data", d1 / vd, false, yaml);
+  }
+  {
+    detail::CoreTestHooks hooks;
+    hooks.observer = &os;
+    const HooksScope scope(&hooks);
+    s = corridor_axis_run(p2, d2 / "data", d2 / vd, false, yaml);
+  }
+  const std::array<std::uint64_t, 5> rem = {rg.gravity_removed,
+                                            rl.gravity_removed,
+                                            rb.gravity_removed,
+                                            c.gravity_removed,
+                                            s.gravity_removed};
+  const std::array<std::uint64_t, 5> unc = {rg.gravity_unchecked,
+                                            rl.gravity_unchecked,
+                                            rb.gravity_unchecked,
+                                            c.gravity_unchecked,
+                                            s.gravity_unchecked};
+  const std::array<std::string, 5> chk = {
+      rg.gravity_check, rl.gravity_check, rb.gravity_check, oc.gravity_check(), os.gravity_check()};
+  for (std::size_t k = 0; k < kScenes.size(); ++k) {
+    sc.removed[k] += rem[k];
+    sc.unchecked[k] += unc[k];
+    sc.checks[k].push_back(std::to_string(seed) + ": " + chk[k]);
+  }
+  sc.circle_end.push_back(c.end_x_m);
+  sc.circle_rms.push_back(c.along_rms_m);
+  sc.circle_ratio.push_back(c.max_ratio);
+  sc.straight_end.push_back(s.end_x_m);
+  sc.straight_rms.push_back(s.along_rms_m);
+  sc.straight_ratio.push_back(s.max_ratio);
+  char b[96];
+  std::snprintf(b,
+                sizeof(b),
+                "%s%u: %.1f at %.1f s, tilt %.2f mrad",
+                sc.circle_max_detail.empty() ? "" : "; ",
+                seed,
+                c.max_ratio,
+                c.t_at_max_s,
+                c.tilt_at_max_rad * 1e3);
+  sc.circle_max_detail += b;
+}
+
 TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
   const char* on = std::getenv("MSS_IMU_STUDY");
   if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
@@ -1168,84 +1253,7 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
     const FullResidualScope full(v.full);
     const PosteriorStatisticScope posterior(v.posterior);
     for (const std::uint32_t seed : seeds) {
-      const std::string tag = std::to_string(seed);
-      const std::string vd = "v" + std::to_string(vi);
-      BoxWorldParams pc = corridor_params();
-      pc.seed = seed;
-      const fs::path dc = rep.dir() / "round2s" / ("corridor_" + tag);
-      BoxWorldParams pb;
-      pb.seed = seed;
-      const fs::path db = rep.dir() / "round2s" / ("box_" + tag);
-      BoxWorldParams p1 = imu_corridor_params(false);
-      p1.seed = seed;
-      const fs::path d1 = rep.dir() / "round2s" / ("circle_" + tag);
-      BoxWorldParams p2 = imu_corridor_params(true);
-      p2.seed = seed;
-      const fs::path d2 = rep.dir() / "round2s" / ("straight_" + tag);
-      if (vi == 0) {
-        ASSERT_TRUE(test::write_box_dataset(dc / "data", pc).is_ok());
-        ASSERT_TRUE(test::write_box_dataset(db / "data", pb).is_ok());
-        ASSERT_TRUE(test::write_box_dataset(d1 / "data", p1).is_ok());
-        ASSERT_TRUE(test::write_box_dataset(d2 / "data", p2).is_ok());
-      }
-      const Round2Run rg = round2_run(pc, dc / "data", dc / vd, true, true, v.yaml, {});
-      const Round2Run rl = round2_run(pc, dc / "data", dc / ("l" + vd), true, false, v.yaml, {});
-      const Round2Run rb = round2_run(pb, db / "data", db / vd, false, false, v.yaml, {});
-      sc.gnss_ate.push_back(rg.ate_m);
-      sc.lidar_ate.push_back(rl.ate_m);
-      sc.nees.push_back(rb.nees6);
-      ImuStudyObserver oc(p1);
-      ImuStudyObserver os(p2);
-      AxisRun c;
-      AxisRun s;
-      {
-        detail::CoreTestHooks hooks;
-        hooks.observer = &oc;
-        const HooksScope scope(&hooks);
-        c = corridor_axis_run(p1, d1 / "data", d1 / vd, false, v.yaml);
-      }
-      {
-        detail::CoreTestHooks hooks;
-        hooks.observer = &os;
-        const HooksScope scope(&hooks);
-        s = corridor_axis_run(p2, d2 / "data", d2 / vd, false, v.yaml);
-      }
-      const std::array<std::uint64_t, 5> rem = {rg.gravity_removed,
-                                                rl.gravity_removed,
-                                                rb.gravity_removed,
-                                                c.gravity_removed,
-                                                s.gravity_removed};
-      const std::array<std::uint64_t, 5> unc = {rg.gravity_unchecked,
-                                                rl.gravity_unchecked,
-                                                rb.gravity_unchecked,
-                                                c.gravity_unchecked,
-                                                s.gravity_unchecked};
-      const std::array<std::string, 5> chk = {rg.gravity_check,
-                                              rl.gravity_check,
-                                              rb.gravity_check,
-                                              oc.gravity_check(),
-                                              os.gravity_check()};
-      for (std::size_t k = 0; k < kScenes.size(); ++k) {
-        sc.removed[k] += rem[k];
-        sc.unchecked[k] += unc[k];
-        sc.checks[k].push_back(std::to_string(seed) + ": " + chk[k]);
-      }
-      sc.circle_end.push_back(c.end_x_m);
-      sc.circle_rms.push_back(c.along_rms_m);
-      sc.circle_ratio.push_back(c.max_ratio);
-      sc.straight_end.push_back(s.end_x_m);
-      sc.straight_rms.push_back(s.along_rms_m);
-      sc.straight_ratio.push_back(s.max_ratio);
-      char b[96];
-      std::snprintf(b,
-                    sizeof(b),
-                    "%s%u: %.1f at %.1f s, tilt %.2f mrad",
-                    sc.circle_max_detail.empty() ? "" : "; ",
-                    seed,
-                    c.max_ratio,
-                    c.t_at_max_s,
-                    c.tilt_at_max_rad * 1e3);
-      sc.circle_max_detail += b;
+      score_seed(rep, v.yaml, seed, "v" + std::to_string(vi), vi == 0, sc);
     }
   }
   const SeedScores& m = scores[0];
@@ -1541,6 +1549,143 @@ TEST(PipelineComponent, ImuStaticGravityLatencySplit) {
                   median_of(col[3]),
                   median_of(col[4]));
     rep.line(buf);
+  }
+}
+
+// PR 4e (ADR-015 note, backend_factors.md section 5), MSS_IMU_STUDY=1: the three forms of
+// the LiDAR / loop relative-pose factor (backend.relative_factor) over seeds 42..56 on the
+// scenes of section 10e (score_seed), paired against `between` (the default): medians, wins /
+// losses and the bootstrap 95 % CI of the median difference. Then the acceptance control of
+// the exploratory controls (deg on, x removed, no backend feedback, gravity factor off) per
+// form and scene. MSS_RF_COV_SCALE_SE3 / MSS_RF_COV_SCALE_DEC add a row of that form at that
+// scan_match.cov_scale (the recalibration of the box NEES). Writes relative_factor_seeds.md.
+TEST(PipelineComponent, RelativeFactorSeeds) {
+  const char* on = std::getenv("MSS_IMU_STUDY");
+  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_IMU_STUDY=1 (GTSAM build)";
+  }
+  StudyReport rep("relative_factor_seeds.md", "MSS_IMU_STUDY_RUN_ID", "imu-study");
+  rep.line("# Relative-factor forms over seeds 42..56 (RelativeFactorSeeds)");
+  struct Variant {
+    std::string name;
+    std::string form;       // backend.relative_factor
+    std::string cov_scale;  // scan_match.cov_scale, empty: default (4.7)
+  };
+  std::vector<Variant> variants = {
+      {"between (default)", "between", ""},
+      {"se3_exact", "se3_exact", ""},
+      {"decoupled", "decoupled", ""},
+  };
+  for (const auto& [env, form] :
+       {std::pair<const char*, const char*>{"MSS_RF_COV_SCALE_SE3", "se3_exact"},
+        std::pair<const char*, const char*>{"MSS_RF_COV_SCALE_DEC", "decoupled"}}) {
+    const char* scale = std::getenv(env);
+    if (scale != nullptr) {
+      variants.push_back({std::string(form) + ", cov_scale " + scale, form, scale});
+    }
+  }
+  const auto yaml_of = [](const Variant& v, const std::string& backend_extra) {
+    std::string y = "    backend:\n      relative_factor: " + v.form + "\n" + backend_extra;
+    if (!v.cov_scale.empty()) {
+      y += "    scan_match:\n      cov_scale: " + v.cov_scale + "\n";
+    }
+    return y;
+  };
+  std::vector<std::uint32_t> seeds;
+  for (std::uint32_t s = 42; s < 57; ++s) {
+    seeds.push_back(s);
+  }
+  std::vector<SeedScores> scores(variants.size());
+  for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+    for (const std::uint32_t seed : seeds) {
+      score_seed(
+          rep, yaml_of(variants[vi], ""), seed, "rf" + std::to_string(vi), vi == 0, scores[vi]);
+    }
+  }
+  const SeedScores& ref = scores[0];
+  rep.line("");
+  rep.line(
+      "Cells: median (max) | wins / losses against between over the 15 paired seeds | 95 % "
+      "bootstrap CI of the median paired difference (form - between). Lower is better (box "
+      "NEES: expectation 6).");
+  const auto table = [&](const char* title, auto get, bool abs_value) {
+    rep.line("");
+    rep.line(std::string("## ") + title);
+    rep.line("");
+    rep.line("| form | median (max) | wins / losses | CI of median diff |");
+    rep.line("| --- | --- | --- | --- |");
+    for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+      rep.line("| " + variants[vi].name + " | " + paired(get(scores[vi]), get(ref), abs_value) +
+               " |");
+    }
+  };
+  table("60 s corridor + GNSS, ATE (m)", [](const SeedScores& s) { return s.gnss_ate; }, false);
+  table(
+      "60 s corridor, LiDAR + IMU, ATE (m)",
+      [](const SeedScores& s) { return s.lidar_ate; },
+      false);
+  table("Box world LiDAR factor NEES (exp. 6)", [](const SeedScores& s) { return s.nees; }, false);
+  table(
+      "20 s circle x free, |end x err| (m)",
+      [](const SeedScores& s) { return s.circle_end; },
+      true);
+  table(
+      "20 s circle x free, along-x RMS (m)",
+      [](const SeedScores& s) { return s.circle_rms; },
+      false);
+  table(
+      "20 s straight x free, |end x err| (m)",
+      [](const SeedScores& s) { return s.straight_end; },
+      true);
+  rep.line("");
+  rep.line("## CorridorImuOnlyAlongAxisWithinDeadReckoning seeds 42..44 (end x err, m)");
+  rep.line("");
+  rep.line("| form | circle 42 / 43 / 44 | straight 42 / 43 / 44 |");
+  rep.line("| --- | --- | --- |");
+  for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+    const SeedScores& sc = scores[vi];
+    char buf[256];
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "| %s | %+.3f / %+.3f / %+.3f | %+.3f / %+.3f / %+.3f |",
+                  variants[vi].name.c_str(),
+                  sc.circle_end[0],
+                  sc.circle_end[1],
+                  sc.circle_end[2],
+                  sc.straight_end[0],
+                  sc.straight_end[1],
+                  sc.straight_end[2]);
+    rep.line(buf);
+  }
+
+  // Acceptance control: the exploratory-controls row (seed 42).
+  rep.line("");
+  rep.line("## Acceptance control: deg on, x removed, no backend feedback (gravity factor off)");
+  rep.line("");
+  rep.line(
+      "| case | along-x RMS (m) | end x err (m) | end / sigma_DR | lateral-y RMS (m) | "
+      "keyframes | match failures | matcher x corr RMS (m) | median H info x (1/m^2) | "
+      "LiDAR factor x: NEES (exp. 1) | err RMS (m) | median sigma (m) | LiDAR factor NEES "
+      "6-DoF (exp. 6) | median tilt of weakest H dir from x (rad) | last KF x err (sigma) "
+      "(m) | last KF v_x err (m/s) | last KF ba_b x / y (m/s^2) |");
+  rep.line(
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
+      "--- | --- | --- |");
+  const std::string deg_on = "    degeneracy:\n      enabled: true\n";
+  const std::string pin = "      static_gravity_factor: false\n";
+  for (const bool straight : {false, true}) {
+    const BoxWorldParams p = imu_corridor_params(straight);
+    const std::string scene = straight ? "straight" : "circle";
+    const fs::path dir = rep.dir() / "rf_control" / scene;
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+      ImuStudyCase c;
+      c.name = scene + ", " + variants[vi].name;
+      c.yaml = deg_on + yaml_of(variants[vi], pin);
+      c.own_state = true;
+      c.x_removed = true;
+      rep.line(imu_study_run(p, dir / "data", dir / ("rf" + std::to_string(vi)), c, nullptr));
+    }
   }
 }
 
