@@ -193,6 +193,36 @@ TEST(GnssAligner, UsesConfiguredSpread) {
   EXPECT_EQ(last, "insufficient horizontal spread");
 }
 
+// PR 4a (gnss_fusion_study.md section 2): T_e_w is re-estimated from all pairs at every
+// call after alignment, it is not frozen at the first estimate.
+TEST(GnssAligner, ReestimatesAsPairsArrive) {
+  GnssAligner aligner(cfg());
+  const Pose T_e_w = yaw_pose(30.0 * kDeg, Vec3(5.0, -3.0, 1.0));
+  const Vec3 p_b_g(-0.20, 0.10, 0.60);
+  std::mt19937 rng(7);
+  std::normal_distribution<double> noise(0.0, 0.3);  // m
+  Pose first;
+  Pose last;
+  int n_ok = 0;
+  for (int n = 1; n <= 200; ++n) {
+    const Pose T_w_b = body_on_circle(n);
+    const Vec3 p_e_g = T_e_w * (T_w_b * p_b_g) + Vec3(noise(rng), noise(rng), noise(rng));
+    const auto res = aligner.update(p_e_g, T_w_b, p_b_g);
+    if (res.is_ok()) {
+      if (n_ok == 0) {
+        first = res.value();
+      }
+      last = res.value();
+      ++n_ok;
+    }
+  }
+  ASSERT_EQ(n_ok, 191);  // from the 10th pair on
+  EXPECT_GT((first.p - last.p).norm() + std::abs(wrap_pi(yaw_of(first.R) - yaw_of(last.R))), 1e-6);
+  // 200 pairs, spread 5 m, sigma 0.3 m: yaw 1-sigma 0.3 / (sqrt(200) 5) = 0.24 deg.
+  EXPECT_LT(std::abs(wrap_pi(yaw_of(last.R) - 30.0 * kDeg)), 1.0 * kDeg);
+  EXPECT_LT((last.p - T_e_w.p).head<2>().norm(), 0.15);
+}
+
 TEST(GnssAligner, NoAllocation) {
   GnssAligner aligner(cfg());
   const Pose T_e_w = yaw_pose(0.5, Vec3(10.0, 20.0, 1.0));

@@ -129,7 +129,11 @@ class Graph {
   /// GnssConfig::sigma_h_m / sigma_v_m when a NavSatFix carries no covariance
   /// (`position_covariance_type == 0`) is the adapter's job: `ros2_node` for live/bag
   /// playback and `tools/bag_to_mssdata.py` for datasets.
-  /// `T_e_w` (from gnss::GnssAligner) is a fixed parameter, not a variable.
+  /// `T_e_w` (from gnss::GnssAligner): with `BackendConfig::gnss_frame_variable` false, a
+  /// fixed parameter of this factor. With it true (ADR-019), every GNSS factor shares one
+  /// variable E = T_e_w; the first accepted call creates E with initial value `T_e_w` and
+  /// one prior centred on it (sigmas `gnss_frame_*`, roll/pitch tight), later calls ignore
+  /// `T_e_w` (docs/derivations/backend_factors.md section 6b).
   /// Graph does not compare m.t with the keyframe time: the pipeline attaches each fix
   /// to the keyframe at (or interpolated to) the fix time.
   /// Frames: m.p_e_g in e; T_e_w maps w to e (`p_e = T_e_w * p_w`). Units: m, m^2.

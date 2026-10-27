@@ -32,6 +32,38 @@ namespace mss::pipeline::detail {
 /// dropped and counted in n_gnss_ring_overflow.
 constexpr std::size_t kMaxDeferredGnss = 32;
 
+/// Test-only observer of the factors EstimatorCore adds (the GNSS fusion study,
+/// tests/component/test_pipeline_component.cpp `GnssFusionStudy`). Called on the estimator
+/// thread, only at keyframes and accepted fixes; never set in production.
+class CoreObserver {
+ public:
+  virtual ~CoreObserver() = default;
+  /// LiDAR between factor i -> j: measurement and covariance as given to the graph.
+  virtual void on_lidar_factor(common::Timestamp /*t_i*/,
+                               common::Timestamp /*t_j*/,
+                               const common::Pose& /*T_bi_bj*/,
+                               const common::PoseCovariance& /*cov_b*/) {}
+  /// GNSS factor at keyframe time `t_k` (fix shifted to t_k) with the T_e_w given to the graph.
+  virtual void on_gnss_factor(common::Timestamp /*t_k*/,
+                              const common::GnssMeasurement& /*m*/,
+                              const common::Pose& /*T_e_w*/) {}
+  /// A fix was accepted; `T_e_w` is the aligner estimate after it.
+  virtual void on_fix_accepted(common::Timestamp /*t*/, const common::Pose& /*T_e_w*/) {}
+};
+
+/// Test-only seam (study): `observer` receives the factor events; with `force_T_e_w` the
+/// GNSS fusion uses `T_e_w` from the first fix and never runs the aligner.
+struct CoreTestHooks {
+  CoreObserver* observer = nullptr;
+  bool force_T_e_w = false;
+  common::Pose T_e_w;
+};
+
+/// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).
+/// Owner: the test that sets them, on the test thread, before building an Estimator; not
+/// thread-safe, never used by production code.
+void set_core_test_hooks(const CoreTestHooks* hooks);
+
 /// Diagnostic counters of EstimatorCore, all since construction.
 struct CoreCounters {
   std::uint64_t n_keyframes = 0;           ///< keyframes added to the graph
@@ -44,6 +76,7 @@ struct CoreCounters {
   std::uint64_t n_gnss_late = 0;           ///< fixes older than the last processed scan start
   std::uint64_t n_gnss_ring_overflow = 0;  ///< deferred fixes overwritten (ring full)
   std::uint64_t n_gnss_unfused_eof = 0;    ///< deferred fixes left at end of data (no IMU after)
+  std::uint64_t n_gnss_realign = 0;        ///< aligner restarts (gnss.max_consecutive_rejects)
   std::uint64_t n_nonfinite_imu = 0;       ///< IMU samples dropped (non-finite acc or gyro)
   std::uint64_t n_odom_factors = 0;        ///< wheel factors added
   std::uint64_t n_odom_rejected = 0;       ///< wheel deltas dropped by the time check
@@ -165,6 +198,7 @@ class EstimatorCore {
 
   common::Estimate latest_;
   CoreCounters counters_;
+  CoreObserver* observer_ = nullptr;  // test-only (CoreTestHooks)
 };
 
 }  // namespace mss::pipeline::detail

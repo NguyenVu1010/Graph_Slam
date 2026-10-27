@@ -97,13 +97,30 @@ with `T_w_b` the front-end pose predicted to the fix time and `P` the latest pos
 "reject everything" nor "accept everything"). Only accepted fixes update the aligner (a
 rejected jump never moves `T_e_w`).
 
+Lock-out guard. A rejected fix feeds neither the aligner nor the graph, so a front end that
+drifted past the gate (for example during a fix outage while the LiDAR drifts) could never
+be pulled back: every later fix would be rejected too. After `gnss.max_consecutive_rejects`
+chi-square rejections in a row (an accepted fix resets the count) the aligner is rebuilt
+empty (fixed-size sums: no allocation), `T_e_w` is unaligned again and the rejected fix is
+the first pair of the new alignment. Once the new alignment is available, fixes are gated
+against the current front end and flow again as factors; with
+`backend.gnss_frame_variable` they share the graph's `E` with the factors from before the
+outage. Counted in `Stats::n_gnss_realign` (bench.json `n_gnss_realign`), one warning per
+restart. Test: `GnssFusion.RealignsAfterMaxConsecutiveRejects`,
+`PipelineComponent.CorridorOutageRealignsAfterRejects`.
+
 Accepted fixes wait for the next keyframe k (`t_k >= m.t`) and are shifted to its time with
 the front-end poses:
 
     p_e_g' = p_e_g + R_e_w (T_w_bk p_b_g - T_w_b(t_fix) p_b_g),     cov unchanged
 
-so the factor residual at the keyframe pose equals the residual at the fix time. The factor
-uses the latest aligner estimate of `T_e_w` when it is added.
+so the factor residual at the keyframe pose equals the residual at the fix time. With
+`backend.gnss_frame_variable` (default, ADR-019) every factor shares the graph variable
+`E = T_e_w`, initialised with the aligner's estimate when the first factor is added
+(`backend_factors.md` section 6b); the aligner's latest `T_e_w` is still the one used by the
+chi-square gate and the shift above. With it false, each factor keeps the aligner estimate
+of the moment it was added, which pulls the gauge of w and made the box world 3.7x worse
+(`gnss_fusion_study.md`).
 
 ## 6. Metrics
 

@@ -128,6 +128,35 @@ Variable `X_k = (R_w_b, p_w_b)`; constants `T_e_w = (R_e_w, p_e_w)` and the leve
 
 Noise `noiseModel::Gaussian::Covariance(m.cov)`.
 
+## 6b. GNSS factor with the frame variable (`detail::GnssFrameFactor`, ADR-019)
+
+Used when `BackendConfig::gnss_frame_variable` is true. Variables `X_k = (R_w_b, p_w_b)` and
+`E = T_e_w = (R_e_w, p_e_w)`, one `E` (key `E(0)`) shared by every GNSS factor; constant
+lever arm `p_b_g`. With `q = R_w_b p_b_g + p_w_b` (antenna in w):
+
+    r = R_e_w q + p_e_w - p_e_g                                (3x1, m)
+
+Both variables use the GTSAM right perturbation `[dphi, drho]`. For `X_k` the Jacobian is
+that of section 6. For `E`, `R_e_w Exp(dphi) q ~= R_e_w q - R_e_w skew(q) dphi` and
+`p_e_w <- p_e_w + R_e_w drho`, so
+
+    d r / [dphi, drho]_E = [ -R_e_w skew(q) ,  R_e_w ]
+
+`E` gets one prior when it is created (first accepted `add_gnss_factor`, kept with the
+keyframe-0 priors), centred on the aligner's `T_e_w` of that call, GTSAM order
+`[phi, rho]`, diagonal sigmas
+
+    [tilt, tilt, yaw, pos, pos, pos]  =  [gnss_frame_tilt_sigma_rad (x2),
+                                          gnss_frame_yaw_sigma_rad, gnss_frame_pos_sigma_m (x3)]
+
+The right-perturbation `phi` of `E` is expressed in w, and w and e share their z axis
+(`R_e_w` is a yaw rotation), so `phi_z` is yaw and `phi_x`, `phi_y` are tilt: the tight tilt
+sigmas keep `E` gravity-aligned (4-DoF, as in `gnss.md` section 4). The loose
+yaw and position sigmas only regularise `E` before the fixes span enough to determine it.
+Why the frame is a variable: `gnss_fusion_study.md`. Tests: `B01_GnssFrameFactorJacobians`
+(numerical differentiation and `EXPECT_CORRECT_FACTOR_JACOBIANS`, random `E` including
+tilt), `GnssFrameVariableAbsorbsAlignmentError` (known answer).
+
 ## 7. Wheel-odometry factor (`detail::OdomBetweenFactor`)
 
 Variables `X_i, X_j`. `r_m, J_m_i, J_m_j` come from

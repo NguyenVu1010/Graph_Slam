@@ -126,6 +126,52 @@ TEST(GnssFusion, JumpRejectedAfterAlignment) {  // Review Focus 5
   EXPECT_EQ(f.collect(Timestamp{100 * kSec}, body_at(21), out), 0U);
 }
 
+// B-1 lock-out guard: N-1 consecutive chi-square rejections keep the alignment, the N-th
+// restarts the aligner (that fix is its first pair) and factors flow again after
+// align_min_pairs fixes consistent with the current front end.
+TEST(GnssFusion, RealignsAfterMaxConsecutiveRejects) {
+  gnss::GnssConfig c = fusion_cfg();
+  c.max_consecutive_rejects = 3;
+  GnssFusion f(c, kPbg);
+  ASSERT_EQ(align(f, 20), 11);
+  const Vec3 jump(5.0, 0.0, 0.0);  // m in e: the front end "drifted" by 5 m
+  FixOutcome outcome = FixOutcome::kAccepted;
+  for (int k = 21; k <= 22; ++k) {
+    EXPECT_EQ(f.on_fix(fix_for(k, body_at(k), jump), body_at(k), kZeroP, &outcome).reason(),
+              "chi-square gate exceeded");
+    EXPECT_EQ(outcome, FixOutcome::kChiSquare);
+    EXPECT_TRUE(f.aligned());
+  }
+  EXPECT_EQ(f.n_realign(), 0U);
+  EXPECT_EQ(f.on_fix(fix_for(23, body_at(23), jump), body_at(23), kZeroP, &outcome).reason(),
+            "gnss not aligned yet");
+  EXPECT_EQ(outcome, FixOutcome::kNotAligned);
+  EXPECT_FALSE(f.aligned());
+  EXPECT_EQ(f.n_realign(), 1U);
+  int n_ok = 0;
+  for (int k = 24; k <= 40; ++k) {  // pairs 2..18 of the new alignment
+    n_ok += f.on_fix(fix_for(k, body_at(k), jump), body_at(k), kZeroP).is_ok() ? 1 : 0;
+  }
+  EXPECT_EQ(n_ok, 17 - 8);  // the 10th pair (k = 32) and every later one
+  EXPECT_TRUE(f.aligned());
+  EXPECT_LT((f.T_e_w().p - (truth_T_e_w().p + jump)).norm(), 1e-9);
+  EXPECT_EQ(f.n_realign(), 1U);
+}
+
+TEST(GnssFusion, AcceptedFixResetsRejectCount) {
+  gnss::GnssConfig c = fusion_cfg();
+  c.max_consecutive_rejects = 3;
+  GnssFusion f(c, kPbg);
+  ASSERT_EQ(align(f, 20), 11);
+  const Vec3 jump(5.0, 0.0, 0.0);
+  for (int k = 21; k <= 40; ++k) {  // reject, reject, accept, ...: never 3 in a row
+    const bool bad = (k % 3) != 0;
+    (void)f.on_fix(fix_for(k, body_at(k), bad ? jump : Vec3::Zero()), body_at(k), kZeroP);
+  }
+  EXPECT_EQ(f.n_realign(), 0U);
+  EXPECT_TRUE(f.aligned());
+}
+
 TEST(GnssFusion, NonFinitePoseCovTreatedAsZero) {  // Review Focus 5
   GnssFusion f(fusion_cfg(), kPbg);
   ASSERT_EQ(align(f, 10), 1);

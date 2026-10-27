@@ -197,6 +197,8 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"n_gnss_unfused_eof\": %" PRIu64
                ",\n"
+               "  \"n_gnss_realign\": %" PRIu64
+               ",\n"
                "  \"n_nonfinite_imu\": %" PRIu64
                ",\n"
                "  \"push_scan_us_p50\": %.3f,\n"
@@ -239,6 +241,7 @@ bool write_json(const fs::path& path,
                st.n_gnss_late,
                st.n_gnss_ring_overflow,
                st.n_gnss_unfused_eof,
+               st.n_gnss_realign,
                st.n_nonfinite_imu,
                st.push_scan_us_p50,
                st.push_scan_us_p95,

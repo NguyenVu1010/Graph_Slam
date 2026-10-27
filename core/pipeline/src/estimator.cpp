@@ -342,6 +342,7 @@ Estimator::Stats Estimator::stats() const {
   out.n_gnss_late = c.n_gnss_late;
   out.n_gnss_ring_overflow = c.n_gnss_ring_overflow;
   out.n_gnss_unfused_eof = c.n_gnss_unfused_eof;
+  out.n_gnss_realign = c.n_gnss_realign;
   out.n_nonfinite_imu = c.n_nonfinite_imu;
   const std::size_t n = s.latency_count;
   if (n > 0) {

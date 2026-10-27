@@ -29,5 +29,7 @@ common::Mat6 permute_cov(const common::Mat6& S);
 gtsam::Key pose_key(common::KeyId k);
 gtsam::Key vel_key(common::KeyId k);
 gtsam::Key bias_key(common::KeyId k);
+// The GNSS frame variable E = T_e_w (ADR-019): E(0).
+gtsam::Key frame_key();
 
 }  // namespace mss::backend::detail

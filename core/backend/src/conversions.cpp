@@ -51,5 +51,8 @@ gtsam::Key vel_key(common::KeyId k) {
 gtsam::Key bias_key(common::KeyId k) {
   return gtsam::symbol_shorthand::B(k);
 }
+gtsam::Key frame_key() {
+  return gtsam::symbol_shorthand::E(0);
+}
 
 }  // namespace mss::backend::detail

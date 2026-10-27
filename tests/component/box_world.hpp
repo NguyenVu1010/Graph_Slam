@@ -54,7 +54,9 @@ struct BoxWorldParams {
   double imu_rate_hz = 200.0;
   double wheel_rate_hz = 50.0;
   double gnss_rate_hz = 5.0;
-  std::int64_t gnss_offset_ns = 0;  // ns, GNSS stamps at t0 + offset + k / gnss_rate_hz
+  std::int64_t gnss_offset_ns = 0;   // ns, GNSS stamps at t0 + offset + k / gnss_rate_hz
+  double gnss_outage_start_s = 0.0;  // s after t0: no fix in [start, start + duration)
+  double gnss_outage_s = 0.0;        // s, outage duration (0: none)
   common::Pose T_b_l = box_default_T_b_l();
   common::Vec3 p_b_g{-0.20, 0.10, 0.60};  // m, antenna lever arm in b
   // IMU white noise densities, equal to config/default.yaml.
@@ -257,6 +259,13 @@ inline common::Status write_box_dataset(const std::filesystem::path& dir, const 
   const common::Pose T_e_w = box_T_e_w(p);
   const std::int64_t gnss_period = box_ns(1.0 / p.gnss_rate_hz);
   for (std::int64_t t = p.t0_ns + p.gnss_offset_ns; t <= t_end.ns; t += gnss_period) {
+    const double t_rel_s = static_cast<double>(t - p.t0_ns) * 1e-9;
+    if (t_rel_s >= p.gnss_outage_start_s && t_rel_s < p.gnss_outage_start_s + p.gnss_outage_s) {
+      for (int k = 0; k < 3; ++k) {
+        (void)n01(gnss_rng);  // keep the noise sequence of the other fixes unchanged
+      }
+      continue;
+    }
     const common::NavState x = box_truth(p, common::Timestamp{t});
     common::GnssMeasurement m;
     m.t = common::Timestamp{t};
@@ -281,9 +290,12 @@ inline common::Status write_box_dataset(const std::filesystem::path& dir, const 
   return w.finish();
 }
 
-// Overlay for config/default.yaml: the box world's extrinsics and, when asked, GNSS and
-// wheel odometry enabled.
-inline std::string box_overlay_yaml(const BoxWorldParams& p, bool gnss_and_wheel) {
+// Overlay for config/default.yaml: the box world's extrinsics and the GNSS and wheel
+// odometry flags (both written explicitly); `gnss_keys`: more lines in the gnss section.
+inline std::string box_overlay_yaml(const BoxWorldParams& p,
+                                    bool gnss,
+                                    bool wheel,
+                                    const std::string& gnss_keys = "") {
   const Eigen::Quaterniond q(p.T_b_l.R);
   char buf[1024];
   std::snprintf(buf,
@@ -306,10 +318,13 @@ inline std::string box_overlay_yaml(const BoxWorldParams& p, bool gnss_and_wheel
                 p.p_b_g.y(),
                 p.p_b_g.z());
   std::string out(buf);
-  if (gnss_and_wheel) {
-    out += "    gnss:\n      enabled: true\n    wheel_odom:\n      enabled: true\n";
-  }
+  out += std::string("    gnss:\n      enabled: ") + (gnss ? "true" : "false") + "\n" + gnss_keys +
+         "    wheel_odom:\n      enabled: " + (wheel ? "true" : "false") + "\n";
   return out;
+}
+
+inline std::string box_overlay_yaml(const BoxWorldParams& p, bool gnss_and_wheel) {
+  return box_overlay_yaml(p, gnss_and_wheel, gnss_and_wheel);
 }
 
 }  // namespace mss::test

@@ -175,7 +175,13 @@ quaternions are Hamilton `[w, x, y, z]` with a `_wxyz` suffix.
 GNSS fusion keys: `gnss.align_min_pairs` (accepted fixes before the w->e alignment is used),
 `gnss.align_min_spread_m` (minimum RMS horizontal spread of those fixes, m) and
 `gnss.chi2_gate` (NIS threshold of the chi-square innovation gate, 3 DoF, default the 95 %
-quantile 7.81). `imu.init_max_acc_std_mps2` must exceed the per-sample accelerometer noise
+quantile 7.81), `gnss.max_consecutive_rejects` (fixes; after that many chi-square rejections in
+a row the aligner restarts, so a front end that drifted during an outage can re-align).
+`gnss.enabled` is off in `config/default.yaml` until multipath and outage are evaluated; the
+sim scenarios turn it on by overlay. `backend.gnss_frame_variable` (ADR-019, default on)
+estimates `T_e_w` as one graph variable shared by all GNSS factors, with a prior from
+`backend.gnss_frame_tilt_sigma_deg` (tight, keeps it 4-DoF), `backend.gnss_frame_yaw_sigma_deg`
+and `backend.gnss_frame_pos_sigma_m` (loose). `imu.init_max_acc_std_mps2` must exceed the per-sample accelerometer noise
 `acc_noise_density * sqrt(rate_hz)` by about 3x, or the static initialisation never passes.
 
 `deterministic: true` (the default) runs the estimator on one thread with a fixed seed so a
