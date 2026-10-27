@@ -169,8 +169,11 @@ cột in đậm là cấu hình phát hành. Các cột có kiểm tra bật ở
 
 ## Việc còn mở
 
-- **Jacobian gần đúng của `BetweenFactor<Pose3>`** (ghi chú ở ADR-015): trong lần đối chứng
-  "x removed, no feedback", keyframe cuối của backend ở +5772 m với sigma tự báo 14 m. Sửa trong
-  PR 4e riêng, bằng factor LiDAR có `Jr^-1` đúng hoặc define của GTSAM. Tiêu chí nhận: lần đối
-  chứng đó nằm trong sigma của chính nó. PR 4b cần nó.
+- **Factor LiDAR với trục không quan sát** (ghi chú PR 4e ở ADR-015): trong lần đối chứng
+  "x removed, no feedback", keyframe cuối của backend ở +5772 m với sigma tự báo 14 m. Nguyên
+  nhân: Jacobian gần đúng của `BetweenFactor<Pose3>` và, chủ yếu, liên hệ `V(phi)^-1` của phần dư
+  SE(3) đưa sai số tịnh tiến lớn dọc trục không quan sát vào các thành phần quan sát được. Chỉ
+  sửa Jacobian (`se3_exact`) thì hết phân kỳ nhưng vẫn tự tin quá 16 sigma. PR 4e cho chọn ba
+  dạng qua `backend.relative_factor`; mặc định `between`, chờ owner quyết định. PR 4b cần quyết
+  định này.
 - Neo lại hướng trọng lực định kỳ ở các cửa sổ đứng yên sau này.

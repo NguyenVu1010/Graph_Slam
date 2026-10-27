@@ -1,6 +1,16 @@
 #pragma once
 
+#include <cstdint>
+
 namespace mss::backend {
+
+// Form of the LiDAR and loop relative-pose factors (docs/derivations/backend_factors.md
+// section 5; ADR-015 PR 4e note, decision pending). YAML: backend.relative_factor.
+enum class RelativeFactor : std::uint8_t {
+  kBetween,   // "between": gtsam::BetweenFactor<Pose3>, approximate Jacobian (previous behaviour)
+  kSe3Exact,  // "se3_exact": the same residual Log(Z^-1 T_i^-1 T_j), exact Jacobians
+  kDecoupled  // "decoupled": translation and rotation residuals separate, exact Jacobians
+};
 
 // YAML: backend.*  Loaded and validated by mss::pipeline::load_config.
 struct BackendConfig {
@@ -24,6 +34,9 @@ struct BackendConfig {
   // statistic at rest overlaps its values at moving starts).
   int static_gravity_check_keyframes = 0;
   double static_gravity_chi2_gate = 5.991464547107979;  // chi-square 2 DoF, 0.95
+  // Relative-pose factor form; default kBetween (the behaviour before PR 4e, evaluated
+  // options until the owner's ruling).
+  RelativeFactor relative_factor = RelativeFactor::kBetween;
   // ADR-019: T_e_w is one graph variable E shared by every GNSS factor (true) instead of a
   // fixed parameter per factor (false, the previous behaviour). E gets one prior, centred on
   // the first T_e_w given to add_gnss_factor, with these sigmas (all > 0 when true):

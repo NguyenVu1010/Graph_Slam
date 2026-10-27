@@ -34,3 +34,9 @@ target_include_directories(test_imu_only_study PRIVATE ${CMAKE_SOURCE_DIR}/core/
   ${CMAKE_SOURCE_DIR}/core/backend/src)  # study_seams.hpp only (no GTSAM types)
 target_compile_definitions(test_imu_only_study PRIVATE
   MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)
+
+# backend: estimate consistent with its marginal along an unobserved axis (PR 4e). GTSAM only.
+if(MSS_WITH_GTSAM)
+  mss_add_test(test_backend_consistency test_backend_consistency.cpp)
+  target_include_directories(test_backend_consistency PRIVATE ${CMAKE_SOURCE_DIR}/tests/unit)
+endif()
