@@ -281,6 +281,26 @@ TEST(Config, GnssGateKeysValidated) {
   EXPECT_TRUE(mentions(gate.reason(), "gnss.chi2_gate: must be > 0 (got -1)")) << gate.reason();
 }
 
+// PR 4e: backend.relative_factor defaults to between (the previous behaviour); the exact forms
+// parse; any other value is a config error naming the key and the allowed values.
+TEST(Config, RelativeFactorKey) {
+  const auto cfg = load_config(kDefault);
+  ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+  EXPECT_EQ(cfg.value().backend.relative_factor, mss::backend::RelativeFactor::kBetween);
+  const std::string base = read_file(kDefault);
+  const auto se3 = parse_config(base, overlay("    backend:\n      relative_factor: se3_exact\n"));
+  ASSERT_TRUE(se3.is_ok()) << se3.reason();
+  EXPECT_EQ(se3.value().backend.relative_factor, mss::backend::RelativeFactor::kSe3Exact);
+  const auto dec = parse_config(base, overlay("    backend:\n      relative_factor: decoupled\n"));
+  ASSERT_TRUE(dec.is_ok()) << dec.reason();
+  EXPECT_EQ(dec.value().backend.relative_factor, mss::backend::RelativeFactor::kDecoupled);
+  const auto bad = parse_config(base, overlay("    backend:\n      relative_factor: exact\n"));
+  ASSERT_FALSE(bad.is_ok());
+  EXPECT_TRUE(mentions(bad.reason(),
+                       "backend.relative_factor: must be one of between, se3_exact, decoupled"))
+      << bad.reason();
+}
+
 // PR 4d: the static-window gravity factor ships on with sigma scale 2 (evaluated, config
 // comment); the flag parses as a bool and the scale must be > 0.
 TEST(Config, StaticGravityFactorKey) {
