@@ -6,6 +6,7 @@ include(mss_warnings)
 
 find_package(ament_cmake REQUIRED)
 find_package(mss_core REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
@@ -16,7 +17,9 @@ add_executable(mss_node src/main.cpp src/rclcpp_logger.cpp)
 mss_set_target_defaults(mss_node)
 target_include_directories(mss_node PRIVATE include)
 target_link_libraries(mss_node PRIVATE mss::pipeline)
-ament_target_dependencies(mss_node rclcpp sensor_msgs nav_msgs geometry_msgs tf2_ros)
+# Keyword form: target_link_libraries above uses the keyword signature, and mixing the two is
+# a CMake error. SYSTEM keeps -Werror from firing on ROS headers.
+ament_target_dependencies(mss_node SYSTEM PUBLIC ament_index_cpp rclcpp sensor_msgs nav_msgs geometry_msgs tf2_ros)
 
 install(TARGETS mss_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
