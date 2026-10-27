@@ -1,0 +1,169 @@
+# GNSS fusion study: why GNSS made the box world worse
+
+Diagnosis for PR 4a (ADR-017 "Việc còn mở", first item), on main `906f57b`.
+The fix that follows from it is in `gnss.md` section 5 and `pipeline.md` section 5.
+
+## Setup
+
+Synthetic box world of `tests/component/box_world.hpp` (`pipeline.md` section 7) with its
+default parameters: 3 s static, 2 s ramp, 15 s cruise at 0.5 m/s on a circle of radius
+2 m (yaw rate 0.25 rad/s), 199 scans, 200 Hz IMU, 5 Hz GNSS, fixed seeds (42, 43). The run
+is 20 s, not 60 s; about 85 fixes arrive after the first estimate. GNSS fixes are
+`T_e_w (T_w_b p_b_g) + N(0, sigma^2 I)` with `cov = sigma^2 I`; `T_e_w` has yaw 30 deg.
+Wheel odometry is off unless stated. GTSAM build, Release.
+
+ATE is the RMS position error of every published estimate against the analytic truth in
+w, without alignment (as in the component test). "ATE 4-DoF" is the RMS after the best
+yaw + translation fit of the estimate to the truth (the aligner's closed form), so it
+measures deformation only.
+
+Driver: a scratch gtest plus an instrumentation patch, neither committed. The patch logs
+every LiDAR factor `(t_i, t_j, T_bi_bj, cov_b)`, every GNSS factor
+`(t_k, p_e_g', cov, T_e_w used)` and every accepted aligner estimate, and can force a
+perfect `T_e_w`. It is kept with the PR report. The committed tests of Task 3 reproduce the
+ATE numbers.
+
+NEES: for a LiDAR factor, `e = boxminus(T_bi_bj, T_true)` and NEES `e^T cov_b^-1 e`, expected
+mean 6. For a GNSS factor, `r = p_e_g' - T_e_w (T_w_bk_true p_b_g)` and NEES `r^T cov^-1 r`,
+expected mean 3, computed with the `T_e_w` the factor used ("used") and with the true one
+("true").
+
+## 1. ATE
+
+| Variant | GNSS sigma (m) | factors | ATE (m) | ATE 4-DoF (m) | max yaw err (deg) |
+| --- | --- | --- | --- | --- | --- |
+| LiDAR + IMU | - | 0 | 0.0088 | 0.0038 | 0.027 |
+| + wheel | - | 0 | 0.0079 | 0.0032 | 0.024 |
+| + GNSS, aligner | 0.1 | 40 | 0.0256 | 0.0222 | 0.832 |
+| + GNSS, aligner | 0.5 | 42 | 0.0322 | 0.0290 | 0.304 |
+| + GNSS, aligner | 2.0 | 41 | 0.0101 | 0.0058 | 0.080 |
+| + GNSS + wheel, aligner | 0.5 | 42 | 0.0329 | 0.0297 | 0.298 |
+| + GNSS, perfect `T_e_w` | 0.1 | 82 | 0.0139 | 0.0089 | 0.379 |
+| + GNSS, perfect `T_e_w` | 0.5 | 82 | 0.0609 | 0.0266 | 0.240 |
+| + GNSS, perfect `T_e_w` | 2.0 | 83 | 0.0310 | 0.0146 | 0.076 |
+
+With a perfect `T_e_w` the factors start at the first estimate (2.2 s), which gives about
+82 factors instead of about 42.
+
+## 2. Aligner `T_e_w` error
+
+The aligner first returns a transform at 10.8 s, when both spreads reach 1.0 m RMS. After
+that it re-estimates `T_e_w` from all pairs at every accepted fix, so it is not frozen.
+Each GNSS factor, however, keeps the `T_e_w` of the moment it was added.
+
+| GNSS sigma (m) | first: yaw err (deg), p err (m) | end: yaw err (deg), p err (m) | RMS yaw err of the `T_e_w` frozen in the factors (deg) |
+| --- | --- | --- | --- |
+| 0.1 | -0.066, 0.033 | 0.179, 0.030 | 0.213 |
+| 0.5 | -0.549, 0.137 | 1.361, 0.129 | 1.338 |
+| 2.0 | -2.359, 0.529 | 6.468, 0.517 | 6.238 |
+
+The expected 1-sigma yaw error (`gnss.md` section 5) is `sigma_yaw = sigma_h / (sqrt(n) spread)`.
+At 0.5 m, with about 40 pairs and the 1.4 m RMS spread of the 2 m circle, this is
+`0.5 / (6.3 * 1.4) = 0.056 rad = 3.2 deg`, so the measured 0.5 to 1.4 deg are typical.
+Between the first and the last estimate the yaw moves by 1.9 deg.
+
+## 3. Covariance consistency (mean NEES)
+
+| Variant | LiDAR factors: NEES (exp. 6) | trans. err RMS / sqrt(tr cov_p) (m) | GNSS NEES used / true (exp. 3) |
+| --- | --- | --- | --- |
+| LiDAR + IMU | 27.98 | 0.0042 / 0.0019 | - |
+| + GNSS 0.1, aligner | 486 | 0.0177 / 0.0020 | 2.24 / 2.33 |
+| + GNSS 0.5, aligner | 534 | 0.0176 / 0.0020 | 2.38 / 2.46 |
+| + GNSS 2.0, aligner | 159 | 0.0101 / 0.0019 | 2.28 / 2.36 |
+| + GNSS 0.5, perfect | 344 | 0.0169 / 0.0022 | 2.57 / 2.57 |
+
+- LiDAR: `cov_b` (from `cov = cov_scale sigma_r^2 H^-1`, `sigma_r >= 5 mm`) is about 4.7
+  times too small in variance (NEES 28 where 6 is expected), as ADR-004 expects. A LiDAR
+  factor's relative error is about 4 mm, while its covariance claims 2 mm.
+- GNSS: NEES is 2.3 to 2.6 where 3 is expected, so the factor's `sigma^2 I` is right
+  (slightly conservative, within sampling). The keyframe-time shift (`pipeline.md`
+  section 5) adds no visible error: the "true" NEES matches the noise-only expectation
+  within sampling.
+- With GNSS on, the LiDAR factor error grows from 4 mm to 18 mm (NEES from 28 to 530). The
+  LiDAR measurement `T_bi_bj = (T_w_bi^ref)^-1 T_w_bj^match` takes `ref` from the graph and
+  `match` from the map. When GNSS moves the graph and the map is not rebuilt (below the
+  ADR-016 thresholds), the two frames differ, and the difference enters the next LiDAR
+  factor.
+
+## 4. Controls
+
+| Variant (GNSS sigma 0.5 m) | ATE (m) | ATE 4-DoF (m) |
+| --- | --- | --- |
+| Default prior (0.1 m, 1 deg), aligner | 0.0322 | 0.0290 |
+| Tight keyframe-0 prior (1 mm, 0.01 deg), LiDAR only | 0.0092 | 0.0036 |
+| Tight prior, aligner | 0.0092 | 0.0036 |
+| Tight prior, perfect `T_e_w` | 0.0091 | 0.0036 |
+| `scan_match.cov_scale` 5 (LiDAR NEES consistent), LiDAR only | 0.0090 | 0.0039 |
+| `cov_scale` 5, aligner | 0.0326 | 0.0292 |
+| `cov_scale` 5, perfect `T_e_w` | 0.0607 | 0.0290 |
+| `cov_scale` 5 + tight prior, aligner | 0.0092 | 0.0035 |
+
+- A consistent LiDAR covariance changes nothing, so covariance weighting is not the
+  cause.
+- Pinning the 4-DoF gauge of w (a tight prior on keyframe 0) removes all of the damage, with
+  the aligner and with a perfect `T_e_w`. The damage is therefore a rigid pull of the whole
+  trajectory in the four gauge directions (x, y, z, yaw), which the default prior leaves
+  soft. The map/graph mismatch of section 3 then turns that pull into deformation.
+
+## 5. Expected optimum
+
+With an unknown 4-DoF `T_e_w`, GNSS carries information only about the shape of the
+trajectory and, through the prior on keyframe 0, about drift. It can help only when the
+LiDAR chain drifts by more than the fixes can resolve, roughly `sigma_h / sqrt(n_fixes)`:
+
+- Box world: `n` is about 85 and `sigma_h = 0.5` m, so `0.5 / sqrt(85) = 0.054` m per axis.
+  The LiDAR deformation is 0.0038 m (4-DoF ATE), and 0.0088 m in w. GNSS is 6 to 14 times
+  weaker than the LiDAR chain, so the optimum is the LiDAR-only estimate. At 0.1 m the bound
+  is 0.011 m, still no better than LiDAR.
+- With a perfect `T_e_w` the fixes do carry absolute information, but only to
+  `sigma_h / sqrt(n)` = 0.054 m per axis. That matches the measured 0.036 m rigid shift and
+  0.061 m ATE. The ground-truth origin (keyframe 0 at exactly 0) is better than that.
+
+## 6. Cause of the 3.4x
+
+1. The GNSS factors pull the 4-DoF gauge of w. The pull comes from the error of the `T_e_w`
+   frozen in each factor. On a 2 m circle the aligner's yaw is poorly determined (1-sigma
+   3 deg at 0.5 m), and each factor freezes the value of its moment, so the factor set is
+   not zero-mean against the trajectory. With a perfect `T_e_w`, the pull is the mean of
+   the fix noise instead. Either way the GNSS information is far weaker than the LiDAR
+   chain's (section 5), so any pull is damage.
+2. The map/graph mismatch turns the rigid pull into deformation: LiDAR factor errors grow
+   4x (section 3), and the map is rebuilt 3 to 4 times.
+3. Ruled out: the GNSS covariance (NEES 2.4 where 3 is expected), the LiDAR covariance
+   (4.7x optimistic, but making it consistent changes nothing), and the keyframe-time
+   shift.
+
+## 7. Consequence for the fix
+
+- Withhold GNSS factors until `T_e_w` is well determined: the RMS horizontal spread must
+  be at least `align_min_spread_sigma * sigma_h_m`, and the predicted yaw 1-sigma
+  `sigma_h / sqrt(sum |a_c,h|^2)` at most `align_max_yaw_sigma_deg` (`gnss.md` section 5).
+  The `T_e_w` frozen in each factor then differs from the final one by much less than the
+  fix noise. GNSS is fused only where the trajectory is large compared with `sigma_h`,
+  which is where it can help; a 2 m circle at 0.5 m is not such a case.
+- The aligner keeps adding pairs while it withholds and re-estimates `T_e_w` at every fix.
+  It already did; this is now tested.
+- Out of scope, recorded as open items: the LiDAR covariance optimism (NEES 28), the
+  map/graph mismatch after a correction below the ADR-016 rebuild thresholds, and
+  estimating `T_e_w` in the graph (one shared variable instead of one frozen copy per
+  factor).
+
+## 8. Where GNSS must help: a degenerate corridor
+
+The gate must not hide a GNSS path that cannot help at all, so the same box world was also
+run as a corridor: half extents (60, 2.5, 1.5) m, yaw rate 0.0005 rad/s (almost straight),
+60 s cruise (30 m), `preprocess.max_range_m` 10 (the end walls are out of range), and
+`degeneracy.enabled` true. Along the corridor the LiDAR has no information, so the estimate
+on that axis comes from the IMU.
+
+| `degeneracy.relax_factor` | LiDAR only ATE (m) | + GNSS 0.5, aligner (m) | + GNSS 0.5, perfect `T_e_w` (m) |
+| --- | --- | --- | --- |
+| 10 (default) | 11.5 | 7.6 | 3.1 |
+| 1e4 | 13.7 | 32.2 | 16.2 |
+| 1e8 | 26.1 | 0.74 | 0.33 |
+
+With the default `relax_factor` the LiDAR factor still claims about 2 mm along the
+unobservable axis (`sqrt(tr cov_p)` 0.012 m against an error of 3 m, NEES 5e5), and no fix
+can move it. Only when the covariance along the degenerate direction is really large (1e8)
+does GNSS work as intended: 35x better. The degeneracy covariance belongs to its own
+module (ADR-004, `degeneracy.md`). The corridor test of Task 3 uses 1e8 in its overlay.
