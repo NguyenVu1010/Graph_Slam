@@ -8,10 +8,14 @@ if(MSS_WITH_GTSAM)
     src/graph.cpp src/conversions.cpp src/validate.cpp
     src/imu_factor.cpp src/gnss_factor.cpp src/odom_factor.cpp)
   target_link_libraries(mss_backend PRIVATE gtsam mss::odom)
-  # GTSAM already links TBB; the explicit link is for <oneapi/tbb/global_control.h> in
-  # graph.cpp (ADR-018). PRIVATE: no TBB type appears in a public header.
-  find_package(TBB REQUIRED)
-  target_link_libraries(mss_backend PRIVATE TBB::tbb)
+  # GTSAM already links TBB; the explicit link is for <tbb/global_control.h> in graph.cpp
+  # (ADR-018). PRIVATE, but a STATIC library exports it as $<LINK_ONLY:TBB::tbb>, so
+  # cmake/mss_coreConfig.cmake.in finds TBB for consumers. GTSAM_USE_TBB comes from
+  # GTSAM's CMake config (gtsam_extra.cmake).
+  if(GTSAM_USE_TBB)
+    find_package(TBB REQUIRED)
+    target_link_libraries(mss_backend PRIVATE TBB::tbb)
+  endif()
 else()
   add_library(mss_backend STATIC src/graph_stub.cpp src/validate.cpp)
 endif()

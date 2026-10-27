@@ -17,7 +17,9 @@ mss_add_backend_test(test_backend_conversions test_backend_conversions.cpp)
 mss_add_backend_test(test_backend_factors test_backend_factors.cpp)
 mss_add_backend_test(test_backend_graph test_backend_graph.cpp)
 mss_add_backend_test(test_backend_isam test_backend_isam.cpp)
-# ADR-018: the test reads tbb::global_control directly.
-find_package(TBB REQUIRED)
+# ADR-018: the test reads tbb::global_control directly (only when GTSAM uses TBB).
 mss_add_backend_test(test_backend_determinism test_backend_determinism.cpp)
-target_link_libraries(test_backend_determinism PRIVATE TBB::tbb)
+if(GTSAM_USE_TBB)
+  find_package(TBB REQUIRED)
+  target_link_libraries(test_backend_determinism PRIVATE TBB::tbb)
+endif()

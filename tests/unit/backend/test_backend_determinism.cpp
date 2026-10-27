@@ -1,6 +1,6 @@
-// ADR-018: BackendConfig::single_thread limits TBB to one thread for the Graph's lifetime,
-// so repeated runs of the same graph are bit-for-bit identical. The multi-thread runs are
-// reported, not asserted (the ADR cites the printed numbers).
+// ADR-018: BackendConfig::single_thread limits TBB to one thread for the rest of the
+// process, so repeated runs of the same graph are bit-for-bit identical. The multi-thread
+// runs are reported, not asserted (the ADR cites the printed numbers).
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -17,7 +17,7 @@
 #include <gtsam/config.h>
 
 #ifdef GTSAM_USE_TBB
-#include <oneapi/tbb/global_control.h>
+#include <tbb/global_control.h>
 #endif
 
 #include "mss/backend/graph.hpp"
@@ -159,69 +159,113 @@ double max_abs_diff(const std::vector<double>& a, const std::vector<double>& b) 
   return worst;
 }
 
-TEST(BackendDeterminism, SingleThreadGraphLimitsTbbForItsLifetime) {
+// True when TBB in this process is already capped at one thread (an earlier single-thread
+// Graph; the limit is process-lifetime, ADR-018).
+bool tbb_limited() {
 #ifdef GTSAM_USE_TBB
   using tbb::global_control;
-  const std::size_t before = global_control::active_value(global_control::max_allowed_parallelism);
-  {
-    const BackendConfig cfg = default_backend_config();
-    const Graph multi(cfg, default_imu_config(), Vec3::Zero());
-    EXPECT_EQ(global_control::active_value(global_control::max_allowed_parallelism), before);
+  return global_control::active_value(global_control::max_allowed_parallelism) == 1U;
+#else
+  return false;
+#endif
+}
+
+struct Summary {
+  int differing = 0;  // runs whose states differ bytewise from the reference
+  double max_diff = 0.0;
+  double optimize_s = 0.0;  // s, mean optimize() wall time per run
+};
+
+Summary summarise(const std::vector<RunResult>& runs, const std::vector<double>& reference) {
+  Summary s;
+  for (const RunResult& r : runs) {
+    if (!bytes_equal(r.states, reference)) {
+      ++s.differing;
+    }
+    s.max_diff = std::max(s.max_diff, max_abs_diff(r.states, reference));
+    s.optimize_s += r.optimize_s / static_cast<double>(runs.size());
   }
+  return s;
+}
+
+// Each test is its own process under ctest (gtest_discover_tests). Timing for ADR-018 is
+// taken with --gtest_filter per test, so the single-thread runs never share a process with
+// TBB workers. Order matters when the whole binary runs in one process: the multi-thread
+// test comes first because the single-thread limit is never released.
+TEST(BackendDeterminism, MultiThreadRunsReported) {
+  if (tbb_limited()) {
+    GTEST_SKIP() << "TBB already limited in this process; run with --gtest_filter";
+  }
+  const Inputs in = make_inputs();
+  std::vector<RunResult> multi;
+  multi.reserve(kRuns);
+  for (int i = 0; i < kRuns; ++i) {
+    multi.push_back(run_graph(in, false));
+  }
+  const Summary vs_multi = summarise(multi, multi.front().states);
+  // Reference single-thread run last: from here on this process is limited. Its timing
+  // is not reported (the workers spawned above may spin).
+  const RunResult single = run_graph(in, true);
+  const Summary vs_single = summarise(multi, single.states);
+  std::printf("[determinism] multi-thread, %d keyframes, %d runs\n", kKeyframes, kRuns);
+  std::printf("[determinism] multi runs differing from multi run 0: %d of %d, max abs diff %.3e\n",
+              vs_multi.differing,
+              kRuns,
+              vs_multi.max_diff);
+  std::printf(
+      "[determinism] multi runs differing from a single-thread run: %d of %d, max abs diff "
+      "%.3e\n",
+      vs_single.differing,
+      kRuns,
+      vs_single.max_diff);
+  std::printf("[determinism] multi-thread optimize() wall time per run: %.3f s\n",
+              vs_multi.optimize_s);
+  RecordProperty("multi_vs_multi0_differing", vs_multi.differing);
+  RecordProperty("multi_vs_single_differing", vs_single.differing);
+  RecordProperty("multi_optimize_s_per_run", std::to_string(vs_multi.optimize_s));
+}
+
+TEST(BackendDeterminism, SingleThreadRunsAreBitIdentical) {
+  const Inputs in = make_inputs();
+  std::vector<RunResult> single;
+  single.reserve(kRuns);
+  for (int i = 0; i < kRuns; ++i) {
+    single.push_back(run_graph(in, true));
+  }
+  ASSERT_EQ(single.front().states.size(), kDoublesPerKeyframe * kKeyframes);
+  for (std::size_t i = 0; i < single.size(); ++i) {
+    EXPECT_TRUE(bytes_equal(single[i].states, single.front().states)) << "single-thread run " << i;
+  }
+  const Summary s = summarise(single, single.front().states);
+  std::printf("[determinism] single-thread optimize() wall time per run: %.3f s\n", s.optimize_s);
+  RecordProperty("single_optimize_s_per_run", std::to_string(s.optimize_s));
+}
+
+// The guarantee itself: the limit is active once a single-thread Graph exists and stays
+// active after it is destroyed; a later multi-thread Graph stays limited and warns.
+TEST(BackendDeterminism, SingleThreadLimitIsProcessLifetime) {
+#ifdef GTSAM_USE_TBB
+  using tbb::global_control;
   {
     BackendConfig cfg = default_backend_config();
     cfg.single_thread = true;
     Graph single(cfg, default_imu_config(), Vec3::Zero());
     EXPECT_EQ(global_control::active_value(global_control::max_allowed_parallelism), 1U);
-    const Graph moved(std::move(single));  // the limit lives in the Impl, not the handle
+    const Graph moved(std::move(single));
     EXPECT_EQ(global_control::active_value(global_control::max_allowed_parallelism), 1U);
   }
-  EXPECT_EQ(global_control::active_value(global_control::max_allowed_parallelism), before);
+  EXPECT_EQ(global_control::active_value(global_control::max_allowed_parallelism), 1U);
+  test::CapturingLogger log;
+  const Graph multi(default_backend_config(), default_imu_config(), Vec3::Zero());
+  EXPECT_EQ(global_control::active_value(global_control::max_allowed_parallelism), 1U);
+  const Graph multi2(default_backend_config(), default_imu_config(), Vec3::Zero());
+  const auto n_warn = std::count_if(log.warnings.begin(), log.warnings.end(), [](const auto& m) {
+    return m.find("TBB already limited to 1 thread") != std::string::npos;
+  });
+  EXPECT_EQ(n_warn, 1);  // logged once per process
 #else
   GTEST_SKIP() << "GTSAM built without TBB: single_thread is a no-op";
 #endif
-}
-
-TEST(BackendDeterminism, SingleThreadRunsAreBitIdenticalMultiThreadReported) {
-  const Inputs in = make_inputs();
-  std::vector<RunResult> single;
-  std::vector<RunResult> multi;
-  single.reserve(kRuns);
-  multi.reserve(kRuns);
-  for (int i = 0; i < kRuns; ++i) {
-    single.push_back(run_graph(in, true));
-  }
-  for (int i = 0; i < kRuns; ++i) {
-    multi.push_back(run_graph(in, false));
-  }
-  ASSERT_EQ(single.front().states.size(), kDoublesPerKeyframe * kKeyframes);
-  double single_s = 0.0;
-  double multi_s = 0.0;
-  int multi_differ = 0;
-  double multi_max_diff = 0.0;
-  for (std::size_t i = 0; i < single.size(); ++i) {
-    EXPECT_TRUE(bytes_equal(single[i].states, single.front().states)) << "single-thread run " << i;
-    if (!bytes_equal(multi[i].states, single.front().states)) {
-      ++multi_differ;
-    }
-    multi_max_diff = std::max(multi_max_diff, max_abs_diff(multi[i].states, single.front().states));
-    single_s += single[i].optimize_s;
-    multi_s += multi[i].optimize_s;
-  }
-  std::printf("[determinism] %d keyframes, %d runs each\n", kKeyframes, kRuns);
-  std::printf(
-      "[determinism] multi-thread runs differing from single-thread run 0: %d of %d, "
-      "max abs difference %.3e\n",
-      multi_differ,
-      kRuns,
-      multi_max_diff);
-  std::printf("[determinism] optimize() wall time per run: single %.3f s, multi %.3f s\n",
-              single_s / kRuns,
-              multi_s / kRuns);
-  RecordProperty("multi_runs_differing", multi_differ);
-  RecordProperty("multi_max_abs_diff", std::to_string(multi_max_diff));
-  RecordProperty("single_optimize_s_per_run", std::to_string(single_s / kRuns));
-  RecordProperty("multi_optimize_s_per_run", std::to_string(multi_s / kRuns));
 }
 
 }  // namespace

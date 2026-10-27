@@ -161,12 +161,13 @@ quantile 7.81). `imu.init_max_acc_std_mps2` must exceed the per-sample accelerom
 `acc_noise_density * sqrt(rate_hz)` by about 3x, or the static initialisation never passes.
 
 `deterministic: true` (the default) runs the estimator on one thread with a fixed seed so a
-replay reproduces bit for bit. It also sets `backend.single_thread` (not a YAML key), which
-caps TBB at one thread while the backend `Graph` lives, so GTSAM's iSAM2 does not run on
-worker threads (ADR-018; process-wide while the Graph lives). The cost is a slower
-`optimize()` on large graphs: about 10 % on a 300-keyframe test graph, within run-to-run noise
-on the E-01 bench replay, with lower CPU use. With `deterministic: false` TBB keeps its
-default parallelism.
+replay reproduces bit for bit. It also sets `backend.single_thread` (not a YAML key): the first
+such backend `Graph` caps TBB at one thread for the rest of the process, so GTSAM's iSAM2
+never runs on worker threads (ADR-018). The limit is process-wide and never released; a later
+Graph with `single_thread: false` in the same process stays limited and logs a warning. On a
+300-keyframe test graph, timed in separate processes per mode, single-thread `optimize()` was
+faster (0.195 s against 0.262 s per run); the E-01 bench replay was within run-to-run noise,
+with lower CPU use. With `deterministic: false` TBB keeps its default parallelism.
 
 ## Before committing
 
