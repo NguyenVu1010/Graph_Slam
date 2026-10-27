@@ -187,7 +187,8 @@ TEST(Config, ScanMatchResidualSigmaFloor) {
 TEST(Config, ScanMatchPlanarityGateRange) {
   const auto ok = load_config(kDefault);
   ASSERT_TRUE(ok.is_ok()) << ok.reason();
-  EXPECT_GE(ok.value().scan_match.plane_min_eig_ratio, 0.0);
+  // Shipped default is off (ADR-007 amendment: evaluated only on noise-free data).
+  EXPECT_EQ(ok.value().scan_match.plane_min_eig_ratio, 0.0);
   for (const char* bad : {"-0.1", "1.0"}) {
     const auto cfg = parse_config(
         read_file(kDefault),
@@ -200,7 +201,8 @@ TEST(Config, ScanMatchPlanarityGateRange) {
 TEST(Config, ScanMatchCollinearityGateRange) {
   const auto ok = load_config(kDefault);
   ASSERT_TRUE(ok.is_ok()) << ok.reason();
-  EXPECT_GE(ok.value().scan_match.min_mid_eig_ratio, 0.0);
+  // Shipped default is off (ADR-007 amendment: breaks narrow corridors).
+  EXPECT_EQ(ok.value().scan_match.min_mid_eig_ratio, 0.0);
   for (const char* bad : {"-0.1", "1.0"}) {
     const auto cfg = parse_config(
         read_file(kDefault),
@@ -226,7 +228,8 @@ TEST(Config, DeterministicSetsBackendSingleThread) {
 TEST(Config, MapMinPointDistValidated) {
   const auto ok = load_config(kDefault);
   ASSERT_TRUE(ok.is_ok()) << ok.reason();
-  EXPECT_GE(ok.value().map.min_point_dist_m, 0.0);
+  // Shipped default is off (ADR-007 amendment: E-01 cost at 0.1 m).
+  EXPECT_EQ(ok.value().map.min_point_dist_m, 0.0);
   const std::string base = read_file(kDefault);
   const auto off = parse_config(base, overlay("    map:\n      min_point_dist_m: 0.0\n"));
   ASSERT_TRUE(off.is_ok()) << off.reason();
