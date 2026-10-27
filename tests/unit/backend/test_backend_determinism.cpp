@@ -160,7 +160,8 @@ double max_abs_diff(const std::vector<double>& a, const std::vector<double>& b) 
 }
 
 // True when TBB in this process is already capped at one thread (an earlier single-thread
-// Graph; the limit is process-lifetime, ADR-018).
+// Graph; the limit is process-lifetime, ADR-018). Also true on a 1-CPU host, where the
+// multi-thread report is skipped: it is informational only, nothing asserts on it.
 bool tbb_limited() {
 #ifdef GTSAM_USE_TBB
   using tbb::global_control;

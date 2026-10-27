@@ -16,7 +16,7 @@
 | `single_thread = false`, so với một lần chạy đơn luồng | 0 / 5 | 0 | |
 | `false`, relinearize mọi biến mỗi lần (thử riêng, không commit) | 0 / 3 | 0 | (không dùng: đo trước khi tách tiến trình) |
 
-Trên các graph này GTSAM nhiều luồng vẫn cho kết quả giống từng byte (có lẽ vì phép duyệt cây song song của GTSAM ghi kết quả mỗi nhánh vào ô theo chỉ số chứ không theo thứ tự hoàn thành; chưa đọc mã để xác nhận). Nhưng đó là chi tiết cài đặt của GTSAM và TBB, không phải hợp đồng; phiên bản GTSAM khác, số lõi khác (Pi5 có 4) hoặc graph lớn hơn có thể khác. Ở cỡ graph này TBB không làm `optimize()` nhanh hơn mà chậm hơn khoảng 25 % (chi phí điều phối luồng lớn hơn phần việc chia được).
+Trên các graph này GTSAM nhiều luồng vẫn cho kết quả giống từng byte (có lẽ vì phép duyệt cây song song của GTSAM ghi kết quả mỗi nhánh vào ô theo chỉ số chứ không theo thứ tự hoàn thành; chưa đọc mã để xác nhận). Nhưng đó là chi tiết cài đặt của GTSAM và TBB, không phải hợp đồng; phiên bản GTSAM khác, số lõi khác (Pi5 có 4) hoặc graph lớn hơn có thể khác. Ở cỡ graph này TBB không làm `optimize()` nhanh hơn mà chậm hơn khoảng 34 % (0,262 s so với 0,195 s; chi phí điều phối luồng lớn hơn phần việc chia được).
 
 ## Quyết định
 
