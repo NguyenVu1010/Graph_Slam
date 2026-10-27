@@ -7,6 +7,7 @@
 #endif
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -28,6 +29,10 @@
 #include <gtsam/nonlinear/PriorFactor.h>
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/slam/BetweenFactor.h>
+
+#ifdef GTSAM_USE_TBB
+#include <oneapi/tbb/global_control.h>
+#endif
 
 #include "mss/common/logger.hpp"
 
@@ -110,6 +115,48 @@ bool values_finite(const gtsam::Values& values) {
   return true;
 }
 
+// ADR-018: while it lives, a single-thread limit caps every TBB arena in the process
+// (GTSAM linearisation and elimination) at one thread. The effect is process-wide, so the
+// live Graphs of each kind are counted and a mix of flags is logged (one Graph per process
+// in practice).
+std::atomic<int> g_live_single_thread{0};
+std::atomic<int> g_live_multi_thread{0};
+
+class TbbLimit {
+ public:
+  explicit TbbLimit(bool single_thread) : single_thread_(single_thread) {
+    const int others = single_thread_ ? g_live_multi_thread.load() : g_live_single_thread.load();
+    live().fetch_add(1);
+    if (others > 0) {
+      common::log_warn(
+          "backend: Graphs with different single_thread flags are alive at once; TBB stays "
+          "limited to 1 thread while any single-thread Graph lives (ADR-018)");
+    }
+    if (!single_thread_) {
+      return;
+    }
+#ifdef GTSAM_USE_TBB
+    control_.emplace(tbb::global_control::max_allowed_parallelism, 1);
+    common::log_info("backend: TBB limited to 1 thread (deterministic)");
+#else
+    common::log_info("backend: single_thread has no effect, GTSAM is built without TBB");
+#endif
+  }
+  ~TbbLimit() { live().fetch_sub(1); }
+  TbbLimit(const TbbLimit&) = delete;
+  TbbLimit& operator=(const TbbLimit&) = delete;
+  TbbLimit(TbbLimit&&) = delete;
+  TbbLimit& operator=(TbbLimit&&) = delete;
+
+ private:
+  std::atomic<int>& live() { return single_thread_ ? g_live_single_thread : g_live_multi_thread; }
+
+  bool single_thread_;
+#ifdef GTSAM_USE_TBB
+  std::optional<tbb::global_control> control_;
+#endif
+};
+
 }  // namespace
 
 /// Owner of the iSAM2 instance and of every factor not yet given to it.
@@ -117,6 +164,7 @@ bool values_finite(const gtsam::Values& values) {
 /// all other factors since the last successful optimize(), dropped when it fails;
 /// committed_factors_: everything iSAM2 holds (to rebuild it after a failure).
 struct Graph::Impl {
+  std::optional<TbbLimit> tbb_limit;  // first member: outlives the iSAM2 (ADR-018)
   BackendConfig cfg;
   imu::ImuConfig imu_cfg;
   Vec3 p_b_g = Vec3::Zero();
@@ -312,6 +360,7 @@ struct Graph::Impl {
 Graph::Graph(const BackendConfig& cfg, const imu::ImuConfig& imu_cfg, const common::Vec3& p_b_g) {
   detail::validate(cfg, imu_cfg, p_b_g);
   impl_ = std::make_unique<Impl>();
+  impl_->tbb_limit.emplace(cfg.single_thread);  // before the ISAM2 is created
   impl_->cfg = cfg;
   impl_->imu_cfg = imu_cfg;
   impl_->p_b_g = p_b_g;

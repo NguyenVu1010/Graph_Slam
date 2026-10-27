@@ -46,7 +46,14 @@ class Graph {
   ///     tolerance; `gravity_mps2`: the IMU factor uses `g_w = [0, 0, -gravity_mps2]`.
   ///     Other ImuConfig fields are not used;
   ///   - `p_b_g`: GNSS antenna lever arm in b, metres (frames.p_b_g), used by
-  ///     add_gnss_factor.
+  ///     add_gnss_factor;
+  ///   - `cfg.single_thread` (ADR-018): when true and GTSAM uses TBB, a
+  ///     `tbb::global_control(max_allowed_parallelism, 1)` is created before the iSAM2 and
+  ///     held for the Graph's lifetime, so iSAM2 runs on one thread and repeated runs are
+  ///     bit-for-bit identical. Process-wide: it caps every TBB arena in the process while
+  ///     this Graph lives (one Graph per process in practice; Graphs alive at once with
+  ///     different flags log a warning). Without TBB it is a no-op (one info log line);
+  ///     the stub build ignores it.
   /// Errors: throws std::invalid_argument when `imu_cfg.rate_hz <= 0`,
   ///   `imu_cfg.gravity_mps2 <= 0`, `keyframe_dist_m <= 0`,
   ///   `keyframe_rot_rad <= 0`, `relinearize_threshold <= 0`, `relinearize_skip <= 0`,
