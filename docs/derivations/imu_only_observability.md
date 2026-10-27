@@ -873,9 +873,12 @@ stays a precondition that the guards do not fully enforce (ADR-020).
 - the straight corridor's 3 sigma_DR target (median 3.9 sigma_DR);
 - the long-run tilt wander through the LiDAR chain (60 s LiDAR-only corridor, median 38.3 m
   against 24.9 m, within the spread);
-- the backend consistency defect of the exploratory controls (`BetweenFactor<Pose3>`'s
-  approximate Jacobian, x-removed no-feedback control at +5772 m with sigma 14 m). That is
-  ADR-015's note and PR 4e;
+- the backend consistency defect of the exploratory controls (x-removed no-feedback control at
+  +5772 m with sigma 14 m). Cause: `BetweenFactor<Pose3>`'s approximate Jacobian and, dominant,
+  the SE(3) residual's `V(phi)^-1` coupling of a large unobserved translation residual into the
+  observed components; the exact Jacobian alone (`se3_exact`) removes the divergence but stays
+  16 sigma over-confident. Three forms are selectable in PR 4e (`backend.relative_factor`),
+  decision pending (ADR-015 PR 4e note);
 - a start in steady straight acceleration in a scene that does not observe the travel axis,
   without wheel odometry (section 12): undetectable, so starting at rest is a precondition;
 - a start in motion that the rest gate passes (a straight acceleration): the factor is kept,

@@ -138,9 +138,14 @@ separate residuals (the SO(3) x R3 chart of `E` instead of the SE(3) `Log`), wit
     r_phi = Log(R_Z^T R_i^T R_j)                 (rad)
     r_p   = R_Z^T (t_rel - p_Z)                  (m, in the frame of Z's end, b_j)
 
-To first order in the noise it equals the SE(3) residual (so `cov` applies unchanged); the two
-differ by the BCH term `0.5 [rho, phi]` when a residual has both a large translation and a
-rotation part. Jacobians, columns `[dphi, drho]` of `T_w_bi` and of `T_w_bj`,
+With `E = Z^-1 T_i^-1 T_j = (R_E, t_E)` and `phi_E = Log(R_E)`, the forms differ only in how
+they combine the two parts: the SE(3) residual is `[V(phi_E)^-1 t_E, phi_E]`, the decoupled
+residual `[t_E, phi_E]`. The rotation parts are equal, and the translation parts are related
+exactly by
+
+    r_p = t_E = V(phi_E) rho_SE3,   rho_SE3 = V(phi_E)^-1 t_E = t_E - 0.5 phi_E x t_E + O(|phi_E|^2 |t_E|)
+
+so the two agree to first order in the residual `E` (`V(0) = I`). Jacobians, columns `[dphi, drho]` of `T_w_bi` and of `T_w_bj`,
 `Jri = Jr^-1(r_phi)`:
 
     X_i:  d r_phi = [ -Jri R_j^T R_i  ,  0      ]
@@ -158,15 +163,35 @@ residuals and at 30 deg / 5 m (`B01_Se3RelativePoseFactorJacobians`,
 `Jr^-1` (6x6) and one adjoint; `decoupled` one SO(3) `Jr^-1` (3x3); once per factor and
 linearisation (E-01 bench below).
 
-**Unobserved axis.** A LiDAR factor with no information along an axis (PR 4b's "unobserved"
-covariance, `cov + s^2 d d^T` with `s` = 1 km) carries residuals of tens to hundreds of metres
-along `d` at a negligible cost. With `between` the omitted `ad(e) / 2` couples them into the
-rotation columns with a gain of that size, and iSAM2 takes one Gauss-Newton step per keyframe,
-so the wrong step is not iterated away. With `se3_exact` the step is right, but the SE(3)
-residual itself couples a large translation residual along `d` into the observed components
-through `V(phi)^-1` (BCH `0.5 [rho, phi]`), which the model then treats as information.
-`decoupled` has no such coupling. Which model matches real scan-matcher errors is the question
-the evaluation below informs; the front end's error along a free axis is a pure translation.
+**Same covariance, different extrapolation.** All three forms consume the scan matcher's
+`cov` identically. `cov` is `cov_scale * sigma^2 * H^-1`, with `H` the Gauss-Newton Hessian of
+the point-to-plane cost in the right-perturbation tangent of the scan pose at `xi = 0`
+(`scan_matcher.hpp`): a first-order object at the estimate. At `E = Exp(delta)` the SE(3)
+residual is exactly `delta` and the decoupled residual is `[V(dphi) drho, dphi]`, equal to
+`delta` to first order, so the quadratic form `r^T cov^-1 r` gives `delta` the same weight in
+all three forms. The `l -> b` conversion agrees too: in the SO(3) x R3 chart a perturbation of
+`T_w_l` moves the body translation by `R_b_l dt + skew(p_b_l) R_b_l dphi`, the `rho` row of
+`Ad(T_b_l)`. The forms differ only away from the estimate, at large residuals, through the
+exact `V(phi_E)^-1` coupling above. Choosing a form chooses how the same Gaussian is extended
+there, not what `cov` means.
+
+**Unobserved axis.** A LiDAR factor with no information along a translation direction `d`
+(degeneracy relaxation, PR 4b's "unobserved" covariance `cov + s^2 d d^T` with `s` = 1 km)
+carries residuals of tens to hundreds of metres along `d` at a negligible cost. In the
+SO(3) x R3 chart the scan pose is `(R Exp(dphi), p + R dt)`, so the point-to-plane residual is
+linear in `dt` at every `dphi`: the free direction is a fixed `dt` direction at any rotation,
+and the decoupled Gaussian is flat along exactly that direction for every residual size, as
+the point-to-plane cost is. In the SE(3) chart the same motion `t_E = s d` with rotation
+`phi_E` has coordinates `rho = V(phi_E)^-1 s d = s d - 0.5 s phi_E x d + ...`: the off-axis
+part `0.5 s |phi_E|` is charged against the observed (centimetre) sigmas although the true
+cost is flat. At `s` of hundreds of metres and mrad rotations that is metres of spurious
+information. So for a translational degeneracy `decoupled` keeps the free direction free and
+`se3_exact` bends it; `decoupled` is the more faithful use of the same covariance. (For a
+rotational degeneracy neither chart is exact.) With `between`, in addition, the omitted
+`ad(e) / 2` gives a wrong Gauss-Newton step with a gain of the residual's size, and iSAM2 takes
+one step per keyframe, so the wrong step is not iterated away. The acceptance control in §5a
+is the empirical confirmation: `between` diverges, `se3_exact` does not diverge but is
+over-confident, `decoupled` stays within its sigma.
 
 Loop: the same factor of the configured form with `noiseModel::Robust::Create(
 mEstimator::Cauchy::Create(k), Gaussian::Covariance(P cov P^T))`. GTSAM reweights on the
@@ -180,7 +205,8 @@ with the running count); the factor is unchanged.
 
 Synthetic consistency (`BackendComponent/UnobservedAxis.*`, 50 seeds x 24 keyframes on a
 circle, a noisy IMU chain, LiDAR factors with `(1 km)^2` along world x, one optimize() per
-keyframe; each form under noise drawn from its own model): world-x NEES of each new keyframe,
+keyframe; each form under noise drawn in its own chart, so the test checks the factor and
+the optimiser, not the chart): world-x NEES of each new keyframe,
 expectation 1: `se3_exact` 0.85, `decoupled` 0.92; `between` under the SE(3) noise: the graph
 becomes indeterminant at seed 1000, keyframe 17 (control).
 
@@ -431,6 +457,7 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §7 rank-3 odom whitening and Jacobians | B-01 `BackendFactors.B01_OdomFactorRotatedSingularCov`, `BackendFactors.B01_OdomFactorZeroCovRejected` |
 | §5 exact Jacobians of `se3_exact` and `decoupled` (numerical < 1e-6 and `EXPECT_CORRECT_FACTOR_JACOBIANS`, small and 30 deg / 5 m residuals; known residual and whitened error); `se3_exact` = GTSAM's exact `Logmap` chain and the `between` error; `between` control at the large residual | B-01 `BackendFactors.B01_Se3RelativePoseFactorJacobians`, `BackendFactors.B01_DecoupledRelativePoseFactorJacobians`, `BackendFactors.B01_Se3RelativePoseFactorMatchesGtsamExactChain`, `BackendFactors.B01_BetweenFactorJacobianApproximateAtLargeResidual` |
 | §5 Cauchy wrap of both exact forms (numerical at zero error; `sqrt(w)` scaling at 0.1 and at the large residual) | B-01 `BackendFactors.B01_RelativePoseRobustLoopJacobians` |
+| §5 permuted noise and Cauchy wrap of the default `between` (numerical at zero error; `sqrt(w)` scaling at 0.1) | B-01 `BackendFactors.B01_BetweenAndRobustLoopJacobians` |
 | §5 estimate consistent with its marginal along an unobserved axis, per form (each under its own noise model); `between` control | `BackendComponent/UnobservedAxis.EstimateConsistentWithMarginal/{se3_exact,decoupled}`, `BackendComponent.UnobservedAxisBetweenFactorControlIsInconsistent` |
 | §5 `backend.relative_factor` parsing | `Config.RelativeFactorKey` |
 | §2, §8 priors and marginal order | `BackendGraph.MarginalCovIsMssOrder` |
@@ -439,7 +466,7 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §6 in the graph | `BackendGraph.GnssFactorPullsPosition` |
 | §9 pose re-anchor, non-finite guess, duplicate IMU factor | `BackendGraph.FailedOptimizeDoesNotStrandLaterKeyframes`, `BackendGraph.AddKeyframeNonFiniteGuessIsSanitised`, `BackendGraph.DuplicateImuFactorRejected` |
 | §9 | `BackendGraph.ImuGapReanchorsVelocityAndBias`, `BackendGraph.OptimizeFailureDropsPendingFactorsKeepsKeyframes`, `BackendGraph.LatestKeyframeWithoutFactorsReturnsGuessAndNanCov` |
-| input validation | `BackendGraph.RejectsBadCovariances`, `BackendApi.ConstructorRejectsInvalidConfig` |
+| input validation (including an unknown `relative_factor`) | `BackendGraph.RejectsBadCovariances`, `BackendApi.ConstructorRejectsInvalidConfig` |
 | §5 robust loop | B-03 `BackendIsam.B03_OutlierLoopDragsLessThanTenCm`, `BackendIsam.B03_ControlNonRobustOutlierDragsMoreThanTenCm` |
 | iSAM2 vs batch LM | B-04 `BackendIsam.B04_IsamMatchesBatchLevenbergMarquardt` |
 | determinism (single-thread TBB in `deterministic` mode: ADR-018), diagnostics | `BackendIsam.RepeatedOptimizeIsStableAndDeterministic`, `BackendDeterminism.SingleThreadLimitIsProcessLifetime`, `BackendDeterminism.SingleThreadRunsAreBitIdentical`, `BackendDeterminism.MultiThreadRunsReported`, `BackendIsam.DegeneracyReportIsDiagnosticOnly` |

@@ -79,7 +79,9 @@ Ba dạng (cùng nhiễu `Gaussian::Covariance(P cov P^T)` và cùng kernel Cauc
   `J_j = Jr^-1(r)`, `J_i = -Jr^-1(r) Ad(T_j^-1 T_i)` lấy từ `odom::relative_pose_residual`.
 - `decoupled` (`detail::DecoupledRelativePoseFactor`): phần dư tịnh tiến
   `R_Z^T (R_i^T (p_j - p_i) - p_Z)` và quay `Log(R_Z^T R_i^T R_j)` tách riêng, Jacobian đúng.
-  Bằng phần dư SE(3) ở bậc một của nhiễu; khác ở số hạng BCH `0,5 [rho, phi]`.
+  Với `E = Z^-1 T_i^-1 T_j = (R_E, t_E)`: phần quay giống nhau, phần tịnh tiến liên hệ chính
+  xác qua `rho_SE3 = V(phi_E)^-1 t_E = t_E - 0,5 phi_E x t_E + ...`, nên hai dạng bằng nhau ở
+  bậc một của phần dư `E` và chỉ khác khi phần dư lớn.
 
 Phương án `GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR` (build GTSAM với cờ đó) không đưa vào đánh
 giá: tính đúng khi đó phụ thuộc cờ build và bản pin trong image deps (build khác cờ sẽ lặng lẽ
@@ -95,11 +97,18 @@ sigma tự báo):
 | se3_exact | -28,23 m (1,75): 16 sigma | +7,47 m (24,28): 0,31 sigma |
 | decoupled | -8,71 m (24,46): 0,36 sigma | +4,36 m (24,48): 0,18 sigma |
 
-`se3_exact` hết phân kỳ nhưng tự tin quá mức trên circle: phần dư SE(3) đưa sai số tịnh tiến
-lớn dọc trục không quan sát vào các thành phần quan sát được qua `V(phi)^-1`. Chỉ `decoupled`
-nằm trong sigma của chính nó ở cả hai cảnh. Trên test tổng hợp, mỗi dạng dùng nhiễu theo đúng
-mô hình của nó: NEES theo x của `se3_exact` là 0,85, của `decoupled` là 0,92, còn `between` làm
-hệ suy biến.
+Cả ba dạng dùng covariance của scan matcher giống hệt nhau ở bậc một: `cov` tỉ lệ với nghịch
+đảo Hessian Gauss-Newton của point-to-plane tại nhiễu loạn 0, nơi chart SE(3) và SO(3) x R3
+trùng nhau (`V(0) = I`), và phép đổi `l -> b` cũng trùng nhau. Chúng chỉ khác khi phần dư lớn,
+qua liên hệ chính xác `V(phi)^-1`. Với một trục tịnh tiến tự do, `decoupled` giữ hướng tự do
+đó tự do ở mọi góc quay, đúng như hàm chi phí point-to-plane; `se3_exact` bẻ cong nó (phần
+lệch trục `0,5 s |phi|` bị tính vào các sigma quan sát được, tức thông tin giả). Vậy
+`decoupled` là cách dùng trung thực hơn cùng một covariance, không phải mô hình lỗi mới.
+Lần đối chứng xác nhận điều đó bằng số: `se3_exact` hết phân kỳ nhưng tự tin quá mức trên
+circle, chỉ `decoupled` nằm trong sigma của chính nó ở cả hai cảnh. Trên test tổng hợp (mỗi
+dạng với nhiễu sinh trong chart của nó, nên test kiểm tra factor và bộ tối ưu, không kiểm tra
+chart): NEES theo x của `se3_exact` là 0,85, của `decoupled` là 0,92, còn `between` làm hệ suy
+biến.
 
 Cấu hình đang ship, 15 seed (42..56) ghép cặp với `between`: không dạng nào khác `between` có
 ý nghĩa thống kê (mọi CI 95 % của hiệu trung vị đều chứa 0). Trung vị của `between` / `se3_exact`
@@ -117,8 +126,7 @@ trung vị circle 3,30 thay vì 2,30 m. Với seed 42..44 của `CorridorImuOnly
 E-01..E-03 và độ trễ (trung vị 5 lần) không đổi trong phạm vi nhiễu đo với cả ba dạng.
 
 Hệ quả, chung cho mọi lựa chọn: dạng chính xác tốn thêm một `Jr^-1` cho mỗi lần tính factor
-(một lần mỗi keyframe và mỗi lần relinearize), không đo được trên E-01. Chọn `decoupled` nghĩa
-là đổi mô hình lỗi của factor LiDAR, cần ghi rõ trong quyết định (`cov` hiểu theo chart
-SO(3) x R3). PR 4b dùng ngữ nghĩa "không quan sát", nên phụ thuộc vào quyết định này.
+(một lần mỗi keyframe và mỗi lần relinearize), không đo được trên E-01. PR 4b dùng ngữ nghĩa
+"không quan sát" (một trục tịnh tiến tự do), nên phụ thuộc vào quyết định này.
 
 Quyết định: chờ owner.

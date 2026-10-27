@@ -7,17 +7,18 @@
 // pipeline's rule) and optimize() runs once per keyframe. Checked: world-x NEES of each new
 // keyframe against the marginal the backend reports, averaged over the run and 50 seeds.
 //
-// Each parametrisation draws the measurement noise from the error model of the factor form
-// under test, so the test checks the factor and the optimiser against their own model (the
-// estimate is consistent with the marginal), not one model against another:
+// Each parametrisation draws the measurement noise in the chart of the factor form under
+// test, so the test checks the factor and the optimiser (the estimate is consistent with the
+// marginal), not one chart against the other. All forms read the same covariance to first
+// order; they extend it differently at large residuals (backend_factors.md section 5):
 //   - se3_exact: Z = Z_true Exp(n) (the SE(3) residual is -n at the truth). Proves that with
 //     exact Jacobians one Gauss-Newton step per keyframe stays consistent (NEES in [0.5, 2]).
 //   - decoupled: R_Z = R_true Exp(-n_phi), p_Z = t_true - R_Z n_rho (the decoupled residual is
 //     n at the truth). Proves the same for the decoupled form.
 //   - between (control, the default form): the SE(3) noise as for se3_exact; its Jacobian
-//     omits Jr^-1, and the run fails or leaves [0.5, 2]. Documents the defect the exact forms
-//     address; it does not say which exact form matches real scan-matcher errors (that is
-//     the study's question, ADR-015 PR 4e note).
+//     omits Jr^-1, and the run fails or leaves [0.5, 2]. Documents the Jacobian defect. Which
+//     chart keeps a free translation axis free (decoupled) is shown analytically in section 5
+//     and by the study's acceptance control, not by this test.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -125,7 +126,7 @@ RunNees run_circle(std::uint32_t seed, RelativeFactor form) {
     const NavState guess_j = noisy_pre.predict(est, g_w);  // the pipeline's guess
 
     // LiDAR noise n ~ N(0, cov) ([rho, phi]), cov in b_j with (1 km)^2 along d, applied in
-    // the error model of the form (file comment).
+    // the chart of the form (file comment).
     const Vec3 d_b = truth_j.T_w_b.R.transpose() * Vec3::UnitX();
     Mat6 cov = lidar_cov;
     cov.topLeftCorner<3, 3>() += kFreeSigmaM * kFreeSigmaM * d_b * d_b.transpose();
