@@ -51,4 +51,4 @@ Sau các PR module của giai đoạn 1, mọi module (`imu`, `preprocess`, `sca
 ## Việc còn mở
 
 - Đề xuất giữ lại factor GNSS cho đến khi độ trải ngang của các cặp trong aligner lớn hơn nhiều lần `sigma_h_m` (cần khoá cấu hình hoặc ADR riêng), để fix không làm xấu quỹ đạo khi `T_e_w` còn kém xác định.
-- Theo sau cho `backend` (cần ADR): khi `deterministic: true`, tạo `tbb::global_control(tbb::global_control::max_allowed_parallelism, 1)`, hoặc build GTSAM không có TBB cho cấu hình deterministic và Pi5, để chế độ đơn luồng tái lập bit-cho-bit đúng như CLAUDE.md yêu cầu.
+- Giới hạn TBB của `backend` khi `deterministic: true`: đã quyết định trong ADR-018 (`BackendConfig::single_thread`, `tbb::global_control` trong `Graph`).
