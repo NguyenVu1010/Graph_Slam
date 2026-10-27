@@ -203,7 +203,7 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   EXPECT_EQ(cfg.value().gnss.align_min_pairs, 10);
   EXPECT_DOUBLE_EQ(cfg.value().gnss.align_min_spread_m, 1.0);
   EXPECT_DOUBLE_EQ(cfg.value().gnss.chi2_gate, 7.814727903251178);
-  EXPECT_EQ(cfg.value().gnss.max_consecutive_rejects, 25);
+  EXPECT_EQ(cfg.value().gnss.max_consecutive_rejects, 60);
   const auto bad =
       parse_config(read_file(kDefault), overlay("    gnss:\n      max_consecutive_rejects: 0\n"));
   ASSERT_FALSE(bad.is_ok());

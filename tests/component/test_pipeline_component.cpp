@@ -314,7 +314,10 @@ const char* const kCorridorDefaultDegeneracyYaml = "    degeneracy:\n      enabl
 
 // Review I-1: the corridor with the shipped degeneracy covariance. The LiDAR factor claims
 // millimetres along the unobservable axis, so GNSS cannot correct it (study section 8), but
-// it must not make it worse: GNSS-on ATE <= 1.2 x LiDAR-only.
+// it must not make it worse: GNSS-on ATE <= 1.2 x LiDAR-only. The lock-out guard restarts
+// the aligner here without any outage (1 restart at gnss.max_consecutive_rejects 60, 2 at
+// 25): the front end drifts along the axis while its pose covariance P stays optimistic, so
+// the chi-square gate rejects every fix and the guard fires as after an outage.
 TEST(PipelineComponent, CorridorDefaultDegeneracyGnssDoesNotDegrade) {
   const BoxWorldParams p = corridor_params();
   const fs::path dir = test_dir();
@@ -327,16 +330,18 @@ TEST(PipelineComponent, CorridorDefaultDegeneracyGnssDoesNotDegrade) {
   EXPECT_LE(with_gnss.ate_m, 1.2 * lidar_only.ate_m);
 }
 
-// Review B-1: a 20 s fix outage in the corridor with the shipped degeneracy covariance. The
+// Review B-1: a 20 s fix outage (20 s to 40 s) in the corridor with the shipped degeneracy
+// covariance; 20 s exceeds the 12 s guard window (gnss.max_consecutive_rejects 60). The
 // front end drifts along the axis and the chi-square gate rejects every fix after the
 // outage; without the guard no factor is added again (lock-out), with it the aligner
-// restarts after gnss.max_consecutive_rejects and factors flow again. The ATE gain is small
-// because the IMU-only chain of this corridor drifts by metres (about 25 m in 20 s with the
-// relax_factor 1e8 overlay), far beyond its own noise model (about 0.3 m): a pre-existing
-// defect recorded as a follow-up, which a few fixes cannot bend back.
+// restarts and factors flow again (11 after the outage). These factor counts are the
+// assertions. The ATEs are only printed (12.85 m vs 12.97 m): the margin is under 1 %
+// because the IMU-only chain of this corridor drifts by metres along the axis (11.5 m ATE
+// with LiDAR + IMU over the run), far beyond its own noise model (about 0.3 m in 20 s), a
+// pre-existing defect recorded as a follow-up that a few fixes cannot bend back.
 TEST(PipelineComponent, CorridorOutageRealignsAfterRejects) {
   BoxWorldParams p = corridor_params();
-  p.gnss_outage_start_s = 25.0;
+  p.gnss_outage_start_s = 20.0;
   p.gnss_outage_s = 20.0;
   const fs::path dir = test_dir();
   ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
@@ -353,7 +358,7 @@ TEST(PipelineComponent, CorridorOutageRealignsAfterRejects) {
     EXPECT_GT(reset.gnss_factors_after_outage, 0U);
     EXPECT_EQ(no_reset.stats.n_gnss_realign, 0U);
     EXPECT_EQ(no_reset.gnss_factors_after_outage, 0U);  // locked out for good
-    EXPECT_LE(reset.ate_m, no_reset.ate_m);
+    // ATEs are printed by run_corridor, not compared: the margin is under 1 % (see above).
   }
 }
 
@@ -715,6 +720,16 @@ double yaw_of(const common::Mat3& R) {
   return std::atan2(R(1, 0), R(0, 0));
 }
 
+// Installs the test hooks for its lifetime, so a throw cannot leave a dangling pointer in
+// the process-wide hook for later tests of this binary.
+class HooksScope {
+ public:
+  explicit HooksScope(const detail::CoreTestHooks* hooks) { detail::set_core_test_hooks(hooks); }
+  ~HooksScope() { detail::set_core_test_hooks(nullptr); }
+  HooksScope(const HooksScope&) = delete;
+  HooksScope& operator=(const HooksScope&) = delete;
+};
+
 // Collects the factor statistics of one run against the box-world truth.
 class StudyObserver final : public detail::CoreObserver {
  public:
@@ -866,9 +881,8 @@ StudyResult study_run(const BoxWorldParams& p,
   hooks.observer = &obs;
   hooks.force_T_e_w = c.perfect;
   hooks.T_e_w = test::box_T_e_w(p);
-  detail::set_core_test_hooks(&hooks);
+  const HooksScope scope(&hooks);
   const ReplayResult r = replay(data, cfg);
-  detail::set_core_test_hooks(nullptr);
   StudyResult out;
   out.ate_m = trajectory_errors(p, r.estimates).ate_m;
   out.ate4_m = ate_4dof(p, r.estimates);
@@ -1094,9 +1108,8 @@ TEST(PipelineComponent, LidarFactorCovarianceConsistent) {
   StudyObserver obs(p);
   detail::CoreTestHooks hooks;
   hooks.observer = &obs;
-  detail::set_core_test_hooks(&hooks);
+  const HooksScope scope(&hooks);
   const ReplayResult r = replay(dir / "data", box_config(p, false, dir / "cfg"));
-  detail::set_core_test_hooks(nullptr);
   std::printf("[ box world ] LiDAR factor NEES %.2f over %llu keyframes\n",
               obs.lidar_nees(),
               static_cast<unsigned long long>(r.stats.n_keyframes));

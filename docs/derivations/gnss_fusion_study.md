@@ -28,7 +28,7 @@ rows of section 7 into `results/<run-id>/gnss_study.md` (`MSS_GNSS_STUDY_RUN_ID`
 `detail::CoreTestHooks` (an observer of every LiDAR factor `(t_i, t_j, T_bi_bj, cov_b)`, GNSS
 factor `(t_k, p_e_g', cov, T_e_w used)` and accepted fix). The run takes about 90 s.
 Since PR 4a fix round 1 the pipeline also has the lock-out guard
-`gnss.max_consecutive_rejects` (25); it changes only corridor rows where the gate locked out
+`gnss.max_consecutive_rejects` (25 in round 1, 60 since round 2); it changes only corridor rows where the gate locked out
 (noted in section 8).
 
 NEES: for a LiDAR factor, `e = boxminus(T_bi_bj, T_true)` and NEES `e^T cov_b^-1 e`, expected
@@ -287,8 +287,11 @@ helps; the frame variable stays within 1.2x of LiDAR only (component test). PR 4
 `relax_factor` with an explicit variance along unobservable directions and will re-measure
 this table.
 
-Lock-out guard in the shipped-relax corridor with a 20 s outage (25 s to 45 s,
-`CorridorOutageRealignsAfterRejects`): without the guard no GNSS factor is added after the
-outage (49 factors, 0 after); with it the aligner restarts once and 6 factors follow
-(55 factors), ATE 12.59 m vs 12.68 m. With `relax_factor` 1e8 and `cov_scale` 4.7 the gate no
-longer locks out in this outage (larger `P`), so the test uses the shipped relax.
+Lock-out guard in the shipped-relax corridor with a 20 s outage (20 s to 40 s,
+`CorridorOutageRealignsAfterRejects`, `gnss.max_consecutive_rejects` 60 = 12 s, longer than
+ADR-011's 10 s multipath hold): without the guard no GNSS factor is added after the outage
+(42 factors, 0 after); with it the aligner restarts once and 11 factors follow (53 factors),
+ATE 12.85 m vs 12.97 m (printed, not asserted). The guard also fires without an outage in
+this corridor (1 restart at 60, 2 at 25): the front end drifts along the axis while `P` stays
+optimistic. With `relax_factor` 1e8 and `cov_scale` 4.7 the gate no longer locks out in the
+outage (larger `P`), so the test uses the shipped relax.

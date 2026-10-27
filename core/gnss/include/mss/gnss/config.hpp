@@ -1,5 +1,7 @@
 #pragma once
 
+#include <limits>
+
 namespace mss::gnss {
 
 // YAML: gnss.*  Loaded and validated by mss::pipeline::load_config.
@@ -18,7 +20,7 @@ struct GnssConfig {
   // so a front end that drifted during an outage can be re-aligned (docs/derivations/
   // pipeline.md section 5). The struct default never restarts (previous behaviour);
   // load_config overwrites it from YAML (>= 1).
-  int max_consecutive_rejects = 2147483647;
+  int max_consecutive_rejects = std::numeric_limits<int>::max();
 };
 
 }  // namespace mss::gnss

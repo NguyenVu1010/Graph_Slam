@@ -52,9 +52,11 @@ mss_node:
       align_min_pairs: 10      # accepted fixes needed before the w->e alignment is used
       align_min_spread_m: 1.0  # min RMS horizontal spread of the fixes for alignment, m
       chi2_gate: 7.814727903251178  # chi-square 3 DoF at q = 0.95 (G-02 band 90-99 %), NIS
-      # Lock-out guard: after this many chi-square rejections in a row (fixes; 25 = 5 s at
-      # 5 Hz) the aligner restarts on the current front end (pipeline.md section 5). >= 1.
-      max_consecutive_rejects: 25
+      # Lock-out guard: after this many chi-square rejections in a row (fixes) the aligner
+      # restarts on the current front end (pipeline.md section 5). >= 1. Rule: the window must
+      # exceed the longest expected multipath hold (ADR-011: steps held 2 to 10 s), or the
+      # restart re-admits the multipath it rejected; 60 = 12 s at 5 Hz. E-06 evaluates it.
+      max_consecutive_rejects: 60
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m
