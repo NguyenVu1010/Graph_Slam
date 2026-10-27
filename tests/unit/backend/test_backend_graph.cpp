@@ -31,7 +31,7 @@ using common::Vec6;
 using test::CapturingLogger;
 using test::default_backend_config;
 using test::default_imu_config;
-constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+constexpr double kDegToRad = EIGEN_PI / 180.0;
 
 constexpr double kChi2Dof6P999 = 22.458;  // chi-square 0.999 quantile, 6 dof
 
@@ -324,6 +324,44 @@ TEST(BackendGraph, GnssFrameVariableAbsorbsAlignmentError) {
   };
   EXPECT_LT(run(true), 5e-3);
   EXPECT_GT(run(false), 0.05);
+}
+
+// Review I-4: after a failed optimize(), keyframes linked to the old graph only through
+// GNSS factors on the frame variable E are not anchored by E: they get the section-9
+// re-anchor prior (two antenna positions leave the rotation about their line free).
+TEST(BackendGraph, GnssFrameVariableDoesNotAnchorOrphans) {
+  const Pose T_e_w = test::pose_from(Vec3(0.0, 0.0, 0.5), Vec3(10.0, -5.0, 1.0));
+  const test::Scenario s = test::square_loop(false, 0);
+  BackendConfig cfg = default_backend_config();
+  cfg.gnss_frame_variable = true;
+  cfg.gnss_frame_tilt_sigma_rad = 0.01 * kDegToRad;
+  cfg.gnss_frame_yaw_sigma_rad = 30.0 * kDegToRad;
+  cfg.gnss_frame_pos_sigma_m = 10.0;
+  Graph g(cfg, default_imu_config(), Vec3::Zero());
+  const auto fix = [&](KeyId k) {
+    common::GnssMeasurement m;
+    m.t = s.truth[k].t;
+    m.p_e_g = T_e_w * s.truth[k].T_w_b.p;
+    m.cov = Mat3::Identity() * 0.01;
+    g.add_gnss_factor(k, m, T_e_w);
+  };
+  g.add_keyframe(s.truth[0].t, s.truth[0]);
+  g.add_keyframe(s.truth[1].t, s.truth[1]);
+  g.add_lidar_factor(0, 1, s.edge_meas[0], s.edge_cov, nullptr);
+  fix(1);
+  ASSERT_TRUE(g.optimize().is_ok());
+  g.add_keyframe(s.truth[2].t, s.truth[2]);
+  fix(2);  // position only: the rotation of X(2) is free
+  ASSERT_FALSE(g.optimize().is_ok());
+  g.add_keyframe(s.truth[3].t, s.truth[3]);
+  g.add_lidar_factor(2, 3, s.edge_meas[2], s.edge_cov, nullptr);
+  fix(2);
+  fix(3);
+  const common::Result<Estimate> r = g.optimize();
+  ASSERT_TRUE(r.is_ok()) << r.reason();
+  for (KeyId k = 0; k <= 3; ++k) {
+    EXPECT_LT(pose_error(state_or_fail(g, k).T_w_b, s.truth[k].T_w_b), 1e-6) << "keyframe " << k;
+  }
 }
 
 TEST(BackendGraph, LatestKeyframeWithoutFactorsReturnsGuessAndNanCov) {

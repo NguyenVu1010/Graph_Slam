@@ -279,6 +279,9 @@ struct Graph::Impl {
       for (KeyId k = 0; k < guesses.size(); ++k) {
         guesses[k] = state_of(k, last_estimate);
       }
+      if (last_estimate.exists(detail::frame_key())) {
+        T_e_w_guess = detail::from_gtsam(last_estimate.at<gtsam::Pose3>(detail::frame_key()));
+      }
       // The IMU start/end flags stay set: the re-queued factors are still accepted IMU
       // factors (they never pass through add_imu_factor again).
       pending_priors.push_back(committed_factors);
@@ -323,6 +326,9 @@ struct Graph::Impl {
     std::map<gtsam::Key, Component> components;
     for (const auto& entry : parent) {
       const gtsam::Key key = entry.first;
+      if (key == detail::frame_key()) {
+        continue;  // ADR-019: E links components but neither anchors nor is a keyframe
+      }
       Component& c = components[find(key)];
       const gtsam::Symbol sym(key);
       const auto k = static_cast<KeyId>(sym.index());
