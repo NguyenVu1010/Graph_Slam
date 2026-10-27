@@ -2,6 +2,7 @@
 // MSS_IMU_STUDY=1 (GTSAM build): the diagnosis tables (sections 1 to 8) and the evaluation of
 // the static-window gravity factor (section 9). Results under results/<run-id>/.
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -170,6 +171,34 @@ class ImuStudyObserver final : public detail::CoreObserver {
     keyframes_.push_back({t, x, cov});
   }
 
+  void on_gravity_check(double chi2, detail::GravityCheckOutcome outcome) override {
+    gravity_chi2_ = chi2;
+    gravity_outcome_ = outcome;
+    gravity_checked_ = true;
+  }
+  // The gravity check: "-" (not run), "kept 1.2", "REMOVED 43.0", "unchecked", "failed".
+  [[nodiscard]] std::string gravity_check() const {
+    if (!gravity_checked_) {
+      return "-";
+    }
+    char buf[48];
+    switch (gravity_outcome_) {
+      case detail::GravityCheckOutcome::kKept:
+        std::snprintf(buf, sizeof(buf), "kept %.1f", gravity_chi2_);
+        break;
+      case detail::GravityCheckOutcome::kRemoved:
+        std::snprintf(buf, sizeof(buf), "REMOVED %.1f", gravity_chi2_);
+        break;
+      case detail::GravityCheckOutcome::kRemovalFailed:
+        std::snprintf(buf, sizeof(buf), "failed %.1f", gravity_chi2_);
+        break;
+      case detail::GravityCheckOutcome::kUnchecked:
+        std::snprintf(buf, sizeof(buf), "unchecked");
+        break;
+    }
+    return buf;
+  }
+
   [[nodiscard]] double corr_x_rms_m() const {
     return info_x_.empty() ? 0.0 : std::sqrt(corr_x2_ / static_cast<double>(info_x_.size()));
   }
@@ -207,6 +236,10 @@ class ImuStudyObserver final : public detail::CoreObserver {
   }
 
  private:
+  double gravity_chi2_ = 0.0;
+  detail::GravityCheckOutcome gravity_outcome_ = detail::GravityCheckOutcome::kKept;
+  bool gravity_checked_ = false;
+
   static double median(std::vector<double> v) {
     if (v.empty()) {
       return 0.0;
@@ -661,6 +694,9 @@ struct Round2Run {
   double nees6 = 0.0;
   double tilt_factor_rms_rad = 0.0;  // per axis, tilt part of the LiDAR factors' rotation error
   std::size_t n_factors = 0;
+  std::uint64_t gravity_removed = 0;    // Stats::n_gravity_factor_removed
+  std::uint64_t gravity_unchecked = 0;  // Stats::n_gravity_factor_unchecked
+  std::string gravity_check;            // ImuStudyObserver::gravity_check()
   std::vector<ImuStudyObserver::Keyframe> keyframes;
   std::vector<std::pair<Timestamp, common::Pose>> frames;
 };
@@ -684,6 +720,27 @@ class FullResidualScope {
 
  private:
   bool full_;
+};
+
+// Study seam (backend study_seams.hpp): the fix-round-1 posterior statistic of the check for
+// the scope when `on`; a scope with `on` false changes nothing.
+class PosteriorStatisticScope {
+ public:
+  explicit PosteriorStatisticScope(bool on) : on_(on) {
+    if (on_) {
+      backend::detail::set_static_gravity_posterior_statistic(true);
+    }
+  }
+  ~PosteriorStatisticScope() {
+    if (on_) {
+      backend::detail::set_static_gravity_posterior_statistic(false);
+    }
+  }
+  PosteriorStatisticScope(const PosteriorStatisticScope&) = delete;
+  PosteriorStatisticScope& operator=(const PosteriorStatisticScope&) = delete;
+
+ private:
+  bool on_;
 };
 
 // `corridor`: the 60 s corridor overlay (max_range 10 m, degeneracy relax 1e8), with GNSS
@@ -712,6 +769,9 @@ Round2Run round2_run(const BoxWorldParams& p,
   out.nees6 = obs.nees6();
   out.tilt_factor_rms_rad = obs.tilt_err_rms();
   out.n_factors = obs.n_factors();
+  out.gravity_removed = r.stats.n_gravity_factor_removed;
+  out.gravity_unchecked = r.stats.n_gravity_factor_unchecked;
+  out.gravity_check = obs.gravity_check();
   out.keyframes = obs.keyframes();
   out.frames = obs.frames();
   return out;
@@ -758,6 +818,8 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
   // Scale 1: hook-scaled noise is relative to the window std of the mean (round-1 rows).
   const std::string fac =
       "    backend:\n      static_gravity_factor: true\n      static_gravity_sigma_scale: 1.0\n";
+  // The full residual has 3 DoF: its check uses the 3-DoF 0.95 quantile.
+  const std::string fac_full = fac + "      static_gravity_chi2_gate: 7.814727903251178\n";
   // 10d: the static window's tilt sigma (0.42 mrad = 0.024 deg) as the keyframe-0 rotation
   // prior, no factor (it applies to yaw too: the yaw of w is a gauge).
   const std::string tilt_prior = off + "      prior_rot_sigma_deg: 0.024\n";
@@ -770,10 +832,10 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
   };
   const std::vector<Variant> variants = {
       {"main (factor off)", off, {}},
-      {"full residual, window sigma", fac, {}, true},
-      {"full residual, sigma / 10", fac, scaled(0.01), true},
-      {"full residual, sigma x 3", fac, scaled(9.0), true},
-      {"full residual, sigma x 10", fac, scaled(100.0), true},
+      {"full residual, window sigma", fac_full, {}, true},
+      {"full residual, sigma / 10", fac_full, scaled(0.01), true},
+      {"full residual, sigma x 3", fac_full, scaled(9.0), true},
+      {"full residual, sigma x 10", fac_full, scaled(100.0), true},
       {"direction only, window sigma", fac, direction_only},
       {"tilt prior 0.42 mrad, no factor", tilt_prior, {}},
       {"shipped default (direction only, scale 2)", "", {}},
@@ -987,9 +1049,19 @@ TEST(PipelineComponent, ImuStaticGravityRound2Study) {
 struct SeedScores {
   std::vector<double> gnss_ate, lidar_ate, nees, circle_end, circle_rms, circle_ratio, straight_end,
       straight_rms, straight_ratio;
-  std::uint64_t removed = 0;      // gravity factors removed by the chi-square check, all scenes
+  // Per scene (kScenes order): factors removed / not checked by the consistency check, and
+  // the check of every seed ("kept 1.2", "REMOVED 43.0", ...).
+  std::array<std::uint64_t, 5> removed{};
+  std::array<std::uint64_t, 5> unchecked{};
+  std::array<std::vector<std::string>, 5> checks;
   std::string circle_max_detail;  // per seed: t of the max ratio and the tilt then
 };
+
+constexpr std::array<const char*, 5> kScenes = {"GNSS 60 s corridor",
+                                                "LiDAR-only 60 s corridor",
+                                                "box NEES",
+                                                "IMU-only circle",
+                                                "IMU-only straight"};
 
 // 95 % bootstrap CI of median(a_i - b_i) over paired seeds (2000 resamples, seed 7).
 std::pair<double, double> bootstrap_median_diff(const std::vector<double>& a,
@@ -1053,18 +1125,27 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
     return std::string("    backend:\n      static_gravity_factor: true\n") +
            "      static_gravity_sigma_scale: " + s + "\n";
   };
+  // The full residual has 3 DoF: its check uses the 3-DoF 0.95 quantile (N-8).
+  const std::string gate3 = "      static_gravity_chi2_gate: 7.814727903251178\n";
+  // No check (the round-2 code path): the check keyframe is never reached.
+  const std::string no_check = "      static_gravity_check_keyframes: 1000000\n";
   struct Variant {
     std::string name;
     std::string yaml;
     bool full = false;
+    bool posterior = false;  // fix-round-1 posterior statistic (study seam)
   };
   const std::vector<Variant> variants = {
       {"main (factor off)", off},
-      {"full residual, window sigma (study seam)", scale("1.0"), true},
+      {"full residual, window sigma (study seam)", scale("1.0") + gate3, true},
       {"shipped form, scale 1", scale("1.0")},
       {"shipped form, scale 1.5", scale("1.5")},
       {"shipped form, scale 2 (default)", scale("2.0")},
       {"shipped form, scale 3", scale("3.0")},
+      {"scale 1, no check (round 2)", scale("1.0") + no_check},
+      {"scale 1, posterior statistic (fix round 1)", scale("1.0"), false, true},
+      {"scale 2, no check (round 2)", scale("2.0") + no_check},
+      {"scale 2, posterior statistic (fix round 1)", scale("2.0"), false, true},
   };
   const char* first_env = std::getenv("MSS_IMU_R2_FIRST");
   const char* last_env = std::getenv("MSS_IMU_R2_LAST");
@@ -1082,6 +1163,7 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
     const Variant& v = variants[vi];
     SeedScores& sc = scores[vi];
     const FullResidualScope full(v.full);
+    const PosteriorStatisticScope posterior(v.posterior);
     for (const std::uint32_t seed : seeds) {
       const std::string tag = std::to_string(seed);
       const std::string vd = "v" + std::to_string(vi);
@@ -1103,19 +1185,54 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
         ASSERT_TRUE(test::write_box_dataset(d1 / "data", p1).is_ok());
         ASSERT_TRUE(test::write_box_dataset(d2 / "data", p2).is_ok());
       }
-      sc.gnss_ate.push_back(round2_run(pc, dc / "data", dc / vd, true, true, v.yaml, {}).ate_m);
-      sc.lidar_ate.push_back(
-          round2_run(pc, dc / "data", dc / ("l" + vd), true, false, v.yaml, {}).ate_m);
-      sc.nees.push_back(round2_run(pb, db / "data", db / vd, false, false, v.yaml, {}).nees6);
-      const AxisRun c = corridor_axis_run(p1, d1 / "data", d1 / vd, false, v.yaml);
-      const AxisRun s = corridor_axis_run(p2, d2 / "data", d2 / vd, false, v.yaml);
+      const Round2Run rg = round2_run(pc, dc / "data", dc / vd, true, true, v.yaml, {});
+      const Round2Run rl = round2_run(pc, dc / "data", dc / ("l" + vd), true, false, v.yaml, {});
+      const Round2Run rb = round2_run(pb, db / "data", db / vd, false, false, v.yaml, {});
+      sc.gnss_ate.push_back(rg.ate_m);
+      sc.lidar_ate.push_back(rl.ate_m);
+      sc.nees.push_back(rb.nees6);
+      ImuStudyObserver oc(p1);
+      ImuStudyObserver os(p2);
+      AxisRun c;
+      AxisRun s;
+      {
+        detail::CoreTestHooks hooks;
+        hooks.observer = &oc;
+        const HooksScope scope(&hooks);
+        c = corridor_axis_run(p1, d1 / "data", d1 / vd, false, v.yaml);
+      }
+      {
+        detail::CoreTestHooks hooks;
+        hooks.observer = &os;
+        const HooksScope scope(&hooks);
+        s = corridor_axis_run(p2, d2 / "data", d2 / vd, false, v.yaml);
+      }
+      const std::array<std::uint64_t, 5> rem = {rg.gravity_removed,
+                                                rl.gravity_removed,
+                                                rb.gravity_removed,
+                                                c.gravity_removed,
+                                                s.gravity_removed};
+      const std::array<std::uint64_t, 5> unc = {rg.gravity_unchecked,
+                                                rl.gravity_unchecked,
+                                                rb.gravity_unchecked,
+                                                c.gravity_unchecked,
+                                                s.gravity_unchecked};
+      const std::array<std::string, 5> chk = {rg.gravity_check,
+                                              rl.gravity_check,
+                                              rb.gravity_check,
+                                              oc.gravity_check(),
+                                              os.gravity_check()};
+      for (std::size_t k = 0; k < kScenes.size(); ++k) {
+        sc.removed[k] += rem[k];
+        sc.unchecked[k] += unc[k];
+        sc.checks[k].push_back(std::to_string(seed) + ": " + chk[k]);
+      }
       sc.circle_end.push_back(c.end_x_m);
       sc.circle_rms.push_back(c.along_rms_m);
       sc.circle_ratio.push_back(c.max_ratio);
       sc.straight_end.push_back(s.end_x_m);
       sc.straight_rms.push_back(s.along_rms_m);
       sc.straight_ratio.push_back(s.max_ratio);
-      sc.removed += c.gravity_removed + s.gravity_removed;
       char b[96];
       std::snprintf(b,
                     sizeof(b),
@@ -1178,6 +1295,40 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
       [](const SeedScores& s) { return s.straight_ratio; },
       false);
   rep.line("");
+  rep.line("## Consistency check per scene: removed / not evaluated (of 15 runs)");
+  rep.line("");
+  rep.line(std::string("| variant | ") + kScenes[0] + " | " + kScenes[1] + " | " + kScenes[2] +
+           " | " + kScenes[3] + " | " + kScenes[4] + " |");
+  rep.line("| --- | --- | --- | --- | --- | --- |");
+  for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+    const SeedScores& s = scores[vi];
+    if (s.gnss_ate.empty()) {
+      continue;
+    }
+    std::string row = "| " + variants[vi].name + " |";
+    for (std::size_t k = 0; k < kScenes.size(); ++k) {
+      row += " " + std::to_string(s.removed[k]) + " / " + std::to_string(s.unchecked[k]) + " |";
+    }
+    rep.line(row);
+  }
+  rep.line("");
+  rep.line("## Consistency check per seed (statistic at the check keyframe)");
+  for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+    const SeedScores& s = scores[vi];
+    if (s.gnss_ate.empty() || vi == 0) {
+      continue;
+    }
+    rep.line("");
+    rep.line("- " + variants[vi].name + ":");
+    for (std::size_t k = 0; k < kScenes.size(); ++k) {
+      std::string line = std::string("  - ") + kScenes[k] + ":";
+      for (const std::string& c : s.checks[k]) {
+        line += " " + c + ";";
+      }
+      rep.line(line);
+    }
+  }
+  rep.line("");
   rep.line("## Per seed, and where the circle's largest excursion is");
   rep.line("");
   for (std::size_t vi = 0; vi < variants.size(); ++vi) {
@@ -1185,8 +1336,7 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
     if (s.gnss_ate.empty()) {
       continue;
     }
-    rep.line("- " + variants[vi].name + " (gravity factor removed by the check in " +
-             std::to_string(s.removed) + " of 30 IMU-only runs):");
+    rep.line("- " + variants[vi].name + ":");
     rep.line("  - GNSS ATE: " + joined(s.gnss_ate, "%.2f"));
     rep.line("  - LiDAR-only ATE: " + joined(s.lidar_ate, "%.2f"));
     rep.line("  - box NEES: " + joined(s.nees, "%.1f"));
