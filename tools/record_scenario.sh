@@ -3,6 +3,10 @@
 # (ADR-011 sections 1, 6 and 7). Desktop only (needs ROS 2 Jazzy + Gazebo; never in CI).
 #
 # Usage: tools/record_scenario.sh <scenario.yaml> <out_dir> [--render-engine ogre2|ogre] [--gui]
+#          [--no-driver] [--lidar-gz-sigma S]
+#   --no-driver: the robot stays at its spawn pose (static calibration recordings).
+#   --lidar-gz-sigma S: Gazebo LiDAR range noise S m instead of the profile's (render
+#   calibration: 0; sim/README.md "LiDAR render error").
 #   e.g. tools/record_scenario.sh sim/scenarios/E-01.yaml results/<run-id>/
 #
 # Steps: gen_sim_assets.py -> ros2 bag record (raw topics, MCAP, zstd file compression,
@@ -18,17 +22,24 @@
 #      WALL_TIMEOUT_FACTOR (default 20: give up after this x duration_s of wall time).
 set -euo pipefail
 
-usage() { echo "usage: $0 <scenario.yaml> <out_dir> [--render-engine ENGINE] [--gui]" >&2; }
+usage() {
+  echo "usage: $0 <scenario.yaml> <out_dir> [--render-engine ENGINE] [--gui] [--no-driver]" \
+    "[--lidar-gz-sigma S]" >&2
+}
 [ $# -ge 2 ] || { usage; exit 2; }
 scenario="$1"
 out="${2%/}"
 shift 2
 render_engine=ogre2
 headless=true
+driver=true
+gen_extra=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --render-engine) render_engine="$2"; shift 2 ;;
     --gui) headless=false; shift ;;
+    --no-driver) driver=false; shift ;;
+    --lidar-gz-sigma) gen_extra=(--lidar-gz-sigma "$2"); shift 2 ;;
     *) usage; exit 2 ;;
   esac
 done
@@ -80,7 +91,8 @@ wall_timeout_s="$("$PYTHON" -c "import math; print(math.ceil($sc_duration_s * $W
 
 echo "record_scenario: $(basename "$scenario") world=$sc_world duration=${sc_duration_s}s seed=$sc_seed engine=$render_engine"
 "$PYTHON" "$repo/tools/gen_sim_assets.py" --profile "$sc_profile" \
-  --pipeline-config "$sc_pipeline_config" --out "$out/assets" > "$logs/gen_assets.log" 2>&1 \
+  --pipeline-config "$sc_pipeline_config" --out "$out/assets" "${gen_extra[@]}" \
+  > "$logs/gen_assets.log" 2>&1 \
   || fail "gen_sim_assets.py failed, see $logs/gen_assets.log"
 
 rec_pid=""
@@ -113,7 +125,7 @@ rec_pid=$!
 # 2. Gazebo paused, robot, bridge, /tf_static and driver.
 setsid ros2 launch "$repo/sim/launch/sim.launch.py" "scenario:=$scenario" \
   "assets_dir:=$out/assets" "render_engine:=$render_engine" "headless:=$headless" \
-  paused:=true > "$logs/launch.log" 2>&1 &
+  paused:=true "driver:=$driver" > "$logs/launch.log" 2>&1 &
 launch_pid=$!
 
 # 3. Wait for the spawned robot and every raw topic subscription, then unpause. The recorder

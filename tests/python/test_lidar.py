@@ -21,6 +21,7 @@ _T_SCAN_S = 0.1
 _STAMP_NS = 2_000_000_000
 _NOISE = LidarNoise(
     range_sigma_m=0.02,
+    render_sigma_m=0.0,
     dropout_p=0.02,
     dropout_p_grazing=0.3,
     grazing_deg=80.0,

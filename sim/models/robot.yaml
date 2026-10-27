@@ -10,6 +10,10 @@ body:
 wheel:
   mass_kg: 1.0
   width_m: 0.04
+  # Contact geometry (the visual stays a cylinder). A cylinder contacts the floor at a rim, so
+  # turns read an effective track of ~0.36 m: -36 deg/rev with true kinematics (odom calibration,
+  # 2026-10-28, sim/README.md); a sphere of the wheel radius contacts in the mid-plane: -0.1 deg/rev.
+  collision_shape: sphere          # cylinder | sphere
   mu: 1.0                          # contact friction; DART takes min(wheel, floor) = floor mu
   joint_damping_nms_per_rad: 0.1   # rolling resistance, N.m.s/rad (section 4)
   joint_friction_nm: 0.2           # N.m (section 4)
@@ -22,7 +26,7 @@ drive:                             # DiffDrive limits (section 2)
   max_linear_acceleration_mps2: 0.5
   max_angular_velocity_radps: 1.0
   max_angular_acceleration_radps2: 1.0   # not set by the ADR; bounds the turn-in jerk
-wheel_slip:                        # placeholder: the next PR tunes these against the odom drift targets
+wheel_slip:                        # 0 = no slip; only adds slip (outdoor surfaces), never corrects odom
   slip_compliance_longitudinal: 0.0
   slip_compliance_lateral: 0.0
 lidar:                             # gpu_lidar (section 2); min range and period come from the profile
@@ -31,11 +35,4 @@ lidar:                             # gpu_lidar (section 2); min range and period
   horizontal_samples: 720
   max_range_m: 100.0
   range_resolution_m: 0.01
-  # Range error gpu_lidar adds by itself (depth-texture interpolation), measured with the Gazebo
-  # range noise at 0 (along-ray residual to the reference planes, ogre2, 2026-10-28): it grows
-  # with range and incidence, ~0 at 1-3 m (corridor walls), 0.011 m at 12-20 m and 0.0125 m at
-  # 20-40 m (warehouse walls). The generator sets the Gazebo noise to
-  # sqrt(range_sigma_m^2 - render_range_sigma_m^2); this value sits between the two worlds so
-  # both measure within +-8 % of the profile sigma (warehouse 0.0215 m, corridor 0.0185 m).
-  render_range_sigma_m: 0.008
 ground_truth_rate_hz: 200.0        # OdometryPublisher on the body (IMU) link, no noise

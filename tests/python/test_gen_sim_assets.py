@@ -2,6 +2,7 @@
 
 import math
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -68,7 +69,9 @@ def test_kinematics_from_kinematics_true(model: ET.Element) -> None:
     ys = sorted(_floats(link.find("pose"))[1] for link in model.findall("link")[1:])
     assert ys == [-kin.track_m / 2, kin.track_m / 2]
     for link in model.findall("link")[1:]:
-        assert _f(link, "collision/geometry/cylinder/radius") == kin.wheel_radius_m
+        # Sphere contact: one point in the wheel mid-plane, so the contact track is the true track.
+        assert _f(link, "collision/geometry/sphere/radius") == kin.wheel_radius_m
+        assert _f(link, "visual/geometry/cylinder/radius") == kin.wheel_radius_m
     for joint in model.findall("joint"):
         assert _f(joint, "axis/dynamics/damping") == 0.1
         assert _f(joint, "axis/dynamics/friction") == 0.2
@@ -124,7 +127,7 @@ def test_lidar_and_gnss_sensors(model: ET.Element) -> None:
     assert math.degrees(step / 719) == pytest.approx(0.5)
     assert _f(lidar, "lidar/range/min") == prof.lidar.min_range_m == 0.5
     assert _f(lidar, "lidar/range/max") == 100.0
-    render = gsa.load_robot()["lidar"]["render_range_sigma_m"]
+    render = prof.lidar.render_sigma_m
     gz_sigma = _f(lidar, "lidar/noise/stddev")
     assert math.hypot(gz_sigma, render) == pytest.approx(prof.lidar.range_sigma_m, rel=1e-12)
     gnss = _sensor(model, "navsat")
@@ -203,14 +206,42 @@ def test_assets_meta_has_no_absolute_paths(assets: dict[str, Path]) -> None:
     assert str(REPO) not in text and str(REPO.as_posix()) not in text
 
 
+def _rx(a: float) -> np.ndarray:
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+
+
+def _ry(a: float) -> np.ndarray:
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+
+
+def _rz(a: float) -> np.ndarray:
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+
+
+def _quat_matrix(w: float, x: float, y: float, z: float) -> np.ndarray:
+    """Rotation of a unit Hamilton quaternion (w, x, y, z), written out by hand."""
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+
+
 def test_quat_rpy_round_trip_general() -> None:
+    """SDF convention, independent of scipy: R(q) == Rz(yaw) @ Ry(pitch) @ Rx(roll)."""
     rng = np.random.default_rng(7)
     for _ in range(50):
         q = rng.normal(size=4)
-        q /= np.linalg.norm(q)
-        rpy = gsa.quat_wxyz_to_rpy(list(q))
-        r = Rotation.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()  # scipy (x, y, z, w)
-        np.testing.assert_allclose(gsa.rpy_to_matrix(rpy), r, atol=1e-9, rtol=0)
+        q /= np.linalg.norm(q)  # Hamilton (w, x, y, z)
+        roll, pitch, yaw = gsa.quat_wxyz_to_rpy(list(q))
+        expected = _quat_matrix(*q)
+        np.testing.assert_allclose(_rz(yaw) @ _ry(pitch) @ _rx(roll), expected, atol=1e-9, rtol=0)
+        np.testing.assert_allclose(gsa.rpy_to_matrix((roll, pitch, yaw)), expected, atol=1e-9)
 
 
 def test_bad_robot_value_rejected(tmp_path: Path) -> None:
@@ -235,7 +266,30 @@ def test_cli_writes_default_names(tmp_path: Path) -> None:
 
 
 def test_render_error_above_profile_sigma_rejected() -> None:
-    robot = gsa.load_robot()
-    robot["lidar"]["render_range_sigma_m"] = 0.05
-    with pytest.raises(gsa.AssetError, match="render_range_sigma_m"):
-        gsa.gz_range_sigma(load_profile(PROFILE), robot)
+    prof = load_profile(PROFILE)
+    bad = replace(prof, lidar=replace(prof.lidar, render_sigma_m=0.05))
+    with pytest.raises(gsa.AssetError, match="render_sigma_m"):
+        gsa.gz_range_sigma(bad)
+
+
+def test_lidar_gz_sigma_override(tmp_path: Path) -> None:
+    paths = gsa.generate(PROFILE, OVERLAY, tmp_path, lidar_gz_sigma_m=0.0)
+    lidar = ET.parse(paths["robot"]).getroot().find("model/link/sensor[@type='gpu_lidar']")
+    assert lidar is not None and _f(lidar, "lidar/noise/stddev") == 0.0
+    assert yaml.safe_load(paths["assets"].read_text())["lidar_gz_range_sigma_m"] == 0.0
+    with pytest.raises(gsa.AssetError, match="lidar-gz-sigma"):
+        gsa.gz_range_sigma(load_profile(PROFILE), -1.0)
+
+
+def test_wheel_collision_shape_validated(tmp_path: Path) -> None:
+    robot = yaml.safe_load(gsa.ROBOT_YAML.read_text())
+    robot["wheel"]["collision_shape"] = "box"
+    f = tmp_path / "robot.yaml"
+    f.write_text(yaml.safe_dump(robot))
+    with pytest.raises(gsa.AssetError, match="collision_shape"):
+        gsa.load_robot(f)
+    robot["wheel"]["collision_shape"] = "cylinder"
+    f.write_text(yaml.safe_dump(robot))
+    paths = gsa.generate(PROFILE, OVERLAY, tmp_path / "out", robot_yaml=f)
+    root = ET.parse(paths["robot"]).getroot()
+    assert root.find("model/link[@name='left_wheel']/collision/geometry/cylinder") is not None

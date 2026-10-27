@@ -103,7 +103,6 @@ def load_robot(path: Path = ROBOT_YAML) -> dict:
         "lidar.horizontal_samples",
         "lidar.max_range_m",
         "lidar.range_resolution_m",
-        "lidar.render_range_sigma_m",
         "ground_truth_rate_hz",
     ):
         _positive(robot, key)
@@ -114,6 +113,11 @@ def load_robot(path: Path = ROBOT_YAML) -> dict:
         v = robot.get("wheel_slip", {}).get(key)
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
             raise AssetError(f"robot.yaml: wheel_slip.{key}: must be a number >= 0, got {v!r}")
+    shape = robot["wheel"].get("collision_shape")
+    if shape not in ("cylinder", "sphere"):
+        raise AssetError(
+            f"robot.yaml: wheel.collision_shape: expected 'cylinder' or 'sphere', got {shape!r}"
+        )
     if not isinstance(robot.get("model_name"), str) or not robot["model_name"]:
         raise AssetError("robot.yaml: model_name: expected a non-empty string")
     return robot
@@ -171,14 +175,19 @@ def imu_discrete_noise(profile: NoiseProfile) -> dict[str, float]:
     }
 
 
-def gz_range_sigma(profile: NoiseProfile, robot: dict) -> float:
-    """Gazebo LiDAR range stddev: the profile sigma minus (in quadrature) the rendering error."""
+def gz_range_sigma(profile: NoiseProfile, override_m: float | None = None) -> float:
+    """Gazebo LiDAR range stddev: the profile sigma minus (in quadrature) the measured rendering
+    error ``lidar.render_sigma_m``; ``override_m`` (calibration runs, e.g. 0) replaces it."""
+    if override_m is not None:
+        if not (math.isfinite(override_m) and override_m >= 0):
+            raise AssetError(f"--lidar-gz-sigma must be a finite number >= 0, got {override_m}")
+        return override_m
     total = profile.lidar.range_sigma_m
-    render = float(robot["lidar"]["render_range_sigma_m"])
+    render = profile.lidar.render_sigma_m
     if not render < total:
         msg = (
-            f"lidar.range_sigma_m {total} m must exceed robot.yaml lidar.render_range_sigma_m "
-            f"{render} m (gpu_lidar's own range error)"
+            f"lidar.range_sigma_m {total} m must exceed lidar.render_sigma_m {render} m "
+            "(gpu_lidar's own range error)"
         )
         raise AssetError(msg)
     return math.sqrt(total * total - render * render)
@@ -215,7 +224,12 @@ def _fmt(v: float) -> str:
 
 
 def robot_context(
-    profile: NoiseProfile, ext: Extrinsics, robot: dict, profile_path: str, pipeline_path: str
+    profile: NoiseProfile,
+    ext: Extrinsics,
+    robot: dict,
+    profile_path: str,
+    pipeline_path: str,
+    lidar_gz_sigma_m: float | None = None,
 ) -> dict[str, Any]:
     """Template variables; numbers are pre-formatted so the SDF is exact and reproducible."""
     kin = profile.odom.kinematics_true
@@ -257,7 +271,7 @@ def robot_context(
         "lidar": {
             "rate_hz": _fmt(1.0 / profile.lidar.scan_period_s),
             "min_range_m": _fmt(profile.lidar.min_range_m),
-            "range_sigma_m": _fmt(gz_range_sigma(profile, robot)),
+            "range_sigma_m": _fmt(gz_range_sigma(profile, lidar_gz_sigma_m)),
             "h_min_rad": _fmt(-math.pi),
             "h_max_rad": _fmt(math.pi - 2.0 * math.pi / n_h),  # no duplicate column at +-pi
             "v_min_rad": _fmt(-v_half),
@@ -319,12 +333,23 @@ def tf_static_transforms(ext: Extrinsics) -> list[dict[str, Any]]:
     ]
 
 
-def generate(profile_path: Path, pipeline_config: Path, out: Path) -> dict[str, Path]:
-    """Write robot.sdf, bridge.yaml, tf_static.yaml and assets.yaml under ``out``."""
+def generate(
+    profile_path: Path,
+    pipeline_config: Path,
+    out: Path,
+    lidar_gz_sigma_m: float | None = None,
+    robot_yaml: Path = ROBOT_YAML,
+) -> dict[str, Path]:
+    """Write robot.sdf, bridge.yaml, tf_static.yaml and assets.yaml under ``out``.
+
+    ``lidar_gz_sigma_m`` overrides the Gazebo LiDAR range noise (render calibration: 0).
+    """
     profile = load_profile(profile_path)
     ext = load_extrinsics(pipeline_config)
-    robot = load_robot()
-    ctx = robot_context(profile, ext, robot, _rel(profile_path), _rel(pipeline_config))
+    robot = load_robot(robot_yaml)
+    ctx = robot_context(
+        profile, ext, robot, _rel(profile_path), _rel(pipeline_config), lidar_gz_sigma_m
+    )
     kin_true = profile.odom.kinematics_true
     out.mkdir(parents=True, exist_ok=True)
     paths = {
@@ -338,6 +363,7 @@ def generate(profile_path: Path, pipeline_config: Path, out: Path) -> dict[str, 
     _dump(paths["tf_static"], {"transforms": tf_static_transforms(ext)})
     meta = {
         "model_name": robot["model_name"],
+        "lidar_gz_range_sigma_m": float(ctx["lidar"]["range_sigma_m"]),
         "robot_sdf": "robot.sdf",
         "bridge_yaml": "bridge.yaml",
         # The model frame is the body frame at axle height: spawn it one wheel radius up, wheels
@@ -457,10 +483,18 @@ def check_world(world_sdf: Path, sidecar: Path) -> list[str]:
         where = f"{sidecar.name}: planes[{i}]"
         axis, sign = _plane_axis(plane["n"], where)
         coord = sign * float(plane["d"])  # n . p = d with n = sign * e_axis
-        hits = [f for f in faces if f.axis == axis and abs(f.coord_m - coord) <= PLANE_TOL_M]
+        name = str(plane.get("name", ""))
+        # The face must belong to the named model (or its parts, e.g. room_wall_west_north).
+        hits = [
+            f
+            for f in faces
+            if f.axis == axis
+            and abs(f.coord_m - coord) <= PLANE_TOL_M
+            and (f.model == name or f.model.startswith(name + "_"))
+        ]
         if not hits:
             errors.append(
-                f"{where} ({plane.get('name', '?')}): no box face at {'xyz'[axis]} = {coord}"
+                f"{where} ({name or '?'}): no face of model {name!r} at {'xyz'[axis]} = {coord}"
             )
     return errors
 
@@ -505,6 +539,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help="output dir (build artefact)")
     ap.add_argument("--check-worlds", action="store_true", help="check worlds vs planes sidecars")
+    ap.add_argument("--robot", type=Path, default=ROBOT_YAML, help="robot description YAML")
+    ap.add_argument(
+        "--lidar-gz-sigma",
+        type=float,
+        default=None,
+        help="Gazebo LiDAR range noise, m (calibration of lidar.render_sigma_m: 0)",
+    )
     args = ap.parse_args(argv)
     if args.check_worlds:
         errors = check_worlds()
@@ -518,7 +559,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.profile is None or args.pipeline_config is None:
         ap.error("--profile and --pipeline-config are required to generate assets")
     try:
-        paths = generate(args.profile, args.pipeline_config, args.out)
+        paths = generate(
+            args.profile, args.pipeline_config, args.out, args.lidar_gz_sigma, args.robot
+        )
     except AssetError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

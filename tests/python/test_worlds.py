@@ -113,3 +113,16 @@ def test_spawn_inside_the_world() -> None:
         xs = sorted(p["d"] for p in planes if p["n"] == [1.0, 0.0, 0.0])
         ys = sorted(p["d"] for p in planes if p["n"] == [0.0, 1.0, 0.0])
         assert xs[0] < x < xs[-1] and ys[0] < y < ys[-1]
+
+
+def test_check_requires_the_named_model(tmp_path: Path) -> None:
+    """A plane on another model's face (shelf_run_15m's y = 1.6) fails under the wrong name."""
+    data = yaml.safe_load((WORLDS / "warehouse.planes.yaml").read_text())
+    data["planes"].append({"name": "wall_north", "n": [0.0, 1.0, 0.0], "d": 1.6})
+    side = tmp_path / "warehouse.planes.yaml"
+    side.write_text(yaml.safe_dump(data))
+    errors = gsa.check_world(WORLDS / "warehouse.sdf", side)
+    assert len(errors) == 1 and "wall_north" in errors[0]
+    data["planes"][-1]["name"] = "shelf_run_15m"
+    side.write_text(yaml.safe_dump(data))
+    assert gsa.check_world(WORLDS / "warehouse.sdf", side) == []

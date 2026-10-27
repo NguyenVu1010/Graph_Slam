@@ -23,7 +23,7 @@
   tau_Allan in [0.01, 100] s only (ADR-011 section 3).
 
   LiDAR range noise: stddev = sqrt(sigma_profile^2 - sigma_render^2), sigma_render being the range
-  error gpu_lidar renders by itself (robot.yaml lidar.render_range_sigma_m, measured).
+  error gpu_lidar renders by itself (profile lidar.render_sigma_m, measured statically).
 -->
 <sdf version="1.10">
   <model name="{{ robot.model_name }}">
@@ -158,7 +158,13 @@
         </inertia>
       </inertial>
       <collision name="{{ w.name }}_collision">
+{% if robot.wheel.collision_shape == 'sphere' %}
+        <!-- Sphere of the wheel radius: one contact point in the wheel's mid-plane, so the
+             contact track is the true track (a cylinder contacts the floor at a rim). -->
+        <geometry><sphere><radius>{{ kinematics.wheel_radius_m }}</radius></sphere></geometry>
+{% else %}
         <geometry><cylinder><radius>{{ kinematics.wheel_radius_m }}</radius><length>{{ robot.wheel.width_m }}</length></cylinder></geometry>
+{% endif %}
         <surface>
           <friction>
             <ode><mu>{{ robot.wheel.mu }}</mu><mu2>{{ robot.wheel.mu }}</mu2></ode>
@@ -213,8 +219,9 @@
 {% endfor %}
     </plugin>
 
-    <!-- Wheel slip. PLACEHOLDER values: the next PR tunes them against the odom drift targets
-         of ADR-011 section 3. Normal force = total mass * g / 2 per driven wheel. -->
+    <!-- Wheel slip: compliance 0 adds no slip. The plugin can only add slip (grass, wet patch
+         of the outdoor world), never correct odometry. wheel_normal_force = total mass * g / 2
+         is an upper bound: the casters at floor height carry part of the load. -->
     <plugin filename="gz-sim-wheel-slip-system" name="gz::sim::systems::WheelSlip">
 {% for w in wheels %}
       <wheel link_name="{{ w.name }}">

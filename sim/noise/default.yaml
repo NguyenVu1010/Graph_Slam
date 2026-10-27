@@ -22,6 +22,11 @@ gnss:
   degraded_factor: 3.0
 lidar:
   range_sigma_m: 0.02
+  # gpu_lidar's own range error: median over range bins of the static calibration (Gazebo noise
+  # 0, robot still, 10 s, warehouse + corridor, 2026-10-28; sim/README.md "LiDAR render error").
+  # Range dependent: 0.0012 m at 0.5-2 m, 0.0029 m at 10-20 m (corridor), 0.0108 m at 10-20 m and
+  # 0.0151 m at 20-40 m (warehouse). Gazebo noise = sqrt(range_sigma_m^2 - render_sigma_m^2).
+  render_sigma_m: 0.003
   dropout_p: 0.02
   dropout_p_grazing: 0.3
   grazing_deg: 80.0
