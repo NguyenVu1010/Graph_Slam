@@ -21,6 +21,9 @@
   variance K^2 t, a random walk of density K; the stationary sigma is K sqrt(tau / 2).
   With tau = {{ imu.bias_corr_time_s }} s the Allan deviation follows the random walk over
   tau_Allan in [0.01, 100] s only (ADR-011 section 3).
+
+  LiDAR range noise: stddev = sqrt(sigma_profile^2 - sigma_render^2), sigma_render being the range
+  error gpu_lidar renders by itself (robot.yaml lidar.render_range_sigma_m, measured).
 -->
 <sdf version="1.10">
   <model name="{{ robot.model_name }}">

@@ -124,7 +124,9 @@ def test_lidar_and_gnss_sensors(model: ET.Element) -> None:
     assert math.degrees(step / 719) == pytest.approx(0.5)
     assert _f(lidar, "lidar/range/min") == prof.lidar.min_range_m == 0.5
     assert _f(lidar, "lidar/range/max") == 100.0
-    assert _f(lidar, "lidar/noise/stddev") == prof.lidar.range_sigma_m
+    render = gsa.load_robot()["lidar"]["render_range_sigma_m"]
+    gz_sigma = _f(lidar, "lidar/noise/stddev")
+    assert math.hypot(gz_sigma, render) == pytest.approx(prof.lidar.range_sigma_m, rel=1e-12)
     gnss = _sensor(model, "navsat")
     assert _f(gnss, "update_rate") == prof.gnss.rate_hz == 5.0
     assert _floats(gnss.find("pose"))[:3] == [-0.20, 0.10, 0.60]
@@ -177,23 +179,25 @@ def test_bridge_yaml_lists_exactly_the_raw_topics(assets: dict[str, Path]) -> No
     assert len(entries) == len(got)
 
 
-def test_tf_static_args(assets: dict[str, Path]) -> None:
-    pubs = yaml.safe_load(assets["tf_static"].read_text())["publishers"]
-    by_child = {}
-    for p in pubs:
-        a = p["args"]
-        by_child[a[a.index("--child-frame-id") + 1]] = a
-        assert a[a.index("--frame-id") + 1] == "imu_link"
+def test_tf_static_transforms(assets: dict[str, Path]) -> None:
+    tfs = yaml.safe_load(assets["tf_static"].read_text())["transforms"]
+    by_child = {t["child_frame_id"]: t for t in tfs}
+    assert sorted(by_child) == ["gnss_link", "lidar_link"]
+    assert {t["frame_id"] for t in tfs} == {"imu_link"}
     lidar = by_child["lidar_link"]
-    q = [float(lidar[lidar.index(k) + 1]) for k in ("--qx", "--qy", "--qz", "--qw")]
+    assert lidar["translation_m"] == [0.10, 0.0, 0.50]
+    q = lidar["quaternion_xyzw"]  # ROS field order (x, y, z, w)
     assert math.sqrt(sum(v * v for v in q)) == pytest.approx(1.0, abs=1e-15)
-    gnss = by_child["gnss_link"]
-    assert [float(gnss[gnss.index(k) + 1]) for k in ("--x", "--y", "--z")] == [-0.2, 0.1, 0.6]
+    assert q[1] == pytest.approx(0.01745241, abs=1e-6) and q[3] == pytest.approx(
+        0.9998477, abs=1e-6
+    )
+    assert by_child["gnss_link"]["translation_m"] == [-0.2, 0.1, 0.6]
+    assert by_child["gnss_link"]["quaternion_xyzw"] == [0.0, 0.0, 0.0, 1.0]
 
 
 def test_assets_meta_has_no_absolute_paths(assets: dict[str, Path]) -> None:
     meta = yaml.safe_load(assets["assets"].read_text())
-    assert meta["spawn_z_m"] == pytest.approx(0.102)
+    assert meta["spawn_z_m"] == 0.10  # wheels touch the floor: no drop at start
     assert meta["profile"] == "sim/noise/default.yaml"
     text = assets["robot"].read_text()
     assert str(REPO) not in text and str(REPO.as_posix()) not in text
@@ -228,3 +232,10 @@ def test_cli_writes_default_names(tmp_path: Path) -> None:
         "robot.sdf",
         "tf_static.yaml",
     ]
+
+
+def test_render_error_above_profile_sigma_rejected() -> None:
+    robot = gsa.load_robot()
+    robot["lidar"]["render_range_sigma_m"] = 0.05
+    with pytest.raises(gsa.AssetError, match="render_range_sigma_m"):
+        gsa.gz_range_sigma(load_profile(PROFILE), robot)

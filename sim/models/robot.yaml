@@ -31,5 +31,11 @@ lidar:                             # gpu_lidar (section 2); min range and period
   horizontal_samples: 720
   max_range_m: 100.0
   range_resolution_m: 0.01
+  # Range error gpu_lidar adds by itself (depth-texture interpolation), measured with the Gazebo
+  # range noise at 0 (along-ray residual to the reference planes, ogre2, 2026-10-28): it grows
+  # with range and incidence, ~0 at 1-3 m (corridor walls), 0.011 m at 12-20 m and 0.0125 m at
+  # 20-40 m (warehouse walls). The generator sets the Gazebo noise to
+  # sqrt(range_sigma_m^2 - render_range_sigma_m^2); this value sits between the two worlds so
+  # both measure within +-8 % of the profile sigma (warehouse 0.0215 m, corridor 0.0185 m).
+  render_range_sigma_m: 0.008
 ground_truth_rate_hz: 200.0        # OdometryPublisher on the body (IMU) link, no noise
-spawn_clearance_m: 0.002           # spawn height above wheel contact, m

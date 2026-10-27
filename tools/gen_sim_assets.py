@@ -9,7 +9,7 @@ Writes under ``--out`` (a build artefact, never committed):
   profile (true kinematics, IMU/LiDAR noise, rates) and the pipeline overlay (``T_b_l``, ``p_b_g``,
   frame names).
 - ``bridge.yaml``: ``ros_gz_bridge parameter_bridge`` config of the raw topics.
-- ``tf_static.yaml``: ``static_transform_publisher`` arguments for ``T_b_l`` and ``p_b_g``.
+- ``tf_static.yaml``: ``T_b_l`` and ``p_b_g`` for ``mss_sim.tf_static`` (one ``/tf_static`` msg).
 - ``assets.yaml``: what the launch file needs (model name, spawn height, frames).
 
 The world helpers (``world_box_faces``, ``check_world``) compare a hand-written world SDF with the
@@ -103,8 +103,8 @@ def load_robot(path: Path = ROBOT_YAML) -> dict:
         "lidar.horizontal_samples",
         "lidar.max_range_m",
         "lidar.range_resolution_m",
+        "lidar.render_range_sigma_m",
         "ground_truth_rate_hz",
-        "spawn_clearance_m",
     ):
         _positive(robot, key)
     size = robot["body"].get("size_m")
@@ -169,6 +169,19 @@ def imu_discrete_noise(profile: NoiseProfile) -> dict[str, float]:
         "acc_dynamic_bias_stddev": imu.acc_random_walk,
         "bias_correlation_time_s": imu.bias_corr_time_s,
     }
+
+
+def gz_range_sigma(profile: NoiseProfile, robot: dict) -> float:
+    """Gazebo LiDAR range stddev: the profile sigma minus (in quadrature) the rendering error."""
+    total = profile.lidar.range_sigma_m
+    render = float(robot["lidar"]["render_range_sigma_m"])
+    if not render < total:
+        msg = (
+            f"lidar.range_sigma_m {total} m must exceed robot.yaml lidar.render_range_sigma_m "
+            f"{render} m (gpu_lidar's own range error)"
+        )
+        raise AssetError(msg)
+    return math.sqrt(total * total - render * render)
 
 
 @dataclass(frozen=True)
@@ -244,7 +257,7 @@ def robot_context(
         "lidar": {
             "rate_hz": _fmt(1.0 / profile.lidar.scan_period_s),
             "min_range_m": _fmt(profile.lidar.min_range_m),
-            "range_sigma_m": _fmt(profile.lidar.range_sigma_m),
+            "range_sigma_m": _fmt(gz_range_sigma(profile, robot)),
             "h_min_rad": _fmt(-math.pi),
             "h_max_rad": _fmt(math.pi - 2.0 * math.pi / n_h),  # no duplicate column at +-pi
             "v_min_rad": _fmt(-v_half),
@@ -282,28 +295,26 @@ def bridge_config() -> list[dict[str, str]]:
     ]
 
 
-def tf_static_publishers(ext: Extrinsics) -> list[dict[str, Any]]:
-    """``static_transform_publisher`` arguments for ``T_b_l`` and ``p_b_g`` (no rotation)."""
+def tf_static_transforms(ext: Extrinsics) -> list[dict[str, Any]]:
+    """``T_b_l`` and ``p_b_g`` (no rotation) for ``mss_sim.tf_static``: one ``/tf_static`` message.
+
+    Quaternions in ROS field order (x, y, z, w), normalised.
+    """
     w, x, y, z = ext.q_b_l_wxyz  # Hamilton order (w, x, y, z)
     norm = math.sqrt(w * w + x * x + y * y + z * z)
     body = ext.frames["body"]
-
-    def args(t: tuple[float, float, float], q_xyzw: tuple[float, ...], child: str) -> list[str]:
-        out = ["--x", _fmt(t[0]), "--y", _fmt(t[1]), "--z", _fmt(t[2])]
-        for key, v in zip(("--qx", "--qy", "--qz", "--qw"), q_xyzw, strict=True):
-            out += [key, _fmt(v)]
-        return [*out, "--frame-id", body, "--child-frame-id", child]
-
     return [
         {
-            "name": "tf_static_b_l",
-            "args": args(
-                ext.t_b_l_m, (x / norm, y / norm, z / norm, w / norm), ext.frames["lidar"]
-            ),
+            "frame_id": body,
+            "child_frame_id": ext.frames["lidar"],
+            "translation_m": [float(v) for v in ext.t_b_l_m],
+            "quaternion_xyzw": [x / norm, y / norm, z / norm, w / norm],
         },
         {
-            "name": "tf_static_b_g",
-            "args": args(ext.p_b_g_m, (0.0, 0.0, 0.0, 1.0), ext.frames["gnss"]),
+            "frame_id": body,
+            "child_frame_id": ext.frames["gnss"],
+            "translation_m": [float(v) for v in ext.p_b_g_m],
+            "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0],
         },
     ]
 
@@ -324,13 +335,14 @@ def generate(profile_path: Path, pipeline_config: Path, out: Path) -> dict[str, 
     }
     paths["robot"].write_text(render_robot(ctx), encoding="utf-8", newline="\n")
     _dump(paths["bridge"], bridge_config())
-    _dump(paths["tf_static"], {"publishers": tf_static_publishers(ext)})
+    _dump(paths["tf_static"], {"transforms": tf_static_transforms(ext)})
     meta = {
         "model_name": robot["model_name"],
         "robot_sdf": "robot.sdf",
         "bridge_yaml": "bridge.yaml",
-        # The model frame is the body frame at axle height: spawn it one wheel radius up.
-        "spawn_z_m": round(kin_true.wheel_radius_m + robot["spawn_clearance_m"], 9),
+        # The model frame is the body frame at axle height: spawn it one wheel radius up, wheels
+        # touching the floor (a spawn gap makes the robot drop and spoils the static window).
+        "spawn_z_m": kin_true.wheel_radius_m,
         "frames": ext.frames,
         "profile": _rel(profile_path),
         "pipeline_config": _rel(pipeline_config),
