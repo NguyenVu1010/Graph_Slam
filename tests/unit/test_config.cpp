@@ -184,6 +184,34 @@ TEST(Config, ScanMatchResidualSigmaFloor) {
   EXPECT_TRUE(mentions(cfg.reason(), "scan_match.min_residual_sigma_m")) << cfg.reason();
 }
 
+TEST(Config, ScanMatchPlanarityGateRange) {
+  const auto ok = load_config(kDefault);
+  ASSERT_TRUE(ok.is_ok()) << ok.reason();
+  // Shipped default is off (ADR-007 amendment: evaluated only on noise-free data).
+  EXPECT_EQ(ok.value().scan_match.plane_min_eig_ratio, 0.0);
+  for (const char* bad : {"-0.1", "1.0"}) {
+    const auto cfg = parse_config(
+        read_file(kDefault),
+        overlay(std::string("    scan_match:\n      plane_min_eig_ratio: ") + bad + "\n"));
+    ASSERT_FALSE(cfg.is_ok()) << bad;
+    EXPECT_TRUE(mentions(cfg.reason(), "scan_match.plane_min_eig_ratio")) << cfg.reason();
+  }
+}
+
+TEST(Config, ScanMatchCollinearityGateRange) {
+  const auto ok = load_config(kDefault);
+  ASSERT_TRUE(ok.is_ok()) << ok.reason();
+  // Shipped default is off (ADR-007 amendment: breaks narrow corridors).
+  EXPECT_EQ(ok.value().scan_match.min_mid_eig_ratio, 0.0);
+  for (const char* bad : {"-0.1", "1.0"}) {
+    const auto cfg = parse_config(
+        read_file(kDefault),
+        overlay(std::string("    scan_match:\n      min_mid_eig_ratio: ") + bad + "\n"));
+    ASSERT_FALSE(cfg.is_ok()) << bad;
+    EXPECT_TRUE(mentions(cfg.reason(), "scan_match.min_mid_eig_ratio")) << cfg.reason();
+  }
+}
+
 // ADR-018: backend.single_thread is not a YAML key; it follows `deterministic` (ADR-008).
 TEST(Config, DeterministicSetsBackendSingleThread) {
   const std::string base = read_file(kDefault);
@@ -195,6 +223,21 @@ TEST(Config, DeterministicSetsBackendSingleThread) {
   ASSERT_TRUE(off.is_ok()) << off.reason();
   EXPECT_FALSE(off.value().deterministic);
   EXPECT_FALSE(off.value().backend.single_thread);
+}
+
+TEST(Config, MapMinPointDistValidated) {
+  const auto ok = load_config(kDefault);
+  ASSERT_TRUE(ok.is_ok()) << ok.reason();
+  // Shipped default is off (ADR-007 amendment: E-01 cost at 0.1 m).
+  EXPECT_EQ(ok.value().map.min_point_dist_m, 0.0);
+  const std::string base = read_file(kDefault);
+  const auto off = parse_config(base, overlay("    map:\n      min_point_dist_m: 0.0\n"));
+  ASSERT_TRUE(off.is_ok()) << off.reason();
+  EXPECT_EQ(off.value().map.min_point_dist_m, 0.0);
+  const auto bad = parse_config(base, overlay("    map:\n      min_point_dist_m: -0.1\n"));
+  ASSERT_FALSE(bad.is_ok());
+  EXPECT_TRUE(mentions(bad.reason(), "map.min_point_dist_m: must be >= 0 (got -0.1)"))
+      << bad.reason();
 }
 
 TEST(Config, GnssGateAndAlignmentKeysLoaded) {

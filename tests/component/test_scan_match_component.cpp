@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include <Eigen/Cholesky>
+#include <Eigen/Eigenvalues>
 #include <gtest/gtest.h>
 
 #include "mss/common/lie.hpp"
@@ -23,11 +25,14 @@
 #include "mss/common/scan_frame.hpp"
 #include "mss/common/types.hpp"
 #include "mss/degeneracy/degeneracy.hpp"
+#include "mss/imu/trajectory.hpp"
 #include "mss/map/voxel_map.hpp"
 #include "mss/pipeline/config.hpp"
+#include "mss/preprocess/preprocessor.hpp"
 #include "mss/scan_match/scan_matcher.hpp"
 
 #include "alloc_counter.hpp"
+#include "box_world.hpp"
 #include "scan_match_scenes.hpp"
 
 namespace mss::scan_match {
@@ -132,12 +137,15 @@ TEST(ScanMatchComponent, S02_KnownTransformRecovered) {
   }
 }
 
-// S-02 at the SHIPPED map config (max_points_per_voxel = 20). Pins a known weakness: on box
-// edges the voxel ring drops part of one face, 5-NN neighbourhoods mix two faces, still pass
-// plane_rms_max_m and bias the answer (about 9.5 mm / 0.08 deg measured). A planarity gate
-// (ADR-007 follow-up, new tunable) should make this error shrink. Same limits as S-02.
-TEST(ScanMatchComponent, S02_DefaultMapConfigEdgeBias) {
-  const pipeline::Config cfg = shipped_config();
+// Worst S-02 error over 10 trials on the 0.125 m room map stored with `cfg.map`, plus the
+// smallest final inlier count. Same per-trial limits as S-02.
+struct EdgeBias {
+  double worst_m = 0.0;
+  double worst_deg = 0.0;
+  int min_inliers = std::numeric_limits<int>::max();
+};
+
+EdgeBias s02_edge_bias(const pipeline::Config& cfg) {
   map::VoxelMap m(cfg.map);
   insert_points(m, room_points_w(kMapSpacingM));
   ScanMatcher matcher(cfg.scan_match, cfg.degeneracy, cfg.realtime.max_points_per_scan);
@@ -145,23 +153,112 @@ TEST(ScanMatchComponent, S02_DefaultMapConfigEdgeBias) {
   ScanFrame scan(scan_w.size());
   make_scan(scan, scan_w, kTruthRoom);
   std::mt19937 rng(2);
-  double worst_m = 0.0;
-  double worst_deg = 0.0;
+  EdgeBias b;
   for (int trial = 0; trial < 10; ++trial) {
     const Pose init = perturb(kTruthRoom, 0.5, 10.0 * kDegToRad, rng);
     const common::Result<MatchResult> r = matcher.align(scan, m, init);
-    ASSERT_TRUE(r.is_ok()) << "trial " << trial << ": " << r.reason();
+    EXPECT_TRUE(r.is_ok()) << "trial " << trial << ": " << r.reason();
+    if (!r.is_ok()) {
+      continue;
+    }
     const MatchResult& res = r.value();
     const PoseError e = pose_error(res.T_w_l, kTruthRoom);
-    worst_m = std::max(worst_m, e.trans_m);
-    worst_deg = std::max(worst_deg, e.rot_rad / kDegToRad);
+    b.worst_m = std::max(b.worst_m, e.trans_m);
+    b.worst_deg = std::max(b.worst_deg, e.rot_rad / kDegToRad);
+    b.min_inliers = std::min(b.min_inliers, res.inliers);
     EXPECT_TRUE(res.converged) << "trial " << trial;
     EXPECT_LE(res.iterations, 10) << "trial " << trial;
     EXPECT_LT(e.trans_m, 0.01) << "trial " << trial;
     EXPECT_LT(e.rot_rad, 0.1 * kDegToRad) << "trial " << trial;
   }
-  std::printf("S-02 default map config: worst err_m=%.2e err_deg=%.2e\n", worst_m, worst_deg);
-  RecordProperty("edge_bias_worst_um", static_cast<int>(std::lround(worst_m * 1e6)));
+  std::printf(
+      "S-02 map N=%d min_point_dist_m %.3f plane %.3f mid %.3f: worst err_m=%.2e err_deg=%.2e "
+      "min inliers %d, map points %zu, spacing replaced %zu\n",
+      cfg.map.max_points_per_voxel,
+      cfg.map.min_point_dist_m,
+      cfg.scan_match.plane_min_eig_ratio,
+      cfg.scan_match.min_mid_eig_ratio,
+      b.worst_m,
+      b.worst_deg,
+      b.min_inliers,
+      m.num_points(),
+      m.num_spacing_replaced());
+  return b;
+}
+
+// The shipped config with spacing and both plane-fit gates off: the configuration before
+// the ADR-007 amendment.
+pipeline::Config ungated_config() {
+  pipeline::Config c = shipped_config();
+  c.map.min_point_dist_m = 0.0;
+  c.scan_match.plane_min_eig_ratio = 0.0;
+  c.scan_match.min_mid_eig_ratio = 0.0;
+  return c;
+}
+
+// Without the gates (pins the weakness behind the ADR-007 amendment): in the voxels on the
+// box edges at x = -4, y = -3 and z = -1 two faces share a voxel (32 points of the 0.125 m
+// grid for 20 slots), the ring keeps the last 20 and 5-NN neighbourhoods become two parallel
+// point columns on two faces (exactly coplanar), which pass plane_rms_max_m and bias the
+// answer by about 9.5 mm / 0.08 deg. Same limits as S-02.
+TEST(ScanMatchComponent, S02_UngatedEdgeBias) {
+  const EdgeBias b = s02_edge_bias(ungated_config());
+  EXPECT_GT(b.worst_m, 5e-3);
+  RecordProperty("edge_bias_worst_um", static_cast<int>(std::lround(b.worst_m * 1e6)));
+}
+
+// S-02 at the SHIPPED config (spacing and both plane-fit gates off, the behaviour of main):
+// the S-02 bounds (< 1 cm, < 0.1 deg) hold with the box-edge bias of the two-column
+// neighbourhoods (9.5 mm / 0.083 deg measured; 7.2 mm / 0.092 deg with planarity 0.01).
+// The next test shows the settings that remove it and why they are not shipped.
+TEST(ScanMatchComponent, S02_DefaultMapConfigEdgeBias) {
+  const pipeline::Config cfg = shipped_config();
+  const EdgeBias b = s02_edge_bias(cfg);
+  EXPECT_LT(b.worst_m, 0.01);
+  EXPECT_LT(b.worst_deg, 0.1);
+  EXPECT_GE(b.min_inliers, cfg.scan_match.min_inliers);
+  RecordProperty("edge_bias_shipped_um", static_cast<int>(std::lround(b.worst_m * 1e6)));
+}
+
+// Stronger settings remove the edge bias, each from the ungated config:
+// - map.min_point_dist_m = 0.1 m: the face point 8.8 cm from the other face's point across
+//   each such edge replaces it and the ring keeps different points (0.38 mm / 0.016 deg);
+// - scan_match.min_mid_eig_ratio = 0.2: the two-column neighbourhoods are long and thin
+//   (lambda_mid / lambda_max < 0.2) and are rejected (0.28 mm / 0.017 deg).
+// Neither is shipped (docs/derivations/scan_match.md section 3, map.md "Đánh giá"): spacing
+// is a memory and speed option whose E-01 effect depends on the gates, and the collinearity
+// gate rejects the thin wall strips of a 5 m wide corridor (LiDAR-only drift 11.5 -> 241 m
+// with planarity 0.05) and fails the no-GTSAM LiDAR NEES bound (2.83 < 3) and
+// CorridorDriftCorrectedByGnss. Eigenvalue-ratio gates also reject many genuinely planar
+// neighbourhoods once the map carries range noise (scan_match.md section 3).
+TEST(ScanMatchComponent, S02_StrongerSettingsRemoveEdgeBias) {
+  pipeline::Config spacing = ungated_config();
+  spacing.map.min_point_dist_m = 0.1;
+  pipeline::Config collinearity = ungated_config();
+  collinearity.scan_match.min_mid_eig_ratio = 0.2;
+  for (const pipeline::Config& cfg : {spacing, collinearity}) {
+    const EdgeBias b = s02_edge_bias(cfg);
+    EXPECT_LT(b.worst_m, 1e-3);
+    EXPECT_LT(b.worst_deg, 0.03);
+    EXPECT_GE(b.min_inliers, cfg.scan_match.min_inliers);
+  }
+}
+
+// Gate sweep (scan_match.md section 3 table): planarity ratio 0 / 0.01 / 0.05 / 0.1 / 0.2
+// and collinearity ratio 0 / 0.01 / 0.05 / 0.1 / 0.2, each with the other gate and spacing
+// off. Same per-trial limits as S-02 for every value; the inlier count stays above
+// min_inliers.
+TEST(ScanMatchComponent, S02_GateSweep) {
+  for (const double ratio : {0.0, 0.01, 0.05, 0.1, 0.2}) {
+    pipeline::Config pl = ungated_config();
+    pl.scan_match.plane_min_eig_ratio = ratio;
+    std::printf("plane_min_eig_ratio %.2f: ", ratio);
+    EXPECT_GE(s02_edge_bias(pl).min_inliers, pl.scan_match.min_inliers) << ratio;
+    pipeline::Config mid = ungated_config();
+    mid.scan_match.min_mid_eig_ratio = ratio;
+    std::printf("min_mid_eig_ratio %.2f: ", ratio);
+    EXPECT_GE(s02_edge_bias(mid).min_inliers, mid.scan_match.min_inliers) << ratio;
+  }
 }
 
 // Noise-free scan at the true pose: sigma_r^2 is ~0 (float rounding), so the covariance sits
@@ -580,6 +677,138 @@ TEST(ScanMatchComponent, CollinearMapNeverNaN) {
       EXPECT_TRUE(res.cov.allFinite());
     }
   }
+}
+
+// Ray-cast LiDAR of box_world.hpp (rings x columns, same elevations) from a static pose:
+// ring-major order, all offsets 0, points in l.
+void cast_box_static(const test::BoxWorldParams& p, const Pose& T_w_l, ScanFrame& out) {
+  out.clear();
+  for (int r = 0; r < p.rings; ++r) {
+    const double el_deg =
+        p.elevation_min_deg + (p.elevation_max_deg - p.elevation_min_deg) * r / (p.rings - 1);
+    const double el = el_deg * kDegToRad;
+    for (int c = 0; c < p.columns; ++c) {
+      const double az = 2.0 * kPi * c / p.columns;
+      const Vec3 d_l(std::cos(el) * std::cos(az), std::cos(el) * std::sin(az), std::sin(el));
+      const Vec3 d = T_w_l.R * d_l;
+      double range = std::numeric_limits<double>::infinity();
+      for (int k = 0; k < 3; ++k) {
+        if (std::abs(d(k)) > 0.0) {
+          const double wall = d(k) > 0.0 ? p.box_half_m(k) : -p.box_half_m(k);
+          const double hit = (wall - T_w_l.p(k)) / d(k);
+          range = hit > 0.0 ? std::min(range, hit) : range;
+        }
+      }
+      const Vec3 p_l = range * d_l;
+      (void)out.push(static_cast<float>(p_l.x()),
+                     static_cast<float>(p_l.y()),
+                     static_cast<float>(p_l.z()),
+                     1.0F,
+                     0U,
+                     static_cast<std::uint16_t>(r));
+    }
+  }
+}
+
+struct CorridorConditioning {
+  double h_ratio = 0.0;      // lambda_min / lambda_max of H (6x6, [rho, phi])
+  double trans_ratio = 0.0;  // lambda_min / lambda_max of the translation Schur complement S
+  double axis_share = 0.0;   // a^T S a / lambda_max(S), a = corridor axis in l
+  int inliers = 0;
+  std::size_t map_points = 0;
+  std::size_t spacing_replaced = 0;
+};
+
+// Corridor from the ray-cast box world (pipeline component tests): the x walls lie beyond
+// preprocess.max_range_m, so walls y = +-5 m, floor and ceiling remain and the world x axis
+// is unobservable (no information along x for exact planes). Keyframe clouds every
+// backend.keyframe_dist_m along x (body at y = z = 0, static scans, no deskew) are
+// preprocessed and inserted as the pipeline does (ADR-016); a scan from the middle of the
+// last stretch is aligned at its true pose. Information along x comes from neighbourhoods
+// whose fitted normal has an x component: those across the wall-floor and wall-ceiling
+// edges (planarity gate sweep, scan_match.md section 3).
+CorridorConditioning corridor_conditioning(const pipeline::Config& cfg) {
+  test::BoxWorldParams p;
+  p.box_half_m.x() = 1000.0;  // m, beyond preprocess.max_range_m (100 m)
+  preprocess::PreprocessConfig pc = cfg.preprocess;
+  pc.deskew_enabled = false;  // static scans
+  const auto n_rays = static_cast<std::size_t>(p.rings * p.columns);
+  preprocess::Preprocessor pre(pc, p.T_b_l, n_rays);
+  const imu::ImuTrajectory traj;  // not read without deskew
+  ScanFrame raw(n_rays);
+  ScanFrame ds(n_rays);
+  map::VoxelMap m(cfg.map);
+  const double step_m = cfg.backend.keyframe_dist_m;
+  constexpr int kKeyframes = 10;
+  for (int k = 0; k < kKeyframes; ++k) {
+    const Pose T_w_l = Pose{Mat3::Identity(), Vec3(k * step_m, 0.0, 0.0)} * p.T_b_l;
+    cast_box_static(p, T_w_l, raw);
+    EXPECT_TRUE(pre.process(raw, traj, ds).is_ok());
+    m.insert(ds, T_w_l);
+  }
+  const Pose T_w_l = Pose{Mat3::Identity(), Vec3((kKeyframes - 0.5) * step_m, 0.0, 0.0)} * p.T_b_l;
+  cast_box_static(p, T_w_l, raw);
+  EXPECT_TRUE(pre.process(raw, traj, ds).is_ok());
+  ScanMatcher matcher(cfg.scan_match, cfg.degeneracy, n_rays);
+  const common::Result<MatchResult> r = matcher.align(ds, m, T_w_l);
+  EXPECT_TRUE(r.is_ok()) << r.reason();
+  CorridorConditioning c;
+  if (!r.is_ok()) {
+    return c;
+  }
+  const Mat6& H = r.value().H;
+  const common::DegeneracyReport rep = degeneracy::analyze(H, cfg.degeneracy);
+  c.h_ratio = rep.eigvals(0) / rep.eigvals(5);
+  const Mat3 H_tt = H.topLeftCorner<3, 3>();
+  const Mat3 H_tr = H.topRightCorner<3, 3>();
+  const Mat3 H_rr = H.bottomRightCorner<3, 3>();
+  const Mat3 S = H_tt - H_tr * H_rr.ldlt().solve(H_tr.transpose());
+  const Eigen::SelfAdjointEigenSolver<Mat3> es(S);
+  c.trans_ratio = es.eigenvalues()(0) / es.eigenvalues()(2);
+  const Vec3 axis_l = T_w_l.R.transpose() * Vec3::UnitX();
+  c.axis_share = axis_l.dot(S * axis_l) / es.eigenvalues()(2);
+  c.inliers = r.value().inliers;
+  c.map_points = m.num_points();
+  c.spacing_replaced = m.num_spacing_replaced();
+  std::printf(
+      "corridor min_point_dist_m %.3f plane %.3f mid %.3f: H lambda_min/max %.3e, translation "
+      "Schur min/max "
+      "%.3e, "
+      "axis share %.3e, inliers %d, map points %zu, spacing replaced %zu\n",
+      cfg.map.min_point_dist_m,
+      cfg.scan_match.plane_min_eig_ratio,
+      cfg.scan_match.min_mid_eig_ratio,
+      c.h_ratio,
+      c.trans_ratio,
+      c.axis_share,
+      c.inliers,
+      c.map_points,
+      c.spacing_replaced);
+  return c;
+}
+
+// Spurious information along an unobservable corridor axis (scan_match.md section 3, map.md
+// "Đánh giá"). Without the gates about 1.1 % of the largest translational information lies
+// along the axis and map spacing does not change that (1.3 / 1.2 / 0.6 % at 0.05 / 0.1 /
+// 0.2 m). The source is neighbourhoods across the wall-floor and wall-ceiling edges: the
+// planarity gate (off by default) cuts the share to 0.10 % at 0.01 (0.04 % at 0.05). This is
+// a conditioning statement only: in the pipeline corridor the fused GNSS ATE gets worse with
+// the gate (CorridorDriftCorrectedByGnss 1.8 -> 5.2 m at 0.01).
+TEST(ScanMatchComponent, CorridorAxisLeak) {
+  for (const double d_m : {0.0, 0.05, 0.1, 0.2}) {
+    pipeline::Config cfg = ungated_config();
+    cfg.map.min_point_dist_m = d_m;
+    const CorridorConditioning c = corridor_conditioning(cfg);
+    EXPECT_GT(c.inliers, 0) << d_m;
+    EXPECT_GT(c.axis_share, 5e-3) << d_m;
+    EXPECT_LT(c.axis_share, 0.05) << d_m;
+  }
+  pipeline::Config gated = ungated_config();
+  gated.scan_match.plane_min_eig_ratio = 0.01;
+  const CorridorConditioning c = corridor_conditioning(gated);
+  EXPECT_GE(c.inliers, gated.scan_match.min_inliers);
+  EXPECT_LT(c.axis_share, 2e-3);
+  RecordProperty("axis_share_plane001_ppm", static_cast<int>(std::lround(c.axis_share * 1e6)));
 }
 
 // Nearest-rank percentile, p in [0, 100]. Sorts `v`, which must not be empty.
