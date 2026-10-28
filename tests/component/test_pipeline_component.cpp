@@ -3,6 +3,7 @@
 // accuracy, allocation-free non-keyframe scans and the robustness cases of the plan's
 // Review Focus list.
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -13,6 +14,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <random>
@@ -48,6 +50,9 @@ namespace mss::pipeline {
 namespace {
 
 using namespace ct;  // NOLINT(google-build-using-namespace): shared test helpers
+
+// Seeds of PrealignStaticFixesAnchorFrameAlongAxis.
+constexpr std::array<std::uint32_t, 4> kPrealignSeeds = {42U, 46U, 48U, 50U};
 
 // GNSS must help where the LiDAR drifts (owner decision on review I3 of PR 4b): a 120 m
 // corridor with the end walls out of range, 60 s, GNSS 0.5 m at 5 Hz, no wheel, degeneracy on
@@ -140,6 +145,168 @@ TEST(PipelineComponent, CorridorOutageRealignsAfterRejects) {
     EXPECT_EQ(no_reset.stats.n_gnss_realign, 0U);
     EXPECT_EQ(no_reset.gnss_factors_after_outage, 0U);  // locked out for good
     // ATEs are printed by run_corridor, not compared: the margin is under 1 % (see above).
+  }
+}
+
+// Records the GNSS frame variable E after the first optimisation that has it, the fixes of
+// the GNSS factors added before that optimisation (the first batch) and the keyframe time of
+// every GNSS factor.
+class FrameObserver : public detail::CoreObserver {
+ public:
+  void on_frame_estimate(Timestamp /*t*/, const common::Pose& T_e_w) override {
+    if (!have_e_) {
+      E_first_ = T_e_w;
+      have_e_ = true;
+    }
+  }
+  void on_gnss_factor(Timestamp t_k,
+                      const common::GnssMeasurement& m,
+                      const common::Pose& /*T_e_w*/) override {
+    t_k_.push_back(t_k);
+    if (!have_e_) {
+      first_batch_t_.push_back(m.t);
+    }
+  }
+  bool have_e_ = false;
+  common::Pose E_first_;
+  std::vector<Timestamp> t_k_;
+  std::vector<Timestamp> first_batch_t_;
+};
+
+// Along-axis error (in w, rotated with the true T_e_w) of every dataset fix, by time (ns).
+std::map<std::int64_t, double> fix_errors_x(const BoxWorldParams& p, const fs::path& data) {
+  std::map<std::int64_t, double> out;
+  auto opened = io::DatasetReader::open(data, 65536);
+  EXPECT_TRUE(opened.is_ok()) << opened.reason();
+  if (!opened.is_ok()) {
+    return out;
+  }
+  io::DatasetReader reader = std::move(opened).value();
+  ScanFrame scan(65536);
+  io::Record rec;
+  const common::Pose T_true = test::box_T_e_w(p);
+  for (;;) {
+    const auto more = reader.next(rec, scan);
+    if (!more.is_ok() || !more.value()) {
+      break;
+    }
+    if (rec.kind == io::RecordKind::kGnss) {
+      const Vec3 r_e = rec.gnss.p_e_g - T_true * (test::box_truth(p, rec.gnss.t).T_w_b * p.p_b_g);
+      out[rec.gnss.t.ns] = (T_true.R.transpose() * r_e).x();
+    }
+  }
+  return out;
+}
+
+// ADR-022 known answer. In the corridor (LiDAR blind along the axis, no wheel) the along-axis
+// translation of E has no absolute anchor but keyframe 0; on main its value right after the
+// alignment comes from the aligner, fitted to dead-reckoned positions (0.1 to 1 m off here).
+// With gnss.attach_prealign_fixes the fixes received before the alignment are factors from
+// the first optimisation with E on: the static ones on keyframe 0 (its pose held by its prior),
+// the others on the first keyframes, which the IMU places from rest to centimetres. So E's
+// along-axis offset from the truth after that optimisation (x of T_true^-1 E, in w) is the
+// mean along-axis error (from the dataset truth) of the fixes of that first batch. The
+// difference is not a sampling error of that mean: it is the mean along-axis error of the
+// batch's keyframes (IMU from rest, keyframe 0's prior) plus the pull of E's loose prior. The
+// tolerance 2 sigma / sqrt(n) (about 0.13 m) is only a conservative scale for that.
+// Measured |E - mean| 0.081 / 0.001 / 0.005 / 0.030 m on seeds 42 / 46 / 48 / 50.
+// Checks: (1) that bound; (2) negative control: off, E is farther from that mean than on (off,
+// E - truth is +0.49 / +0.97 / +0.12 / +0.84 m); (3) the brief's static-only form: within
+// 2 sigma / sqrt(n_static) (about 0.30 m) of the mean error of the static-window fixes
+// (measured 1.0 to 1.3 sigma / sqrt(n_static)); (4) every static-window fix is a factor on
+// keyframe 0 (Stats::n_gnss_prealign_static) unless the chi-square gate rejected it at release
+// (2 of 11 on seed 46).
+TEST(PipelineComponent, PrealignFixesAnchorFrameAlongAxis) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "the stub backend has no frame variable";
+  }
+  for (const std::uint32_t seed : kPrealignSeeds) {
+    BoxWorldParams p = corridor_params();
+    p.seed = seed;
+    const fs::path dir = test_dir() / ("seed" + std::to_string(seed));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const std::map<std::int64_t, double> err_x = fix_errors_x(p, dir / "data");
+    const common::Pose T_true = test::box_T_e_w(p);
+    std::array<double, 2> dx = {0.0, 0.0};
+    double batch_mean_x = 0.0;
+    std::size_t batch_n = 0;
+    Timestamp t_kf0{};
+    std::array<std::uint64_t, 2> attached = {0, 0};
+    std::array<std::size_t, 2> at_kf0 = {0, 0};
+    std::uint64_t static_attached = 0;
+    std::uint64_t rejected = 0;
+    for (int on = 0; on < 2; ++on) {
+      const Config cfg =
+          box_config(p,
+                     true,
+                     false,
+                     dir / (on != 0 ? "on" : "off"),
+                     std::string("    preprocess:\n      max_range_m: 10.0\n") + kCorridorRelaxYaml,
+                     on != 0 ? "      attach_prealign_fixes: true\n" : "");
+      FrameObserver obs;
+      detail::CoreTestHooks hooks;
+      hooks.observer = &obs;
+      ReplayResult rr;
+      {
+        const HooksScope scope(&hooks);
+        rr = replay(dir / "data", cfg);
+      }
+      ASSERT_FALSE(rr.estimates.empty());
+      ASSERT_TRUE(obs.have_e_);
+      t_kf0 = rr.estimates.front().state.t;  // keyframe 0
+      dx[static_cast<std::size_t>(on)] = (T_true.inverse() * obs.E_first_).p.x();
+      attached[static_cast<std::size_t>(on)] = rr.stats.n_gnss_prealign_attached;
+      at_kf0[static_cast<std::size_t>(on)] =
+          static_cast<std::size_t>(std::count(obs.t_k_.begin(), obs.t_k_.end(), t_kf0));
+      if (on != 0) {
+        double sum = 0.0;
+        for (const Timestamp t : obs.first_batch_t_) {
+          sum += err_x.at(t.ns);
+        }
+        batch_n = obs.first_batch_t_.size();
+        static_attached = rr.stats.n_gnss_prealign_static;
+        rejected = rr.stats.n_gnss_prealign_rejected;
+        batch_mean_x = batch_n > 0 ? sum / static_cast<double>(batch_n) : 0.0;
+      }
+    }
+    // Fixes of the static initialisation window [t_kf0 - imu.init_window_s, t_kf0].
+    std::size_t n_static = 0;
+    double static_sum_x = 0.0;
+    for (const auto& [t_ns, e] : err_x) {
+      if (t_ns >= t_kf0.ns - test::box_ns(2.0) && t_ns <= t_kf0.ns) {
+        ++n_static;
+        static_sum_x += e;
+      }
+    }
+    ASSERT_GT(n_static, 0U);
+    const double static_mean_x = static_sum_x / static_cast<double>(n_static);
+    const double sigma_static = p.gnss_sigma_m / std::sqrt(static_cast<double>(n_static));
+    const double sigma_mean = p.gnss_sigma_m / std::sqrt(static_cast<double>(batch_n));
+    std::printf(
+        "[ prealign ] seed %u: first batch %zu fixes, mean along-x error %+.3f m (sigma %.3f); "
+        "E - truth along x after alignment: off %+.3f m, on %+.3f m; on: %llu attached, %zu on "
+        "keyframe 0 (%zu static, mean along-x error %+.3f m, sigma %.3f)\n",
+        seed,
+        batch_n,
+        batch_mean_x,
+        sigma_mean,
+        dx[0],
+        dx[1],
+        static_cast<unsigned long long>(attached[1]),
+        at_kf0[1],
+        n_static,
+        static_mean_x,
+        sigma_static);
+    EXPECT_EQ(attached[0], 0U);
+    EXPECT_EQ(at_kf0[0], 0U);
+    // The static-window fixes, plus the still-static ones after keyframe 0 nearer to it.
+    EXPECT_GE(at_kf0[1], n_static);
+    EXPECT_GT(batch_n, n_static);
+    EXPECT_LE(static_attached, static_cast<std::uint64_t>(n_static));
+    EXPECT_GE(static_attached + rejected, static_cast<std::uint64_t>(n_static));
+    EXPECT_LT(std::abs(dx[1] - batch_mean_x), 2.0 * sigma_mean) << "seed " << seed;
+    EXPECT_LT(std::abs(dx[1] - batch_mean_x), std::abs(dx[0] - batch_mean_x)) << "seed " << seed;
+    EXPECT_LT(std::abs(dx[1] - static_mean_x), 2.0 * sigma_static) << "seed " << seed;
   }
 }
 
@@ -456,14 +623,17 @@ class StaticCore {
  public:
   // `aux`: gnss.enabled and wheel_odom.enabled, with GNSS (5 Hz, 1.234 ms off the IMU grid)
   // and wheel (50 Hz) messages merged into the stream by time.
-  explicit StaticCore(bool aux = false)
-      : aux_(aux), cfg_(make_cfg(aux)), core_(std::make_unique<detail::EstimatorCore>(cfg_)) {
+  // `prealign_max_fixes` > 0: also gnss.attach_prealign_fixes with that buffer bound (ADR-022).
+  explicit StaticCore(bool aux = false, int prealign_max_fixes = 0)
+      : aux_(aux),
+        cfg_(make_cfg(aux, prealign_max_fixes)),
+        core_(std::make_unique<detail::EstimatorCore>(cfg_)) {
     scan_.reserve(static_cast<std::size_t>(p_.rings * p_.columns));
     test::box_scan(p_, Timestamp{p_.t0_ns}, scan_);  // static: identical at every time
     empty_.reserve(1);
   }
 
-  static Config make_cfg(bool aux = false) {
+  static Config make_cfg(bool aux = false, int prealign_max_fixes = 0) {
     const auto loaded = load_config(kDefault);
     EXPECT_TRUE(loaded.is_ok()) << loaded.reason();
     Config c = loaded.value();
@@ -471,6 +641,10 @@ class StaticCore {
     c.frames.p_b_g = BoxWorldParams{}.p_b_g;
     c.gnss.enabled = aux;
     c.wheel_odom.enabled = aux;
+    if (prealign_max_fixes > 0) {
+      c.gnss.attach_prealign_fixes = true;
+      c.gnss.prealign_max_fixes = prealign_max_fixes;
+    }
     return c;
   }
 
@@ -559,6 +733,31 @@ TEST(PipelineComponent, NonKeyframeScanDoesNotAllocate) {
   EXPECT_EQ(s.core().counters().n_match_failures, 0U);
   EXPECT_EQ(s.core().latest().state.t, Timestamp{s.t_scan(15)});
   EXPECT_LT(s.core().latest().state.T_w_b.p.norm(), 0.02);  // static: matched near origin
+}
+
+// ADR-022: with gnss.attach_prealign_fixes the static body never aligns (no spread), so every
+// fix goes to the pre-alignment buffer, which fills (4 fixes) and then drops and counts; the
+// non-keyframe scans still do not allocate.
+TEST(PipelineComponent, PrealignBufferBoundedNoAllocation) {
+  StaticCore s(true, 4);
+  s.scan_at(s.t_scan(0));  // initialisation + keyframe 0
+  ASSERT_TRUE(s.core().has_estimate());
+  for (int k = 1; k <= 5; ++k) {
+    s.scan_at(s.t_scan(k));  // warm-up
+  }
+  const std::uint64_t dropped = s.core().counters().n_gnss_prealign_dropped;
+  AllocCounter::reset();
+  {
+    const EigenMallocGuard guard;
+    for (int k = 6; k < 16; ++k) {
+      s.scan_at(s.t_scan(k));
+    }
+  }
+  EXPECT_EQ(AllocCounter::count_this_thread(), 0U);
+  // 5 Hz: one second of scans brings 5 more fixes, all dropped (buffer full).
+  EXPECT_EQ(s.core().counters().n_gnss_prealign_dropped, dropped + 5U);
+  EXPECT_EQ(s.core().counters().n_gnss_prealign_attached, 0U);
+  EXPECT_EQ(s.core().counters().n_gnss_factors, 0U);
 }
 
 // I-2: a NaN IMU sample inside a scan span and one exactly at a scan start are dropped;

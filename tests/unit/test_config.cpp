@@ -265,6 +265,14 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   ASSERT_FALSE(bad.is_ok());
   EXPECT_TRUE(mentions(bad.reason(), "gnss.max_consecutive_rejects: must be >= 1 (got 0)"))
       << bad.reason();
+  // ADR-022: off by default (previous behaviour), buffer bound >= 1.
+  EXPECT_FALSE(cfg.value().gnss.attach_prealign_fixes);
+  EXPECT_EQ(cfg.value().gnss.prealign_max_fixes, 128);
+  const auto bad_buf =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      prealign_max_fixes: 0\n"));
+  ASSERT_FALSE(bad_buf.is_ok());
+  EXPECT_TRUE(mentions(bad_buf.reason(), "gnss.prealign_max_fixes: must be >= 1 (got 0)"))
+      << bad_buf.reason();
 }
 
 // Ruling on the static-init threshold: it must exceed the per-sample accelerometer noise

@@ -21,6 +21,11 @@ struct GnssConfig {
   // pipeline.md section 5). The struct default never restarts (previous behaviour);
   // load_config overwrites it from YAML (>= 1).
   int max_consecutive_rejects = std::numeric_limits<int>::max();
+  // ADR-022: fixes received before the first alignment (the static ones at keyframe 0
+  // included) become factors once aligned. The struct default keeps the previous behaviour
+  // (dropped); load_config overwrites both from YAML.
+  bool attach_prealign_fixes = false;
+  int prealign_max_fixes = 1;  // fixes, capacity of the pre-alignment buffer (>= 1)
 };
 
 }  // namespace mss::gnss

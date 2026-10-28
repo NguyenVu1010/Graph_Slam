@@ -118,13 +118,19 @@ struct CoreCounters {
   std::uint64_t n_gnss_rejected = 0;             ///< fixes rejected (gate_fix, chi-square, pose)
   std::uint64_t n_gnss_late = 0;                 ///< fixes older than the last processed scan start
   std::uint64_t n_gnss_ring_overflow = 0;        ///< deferred fixes overwritten (ring full)
-  std::uint64_t n_gnss_unfused_eof = 0;      ///< deferred fixes left at end of data (no IMU after)
-  std::uint64_t n_gnss_realign = 0;          ///< aligner restarts (gnss.max_consecutive_rejects)
-  std::uint64_t n_nonfinite_imu = 0;         ///< IMU samples dropped (non-finite acc or gyro)
-  std::uint64_t n_odom_factors = 0;          ///< wheel factors added
-  std::uint64_t n_odom_rejected = 0;         ///< wheel deltas dropped by the time check
-  std::uint64_t n_backend_failures = 0;      ///< optimize() errors (stub build: every keyframe)
-  std::uint64_t n_gravity_factor_gated = 0;  ///< kf-0 gravity factor not added (rest gate)
+  std::uint64_t n_gnss_unfused_eof = 0;  ///< deferred fixes left at end of data (no IMU after)
+  std::uint64_t n_gnss_realign = 0;      ///< aligner restarts (gnss.max_consecutive_rejects)
+  // ADR-022, see Estimator::Stats.
+  std::uint64_t n_gnss_prealign_attached = 0;
+  std::uint64_t n_gnss_prealign_static = 0;
+  std::uint64_t n_gnss_prealign_dropped = 0;
+  std::uint64_t n_gnss_prealign_not_static = 0;
+  std::uint64_t n_gnss_prealign_rejected = 0;
+  std::uint64_t n_nonfinite_imu = 0;             ///< IMU samples dropped (non-finite acc or gyro)
+  std::uint64_t n_odom_factors = 0;              ///< wheel factors added
+  std::uint64_t n_odom_rejected = 0;             ///< wheel deltas dropped by the time check
+  std::uint64_t n_backend_failures = 0;          ///< optimize() errors (stub build: every keyframe)
+  std::uint64_t n_gravity_factor_gated = 0;      ///< kf-0 gravity factor not added (rest gate)
   std::uint64_t n_gravity_factor_removed = 0;    ///< removed by the chi-square check (ADR-020)
   std::uint64_t n_gravity_factor_unchecked = 0;  ///< check not evaluated, factor kept (ADR-020)
   /// VoxelMap spacing replacements counted before the map's last clear() (rebuilds); the
@@ -174,6 +180,10 @@ class EstimatorCore {
   void process_deferred_gnss();
   // One fix at the body pose predicted from front_ to m.t (m.t >= front_.t, IMU covers it).
   void fuse_gnss(const common::GnssMeasurement& m);
+  // ADR-022: assigns the pre-alignment fixes up to keyframe j (at t, front_ holds its
+  // front-end pose) and, once aligned, adds them as factors on their keyframes.
+  void attach_prealign_fixes(common::KeyId j, common::Timestamp t);
+  void sync_prealign_counters();
   // Feeds `s` to both preintegrators when it is newer than the last fed sample.
   void feed_preintegrators(const common::ImuSample& s);
   // Drops buffered samples older than the last one at or before `t`.
@@ -222,6 +232,8 @@ class EstimatorCore {
   std::unique_ptr<std::array<common::ImuSample, kMaxImuQueue>> init_window_;
   std::unique_ptr<imu::ImuTrajectory> traj_;
   std::unique_ptr<std::array<common::GnssMeasurement, kMaxAuxQueue>> gnss_out_;
+  // ADR-022 output of GnssFusion::take_prealign; nullptr unless gnss.attach_prealign_fixes.
+  std::unique_ptr<std::array<EarlyFactor, kMaxAuxQueue>> early_out_;
   BoundedQueue<common::WheelSample, kMaxAuxQueue> wheel_queue_;
   BoundedQueue<common::GnssMeasurement, kMaxDeferredGnss> gnss_deferred_;
   common::ScanFrame pre_out_;
