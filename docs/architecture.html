@@ -209,6 +209,8 @@
     <div class="hint">Nhấn vào một khối để xem đầu vào, đầu ra, test và sơ đồ hàm. Nhấn lại khối đang chọn để bỏ chọn.</div>
     <div class="card"><svg id="overview" viewBox="0 0 1200 720" role="img" aria-label="Sơ đồ khối tổng thể"></svg></div>
     <div id="detail" class="card"><div class="empty">Chưa chọn khối nào.</div></div>
+    <h2>Các thay đổi gần đây và việc còn mở</h2>
+    <div class="card" id="status-card"></div>
   </section>
 
   <section id="chu-ky" role="tabpanel" hidden>
@@ -252,7 +254,7 @@
 </main>
 <footer>
   Cập nhật: sửa khối <code>DATA</code> ở đầu phần script (trạng thái module, test, hàm, các chu kỳ). Hàm đánh dấu <b>dự kiến</b> là thiết kế đề xuất, chưa có trong code; <b>nội bộ</b> là hàm trong <code>src/</code>, không thuộc header giao diện.
-  Quy ước frame và Jacobian: <code>docs/conventions.md</code>. Luồng dữ liệu: <code>docs/derivations/pipeline.md</code>, ADR-016 đến ADR-019.
+  Quy ước frame và Jacobian: <code>docs/conventions.md</code>. Luồng dữ liệu: <code>docs/derivations/pipeline.md</code>, ADR-016 đến ADR-021.
 </footer>
 
 <script>
@@ -263,12 +265,32 @@
 // cycles[].stages[].refs: "module.fn" phải trỏ tới một fn có trong modules
 // ============================================================================
 const DATA = {
-  repo: { commit: "f64b186", date: "2026-10-27", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
-  ci: { run: 40496168491, jobs: [
+  repo: { commit: "bd7da25", date: "2026-10-28", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
+  ci: { run: 40673319429, jobs: [
     { name: "lint", ok: true, note: "clang-format 18 + ruff" },
     { name: "core-no-gtsam", ok: true, note: "CMake + GTest, -Werror, MSS_WITH_GTSAM=OFF" },
     { name: "python", ok: true, note: "pip install -e + pytest" },
-    { name: "docker-full", ok: true, note: "ROS 2 Jazzy + GTSAM 4.2.0; colcon build 3 gói (multi_sensor_slam, mss_core, mss_ros2) -Werror; ctest; ros2 launch mss_ros2 mss.launch.py giữ 15 s; tích hợp E-01..E-03, PF-01: ATE 0,0022 / 0,0022 / 0,0021 m, p95 xử lý scan khoảng 8,5 ms trên runner" } ] },
+    { name: "docker-full", ok: true, note: "ROS 2 Jazzy + GTSAM 4.2.0; colcon build 3 gói (multi_sensor_slam, mss_core, mss_ros2) -Werror; ctest; ros2 launch mss_ros2 mss.launch.py giữ 15 s; tích hợp E-01..E-03, PF-01: ATE 0,002184 / 0,002184 / 0,002181 m, p95 xử lý scan 8,0 / 8,1 / 8,3 ms trên runner, chấm với eval/baselines.json (xấu hơn 20 % thì fail)" } ] },
+
+  // status: các PR đã gộp sau lần cập nhật trước (#23 đến #30) và các việc còn mở; hiển thị ở tab Tổng quan
+  status: {
+    done: [
+      ["#23", "2026-10-28", "docs/lessons.md: các bài học từ ước lượng, mô phỏng, quy trình."],
+      ["#24", "2026-10-28", "ADR-020: factor hướng trọng lực của cửa sổ tĩnh vào keyframe 0 (backend.static_gravity_factor, mặc định bật; cổng đứng yên; kiểm tra nhất quán đã đánh giá, tắt). IMU-only hành lang: lỗi x cuối vòng tròn 21,7 → 1,45 m. Stats: n_gravity_factor_gated / _removed / _unchecked."],
+      ["#25", "2026-10-28", "PR 4e: backend.relative_factor chọn dạng factor tương đối (between, se3_exact, decoupled) với Jacobian đúng; chẩn đoán ghép phần dư SE(3)."],
+      ["#26", "2026-10-28", "ADR-011 phần B, S1: môi trường Gazebo Harmonic (robot mẫu, world warehouse và corridor, driver pure pursuit, tools/record_scenario.sh, bảng sai số render LiDAR đo theo world, run_integration.py --bridged, kịch bản E-04)."],
+      ["#27", "2026-10-28", "ADR-021: backend.relative_factor mặc định decoupled (DecoupledRelativePoseFactor) cho LiDAR và loop; B-04 tham chiếu batch hội tụ."],
+      ["#28", "2026-10-28", "PosePriorFactor (Jacobian đúng) thay gtsam::PriorFactor<Pose3> ở ba chỗ prior: keyframe 0, tái neo nhóm mồ côi, biến khung GNSS E."],
+      ["#29", "2026-10-28", "PR 4b-1: degeneracy::unobserved_covariance, hai khóa scan_match.unobserved_var_m2 / _rad2 (hiệp phương sai theo hướng bị cờ), Stats n_degenerate_keyframes và n_degenerate_rot_keyframes. degeneracy.enabled vẫn tắt."],
+      ["#30", "2026-10-28", "Baseline đầu tiên trong eval/baselines.json (docs/baselines/2026-10-28): ATE E-01 0,002184 m, E-02 0,002184 m, E-03 0,002181 m; p95 mỗi scan 8,040 / 8,079 / 8,253 ms. Cổng 20 % có hiệu lực: E-01, E-02 fail trên 0,002621 m; PF-01 chỉ cảnh báo trên 9,648 ms. Chưa baseline cho bag Gazebo."]
+    ],
+    open: [
+      "Trong hành lang, dung hợp LiDAR + GNSS chưa chắc tốt hơn GNSS thô (0,51 / 0,59 / 1,70 m trên seed 42, 43, 44 so với khoảng 0,87 m của GNSS thô; trên main trung vị 15 seed là 3,47 m). Cần một PR chẩn đoán (gnss_fusion_study.md mục 12).",
+      "PR 4b-2: bộ phát hiện theo sigma được giữ trên nhánh, chưa gộp, đến khi sửa rò rỉ cạnh của map (1,15 % thông tin dọc trục hành lang từ cạnh tường-sàn; degeneracy.md mục 7).",
+      "S2 (Gazebo): E-04 với degeneracy bật trôi theo phương đứng (ATE 2,13 m, gần hết theo z); E-01 chỉ LiDAR + IMU lệch đứng +0,10 m trong 10 s đầu; bench chưa xuất hướng suy biến bị cờ; chỉnh lại unobserved_var_m2 (hiện 0,001 m²) theo nhiều bản ghi Gazebo, ứng viên 0,01 m².",
+      "Chưa có: luồng ADR-005, loop closure (LoopDetector), xuất bản đồ, nối ros2_node với pipeline; tái neo trọng lực định kỳ (lessons.md 1.13)."
+    ]
+  },
 
   modules: [
     // -------------------------------------------------------------- inputs
@@ -349,7 +371,7 @@ const DATA = {
       calls: [["lla","ecef"],["enu","ecef"],["llast","lla"],["ecef","gate"],["gate","res"],["actor","align"],["res","nis"],["res","chi"],["nis","cnis"],["chi","cnis"],["chi","align"]] },
 
     { id: "odom", status: "done", name: "odom", short: "impl + tests, PR #5", x: 190, y: 400, w: 140, h: 54,
-      desc: "Tích phân bánh xe theo mô hình unicycle phẳng, chính xác trên SE(2) trong frame o, nhúng SE(3) rồi đổi sang frame b: T_b0_b1 = T_b_o·T_o0_o1·T_b_o⁻¹; hiệp phương sai lan truyền bậc một, bằng 0 theo z, roll, pitch (suy biến theo thiết kế). odom_residual.hpp cho backend: phần dư tương đối pose (như BetweenFactor<Pose3>) và non-holonomic, Jacobian giải tích theo [rho, phi]. PR #21 (ADR-011 §3 phương án 2) chỉ đổi sai số hiệu chỉnh của sim (track tin là −0,25 %, mục tiêu yaw 4 đến 5°/vòng); test_odom kiểm sai số đó.",
+      desc: "Tích phân bánh xe theo mô hình unicycle phẳng, chính xác trên SE(2) trong frame o, nhúng SE(3) rồi đổi sang frame b: T_b0_b1 = T_b_o·T_o0_o1·T_b_o⁻¹; hiệp phương sai lan truyền bậc một, bằng 0 theo z, roll, pitch (suy biến theo thiết kế). odom_residual.hpp cho backend: phần dư tương đối pose (cùng dạng SE(3) Log với BetweenFactor<Pose3>) và non-holonomic, Jacobian giải tích theo [rho, phi]. PR #21 (ADR-011 §3 phương án 2) chỉ đổi sai số hiệu chỉnh của sim (track tin là −0,25 %, mục tiêu yaw 4 đến 5°/vòng); test_odom kiểm sai số đó.",
       inputs: ["WheelSample{v_mps, omega_radps} + Timestamp (in_odom)", "T_b_o (frames.T_b_o), WheelOdomConfig{speed_sigma_mps, yaw_rate_sigma_radps}"],
       outputs: ["OdomDelta{t0, t1, T_b0_b1, cov 6x6 [rho, phi]} cho backend", "RelativePoseResidual / NonholonomicResidual (r + Jacobian)"],
       tests: [
@@ -366,9 +388,9 @@ const DATA = {
       calls: [["ctor","integ"],["integ","arc"],["integ","delta"],["delta","rel"],["rel","jr"]] },
 
     // -------------------------------------------------------------- stage 2
-    { id: "scan_match", status: "done", name: "scan_match", short: "impl + tests, PR #10, #19, #20", x: 380, y: 70, w: 140, h: 54,
-      desc: "Đăng ký ScanFrame (đã preprocess) vào VoxelMap bằng Gauss-Newton point-to-plane với kernel Huber (IRLS), khởi tạo từ dự đoán IMU. Mỗi vòng, mỗi điểm: knn (k = map.knn_k), giữ tương ứng khi có ≥ 3 láng giềng, điểm gần nhất ≤ max_corr_dist_m, RMS mặt phẳng ≤ plane_rms_max_m, và hai cổng mới của PR #20 (ADR-007 bổ sung, đã đánh giá, tắt mặc định): planarity λ_min ≤ plane_min_eig_ratio·λ_mid và collinearity λ_mid > min_mid_eig_ratio·λ_max. Khi degeneracy.enabled, trong MỖI vòng: analyze(H) → nâng trị riêng bị cờ lên eig_threshold (H_reg) → giải → project_update. Hiệp phương sai cov = cov_scale·max(σ_r², min_residual_sigma_m²)·A⁻¹; PR #19 hiệu chỉnh cov_scale = 4,7 (với 1,0 NEES factor LiDAR là 28 so với 6 kỳ vọng). cov trả ra đã nới và là cuối cùng. Không hội tụ trong max_iterations không phải lỗi.",
-      inputs: ["ScanFrame trong l, đã preprocess (preprocess)", "T_w_l khởi tạo = T_w_b dự đoán · T_b_l", "VoxelMap::knn (map)", "scan_match.{max_iterations, rot_tol_rad, trans_tol_m, max_corr_dist_m, plane_rms_max_m, plane_min_eig_ratio, min_mid_eig_ratio, robust_huber_delta_m, min_inliers, cov_scale, min_residual_sigma_m}", "DegeneracyConfig (degeneracy.*)"],
+    { id: "scan_match", status: "done", name: "scan_match", short: "impl + tests, PR #10, #19, #20, #29", x: 380, y: 70, w: 140, h: 54,
+      desc: "Đăng ký ScanFrame (đã preprocess) vào VoxelMap bằng Gauss-Newton point-to-plane với kernel Huber (IRLS), khởi tạo từ dự đoán IMU. Mỗi vòng, mỗi điểm: knn (k = map.knn_k), giữ tương ứng khi có ≥ 3 láng giềng, điểm gần nhất ≤ max_corr_dist_m, RMS mặt phẳng ≤ plane_rms_max_m, và hai cổng mới của PR #20 (ADR-007 bổ sung, đã đánh giá, tắt mặc định): planarity λ_min ≤ plane_min_eig_ratio·λ_mid và collinearity λ_mid > min_mid_eig_ratio·λ_max. Khi degeneracy.enabled, trong MỖI vòng: analyze(H) → nâng trị riêng bị cờ lên eig_threshold (H_reg) → giải → project_update. Hiệp phương sai cov = cov_scale·max(σ_r², min_residual_sigma_m²)·A⁻¹; PR #19 hiệu chỉnh cov_scale = 4,7 (với 1,0 NEES factor LiDAR là 28 so với 6 kỳ vọng). cov trả ra đã nới và là cuối cùng: khi degeneracy.enabled, hướng bị cờ nhận phương sai “không quan sát được” (PR 4b-1, #29) qua degeneracy::unobserved_covariance, scan_match.unobserved_var_m2 (0,001 m²) và unobserved_var_rad2 (1e-4 rad²), có sàn relax_factor·c/eig_threshold nên ở mặc định trên bag Gazebo E-04 sàn có thể ràng và kết quả bằng hiệp phương sai nới cũ. Không hội tụ trong max_iterations không phải lỗi.",
+      inputs: ["ScanFrame trong l, đã preprocess (preprocess)", "T_w_l khởi tạo = T_w_b dự đoán · T_b_l", "VoxelMap::knn (map)", "scan_match.{max_iterations, rot_tol_rad, trans_tol_m, max_corr_dist_m, plane_rms_max_m, plane_min_eig_ratio, min_mid_eig_ratio, robust_huber_delta_m, min_inliers, cov_scale, min_residual_sigma_m, unobserved_var_m2, unobserved_var_rad2}", "DegeneracyConfig (degeneracy.*)"],
       outputs: ["MatchResult{T_w_l, cov 6x6 (đã nới, cuối cùng), H 6x6 chưa chiếu, inliers, iterations, converged}", "H cho degeneracy::analyze ở pipeline (chỉ chẩn đoán)"],
       tests: [
         { name: "test_scan_match: 11 case (S-01 Jacobian, plane fit 5 gồm cổng planarity/collinearity, ScanMatcher 4)", file: "tests/unit/test_scan_match.cpp", ok: true },
@@ -411,20 +433,21 @@ const DATA = {
       calls: [["ctor","insert"],["insert","key"],["insert","fvox"],["insert","near"],["knn","key"],["knn","fvox"],["knn","nbuf"],["prune","erase"],["key","home"],["fvox","fslot"],["home","fslot"],["clear","insert"]] },
 
     // -------------------------------------------------------------- stage 3
-    { id: "degeneracy", status: "done", name: "degeneracy", short: "impl + tests, PR #3", x: 570, y: 70, w: 140, h: 54,
-      desc: "Hàm tự do, không trạng thái. analyze: SelfAdjointEigenSolver trên H 6x6 (chỉ đọc tam giác dưới), trị riêng tăng dần, đánh dấu hướng có trị riêng < eig_threshold; H không hữu hạn thì mọi hướng bị đánh dấu. project_update bỏ thành phần cập nhật theo hướng suy biến; relax_covariance nhân hiệp phương sai theo hướng đó relax_factor lần. Gọi bên trong ScanMatcher::align (mỗi vòng) và ở pipeline chỉ để chẩn đoán (analyze trên MatchResult::H khi tạo keyframe). Tangent [rho, phi] của T_w_l. Cờ degeneracy.enabled mặc định false: khi tắt, cả ba hàm là đồng nhất. Hiệp phương sai riêng cho hướng không quan sát được (scan_match.unobserved_var_m2, PR 4b theo ADR-019) chưa có.",
-      inputs: ["H 6x6 (scan_match), tangent của T_w_l", "Delta Gauss-Newton, cov 6x6", "DegeneracyConfig{enabled, eig_threshold, relax_factor}"],
-      outputs: ["DegeneracyReport{eigvals, eigvecs, degenerate[6]}", "Delta đã chiếu cho scan_match", "Cov đã nới theo hướng suy biến"],
+    { id: "degeneracy", status: "done", name: "degeneracy", short: "impl + tests, PR #3, #29", x: 570, y: 70, w: 140, h: 54,
+      desc: "Hàm tự do, không trạng thái. analyze: SelfAdjointEigenSolver trên H 6x6 (chỉ đọc tam giác dưới), trị riêng tăng dần, đánh dấu hướng có trị riêng < eig_threshold; H không hữu hạn thì mọi hướng bị đánh dấu. project_update bỏ thành phần cập nhật theo hướng suy biến; relax_covariance nhân hiệp phương sai theo hướng đó relax_factor lần. Gọi bên trong ScanMatcher::align (mỗi vòng) và ở pipeline chỉ để chẩn đoán (analyze trên MatchResult::H khi tạo keyframe). Tangent [rho, phi] của T_w_l. Cờ degeneracy.enabled mặc định false: khi tắt, cả ba hàm là đồng nhất. unobserved_covariance (PR 4b-1, #29): cov' = P·cov·P + U', trong đó P chiếu bỏ các hướng bị cờ, U' là phương sai cấu hình (var_trans_m2, var_rot_rad2) trên không gian con bị cờ, mỗi trị riêng được nâng lên sàn relax_factor·c/eig_threshold (c = cov_scale·s²); không cờ nào thì trả đúng đầu vào (degeneracy.md mục 4b). ScanMatcher dùng nó thay relax_covariance. degeneracy.enabled vẫn tắt mặc định, eig_threshold 100 tuyệt đối (đánh giá ở degeneracy.md mục 7); bộ phát hiện theo sigma (PR 4b-2) được giữ trên nhánh, chưa gộp, đến khi sửa rò rỉ cạnh của map.",
+      inputs: ["H 6x6 (scan_match), tangent của T_w_l", "Delta Gauss-Newton, cov 6x6", "DegeneracyConfig{enabled, eig_threshold, relax_factor}", "var_trans_m2, var_rot_rad2, c (cho unobserved_covariance)"],
+      outputs: ["DegeneracyReport{eigvals, eigvecs, degenerate[6]}", "Delta đã chiếu cho scan_match", "Cov đã nới theo hướng suy biến (relax_covariance) hoặc cov \"không quan sát được\" (unobserved_covariance)"],
       tests: [
-        { name: "test_degeneracy: 15 case", file: "tests/unit/test_degeneracy.cpp", ok: true },
+        { name: "test_degeneracy: 20 case (gồm 5 case UnobservedCovariance: không cờ = đồng nhất, giữ hướng quan sát, sàn, bất biến cơ sở)", file: "tests/unit/test_degeneracy.cpp", ok: true },
         { name: "test_degeneracy_scenes: 5 case (D-01..D-03: hành lang, phòng 6 mặt, một mặt phẳng)", file: "tests/component/test_degeneracy_scenes.cpp", ok: true } ],
       fns: [
         { id: "analyze", name: "analyze", real: true, sig: "common::DegeneracyReport analyze(const common::Mat6& H, const DegeneracyConfig& cfg)", stage: 0, note: "SelfAdjointEigenSolver trên 6x6, không cấp phát." },
         { id: "lfin", name: "lower_triangle_finite (nội bộ)", real: true, priv: true, sig: "bool lower_triangle_finite(const common::Mat6& hessian)", stage: 1, note: "H không hữu hạn → eigvals 0, eigvecs I, mọi hướng bị cờ." },
         { id: "project", name: "project_update", real: true, sig: "common::Vec6 project_update(const common::Vec6& delta, const common::DegeneracyReport& report)", stage: 1, note: "delta' = V·diag(m)·Vᵀ·delta (Zhang & Singh 2016)." },
         { id: "relax", name: "relax_covariance", real: true, sig: "common::PoseCovariance relax_covariance(const common::PoseCovariance& cov, const common::DegeneracyReport& report, const DegeneracyConfig& cfg)", stage: 1, note: "cov' = A·cov·Aᵀ, s_k = sqrt(relax_factor) theo hướng suy biến; đối xứng hoá." },
+        { id: "unobs", name: "unobserved_covariance", real: true, sig: "common::PoseCovariance unobserved_covariance(const common::PoseCovariance& cov, const common::DegeneracyReport& report, const DegeneracyConfig& cfg, double var_trans_m2, double var_rot_rad2, double c)", stage: 1, note: "PR 4b-1: cov' = P cov P + U', U = P_F D P_F; mỗi trị riêng của U trên không gian bị cờ nâng lên relax_factor·c/eig_threshold; không cờ = đúng đầu vào." },
         { id: "anyf", name: "any_flagged (nội bộ)", real: true, priv: true, sig: "bool any_flagged(const common::DegeneracyReport& report)", stage: 2, note: "Không cờ nào → trả đúng đầu vào (đồng nhất bit-cho-bit)." } ],
-      calls: [["analyze","lfin"],["analyze","project"],["analyze","relax"],["project","anyf"],["relax","anyf"]] },
+      calls: [["analyze","lfin"],["analyze","project"],["analyze","relax"],["analyze","unobs"],["project","anyf"],["relax","anyf"],["unobs","anyf"]] },
 
     { id: "loop", status: "planned", name: "loop", short: "chỉ header, chưa có .cpp", x: 570, y: 180, w: 140, h: 54,
       desc: "Tìm keyframe cũ gần vị trí hiện tại, xác minh bằng scan matching, sinh LoopConstraint cho backend (Graph::add_loop_factor đã có, kernel Cauchy). Giai đoạn 2: header chỉ cố định constructor; mss_loop là thư viện INTERFACE (CMake: chuyển sang STATIC khi có .cpp đầu tiên), constructor chưa có định nghĩa và pipeline chưa tạo LoopDetector. loop_closure.enabled: false.",
@@ -437,32 +460,38 @@ const DATA = {
       calls: [["ctor","query"],["query","verify"]] },
 
     // -------------------------------------------------------------- backend
-    { id: "backend", status: "done", name: "backend", short: "impl + tests, PR #11, #17, #19", x: 800, y: 70, w: 150, h: 164,
-      desc: "Nơi duy nhất include GTSAM (pimpl). Factor graph tăng dần iSAM2 (ADR-004; CHOLESKY, wildfire 0) trên pose, vận tốc, bias mỗi keyframe. IMU: factor preintegration 9x9 tự viết [phi, p, v] + BetweenFactor bias random walk, không dùng CombinedImuFactor (ADR-015). LiDAR và loop dùng factor tương đối theo backend.relative_factor (mặc định decoupled: phần dư tịnh tiến và quay tách riêng, Jacobian đúng, ADR-021; between = BetweenFactor<Pose3> và se3_exact giữ để so sánh); loop bọc thêm Cauchy k = 3,5485; odom là between factor. GNSS (PR #19, ADR-019): khi backend.gnss_frame_variable (mặc định true) mọi factor GNSS dùng chung biến E = T_e_w (GnssFrameFactor trên (X_k, E)), tạo ở lần add_gnss_factor đầu với một prior: roll/pitch chặt 0,01°, yaw 30°, vị trí 10 m; false thì T_e_w cố định trong từng factor (GnssPositionFactor). ADR-018 (PR #17): BackendConfig::single_thread = deterministic (không phải khóa YAML) giới hạn TBB một luồng cho cả tiến trình bằng tbb::global_control trước khi tạo iSAM2. add_* sai bị bỏ kèm một dòng log. optimize() lỗi: bắt exception, giữ keyframe và prior, bỏ factor chờ, dựng lại iSAM2, tái neo nhóm mồ côi. Bản không GTSAM dùng graph_stub.cpp cùng API.",
-      inputs: ["PreintegratedDelta (imu, kf_)", "T_bi_bj + cov 6x6 đã nới, đổi sang b (scan_match, pipeline)", "DegeneracyReport (chỉ chẩn đoán)", "GnssMeasurement đã dời về keyframe + T_e_w của aligner (pipeline)", "OdomDelta (odom)", "LoopConstraint (loop, chưa có)", "backend.{relinearize_threshold, relinearize_skip, prior_*, gnss_frame_variable, gnss_frame_*_sigma_*}; single_thread ← deterministic"],
+    { id: "backend", status: "done", name: "backend", short: "impl + tests, PR #11, #17, #19, #24, #25, #27, #28", x: 800, y: 70, w: 150, h: 164,
+      desc: "Nơi duy nhất include GTSAM (pimpl). Factor graph tăng dần iSAM2 (ADR-004; CHOLESKY, wildfire 0) trên pose, vận tốc, bias mỗi keyframe. IMU: factor preintegration 9x9 tự viết [phi, p, v] + BetweenFactor<ConstantBias> cho bias random walk, không dùng CombinedImuFactor (ADR-015). LiDAR và loop dùng factor tương đối theo backend.relative_factor (mặc định decoupled: phần dư tịnh tiến và quay tách riêng, Jacobian đúng, ADR-021; between = BetweenFactor<Pose3>, Jacobian xấp xỉ, hành vi trước ADR-021, và se3_exact giữ để so sánh; PR 4e #25 thêm ba dạng, #27 đổi mặc định); loop bọc thêm Cauchy k = 3,5485; odom là OdomBetweenFactor tự viết. PR #28: ba prior pose (keyframe 0, tái neo nhóm mồ côi, biến khung GNSS E) dùng detail::PosePriorFactor (cùng phần dư và mô hình nhiễu như gtsam::PriorFactor<Pose3> nhưng Jacobian đúng Jr⁻¹(r)); prior vận tốc và bias vẫn là gtsam::PriorFactor trên không gian vector. ADR-020 (PR #24): keyframe 0 còn nhận factor hướng trọng lực StaticGravityFactor (2 chiều, chỉ hướng, không độ lớn) từ trung bình lực riêng của cửa sổ tĩnh, nhiễu static_gravity_sigma_scale² (2,0²) lần phương sai của trung bình, đi cùng prior keyframe 0 (backend.static_gravity_factor mặc định true); kiểm tra nhất quán (static_gravity_check_keyframes) đã đánh giá và tắt (0). GNSS (PR #19, ADR-019): khi backend.gnss_frame_variable (mặc định true) mọi factor GNSS dùng chung biến E = T_e_w (GnssFrameFactor trên (X_k, E)), tạo ở lần add_gnss_factor đầu với một prior: roll/pitch chặt 0,01°, yaw 30°, vị trí 10 m; false thì T_e_w cố định trong từng factor (GnssPositionFactor). ADR-018 (PR #17): BackendConfig::single_thread = deterministic (không phải khóa YAML) giới hạn TBB một luồng cho cả tiến trình bằng tbb::global_control trước khi tạo iSAM2. add_* sai bị bỏ kèm một dòng log. optimize() lỗi: bắt exception, giữ keyframe và prior, bỏ factor chờ, dựng lại iSAM2, tái neo nhóm mồ côi. Bản không GTSAM dùng graph_stub.cpp cùng API.",
+      inputs: ["PreintegratedDelta (imu, kf_)", "T_bi_bj + cov 6x6 đã nới, đổi sang b (scan_match, pipeline)", "DegeneracyReport (chỉ chẩn đoán)", "InitState.acc_mean_b + acc_mean_cov cho factor trọng lực keyframe 0 (imu, pipeline)", "GnssMeasurement đã dời về keyframe + T_e_w của aligner (pipeline)", "OdomDelta (odom)", "LoopConstraint (loop, chưa có)", "backend.{relinearize_threshold, relinearize_skip, prior_*, relative_factor, static_gravity_factor, static_gravity_sigma_scale, static_gravity_check_keyframes, static_gravity_chi2_gate, gnss_frame_variable, gnss_frame_*_sigma_*}; single_thread ← deterministic"],
       outputs: ["Result<Estimate> của keyframe mới nhất (optimize)", "NavState từng keyframe đã tối ưu (keyframe_state, cho dựng lại map ADR-016)", "PoseCovariance biên 6x6 [rho, phi] (marginal_cov), NaN khi chưa có"],
       tests: [
         { name: "test_backend_api: 6 case (cả hai bản build)", file: "tests/unit/test_backend_api.cpp", ok: true },
         { name: "test_backend_stub: 1 case (chỉ MSS_WITH_GTSAM=OFF)", file: "tests/unit/test_backend_stub.cpp", ok: true },
         { name: "test_backend_conversions: 4 case (hoán vị [rho, phi] ↔ [phi, rho])", file: "tests/unit/backend/test_backend_conversions.cpp", ok: true },
-        { name: "test_backend_factors: 9 case (B-01 Jacobian IMU, GNSS, GnssFrameFactor, odom, between, loop)", file: "tests/unit/backend/test_backend_factors.cpp", ok: true },
-        { name: "test_backend_graph: 15 case (B-02, chuỗi IMU, tái neo, GnssFrameVariable*, optimize lỗi)", file: "tests/unit/backend/test_backend_graph.cpp", ok: true },
-        { name: "test_backend_isam: 5 case (B-03 loop outlier, DegeneracyReportIsDiagnosticOnly, B-04 iSAM2 so với LM)", file: "tests/unit/backend/test_backend_isam.cpp", ok: true },
+        { name: "test_backend_factors: 20 case (B-01 Jacobian IMU, GNSS, GnssFrameFactor, odom, between, loop, ba dạng factor tương đối, PosePriorFactor, StaticGravityFactor; Jacobian so với sai phân số)", file: "tests/unit/backend/test_backend_factors.cpp", ok: true },
+        { name: "test_backend_graph: 19 case (B-02, chuỗi IMU, tái neo, GnssFrameVariable*, optimize lỗi, StaticGravity*)", file: "tests/unit/backend/test_backend_graph.cpp", ok: true },
+        { name: "test_backend_isam: 7 case (B-03 loop outlier, DegeneracyReportIsDiagnosticOnly, B-04 iSAM2 so với LM; tham chiếu batch hội tụ, #27, #28)", file: "tests/unit/backend/test_backend_isam.cpp", ok: true },
         { name: "test_backend_determinism: 3 case (ADR-018: đơn luồng bit-cho-bit, giới hạn giữ suốt tiến trình)", file: "tests/unit/backend/test_backend_determinism.cpp", ok: true },
-        { name: "test_lie_gtsam: 2 case (Logmap = se3_log hoán vị)", file: "tests/unit/backend/test_lie_gtsam.cpp", ok: true } ],
+        { name: "test_lie_gtsam: 2 case (Logmap = se3_log hoán vị)", file: "tests/unit/backend/test_lie_gtsam.cpp", ok: true },
+        { name: "test_backend_consistency: 2 case (PR 4e: trục không quan sát, NEES của ước lượng so với marginal; đối chứng between không nhất quán)", file: "tests/component/test_backend_consistency.cpp", ok: true } ],
       fns: [
         { id: "ctor", name: "Graph::Graph", real: true, sig: "Graph(const BackendConfig& cfg, const imu::ImuConfig& imu_cfg, const common::Vec3& p_b_g)", stage: 0, note: "detail::validate (ném std::invalid_argument), apply_tbb_limit, ISAM2Params." },
         { id: "val", name: "detail::validate (nội bộ)", real: true, priv: true, sig: "void validate(const BackendConfig& cfg, const imu::ImuConfig& imu_cfg, const common::Vec3& p_b_g)", stage: 1, note: "Dùng chung với graph_stub.cpp." },
         { id: "tbb", name: "apply_tbb_limit (nội bộ)", real: true, priv: true, sig: "void apply_tbb_limit(bool single_thread)", stage: 1, note: "ADR-018: static tbb::global_control(max_allowed_parallelism, 1), không bao giờ giải phóng; Graph sau với false chỉ cảnh báo một lần." },
-        { id: "kf", name: "Graph::add_keyframe", real: true, sig: "common::KeyId add_keyframe(common::Timestamp t, const common::NavState& x0)", stage: 1, note: "KeyId 0, 1, 2, ... dày; keyframe 0 có prior pose, vận tốc, bias; x0 không hữu hạn bị thay bằng guess trước." },
-        { id: "pri", name: "Impl::push_keyframe0_priors (nội bộ)", real: true, priv: true, sig: "void push_keyframe0_priors()", stage: 2, note: "Prior pose [phi, rho] sigma prior_rot/prior_pos, vận tốc, bias; giữ lại khi optimize lỗi." },
-        { id: "f_imu", name: "Graph::add_imu_factor", real: true, sig: "void add_imu_factor(common::KeyId i, common::KeyId j, const common::PreintegratedDelta& delta)", stage: 2, note: "ImuPreintFactor 9x9 + BetweenFactor bias sigma random_walk·sqrt(dt_s); |round(dt_s·1e9) − (t_j − t_i)| ≤ 1,5e9/rate_hz ns." },
-        { id: "f_lidar", name: "Graph::add_lidar_factor", real: true, sig: "void add_lidar_factor(common::KeyId i, common::KeyId j, const common::Pose& T_bi_bj, const common::PoseCovariance& cov, const common::DegeneracyReport* degeneracy)", stage: 2, note: "Factor tương đối theo backend.relative_factor (mặc định DecoupledRelativePoseFactor, ADR-021), cov dùng nguyên (hoán vị); degeneracy chỉ đếm degenerate_keyframes nội bộ, không vào Stats." },
-        { id: "f_gnss", name: "Graph::add_gnss_factor", real: true, sig: "void add_gnss_factor(common::KeyId k, const common::GnssMeasurement& m, const common::Pose& T_e_w)", stage: 2, note: "gnss_frame_variable: lần đầu tạo E = T_e_w + prior, sau đó bỏ qua T_e_w truyền vào; false: T_e_w cố định trong factor." },
+        { id: "kf", name: "Graph::add_keyframe", real: true, sig: "common::KeyId add_keyframe(common::Timestamp t, const common::NavState& x0)", stage: 1, note: "KeyId 0, 1, 2, ... dày; keyframe 0 có PosePriorFactor, prior vận tốc, bias; x0 không hữu hạn bị thay bằng guess trước." },
+        { id: "pri", name: "Impl::push_keyframe0_priors (nội bộ)", real: true, priv: true, sig: "void push_keyframe0_priors()", stage: 2, note: "PosePriorFactor [phi, rho] sigma prior_rot/prior_pos (PR #28), prior vận tốc, bias; giữ lại khi optimize lỗi." },
+        { id: "f_grav", name: "Graph::add_static_gravity_factor", real: true, sig: "void add_static_gravity_factor(common::KeyId k, const common::Vec3& f_b, const common::Mat3& cov)", stage: 2, note: "ADR-020: StaticGravityFactor trên pose + bias keyframe k (phần dư f_b − (ba − Rᵀg) chiếu vuông góc f_b, 2 chiều); đi cùng prior keyframe 0, giữ khi optimize lỗi; đầu vào sai bị bỏ kèm log." },
+        { id: "f_gchi", name: "Graph::static_gravity_chi2 / remove_static_gravity_factor", real: true, sig: "common::Result<double> static_gravity_chi2() const; bool remove_static_gravity_factor()", stage: 5, note: "Kiểm tra nhất quán (ADR-020), chạy một lần ở static_gravity_check_keyframes; mặc định 0 = tắt vì gỡ nhầm lúc đứng yên." },
+        { id: "f_imu", name: "Graph::add_imu_factor", real: true, sig: "void add_imu_factor(common::KeyId i, common::KeyId j, const common::PreintegratedDelta& delta)", stage: 2, note: "ImuPreintFactor 9x9 + BetweenFactor<ConstantBias> bias sigma random_walk·sqrt(dt_s); |round(dt_s·1e9) − (t_j − t_i)| ≤ 1,5e9/rate_hz ns." },
+        { id: "f_lidar", name: "Graph::add_lidar_factor", real: true, sig: "void add_lidar_factor(common::KeyId i, common::KeyId j, const common::Pose& T_bi_bj, const common::PoseCovariance& cov, const common::DegeneracyReport* degeneracy)", stage: 2, note: "Factor tương đối theo backend.relative_factor (mặc định DecoupledRelativePoseFactor, ADR-021; between và se3_exact để so sánh), cov dùng nguyên (hoán vị); degeneracy chỉ để chẩn đoán, pipeline đếm n_degenerate_keyframes / n_degenerate_rot_keyframes (Stats)." },
+        { id: "f_gnss", name: "Graph::add_gnss_factor", real: true, sig: "void add_gnss_factor(common::KeyId k, const common::GnssMeasurement& m, const common::Pose& T_e_w)", stage: 2, note: "gnss_frame_variable: lần đầu tạo E = T_e_w + PosePriorFactor, sau đó bỏ qua T_e_w truyền vào; false: T_e_w cố định trong factor." },
         { id: "f_odom", name: "Graph::add_odom_factor", real: true, sig: "void add_odom_factor(common::KeyId i, common::KeyId j, const common::OdomDelta& odom)", stage: 2, note: "OdomBetweenFactor chỉ ràng thành phần có phương sai khác 0; pipeline kiểm thời gian 1,5 chu kỳ bánh xe." },
         { id: "f_loop", name: "Graph::add_loop_factor", real: true, sig: "void add_loop_factor(const common::LoopConstraint& lc)", stage: 2, note: "Factor tương đối cùng dạng backend.relative_factor (mặc định decoupled, ADR-021) bọc mEstimator::Cauchy(kLoopCauchyK = 3.5485); B-03. Chưa có người gọi." },
         { id: "fac_imu", name: "detail::ImuPreintFactor (nội bộ)", real: true, priv: true, sig: "class ImuPreintFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3, gtsam::Vector3, gtsam::Pose3, gtsam::Vector3, gtsam::imuBias::ConstantBias>  // evaluateError(...)", stage: 3, note: "core/backend/src/imu_factor.hpp; ADR-015." },
         { id: "fac_gnss", name: "detail::GnssPositionFactor / GnssFrameFactor (nội bộ)", real: true, priv: true, sig: "class GnssPositionFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3>; class GnssFrameFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3, gtsam::Pose3>", stage: 3, note: "GnssFrameFactor trên (X_k, E(0)): r = R_e_w(R_w_b p_b_g + p_w_b) + p_e_w − p_e_g (backend_factors.md §6b)." },
+        { id: "fac_rel", name: "detail::DecoupledRelativePoseFactor (nội bộ)", real: true, priv: true, sig: "class DecoupledRelativePoseFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3, gtsam::Pose3>  // relative_pose_factor.hpp", stage: 3, note: "Phần dư tịnh tiến R_Zᵀ(R_iᵀ(p_j − p_i) − p_Z) và quay Log(R_Zᵀ R_iᵀ R_j) tách riêng, Jacobian đúng, cùng chart với hiệp phương sai scan_match (ADR-021, backend_factors.md mục 5)." },
+        { id: "fac_prior", name: "detail::PosePriorFactor (nội bộ)", real: true, priv: true, sig: "class PosePriorFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3>  // pose_prior_factor.hpp", stage: 3, note: "PR #28: phần dư Log(X0⁻¹ X) như PriorFactor<Pose3>, Jacobian Jr⁻¹(r) (P Jr⁻¹ P theo thứ tự GTSAM); backend_factors.md mục 2b, lessons.md 1.9." },
+        { id: "fac_grav", name: "detail::StaticGravityFactor (nội bộ)", real: true, priv: true, sig: "class StaticGravityFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3, gtsam::imuBias::ConstantBias>  // static_gravity_factor.hpp", stage: 3, note: "ADR-020, backend_factors.md mục 6c: hướng trọng lực của cửa sổ tĩnh trên (X_0, B_0)." },
         { id: "fac_odom", name: "detail::OdomBetweenFactor (nội bộ)", real: true, priv: true, sig: "class OdomBetweenFactor : public gtsam::NoiseModelFactorN<gtsam::Pose3, gtsam::Pose3>", stage: 3, note: "create() chỉ giữ các hướng có phương sai > kOdomRankRelTol·λ_max (1 đến 6 hàng làm trắng), nên cov suy biến không bị nghịch đảo." },
         { id: "conv", name: "detail::to_gtsam / from_gtsam / permute_cov (nội bộ)", real: true, priv: true, sig: "gtsam::Pose3 to_gtsam(const common::Pose& T); common::Pose from_gtsam(const gtsam::Pose3& T); common::Mat6 permute_cov(const common::Mat6& S); gtsam::Key pose_key(common::KeyId k); gtsam::Key frame_key()", stage: 3, note: "Nơi duy nhất hoán vị [rho, phi] ↔ [phi, rho]." },
         { id: "opt", name: "Graph::optimize", real: true, sig: "common::Result<common::Estimate> optimize()", stage: 4, note: "Một lần ISAM2::update + calculateEstimate. Lỗi: empty graph, optimization failed: <GTSAM> (bỏ factor chờ, giữ keyframe), non-finite estimate. Bản stub: built without GTSAM." },
@@ -470,7 +499,7 @@ const DATA = {
         { id: "rebuild", name: "Impl::rebuild (nội bộ)", real: true, priv: true, sig: "void rebuild()", stage: 5, note: "Sau optimize lỗi: ISAM2 mới từ committed_factors tại last_estimate; nếu lại lỗi, xếp lại mọi factor làm prior chờ." },
         { id: "marg", name: "Graph::marginal_cov", real: true, sig: "common::PoseCovariance marginal_cov(common::KeyId k) const", stage: 5, note: "6x6 [rho, phi]; keyframe lạ hoặc chưa tối ưu trả NaN (không bao giờ 0)." },
         { id: "kstate", name: "Graph::keyframe_state", real: true, sig: "common::Result<common::NavState> keyframe_state(common::KeyId k) const", stage: 5, note: "Lỗi unknown keyframe, keyframe not optimised, built without GTSAM." } ],
-      calls: [["ctor","val"],["ctor","tbb"],["ctor","kf"],["kf","pri"],["kf","f_imu"],["kf","f_lidar"],["kf","f_gnss"],["kf","f_odom"],["kf","f_loop"],["f_imu","fac_imu"],["f_gnss","fac_gnss"],["f_odom","fac_odom"],["f_lidar","conv"],["fac_imu","opt"],["fac_gnss","opt"],["fac_odom","opt"],["conv","opt"],["opt","anch"],["opt","rebuild"],["opt","marg"],["opt","kstate"]] },
+      calls: [["ctor","val"],["ctor","tbb"],["ctor","kf"],["kf","pri"],["kf","f_grav"],["f_grav","fac_grav"],["fac_grav","opt"],["f_lidar","fac_rel"],["fac_rel","opt"],["pri","fac_prior"],["fac_prior","opt"],["opt","f_gchi"],["kf","f_imu"],["kf","f_lidar"],["kf","f_gnss"],["kf","f_odom"],["kf","f_loop"],["f_imu","fac_imu"],["f_gnss","fac_gnss"],["f_odom","fac_odom"],["f_lidar","conv"],["fac_imu","opt"],["fac_gnss","opt"],["fac_odom","opt"],["conv","opt"],["opt","anch"],["opt","rebuild"],["opt","marg"],["opt","kstate"]] },
 
     // -------------------------------------------------------------- outputs
     { id: "out_pose", status: "io", name: "Pose + cov", short: "T_w_b, 6x6", x: 1040, y: 70, w: 150, h: 54,
@@ -481,14 +510,14 @@ const DATA = {
 
     // -------------------------------------------------------------- base + apps
     { id: "pipeline", status: "done", name: "pipeline", short: "Estimator 1 luồng, ADR-016..019", x: 800, y: 400, w: 150, h: 54,
-      desc: "Điều phối toàn bộ module, một luồng (ADR-017). Estimator giữ hàng đợi có giới hạn (scan, IMU, GNSS, odom), pool ScanFrame cấp phát một lần và phép trộn k-way theo khóa thời gian (scan theo thời điểm cuối; hòa thì IMU, wheel, GNSS, scan). Mỗi message đi vào EstimatorCore sở hữu mọi module. Scan chỉ được xử lý khi đã có mẫu IMU hữu hạn với t ≥ khóa (watermark). Chu kỳ scan: kiểm thứ tự và độ phủ IMU → GNSS chờ → khởi tạo tĩnh hoặc dự đoán (cắt IMU bằng mẫu biên nội suy) → quỹ đạo deskew → preprocess → keyframe 0 hoặc scan_match → keyframe theo khoảng cách / góc → backend (IMU, LiDAR, wheel, GNSS) → optimize → đám mây keyframe vào KeyframeStore và VoxelMap tại pose đã tối ưu → dựng lại cache khi lệch (ADR-016) → prune. GNSS: vòng chờ 32 fix đến khi IMU phủ, dự đoán pose tại m.t, gate_fix, chi-square, aligner, dời về keyframe kế; bộ chống khóa (PR #19) khởi động lại aligner sau gnss.max_consecutive_rejects lần chi-square từ chối liên tiếp (n_gnss_realign). Stats (PR #19, #20) thêm n_gnss_realign, n_map_points, n_map_spacing_replaced. load_config gán backend.single_thread = deterministic (ADR-018). start()/stop() là no-op: luồng ADR-005 chưa có.",
+      desc: "Điều phối toàn bộ module, một luồng (ADR-017). Estimator giữ hàng đợi có giới hạn (scan, IMU, GNSS, odom), pool ScanFrame cấp phát một lần và phép trộn k-way theo khóa thời gian (scan theo thời điểm cuối; hòa thì IMU, wheel, GNSS, scan). Mỗi message đi vào EstimatorCore sở hữu mọi module. Scan chỉ được xử lý khi đã có mẫu IMU hữu hạn với t ≥ khóa (watermark). Chu kỳ scan: kiểm thứ tự và độ phủ IMU → GNSS chờ → khởi tạo tĩnh hoặc dự đoán (cắt IMU bằng mẫu biên nội suy) → quỹ đạo deskew → preprocess → keyframe 0 hoặc scan_match → keyframe theo khoảng cách / góc → backend (IMU, LiDAR, wheel, GNSS) → optimize → đám mây keyframe vào KeyframeStore và VoxelMap tại pose đã tối ưu → dựng lại cache khi lệch (ADR-016) → prune. GNSS: vòng chờ 32 fix đến khi IMU phủ, dự đoán pose tại m.t, gate_fix, chi-square, aligner, dời về keyframe kế; bộ chống khóa (PR #19) khởi động lại aligner sau gnss.max_consecutive_rejects lần chi-square từ chối liên tiếp (n_gnss_realign). Stats (PR #19, #20) thêm n_gnss_realign, n_map_points, n_map_spacing_replaced; PR #24 thêm n_gravity_factor_gated / _removed / _unchecked (factor hướng trọng lực ở keyframe 0, ADR-020: scan khởi tạo qua cổng đứng yên thì mới thêm factor); PR #29 thêm n_degenerate_keyframes và n_degenerate_rot_keyframes (keyframe có hướng bị cờ, và trong đó hướng chủ yếu là quay). load_config gán backend.single_thread = deterministic (ADR-018). start()/stop() là no-op: luồng ADR-005 chưa có.",
       inputs: ["Mọi message từ apps (push_*)", "config/default.yaml + overlay (load_config)", "realtime.{scan,imu,aux}_queue_depth, max_points_per_scan", "imu.init_window_s, map.{keyframe_voxel_m, max_keyframes, window_keyframes, rebuild_trans_m, rebuild_rot_deg, prune_period_s}", "gnss.{enabled, max_cov_m2, align_min_pairs, align_min_spread_m, chi2_gate, max_consecutive_rejects}", "backend.{keyframe_dist_m, keyframe_rot_deg}, wheel_odom.enabled, degeneracy.enabled"],
-      outputs: ["latest_state() (Estimate: pose, vận tốc, bias, cov, keyframe_id)", "stats() (24 trường: bộ đếm + p50/p95 push_scan)"],
+      outputs: ["latest_state() (Estimate: pose, vận tốc, bias, cov, keyframe_id)", "stats() (29 trường: bộ đếm + p50/p95 push_scan)"],
       tests: [
-        { name: "test_config: 21 case (gồm DeterministicSetsBackendSingleThread, ScanMatchPlanarity/CollinearityGateRange, MapMinPointDistValidated, GnssFrameVariableKeys)", file: "tests/unit/test_config.cpp", ok: true },
+        { name: "test_config: 24 case (gồm DeterministicSetsBackendSingleThread, ScanMatchPlanarity/CollinearityGateRange, MapMinPointDistValidated, GnssFrameVariableKeys)", file: "tests/unit/test_config.cpp", ok: true },
         { name: "test_estimator: 15 case (BoundedQueue, push_*, run_once thứ tự khóa, ScanWaitsForImuCoverage, start/stop no-op)", file: "tests/unit/test_estimator.cpp", ok: true },
-        { name: "test_pipeline_internals: 32 case (internals 24: ImuBuffer, ImuTrajectory, Frames, KeyframeStore, KeyframePolicy; gnss_fusion 8 gồm RealignsAfterMaxConsecutiveRejects, AcceptedFixResetsRejectCount)", file: "tests/unit/test_pipeline_internals.cpp, test_pipeline_gnss_fusion.cpp", ok: true },
-        { name: "test_pipeline_component: 20 case (box world, GNSS + wheel, hành lang có GNSS, CorridorOutageRealignsAfterRejects, MapSpacingCountersInStats, LidarFactorCovarianceConsistent, không cấp phát, các đường bỏ scan / fix)", file: "tests/component/test_pipeline_component.cpp", ok: true },
+        { name: "test_pipeline_internals: 34 case (internals 26: ImuBuffer, ImuTrajectory, Frames, KeyframeStore, KeyframePolicy; gnss_fusion 8 gồm RealignsAfterMaxConsecutiveRejects, AcceptedFixResetsRejectCount)", file: "tests/unit/test_pipeline_internals.cpp, test_pipeline_gnss_fusion.cpp", ok: true },
+        { name: "test_pipeline_component: 29 case (gồm factor trọng lực, cổng đứng yên, hạt giống factor tương đối, box world, GNSS + wheel, hành lang có GNSS, CorridorOutageRealignsAfterRejects, MapSpacingCountersInStats, LidarFactorCovarianceConsistent, không cấp phát, các đường bỏ scan / fix)", file: "tests/component/test_pipeline_component.cpp", ok: true },
         { name: "test_interfaces_compile: 1 case (mọi header giao diện biên dịch được)", file: "tests/unit/test_interfaces_compile.cpp", ok: true } ],
       fns: [
         { id: "load", name: "load_config", real: true, sig: "common::Result<Config> load_config(const std::filesystem::path& default_yaml, const std::optional<std::filesystem::path>& overlay = std::nullopt)", stage: 0, note: "Gộp default + overlay, _deg → _rad, validate, không ném; liệt kê mọi lỗi dạng <dotted.key>: <reason>. Gán backend.single_thread = deterministic." },
@@ -534,7 +563,7 @@ const DATA = {
         { id: "gfix", name: "detail::GnssFusion::on_fix (nội bộ)", real: true, priv: true, sig: "common::Status on_fix(const common::GnssMeasurement& m, const common::Pose& T_w_b_fix, const common::PoseCovariance& P_w_b, FixOutcome* outcome = nullptr)", stage: 8, note: "gate_fix → pose hữu hạn → (đã căn) chi-square với S = cov + J P Jᵀ → chống khóa → aligner → hàng chờ 256." },
         { id: "gcol", name: "detail::GnssFusion::collect (nội bộ)", real: true, priv: true, sig: "std::size_t collect(common::Timestamp t_k, const common::Pose& T_w_bk, std::array<common::GnssMeasurement, kMaxAuxQueue>& out)", stage: 9, note: "p_e_g' = p_e_g + R_e_w(T_w_bk p_b_g − T_w_b(t_fix) p_b_g), cov giữ nguyên." },
         { id: "state", name: "Estimator::latest_state", real: true, sig: "common::Estimate latest_state() const", stage: 10, note: "Mặc định (state.t == Timestamp{}) đến khi IMU khởi tạo và có keyframe 0." },
-        { id: "stats", name: "Estimator::stats", real: true, sig: "Stats stats() const", stage: 10, note: "24 trường: n_scans, n_imu, n_gnss, n_odom, n_dropped_*, n_rejected_imu, n_keyframes, n_match_failures, n_skipped_scans, n_uncovered_scans, n_map_rebuilds, n_gnss_factors, n_odom_factors, n_gnss_late, n_gnss_ring_overflow, n_gnss_unfused_eof, n_gnss_realign, n_nonfinite_imu, n_map_points, n_map_spacing_replaced, push_scan_us_p50/p95." },
+        { id: "stats", name: "Estimator::stats", real: true, sig: "Stats stats() const", stage: 10, note: "29 trường: n_scans, n_imu, n_gnss, n_odom, n_dropped_*, n_rejected_imu, n_keyframes, n_match_failures, n_skipped_scans, n_uncovered_scans, n_map_rebuilds, n_degenerate_keyframes, n_degenerate_rot_keyframes, n_gnss_factors, n_odom_factors, n_gnss_late, n_gnss_ring_overflow, n_gnss_unfused_eof, n_gnss_realign, n_nonfinite_imu, n_gravity_factor_gated, n_gravity_factor_removed, n_gravity_factor_unchecked, n_map_points, n_map_spacing_replaced, push_scan_us_p50/p95." },
         { id: "ss", name: "Estimator::start / stop", real: true, sig: "void start(); void stop()", stage: 10, note: "No-op kèm cảnh báo (deterministic: không có luồng; không deterministic: chưa cài)." },
         { id: "fe", name: "front_end_loop", sig: "void front_end_loop()  // thread", stage: 11, note: "ADR-005, chưa có." },
         { id: "bl", name: "backend_loop", sig: "void backend_loop()  // thread", stage: 11, note: "ADR-005, chưa có." } ],
@@ -611,7 +640,7 @@ const DATA = {
       calls: [["launch","main"],["main","rl"],["main","on_lidar"],["main","on_imu"],["main","on_fix"],["on_lidar","pub"]] },
 
     { id: "bench", status: "done", name: "bench", short: "mss_bench", x: 1040, y: 400, w: 150, h: 54,
-      desc: "Phát lại dataset mssdata qua Estimator không cần ROS, chạy được trên Pi5. Replayer gọi run_once() trước và sau mỗi push_scan và trước khi một hàng đợi đầy (depth − 1), flush() ở cuối. Đo PF-01: mỗi lần run_once/flush có xử lý scan thêm mẫu ms mỗi scan. Ghi est.tum (pose %.17g, t từ ns nguyên) và bench.json gồm 24 trường Stats, scan_process_ms_p50/p95, n_latency_samples, replay_wall_s và số bản ghi theo luồng. Exit 0; 2 lỗi cấu hình / dataset / đầu ra; 3 còn bản ghi chưa xử lý. Đo mới nhất trên desktop: xử lý scan p50 / p95 khoảng 4,3 / 6,0 ms; optimize() p99 9,3 ms trên lần chạy 10 phút.",
+      desc: "Phát lại dataset mssdata qua Estimator không cần ROS, chạy được trên Pi5. Replayer gọi run_once() trước và sau mỗi push_scan và trước khi một hàng đợi đầy (depth − 1), flush() ở cuối. Đo PF-01: mỗi lần run_once/flush có xử lý scan thêm mẫu ms mỗi scan. Ghi est.tum (pose %.17g, t từ ns nguyên) và bench.json gồm 29 trường Stats, scan_process_ms_p50/p95, n_latency_samples, replay_wall_s và số bản ghi theo luồng. Exit 0; 2 lỗi cấu hình / dataset / đầu ra; 3 còn bản ghi chưa xử lý. Đo mới nhất trên desktop: xử lý scan p50 / p95 khoảng 4,3 / 6,0 ms; optimize() p99 9,3 ms trên lần chạy 10 phút.",
       inputs: ["mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR"], outputs: ["DIR/est.tum", "DIR/bench.json", "bảng tóm tắt trên stdout"],
       tests: [
         { name: "test_bench_replay: 9 case (dataset tổng hợp, cảm biến đi trước LiDAR, hàng đợi IMU nhỏ, lệch stamp IMU, E-02 hai lần chạy bit-cho-bit, mã thoát 2 / 3)", file: "tests/component/test_bench_replay.cpp", ok: true },
@@ -629,35 +658,36 @@ const DATA = {
       calls: [["main","args"],["main","feed"],["feed","drain"],["drain","timed"],["drain","latest"],["main","fin"],["fin","timed"],["fin","latest"],["latest","tum"],["main","json"]] },
 
     { id: "eval", status: "done", name: "eval (py)", short: "TUM, ATE, noise report", x: 1040, y: 500, w: 150, h: 46,
-      desc: "Không link core; chỉ đọc file TUM. mss_eval.ate: ghép mốc thời gian ns gần nhất, căn chỉnh SE(3) Umeyama, RMSE. tools/run_integration.py (PR #14, #16): chuẩn bị dữ liệu từ khối prep: của kịch bản, chạy mss_bench (hết giờ thì giết container), chấm E-01..E-03 so với eval/baselines.json (fail nếu ATE xấu hơn 20 %; baseline hiện là null nên chỉ ghi chú), E-03 phải mất bản ghi, E-02 phải bit-cho-bit, PF-01 độ trễ. Noise report (ADR-011 §7) so profile nhiễu khai báo với nhiễu đo. CI run 40496168491: ATE E-01 0,0022 m, E-02 0,0022 m, E-03 0,0021 m.",
+      desc: "Không link core; chỉ đọc file TUM. mss_eval.ate: ghép mốc thời gian ns gần nhất, căn chỉnh SE(3) Umeyama, RMSE. tools/run_integration.py (PR #14, #16): chuẩn bị dữ liệu từ khối prep: của kịch bản, chạy mss_bench (hết giờ thì giết container), chấm E-01..E-03 so với eval/baselines.json (fail nếu ATE xấu hơn 20 %; từ PR #30 baseline có giá trị: ATE 0,002184 / 0,002184 / 0,002181 m, p95 8,040 / 8,079 / 8,253 ms, E-03 chấm theo baseline E-01, PF-01 chỉ cảnh báo; mục null vẫn chỉ ghi chú); --bridged <thư mục record_scenario> thay dữ liệu tổng hợp bằng bag Gazebo (E-01 ATE 0,0955 m, E-04 hành lang; chưa baseline, không chạy trong CI), E-03 phải mất bản ghi, E-02 phải bit-cho-bit, PF-01 độ trễ. Noise report (ADR-011 §7) so profile nhiễu khai báo với nhiễu đo. CI: ATE E-01 0,002184 m, E-02 0,002184 m, E-03 0,002181 m (docs/baselines/2026-10-28).",
       inputs: ["est.tum + bench.json từ bench", "gt.tum từ sim", "eval/baselines.json"], outputs: ["results/<run-id>/: ATE, plots, verdict", "noise_report.html / .json"],
       tests: [
         { name: "test_ate: 12 hàm test (Umeyama SE(3), ghép mốc, NaN, thiếu cặp)", file: "tests/python/test_ate.py", ok: true },
-        { name: "test_run_integration: 25 hàm test (ngưỡng 20 %, PF-01, baseline null, E-03 mất bản ghi, E-02 cần quỹ đạo, prep:, timeout, mã thoát)", file: "tests/python/test_run_integration.py", ok: true },
-        { name: "test_tum 2, test_allan 3, test_noise_report 16 hàm test", file: "tests/python/test_tum.py, test_allan.py, test_noise_report.py", ok: true },
-        { name: "E-01..E-03, PF-01 trong CI docker-full (run 40496168491: ATE 0,0022 / 0,0022 / 0,0021 m, p95 xử lý scan khoảng 8,5 ms; baselines.json còn null)", file: ".github/workflows/ci.yml", ok: true } ],
+        { name: "test_run_integration: 30 hàm test (ngưỡng 20 %, PF-01, baseline null, --bridged, E-03 mất bản ghi, E-02 cần quỹ đạo, prep:, timeout, mã thoát)", file: "tests/python/test_run_integration.py", ok: true },
+        { name: "test_tum 2, test_allan 3, test_noise_report 30 hàm test", file: "tests/python/test_tum.py, test_allan.py, test_noise_report.py", ok: true },
+        { name: "E-01..E-03, PF-01 trong CI docker-full (baseline PR #30: ATE 0,002184 / 0,002184 / 0,002181 m, p95 xử lý scan 8,040 / 8,079 / 8,253 ms; cổng 20 % có hiệu lực)", file: ".github/workflows/ci.yml", ok: true } ],
       fns: [
         { id: "read", name: "read_tum", real: true, sig: "def read_tum(path: Path) -> Trajectory", stage: 0, note: "Kiểm tra 8 cột, bỏ dòng #." },
         { id: "write", name: "write_tum", real: true, sig: "def write_tum(path: Path, traj: Trajectory) -> None", stage: 0, note: "" },
         { id: "assoc", name: "associate", real: true, sig: "def associate(est_ns: np.ndarray, gt_ns: np.ndarray, max_dt_ns: int) -> tuple[np.ndarray, np.ndarray]", stage: 1, note: "GT gần nhất cho mỗi ước lượng, |dt| ≤ max_dt_ns." },
         { id: "ume", name: "umeyama_se3", real: true, sig: "def umeyama_se3(src: np.ndarray, dst: np.ndarray) -> tuple[np.ndarray, np.ndarray]", stage: 1, note: "R, t không tỉ lệ." },
         { id: "ate", name: "ate", real: true, sig: "def ate(est_path: Path, gt_path: Path, *, max_dt_ns: int = DEFAULT_MAX_DT_NS, min_pairs: int = DEFAULT_MIN_PAIRS) -> AteResult", stage: 2, note: "ValueError khi dòng không hữu hạn hoặc dưới min_pairs." },
-        { id: "prep", name: "run_integration.prepare", real: true, sig: "def prepare(scenario: Path, out: Path, duration_s: float | None) -> Prepared", stage: 0, note: "PR #16: tổng hợp bag từ prep: của kịch bản, bridge, mutate (E-03), đổi sang mssdata dưới out/data." },
+        { id: "prep", name: "run_integration.prepare", real: true, sig: "def prepare(scenario: Path, out: Path, duration_s: float | None) -> Prepared", stage: 0, note: "PR #16: tổng hợp bag từ prep: của kịch bản, bridge, mutate (E-03), đổi sang mssdata dưới out/data. PR #26: --bridged dùng bag đã ghi từ Gazebo (kiểm khớp kịch bản)." },
         { id: "bench", name: "run_integration.run_bench", real: true, sig: "def run_bench(bench_cmd: list[str], default_yaml: Path, data: Path, overlay: Path, out: Path, path_style: str, timeout_s: float | None = None, *, kill_cmd: Sequence[str] | None = None, ...)", stage: 1, note: "Hết giờ thì giết container (PR #16)." },
-        { id: "cmp", name: "run_integration.judge", real: true, sig: "def judge(test_id: str, ate_m: float | None, bench_exit: int, baselines: dict, identical: bool | None, *, ate_error: str | None = None) -> Verdict", stage: 3, note: "Fail nếu ATE xấu hơn baseline 20 %; baseline null = pass kèm ghi chú." },
+        { id: "cmp", name: "run_integration.judge", real: true, sig: "def judge(test_id: str, ate_m: float | None, bench_exit: int, baselines: dict, identical: bool | None, *, ate_error: str | None = None) -> Verdict", stage: 3, note: "Fail nếu ATE xấu hơn baseline 20 %; mục baseline null = pass kèm ghi chú (E-01..E-03 đã có giá trị từ PR #30)." },
         { id: "e03", name: "run_integration.judge_e03_drops / judge_latency", real: true, sig: "def judge_e03_drops(n_scans_e03: int | None, n_scans_e01: int | None, n_dropped: int | None) -> Verdict; def judge_latency(p95_ms: float | None, baselines: dict) -> Verdict", stage: 3, note: "E-03 phải mất bản ghi và ít scan hơn E-01; PF-01." },
         { id: "nrun", name: "noise_report.run", real: true, sig: "def run(bag_dir: Path, profile: Path, out_dir: Path, *, planes: Path | None = None, pipeline_config: Path | None = None, static_s: float = 5.0, allan_gate: bool = False, odom_gate: bool = False) -> Report", stage: 1, note: "Gate (exit 1) và dòng thông tin; ghi html + json." } ],
       calls: [["read","ate"],["assoc","ate"],["ume","ate"],["prep","bench"],["bench","ate"],["ate","cmp"],["ate","e03"],["read","nrun"]] },
 
-    { id: "sim", status: "done", name: "sim (py)", short: "noise layer, bridge, prep", x: 1040, y: 560, w: 150, h: 46,
-      desc: "Lớp nhiễu offline (ADR-011): đọc bag thô sạch, thêm nhiễu IMU/GNSS/LiDAR/odom theo profile + scenario, tất định theo seed, ghi bag MCAP và gt.tum. PR #16: kịch bản sở hữu khối prep: (static_s, ramp_s, speed_mps, omega_radps, box_half_m, và mutate cho E-03) cho dữ liệu tổng hợp của bộ tích hợp. PR #21 (ADR-011 §3 phương án 2): sai số hiệu chỉnh bánh xe nhất quán với mục tiêu yaw: bán kính +1,0 %, track tin là −0,25 % (0,399 m), mục tiêu yaw 4 đến 5°/vòng, trôi quãng đường 1 đến 3 %. Gazebo world/driver thuộc phần B.",
-      inputs: ["Bag thô (Gazebo hoặc write_synthetic_raw_bag)", "sim/noise/<profile>.yaml, sim/scenarios/<id>.yaml (gồm prep:)"],
+    { id: "sim", status: "done", name: "sim (py)", short: "noise layer, bridge, Gazebo (S1)", x: 1040, y: 560, w: 150, h: 46,
+      desc: "Lớp nhiễu offline (ADR-011): đọc bag thô sạch, thêm nhiễu IMU/GNSS/LiDAR/odom theo profile + scenario, tất định theo seed, ghi bag MCAP và gt.tum. PR #16: kịch bản sở hữu khối prep: (static_s, ramp_s, speed_mps, omega_radps, box_half_m, và mutate cho E-03) cho dữ liệu tổng hợp của bộ tích hợp. PR #21 (ADR-011 §3 phương án 2): sai số hiệu chỉnh bánh xe nhất quán với mục tiêu yaw: bán kính +1,0 %, track tin là −0,25 % (0,399 m), mục tiêu yaw 4 đến 5°/vòng, trôi quãng đường 1 đến 3 %. PR #26 (ADR-011 phần B, S1) thêm môi trường Gazebo Harmonic (chỉ chạy trên máy bàn; CI chạy tools/ci/check_sim_assets.sh): robot mẫu sim/models/robot.sdf.j2 + robot.yaml sinh bằng tools/gen_sim_assets.py (bánh va chạm hình cầu để quay tại chỗ khớp động học, lessons.md 2.4), hai world viết tay warehouse (40 x 25 m) và corridor (60 x 2,5 m) kèm sidecar mặt phẳng, driver pure pursuit (sim/mss_sim/pursuit.py, driver.py) với quỹ đạo warehouse_lap_60s và corridor_60s, tools/record_scenario.sh ghi bag thô + bag qua bridge + báo cáo nhiễu bằng một lệnh, kịch bản E-01 (kho) và E-04 (hành lang suy biến, chạy hai lần với degeneracy tắt và bật). Sai số render của gpu_lidar không phải nhiễu cấu hình: bảng đo theo world và dải tầm x góc tới (sim/noise/render/<world>.yaml, 6 ô kho, 14 ô hành lang) từ tools/calibrate_lidar_render.sh, đo dọc quỹ đạo với nhiễu Gazebo = 0, loại điểm viền, chia ô theo tầm không nhiễu (lessons.md 2.5); báo cáo nhiễu gate ±15 % mỗi ô.",
+      inputs: ["Bag thô (Gazebo hoặc write_synthetic_raw_bag)", "sim/noise/<profile>.yaml, sim/scenarios/<id>.yaml (gồm prep:)", "sim/worlds/*.sdf + *.planes.yaml, sim/trajectories/*.yaml, sim/noise/render/<world>.yaml"],
       outputs: ["Bag nhiễu (MCAP)", "gt.tum", "bridge_report.json"],
       tests: [
-        { name: "test_scenario: 15 hàm test (gồm khối prep: và prep.mutate)", file: "tests/python/test_scenario.py", ok: true },
-        { name: "test_synth: 12, test_bridge: 12, test_lidar: 7, test_gnss: 10, test_odom: 12 hàm test (SIM-04..SIM-06, độ lệch yaw 4 đến 5°/vòng)", file: "tests/python/test_synth.py, test_bridge.py, test_lidar.py, test_gnss.py, test_odom.py", ok: true },
-        { name: "test_sim03_consistency: 3 hàm test (SIM-03: nhiễu pipeline ≥ nhiễu sim)", file: "tests/python/test_sim03_consistency.py", ok: true },
-        { name: "test_bag_io 7, test_bag_to_mssdata 21, test_mutate_bag 5, test_profile 10, test_geodesy 7, test_gt 6 hàm test", file: "tests/python/", ok: true } ],
+        { name: "test_scenario: 20 hàm test (gồm khối prep:, prep.mutate, quỹ đạo và pipeline_config_variants)", file: "tests/python/test_scenario.py", ok: true },
+        { name: "test_synth: 12, test_bridge: 12, test_lidar: 7, test_gnss: 10, test_odom: 15 hàm test (SIM-04..SIM-06, độ lệch yaw 4 đến 5°/vòng)", file: "tests/python/test_synth.py, test_bridge.py, test_lidar.py, test_gnss.py, test_odom.py", ok: true },
+        { name: "test_sim03_consistency: 5 hàm test (SIM-03: nhiễu pipeline ≥ nhiễu sim)", file: "tests/python/test_sim03_consistency.py", ok: true },
+        { name: "test_bag_io 7, test_bag_to_mssdata 21, test_mutate_bag 5, test_profile 11, test_geodesy 7, test_gt 6 hàm test", file: "tests/python/", ok: true },
+        { name: "test_gen_sim_assets 15, test_pursuit 9, test_worlds 11 hàm test (SDF sinh ra, mặt phẳng sidecar nằm trên mặt hộp 1 mm, pure pursuit, quỹ đạo cách tường 0,5 m)", file: "tests/python/test_gen_sim_assets.py, test_pursuit.py, test_worlds.py", ok: true } ],
       fns: [
         { id: "lp", name: "load_profile", real: true, sig: "def load_profile(path: Path) -> NoiseProfile", stage: 0, note: "Kiểm tra đơn vị và giá trị khi nạp." },
         { id: "ls", name: "load_scenario", real: true, sig: "def load_scenario(path: Path) -> Scenario", stage: 0, note: "Gồm seed, segment GNSS, zones, prep: Prep | None (PR #16)." },
@@ -667,8 +697,11 @@ const DATA = {
         { id: "gstep", name: "GnssDegrader.step", real: true, sig: "def step(self, t_ns: int, p_e_g_true: np.ndarray) -> GnssSample | None", stage: 2, note: "Nominal/degraded/multipath/outage." },
         { id: "wstep", name: "WheelQuantizer.step", real: true, sig: "def step(self, t_ns: int, names: list[str], velocity_radps: list[float]) -> OdomTwist | None", stage: 2, note: "Encoder lượng tử, sai số hiệu chỉnh bán kính / track (ADR-011 §3)." },
         { id: "b2m", name: "bag_to_mssdata.convert", real: true, sig: "def convert(bag_dir: Path, out_dir: Path, *, origin_lla: tuple[float, float, float] | None = None, pipeline_config: Path | None = None) -> ConvertReport", stage: 2, note: "Bag nhiễu MCAP → mssdata cho bench (ADR-014)." },
+        { id: "gen", name: "gen_sim_assets.generate", real: true, sig: "def generate(...) -> ...  # tools/gen_sim_assets.py", stage: 0, note: "PR #26: SDF robot từ robot.sdf.j2 + robot.yaml + hồ sơ nhiễu + extrinsics của overlay; cấu hình bridge và /tf_static; --check-worlds kiểm sidecar mặt phẳng." },
+        { id: "rec", name: "record_scenario.sh", real: true, sig: "tools/record_scenario.sh <kịch bản> results/<run-id>/ [--no-driver] [--lidar-gz-sigma S]", stage: 0, note: "Ghi bag thô, bridge, báo cáo nhiễu, record_summary.json; thoát 0 / 1 (báo cáo nhiễu trượt) / 2 (lỗi thiết lập)." },
+        { id: "cal", name: "calibrate_lidar_render.measure", real: true, sig: "def measure(raw_bag: Path, planes: Path, lidar_cfg: dict, min_range_m: float) -> list", stage: 3, note: "Bảng σ_render theo ô tầm x góc tới từ bag thô có nhiễu Gazebo = 0." },
         { id: "mut", name: "mutate (tools)", real: true, sig: "def mutate(in_bag: Path, out_bag: Path, *, drop_fraction: float = 0.05, reorder_fraction: float = 0.02, window_ns: int = 20_000_000, topics: tuple[str, ...] = (\"/imu/data\", \"/lidar/points\"), seed: int = 0) -> MutateReport", stage: 3, note: "tools/mutate_bag.py: bag E-03; tham số từ prep.mutate." } ],
-      calls: [["lp","rb"],["ls","rb"],["ls","syn"],["syn","rb"],["rb","pscan"],["rb","gstep"],["rb","wstep"],["rb","mut"],["rb","b2m"]] },
+      calls: [["lp","rb"],["ls","rb"],["ls","syn"],["syn","rb"],["rb","pscan"],["rb","gstep"],["rb","wstep"],["rb","mut"],["rb","b2m"],["gen","rec"],["rec","rb"],["cal","pscan"]] },
   ],
 
   // edges: { f, t, l }  + tuỳ chọn: both (hai chiều), via (đi theo hành lang ngang ở y này), lx (x đặt nhãn)
@@ -792,8 +825,8 @@ const DATA = {
           cond: ["Từng điểm: bỏ NaN và tầm ngoài [min_range_m, max_range_m]; deskew p_l(t_start) = T_l0_l(t)·p_l; giữ điểm đầu mỗi voxel downsample_voxel_m.", "traj hoặc preprocess lỗi: bỏ scan, front_ = predicted (đi theo IMU)."], ctr: ["n_skipped_scans"], yaml: ["preprocess.min_range_m (0,5)", "preprocess.max_range_m (100)", "preprocess.downsample_voxel_m (0,5)", "preprocess.deskew_enabled (true)"],
           hot: ["pt", "Có: theo điểm, không cấp phát, không log, không ném."], time: "", exits: ["lỗi → đi theo dự đoán IMU"] },
         { id: "b9", t: "keyframe 0?", sub: "first_keyframe", kind: "decision", refs: ["pipeline.first"],
-          in: "has_estimate_.", out: "Nếu chưa có ước lượng: keyframe 0 (graph + prior, đám mây vào map), rồi kết thúc scan.",
-          cond: ["Scan đầu tiên sau khởi tạo luôn là keyframe 0, không scan_match (map còn rỗng)."], ctr: ["n_keyframes"], yaml: ["backend.prior_*"],
+          in: "has_estimate_.", out: "Nếu chưa có ước lượng: keyframe 0 (graph + PosePriorFactor + factor hướng trọng lực khi qua cổng đứng yên, đám mây vào map), rồi kết thúc scan.",
+          cond: ["Scan đầu tiên sau khởi tạo luôn là keyframe 0, không scan_match (map còn rỗng).", "ADR-020: backend.static_gravity_factor (mặc định true) thêm factor hướng trọng lực từ trung bình lực riêng của cửa sổ tĩnh; cổng đứng yên (gyro trung bình, tốc độ bánh xe, ||f| − g) không qua thì bỏ factor và đếm."], ctr: ["n_keyframes", "n_gravity_factor_gated", "n_gravity_factor_removed", "n_gravity_factor_unchecked"], yaml: ["backend.prior_*", "backend.static_gravity_factor (true)", "backend.static_gravity_sigma_scale (2,0)", "backend.static_gravity_check_keyframes (0)", "imu.init_max_mean_gyro_radps (0,15)", "imu.init_max_wheel_speed_mps (0,1)"],
           hot: ["kf", "Một lần."], time: "", exits: ["keyframe 0 → chu kỳ (c)"] },
         { id: "b10", t: "khớp scan với map", sub: "ScanMatcher::align", refs: ["scan_match.align", "map.knn"],
           in: "pre_out_ (l), VoxelMap (w), T_w_l_init = predicted.T_w_b·T_b_l.", out: "MatchResult{T_w_l, cov (l, đã nới), H, inliers, iterations, converged}.",
@@ -861,9 +894,9 @@ const DATA = {
           in: "LLT của vòng cuối, Σ w r², Σ w.", out: "C = cov_scale·max(σ_r², min_residual_sigma_m²)·A⁻¹, đối xứng hoá (l, [rho, phi]).",
           cond: ["PR #19: cov_scale 4,7 để NEES factor LiDAR nhất quán (test LidarFactorCovarianceConsistent giữ trong [3, 12])."], ctr: [], yaml: ["scan_match.cov_scale (4,7)", "scan_match.min_residual_sigma_m (0,005)"],
           hot: ["scan", "Có."], time: "" },
-        { id: "m12", t: "nới hướng suy biến", sub: "relax_covariance", refs: ["degeneracy.relax"],
+        { id: "m12", t: "cov hướng không quan sát", sub: "unobserved_covariance", refs: ["degeneracy.unobs", "degeneracy.relax"],
           in: "C, report của vòng cuối.", out: "cov cuối cùng: hướng bị cờ nhân relax_factor; pipeline không nới lại.",
-          cond: ["Chỉ khi enabled.", "Phương sai riêng cho hướng không quan sát được (scan_match.unobserved_var_m2, PR 4b theo ADR-019) CHƯA có trong code."], ctr: [], yaml: ["degeneracy.relax_factor (10)"],
+          cond: ["Chỉ khi enabled.", "PR 4b-1 (#29): hướng bị cờ nhận phương sai \"không quan sát được\" qua unobserved_covariance, cov' = P·cov·P + U' với sàn relax_factor·c/eig_threshold; không cờ thì cov nguyên."], ctr: [], yaml: ["degeneracy.relax_factor (10)", "scan_match.unobserved_var_m2 (0,001)", "scan_match.unobserved_var_rad2 (1e-4)"],
           hot: ["scan", "Có."], time: "" } ] },
 
     { id: "kf", tag: "(c)", title: "Chu kỳ mỗi keyframe", center: ["mỗi keyframe", "khoảng cách / góc", "EstimatorCore::add_keyframe"], close: "keyframe kế tiếp",
@@ -875,12 +908,12 @@ const DATA = {
           cond: ["x0 không hữu hạn: thay bằng guess trước (log)."], ctr: ["n_keyframes"], yaml: [],
           hot: ["kf", "Không: khoảng 1 Hz."], time: "" },
         { id: "k2", t: "factor IMU", sub: "add_imu_factor(i, j, kf_.delta())", refs: ["backend.f_imu", "imu.delta", "backend.fac_imu"],
-          in: "PreintegratedDelta từ keyframe i (kf_, có mẫu biên ở hai đầu).", out: "ImuPreintFactor 9x9 + BetweenFactor bias.",
+          in: "PreintegratedDelta từ keyframe i (kf_, có mẫu biên ở hai đầu).", out: "ImuPreintFactor 9x9 + BetweenFactor<ConstantBias> (bias random walk).",
           cond: ["|round(dt_s·1e9) − (t_j − t_i)| > 1,5e9 / rate_hz ns: bỏ factor (log).", "Khoảng không có factor IMU: graph tái neo vận tốc và bias."], ctr: [], yaml: ["imu.acc_random_walk", "imu.gyro_random_walk", "imu.rate_hz"],
           hot: ["kf", "Không."], time: "", exits: ["lệch thời gian → bỏ (log)"] },
         { id: "k3", t: "factor LiDAR", sub: "add_lidar_factor", refs: ["backend.f_lidar", "pipeline.lcov", "pipeline.dcov", "degeneracy.analyze"],
           in: "T_bi_bj = (T_w_bi^ref)⁻¹·T_w_bj^khớp; cov_b (l → b bằng adjoint).", out: "Factor tương đối (mặc định decoupled, ADR-021) với cov_b hoán vị sang [phi, rho].",
-          cond: ["degeneracy.enabled: analyze(match.H), đổi sang b, chuyển cho graph CHỈ để chẩn đoán (graph đếm degenerate_keyframes nội bộ; không có n_degenerate_keyframes trong Stats).", "cov không SPD: bỏ (log)."], ctr: [], yaml: ["degeneracy.enabled"],
+          cond: ["degeneracy.enabled: analyze(match.H), đổi sang b, chuyển cho graph CHỈ để chẩn đoán (pipeline đếm n_degenerate_keyframes và n_degenerate_rot_keyframes trong Stats).", "cov không SPD: bỏ (log)."], ctr: ["n_degenerate_keyframes", "n_degenerate_rot_keyframes"], yaml: ["degeneracy.enabled", "backend.relative_factor (decoupled)"],
           hot: ["kf", "Không."], time: "" },
         { id: "k4", t: "factor bánh xe", sub: "take_delta → add_odom_factor", refs: ["odom.delta", "pipeline.odt", "backend.f_odom"],
           in: "OdomDelta{t0, t1, T_b0_b1, cov} từ keyframe trước.", out: "OdomBetweenFactor (chỉ hướng có phương sai > 0).",
@@ -991,7 +1024,7 @@ const DATA = {
           in: "Estimate mới.", out: "t x y z qx qy qz qw (%.17g); quaternion chỉ ở biên I/O.",
           cond: ["Một dòng mỗi state.t mới; E-02 so file bit-cho-bit."], ctr: [], yaml: [], hot: ["none", "Ngoài core."], time: "" },
         { id: "o3", t: "bench.json", sub: "Estimator::stats", kind: "io", refs: ["pipeline.stats", "bench.json"],
-          in: "Stats (24 trường) + số bản ghi + độ trễ PF-01.", out: "bench.json; exit 3 nếu còn bản ghi chưa xử lý.",
+          in: "Stats (29 trường) + số bản ghi + độ trễ PF-01.", out: "bench.json; exit 3 nếu còn bản ghi chưa xử lý.",
           cond: ["Không có trong Stats: n_backend_failures, n_gnss_rejected, n_odom_rejected (chỉ CoreCounters)."], ctr: ["n_*", "push_scan_us_p50/p95", "scan_process_ms_p50/p95"], yaml: [], hot: ["none", "Một lần."], time: "" },
         { id: "o4", t: "Odometry + TF", sub: "publish_state (ROS 2)", kind: "planned", refs: ["ros2_node.pub"],
           in: "Estimate.", out: "nav_msgs/Odometry, TF map→imu_link.",
@@ -1021,7 +1054,7 @@ const DATA = {
   ],
   sequences: [
     { id: "boot", title: "1. Khởi động: cấu hình, cửa sổ IMU tĩnh, keyframe 0",
-      caption: "App nạp YAML và dựng Estimator (mọi bộ đệm cấp phát một lần, Graph giới hạn TBB khi deterministic). Các mẫu IMU đứng yên lấp đầy bộ đệm vòng; ở scan đầu tiên được phủ, EstimatorCore lấy cửa sổ imu.init_window_s quanh t_start và gọi ImuInitializer::try_init. Thất bại thì scan bị bỏ và chưa có ước lượng. Thành công thì InitState (g_w, bias, R_w_b với yaw 0) khởi tạo các preintegrator, scan được deskew và preprocess, rồi thành keyframe 0 với prior pose, vận tốc, bias trong graph.",
+      caption: "App nạp YAML và dựng Estimator (mọi bộ đệm cấp phát một lần, Graph giới hạn TBB khi deterministic). Các mẫu IMU đứng yên lấp đầy bộ đệm vòng; ở scan đầu tiên được phủ, EstimatorCore lấy cửa sổ imu.init_window_s quanh t_start và gọi ImuInitializer::try_init. Thất bại thì scan bị bỏ và chưa có ước lượng. Thành công thì InitState (g_w, bias, R_w_b với yaw 0) khởi tạo các preintegrator, scan được deskew và preprocess, rồi thành keyframe 0 với PosePriorFactor pose, prior vận tốc, bias và (qua cổng đứng yên) factor hướng trọng lực trong graph.",
       msgs: [
         { k: "call", f: "app", t: "est", l: "load_config(default.yaml, overlay) → Result<Config>", r: ["pipeline.load"], d: { out: "Config đã validate; _deg → _rad; backend.single_thread = deterministic.", yaml: ["deterministic (true)", "random_seed (42)"], cond: ["Lỗi: liệt kê mọi khóa sai dạng <dotted.key>: <reason>; bench thoát mã 2."] } },
         { k: "call", f: "app", t: "est", l: "Estimator(cfg)", r: ["pipeline.ctor"], d: { cond: ["realtime.*_queue_depth ngoài [1, max biên dịch]: ném std::invalid_argument nêu tên khóa."], yaml: ["realtime.scan_queue_depth", "realtime.imu_queue_depth", "realtime.aux_queue_depth", "realtime.max_points_per_scan"] } },
@@ -1056,8 +1089,11 @@ const DATA = {
         { k: "ret", f: "imu", t: "core", l: "ImuTrajectory" },
         { k: "call", f: "core", t: "pre", l: "process(raw_l, traj, pre_out_)", r: ["preprocess.process"], st: "b8" },
         { k: "ret", f: "pre", t: "core", l: "pre_out_ (l tại t_start)" },
-        { k: "call", f: "core", t: "graph", l: "add_keyframe(t, x0) + prior pose / vận tốc / bias", r: ["backend.kf", "backend.pri"], st: "b9", d: { yaml: ["backend.prior_pos_sigma_m (0,1)", "backend.prior_rot_sigma_deg (1)", "backend.prior_vel_sigma_mps (0,1)", "backend.prior_bias_acc_sigma_mps2", "backend.prior_bias_gyro_sigma_radps"] } },
+        { k: "call", f: "core", t: "graph", l: "add_keyframe(t, x0) + PosePriorFactor pose, prior vận tốc / bias", r: ["backend.kf", "backend.pri"], st: "b9", d: { yaml: ["backend.prior_pos_sigma_m (0,1)", "backend.prior_rot_sigma_deg (1)", "backend.prior_vel_sigma_mps (0,1)", "backend.prior_bias_acc_sigma_mps2", "backend.prior_bias_gyro_sigma_radps"] } },
         { k: "ret", f: "graph", t: "core", l: "KeyId 0" },
+        { fr: "opt", l: "backend.static_gravity_factor và cửa sổ đứng yên (ADR-020)" },
+        { k: "call", f: "core", t: "graph", l: "add_static_gravity_factor(0, acc_mean_b, acc_mean_cov)", r: ["backend.f_grav", "backend.fac_grav"], st: "b9" },
+        { end: 1 },
         { k: "call", f: "core", t: "graph", l: "optimize()", r: ["backend.opt"] },
         { fr: "alt", l: "GTSAM có" },
         { k: "ret", f: "graph", t: "core", l: "Estimate{state, marginal cov [rho, phi]}", r: ["backend.opt"] },
@@ -1179,7 +1215,7 @@ const DATA = {
         { k: "call", f: "core", t: "sm", l: "degeneracy::analyze(match.H) → degeneracy_in_body", r: ["degeneracy.analyze", "pipeline.dcov"] },
         { k: "ret", f: "sm", t: "core", l: "DegeneracyReport (b, chỉ chẩn đoán)" },
         { end: 1 },
-        { k: "call", f: "core", t: "graph", l: "add_lidar_factor(i, j, T_bi_bj = ref⁻¹·T_w_b, cov_b = Ad(T_b_l) cov_l Adᵀ, report*)", r: ["backend.f_lidar", "pipeline.lcov"], st: "k3" },
+        { k: "call", f: "core", t: "graph", l: "add_lidar_factor(i, j, T_bi_bj = ref⁻¹·T_w_b, cov_b = Ad(T_b_l) cov_l Adᵀ, report*) → DecoupledRelativePoseFactor (ADR-021)", r: ["backend.f_lidar", "pipeline.lcov"], st: "k3" },
         { k: "call", f: "core", t: "odom", l: "take_delta()", r: ["odom.delta"], st: "w4" },
         { k: "ret", f: "odom", t: "core", l: "OdomDelta{t0, t1, T_b0_b1, cov o → b}" },
         { fr: "opt", l: "wheel_odom.enabled" },
@@ -1316,7 +1352,7 @@ const DATA = {
         { k: "note", f: "core", t: "core", l: "n_gnss_unfused_eof += fix còn chờ", r: ["pipeline.c_eod"], d: { ctr: ["n_gnss_unfused_eof"] } },
         { k: "ret", f: "est", t: "app", l: "hàng đợi rỗng" },
         { k: "call", f: "app", t: "est", l: "stats()", r: ["pipeline.stats"] },
-        { k: "ret", f: "est", t: "app", l: "Stats (24 trường, p50/p95 push_scan)" },
+        { k: "ret", f: "est", t: "app", l: "Stats (29 trường, p50/p95 push_scan)" },
         { k: "self", f: "app", t: "app", l: "all_processed(counts, stats) → exit 0 hoặc 3", r: ["bench.json"] },
         { k: "async", f: "app", t: "out", l: "est.tum (dòng cuối), bench.json (Stats, scan_process_ms_p50/p95, replay_wall_s, records)", r: ["bench.tum", "bench.json"], st: "o3" },
       ] },
@@ -1357,6 +1393,16 @@ function renderHeader() {
   const strip = document.getElementById("ci-strip");
   strip.innerHTML = `<span class="chip">CI run ${DATA.ci.run}</span>` + DATA.ci.jobs.map(j =>
     `<span class="chip ${j.ok ? "ok" : "fail"}" title="${esc(j.note)}"><span class="dot"></span>${j.name}: ${j.ok ? "pass" : "fail"}</span>`).join("");
+}
+
+// ---------------------------------------------------------------- status
+function renderStatus() {
+  const st = DATA.status, card = document.getElementById("status-card");
+  if (!st || !card) return;
+  card.innerHTML =
+    `<h3>Đã gộp (#23 đến #30)</h3><div class="scroll"><table><tr><th>PR</th><th>Ngày</th><th>Nội dung</th></tr>` +
+    st.done.map(r => `<tr><td class="mono">${esc(r[0])}</td><td class="mono">${esc(r[1])}</td><td>${esc(r[2])}</td></tr>`).join("") + `</table></div>` +
+    `<h3>Còn mở</h3><ul>` + st.open.map(t => `<li>${esc(t)}</li>`).join("") + `</ul>`;
 }
 
 // ---------------------------------------------------------------- tabs
@@ -1874,6 +1920,7 @@ function renderTimeline() {
 }
 
 renderHeader();
+renderStatus();
 initTabs();
 renderOverview();
 renderCycles();
