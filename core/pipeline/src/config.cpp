@@ -104,7 +104,16 @@ void merge_overlay(YAML::Node base,
   }
 }
 
-enum class Range { kAny, kPositive, kNonNegative, kAtLeastOne, kAtLeastTwo, kUnitHalfOpen };
+enum class Range {
+  kAny,
+  kPositive,
+  kNonNegative,
+  kAtLeastOne,
+  kAtLeastTwo,
+  kUnitHalfOpen,
+  kUnitOpenClosed,
+  kHalfTurnDeg
+};
 
 template <typename T>
 bool in_range(T value, Range range) {
@@ -121,6 +130,10 @@ bool in_range(T value, Range range) {
       return value >= T{2};
     case Range::kUnitHalfOpen:
       return value >= T{0} && value < T{1};
+    case Range::kUnitOpenClosed:
+      return value > T{0} && value <= T{1};
+    case Range::kHalfTurnDeg:
+      return value > T{0} && value <= T{180};
   }
   return false;
 }
@@ -139,6 +152,10 @@ const char* range_text(Range range) {
       return "must be >= 2";
     case Range::kUnitHalfOpen:
       return "must be in [0, 1)";
+    case Range::kUnitOpenClosed:
+      return "must be in (0, 1]";
+    case Range::kHalfTurnDeg:
+      return "must be in (0, 180]";
   }
   return "";
 }
@@ -431,6 +448,12 @@ Config read_config(Reader& r) {
   r.field("gnss.align_yaw_from_track", c.gnss.align_yaw_from_track);
   r.field("gnss.align_yaw_chunk_fixes", c.gnss.align_yaw_chunk_fixes, Range::kAtLeastTwo);
   r.angle_deg("gnss.align_yaw_max_sigma_deg", c.gnss.align_yaw_max_sigma_rad, Range::kPositive);
+  r.field("gnss.align_yaw_min_track_m", c.gnss.align_yaw_min_track_m, Range::kPositive);
+  r.field("gnss.align_yaw_min_coherence", c.gnss.align_yaw_min_coherence, Range::kUnitOpenClosed);
+  r.angle_deg("gnss.align_yaw_max_turn_deg", c.gnss.align_yaw_max_turn_rad, Range::kHalfTurnDeg);
+  r.field("gnss.align_yaw_min_var_m2", c.gnss.align_yaw_min_var_m2, Range::kPositive);
+  r.field(
+      "gnss.align_yaw_min_wheel_travel_m", c.gnss.align_yaw_min_wheel_travel_m, Range::kPositive);
   r.field("gnss.align_yaw_reverse_nsigma", c.gnss.align_yaw_reverse_nsigma, Range::kPositive);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);

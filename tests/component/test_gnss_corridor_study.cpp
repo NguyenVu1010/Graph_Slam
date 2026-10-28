@@ -88,7 +88,10 @@ class CorridorObserver : public detail::CoreObserver {
     }
     E_last_ = T_e_w;
   }
-  void on_alignment(Timestamp /*t*/, const common::Pose& T_e_w, double yaw_sigma_rad) override {
+  void on_alignment(Timestamp /*t*/,
+                    const common::Pose& T_e_w,
+                    double yaw_sigma_rad,
+                    const gnss::GnssTrackYawAligner& /*track*/) override {
     if (n_alignments_ == 0) {
       align_T_ = T_e_w;
       align_sigma_rad_ = yaw_sigma_rad;
@@ -358,7 +361,7 @@ void fused_run(const BoxWorldParams& p,
   if (obs.n_alignments_ > 0) {
     double dx = 0.0;
     in_w(T_true, obs.align_T_, dx, r.align0_dyaw_deg);
-    r.align0_sigma_deg = obs.align_sigma_rad_ * 180.0 / 3.14159265358979323846;
+    r.align0_sigma_deg = obs.align_sigma_rad_ * kRadToDeg;
   }
   if (obs.n_gnss_ > 0) {
     in_w(T_true, obs.E_prior_, r.align_first_dx, r.align_first_dyaw_deg);

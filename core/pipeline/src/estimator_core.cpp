@@ -148,7 +148,11 @@ void EstimatorCore::on_wheel(const common::WheelSample& s) {
       return;
     }
     wheel_period_ns_ = s.t.ns - last_wheel_t_.ns;
+    // ADR-023: signed odometer for the track-yaw direction of travel (trapezoid).
+    wheel_odometer_m_ +=
+        0.5 * (last_wheel_v_mps_ + s.v_mps) * (static_cast<double>(wheel_period_ns_) * 1e-9);
   }
+  last_wheel_v_mps_ = s.v_mps;
   have_wheel_ = true;
   last_wheel_t_ = s.t;
   if (wheel_queue_.size() == wheel_queue_.capacity()) {
@@ -249,7 +253,16 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
   const common::NavState x =
       predict_state_at(imu_, pred_, pred_last_t_, front_, m.t, g_w_, scratch_);
   FixOutcome outcome = FixOutcome::kAccepted;
-  (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome);
+  // ADR-023: wheel travel since the previous fix, when wheel samples arrived in between.
+  double wheel_travel_m = std::numeric_limits<double>::quiet_NaN();
+  if (cfg_.wheel_odom.enabled && have_wheel_ && have_gnss_odometer_ &&
+      last_wheel_t_.ns > last_fix_odometer_t_.ns) {
+    wheel_travel_m = wheel_odometer_m_ - fix_odometer_m_;
+  }
+  have_gnss_odometer_ = true;
+  fix_odometer_m_ = wheel_odometer_m_;
+  last_fix_odometer_t_ = m.t;
+  (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome, wheel_travel_m);
   if (early_out_ != nullptr) {
     sync_prealign_counters();
   }
@@ -261,7 +274,8 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
   }
   if (observer() != nullptr && fusion_.n_alignments() != n_alignments_seen_) {
     n_alignments_seen_ = fusion_.n_alignments();
-    observer()->on_alignment(m.t, fusion_.T_e_w(), fusion_.align_yaw_sigma_rad());
+    observer()->on_alignment(
+        m.t, fusion_.T_e_w(), fusion_.align_yaw_sigma_rad(), fusion_.track_aligner());
   }
   if (observer() != nullptr && outcome == FixOutcome::kAccepted) {
     observer()->on_fix_accepted(m.t, fusion_.T_e_w());

@@ -4,6 +4,9 @@
 
 namespace mss::gnss {
 
+/// Radians per degree (pi / 180), for struct defaults given in degrees.
+inline constexpr double kRadPerDegree = 3.14159265358979323846 / 180.0;
+
 // YAML: gnss.*  Loaded and validated by mss::pipeline::load_config.
 struct GnssConfig {
   bool enabled = false;     // feature flag
@@ -28,11 +31,18 @@ struct GnssConfig {
   int prealign_max_fixes = 1;  // fixes, capacity of the pre-alignment buffer (>= 1)
   // ADR-023: the yaw of T_e_w from the GNSS track direction against the body heading
   // (GnssTrackYawAligner) instead of GnssAligner's fit of front-end positions. The struct
-  // default keeps the previous behaviour; load_config overwrites all four from YAML.
+  // default keeps the previous behaviour; load_config overwrites all of them from YAML.
   bool align_yaw_from_track = false;
-  int align_yaw_chunk_fixes = 10;                                         // fixes per chunk (>= 2)
-  double align_yaw_max_sigma_rad = 3.0 * 3.14159265358979323846 / 180.0;  // rad, 1-sigma to align
+  int align_yaw_chunk_fixes = 10;                        // fixes per chunk (>= 2)
+  double align_yaw_max_sigma_rad = 3.0 * kRadPerDegree;  // rad, yaw 1-sigma needed to align (> 0)
+  double align_yaw_min_track_m = 5.0;     // m, along-heading GNSS track needed to align (> 0)
+  double align_yaw_min_coherence = 0.5;   // along-heading track / GNSS path length to align (0, 1]
   double align_yaw_reverse_nsigma = 3.0;  // sigmas: a segment this far backwards reverses (> 0)
+  // rad, turn gate: max heading change across a segment, or within a chunk (0, pi]
+  double align_yaw_max_turn_rad = 45.0 * kRadPerDegree;
+  // m, wheel travel below which a segment is stationary and skipped (> 0)
+  double align_yaw_min_wheel_travel_m = 0.2;
+  double align_yaw_min_var_m2 = 0.25;  // m^2, floor on the declared horizontal fix variance (> 0)
 };
 
 }  // namespace mss::gnss

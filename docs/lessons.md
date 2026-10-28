@@ -227,6 +227,75 @@ Format of an entry: **symptom** → cause → fix → rule.
 - **Rule.** Rank options on several runs (seeds or recordings), never on one chaotic run; a
   difference that grows from 1e-13 to metres is the signature. See 1.12.
 
+### 1.16 Choose the initialisation method from the sensors the platform actually has (PR design 2, ADR-023, `derivations/gnss_fusion_study.md` section 15)
+
+- **Symptom.** The GNSS frame yaw from the track direction (design 2) flipped 180° in review
+  probes in two cases:
+  - on a fast turn (above about 1.57 rad/s with 10-fix chunks);
+  - whenever the robot's net motion was backward before the yaw was confident (3 m forward then
+    back: -177°).
+
+  A fix covariance declared as zero, or a parked robot with slowly drifting GNSS, aligned with an
+  error up to 180° and a small reported sigma.
+- **Cause.** The brief proposed the method without checking it against what the hardware gives.
+  - The usual sources of absolute heading are a magnetometer (9-axis IMU), GNSS Doppler
+    velocity, a dual-antenna receiver, or the course over ground of a moving vehicle.
+  - The MPU IMU has no trustworthy magnetometer, and the simulated receiver gives positions only,
+    so course over ground was the only option.
+  - Course over ground has known preconditions: a sign of travel, a minimum speed or track
+    length, straight segments, and an honest noise floor.
+  - The first design took the sign of travel from a forward-driving assumption. The brief's
+    alternative, the front end, is exactly the unobserved axis that broke the old aligner.
+- **Fix.** Use the standard land-vehicle practice with the sensors present:
+  - The sign of travel comes from the wheel-odometry speed, per segment. The forward-driving
+    assumption is used only without wheel data, and those segments are counted. A segment with
+    less than 0.2 m of wheel travel is stationary and is skipped: wheel noise at rest has a
+    random sign, and using it cut E-01 from 65 GNSS factors to 8.
+  - Segments are excluded when the heading change exceeds 45° (`gnss.align_yaw_max_turn_deg`).
+    The heading is unwrapped so that the turn is measured correctly.
+  - The lever-arm term depends only on rotation, and is solved in closed form.
+  - The declared fix variance is floored at 0.25 m², and non-positive covariance is rejected.
+  - Alignment requires a minimum track length of 5 m and a track coherence of 0.5. Coherence is
+    the track along the heading divided by the GNSS path length. Together they stop a parked
+    robot with drifting GNSS from aligning: 13 of 100 seeds aligned before, 0 after.
+
+  The remaining case, no wheel data and net backward motion before the yaw is confident, is
+  documented as a limitation in ADR-023 and pinned by a test.
+- **Rule.** Before designing an estimator step, list the sensors the target platform has and
+  what each one observes. Then compare with how established systems solve the same step and
+  which sensors they assume. Pick the method whose preconditions your hardware can check. Never
+  take a decisive quantity (a sign, a scale, an initial yaw) from a state that the diagnosis
+  already showed is unobserved.
+
+### 1.17 Wait for observability by a condition, not by skipping frames (PRs #33 and design 2, ADR-022, ADR-023)
+
+- **Symptom.** The GNSS frame yaw can't be found while the robot is still: the fixes are a noise
+  cloud around one point. Skipping the first N frames until the heading "settles" looks like the
+  easy fix. It also matches the way a particle-filter localiser waits for some motion before it
+  trusts its pose.
+- **Cause.** Yaw becomes observable only with motion: enough track length on straight segments.
+  - A fixed N is not tied to that. A robot that stays still for longer is still unaligned after
+    N frames, and a fast one waits for nothing.
+  - Skipping frames also throws away good data. The LiDAR-inertial front end is correct in the
+    local frame from the first frame; only the local-to-ENU transform is unknown.
+- **Fix (chosen).**
+  - The front end runs and publishes the local pose from the first frame.
+  - The only fixed wait is the static phase at keyframe 0, for IMU bias and gravity.
+  - The GNSS alignment waits on conditions, all of which must pass:
+    - predicted yaw sigma at most 3°;
+    - at least 5 m of track along the heading;
+    - track coherence at least 0.5;
+    - segments that turn more than 45° are not used;
+    - segments without wheel motion are not used.
+  - Fixes received before alignment are buffered and attached once it succeeds (design 1), not
+    dropped. The buffer is sized to the expected alignment delay (256 fixes; E-01 needs about
+    220).
+  - The global (ENU) output is to carry an "aligned" flag. It is valid only after alignment, and
+    consumers use the local pose until then (planned for S2).
+- **Rule.** When a quantity needs excitation to become observable, gate on a measure of that
+  observability (a sigma, a track length, an eigenvalue), never on a frame count. Keep the data
+  that arrives before the gate opens, and say in the output which estimates are valid yet.
+
 ## 2. Simulation and evaluation
 
 ### 2.1 Coupled calibration errors (PR #21, ADR-011 §3)

@@ -314,9 +314,14 @@ TEST(PipelineComponent, PrealignFixesAnchorFrameAlongAxis) {
 // first alignment's predicted yaw sigma.
 class AlignObserver : public detail::CoreObserver {
  public:
-  void on_alignment(Timestamp /*t*/, const common::Pose& /*T_e_w*/, double yaw_sigma_rad) override {
+  void on_alignment(Timestamp /*t*/,
+                    const common::Pose& /*T_e_w*/,
+                    double yaw_sigma_rad,
+                    const gnss::GnssTrackYawAligner& track) override {
     if (n_alignments_++ == 0) {
       sigma_rad_ = yaw_sigma_rad;
+      no_wheel_segments_ = track.n_no_wheel_segments();
+      skipped_turns_ = track.n_skipped_turns();
     }
   }
   void on_gnss_factor(Timestamp /*t_k*/,
@@ -328,6 +333,8 @@ class AlignObserver : public detail::CoreObserver {
     }
   }
   int n_alignments_ = 0;
+  int no_wheel_segments_ = -1;
+  int skipped_turns_ = -1;
   double sigma_rad_ = std::numeric_limits<double>::quiet_NaN();
   bool have_first_ = false;
   common::Pose first_;
@@ -381,6 +388,54 @@ TEST(PipelineComponent, TrackYawAlignsCorridorFlipSeeds) {
         EXPECT_GT(err_deg, 90.0) << "seed " << seed;
         EXPECT_TRUE(std::isnan(obs.sigma_rad_));
       }
+    }
+  }
+}
+
+// ADR-023 addendum: the direction of travel comes from the wheel speed when wheel odometry is
+// on. Box world (2 m circle, wheel samples in the dataset): with wheel_odom.enabled every
+// segment up to the first alignment has a wheel sign; without it every one used the
+// forward-driving fallback. The circle (29 deg per chunk) passes the 45 deg turn gate.
+TEST(PipelineComponent, TrackYawUsesWheelSignWhenAvailable) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "the front end follows the backend; measured with GTSAM";
+  }
+  BoxWorldParams p;
+  p.seed = 42;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const common::Pose T_true = test::box_T_e_w(p);
+  for (const bool wheel : {false, true}) {
+    const Config cfg = box_config(p,
+                                  true,
+                                  wheel,
+                                  dir / (wheel ? "wheel" : "no_wheel"),
+                                  "",
+                                  "      align_yaw_from_track: true\n");
+    AlignObserver obs;
+    detail::CoreTestHooks hooks;
+    hooks.observer = &obs;
+    {
+      const HooksScope scope(&hooks);
+      (void)replay(dir / "data", cfg);
+    }
+    ASSERT_GE(obs.n_alignments_, 1) << "wheel " << wheel;
+    ASSERT_TRUE(obs.have_first_);
+    const double err_deg = std::abs(wrap_deg(yaw_of(T_true.R.transpose() * obs.first_.R)));
+    std::printf(
+        "[ track yaw ] box world wheel %d: yaw error %.2f deg, sigma %.2f deg, "
+        "no-wheel segments %d, turn-gated %d\n",
+        wheel ? 1 : 0,
+        err_deg,
+        obs.sigma_rad_ * kRadToDeg,
+        obs.no_wheel_segments_,
+        obs.skipped_turns_);
+    EXPECT_LT(err_deg, 3.0 * obs.sigma_rad_ * kRadToDeg);
+    EXPECT_EQ(obs.skipped_turns_, 0);
+    if (wheel) {
+      EXPECT_EQ(obs.no_wheel_segments_, 0);
+    } else {
+      EXPECT_GT(obs.no_wheel_segments_, 0);
     }
   }
 }

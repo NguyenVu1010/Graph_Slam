@@ -58,10 +58,12 @@ class CoreObserver {
                               const common::Pose& /*T_e_w*/) {}
   /// The GNSS fusion became aligned (first time or after a realign) with the fix at `t`:
   /// `T_e_w` the aligner estimate, `yaw_sigma_rad` its predicted yaw 1-sigma (NaN for
-  /// GnssAligner; ADR-023 study).
+  /// GnssAligner; ADR-023 study) and `track` the track-yaw aligner (counters: segments without
+  /// wheel data, reversals, turn-gated segments; meaningful with gnss.align_yaw_from_track).
   virtual void on_alignment(common::Timestamp /*t*/,
                             const common::Pose& /*T_e_w*/,
-                            double /*yaw_sigma_rad*/) {}
+                            double /*yaw_sigma_rad*/,
+                            const gnss::GnssTrackYawAligner& /*track*/) {}
   /// A fix was accepted; `T_e_w` is the aligner estimate after it.
   virtual void on_fix_accepted(common::Timestamp /*t*/, const common::Pose& /*T_e_w*/) {}
   /// Scan at `t` matched: the IMU-predicted body pose, the matched one and the match result
@@ -260,6 +262,13 @@ class EstimatorCore {
   common::Timestamp last_prune_t_{};
   bool have_wheel_ = false;
   common::Timestamp last_wheel_t_{};
+  // ADR-023: signed wheel odometer (m, trapezoid of WheelSample::v_mps) and its value at the
+  // last GNSS fix, for the track-yaw direction of travel.
+  double last_wheel_v_mps_ = 0.0;
+  double wheel_odometer_m_ = 0.0;
+  double fix_odometer_m_ = 0.0;
+  bool have_gnss_odometer_ = false;
+  common::Timestamp last_fix_odometer_t_{};
   std::int64_t wheel_period_ns_ = 0;
   std::size_t map_dropped_ = 0;
   bool init_failure_logged_ = false;

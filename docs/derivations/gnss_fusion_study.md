@@ -315,9 +315,16 @@ outage (larger `P`), so the test uses the shipped relax.
     fixed (median 0.08 m along the axis), the fused ATE is not yet (1.88 m median, CI includes
     0).
   - Design 2 (section 15, ADR-023, `gnss.align_yaw_from_track`, off): no initialisation flip
-    is left (0 of 15 seeds above 10 deg). Alone it is worse (3.37 m median); with design 1 the
-    fused ATE is 0.60 m median, max 3.46 m, with a CI against `ref` that excludes 0, but still
-    not better than raw GNSS (8/15). Design 3 is open.
+    is left (0 of 15 seeds above 10 deg, max 2.5 deg).
+    - Alone it is worse than raw GNSS (CI excludes 0). Against `ref` its median is 4.66 m, but
+      that CI includes 0.
+    - With design 1 the fused ATE is 1.66 m median, max 3.17 m, with a CI against `ref` that
+      excludes 0, but it is still not better than raw GNSS (6/15).
+    - Design 3 is open.
+- **Planned for S2: a validity flag on the global output.** The global (ENU) output is to
+  carry an "aligned" flag, set once the w->e alignment exists (and, with
+  `align_yaw_from_track`, once its yaw is confident). Consumers use the local pose until it is
+  set. The estimator output interface does not change in the design 2 PR.
 - **With the shipped defaults (degeneracy off), this corridor never moves.** Scan matching
   succeeds on every scan, but the estimate stays at the start: one keyframe, no GNSS factor,
   17.35 m ATE (section 13.3, H3). The "3.47 m on main" quoted here before came from the ADR-021
@@ -601,7 +608,7 @@ bench within noise.
      need item 3. If item 3 leaves any, tie the yaw prior sigma of `E` to the alignment's
      predicted yaw sigma.
    - Done behind `gnss.align_yaw_from_track` (ADR-023, section 15): target met (0 of 15, max
-     4.4 deg), flag off. Design 1 already removed the graph flips of seeds 53 and 54, and with
+     2.5 deg), flag off. Design 1 already removed the graph flips of seeds 53 and 54, and with
      both designs none remains, so the yaw prior sigma of `E` is not tied.
 3. **Shift, smallest form: inflate the fix covariance by the shift uncertainty in
    `GnssFusion::collect`.** Behind a YAML flag in the `gnss` section; no `graph.hpp` change.
@@ -624,7 +631,8 @@ bench within noise.
 ## 14. Design 1: pre-alignment fixes as factors (ADR-022)
 
 Section 13.6, item 1. `gnss.attach_prealign_fixes` (default off) keeps the fixes received before
-the first alignment in a bounded buffer (`gnss.prealign_max_fixes`, 128) and adds them as
+the first alignment in a bounded buffer (`gnss.prealign_max_fixes`, 128 at the time, 256 since
+ADR-023) and adds them as
 factors once the aligner has a transform:
 
 - the fixes of the IMU initialisation window go to keyframe 0 unshifted (only when keyframe 0
@@ -757,112 +765,113 @@ E-01..E-03) is re-measured.
 ## 15. Design 2: frame yaw from the GNSS track (ADR-023)
 
 Section 13.6, item 2. `gnss.align_yaw_from_track` (default off) replaces `GnssAligner` by
-`GnssTrackYawAligner` (`gnss.md` section 5): the yaw of `T_e_w` comes from the GNSS track
-direction against the body heading, with chunk means of 10 fixes, and the alignment waits until
-the predicted yaw 1-sigma is at most `gnss.align_yaw_max_sigma_deg` (3 deg). The translation,
-the gate, the `E` prior and everything downstream are unchanged. Details and alternatives:
-ADR-023.
+`GnssTrackYawAligner` (`gnss.md` section 5). The yaw of `T_e_w` comes from the GNSS track
+direction (course over ground) against the body heading, and the direction of travel from the
+sign of the wheel speed when wheel odometry is on.
+
+- Segments that turn more than 45 deg are not used. The lever arm is removed in closed form.
+- The declared fix variance is floored at 0.25 m^2.
+- The alignment waits until the predicted yaw sigma is at most 3 deg, with at least 5 m of
+  track and a coherence of 0.5.
+- Translation, gate, `E` prior and everything downstream are unchanged.
+
+Details, alternatives and prior art: ADR-023.
 
 What the data showed first (seeds 51 and 52, `ref`, the front-end state at each fix before the
 first alignment): the front-end heading is within 0.2 deg of the truth, but its along-axis
 velocity changes sign at about t = 10 s and reaches -1.7 m/s on both seeds, against +0.5 m/s
-true. The front end then runs backwards. Any sign taken from front-end motion therefore fails on
-exactly these seeds, so the sign must come from the GNSS track under a forward-motion
-assumption (ADR-023).
+true. The front end runs backwards, so the direction of travel cannot come from front-end
+motion.
+
+Wheel data per scene:
+
+- The corridor dataset has wheel samples, but the corridor runs keep `wheel_odom.enabled`
+  false, because the wheel speed would observe the corridor axis (section 8). The corridor
+  variants therefore use the forward-driving fallback.
+- The box world has both cases: "GNSS" (wheel off, fallback) and "GNSS + wheel" (wheel sign).
+- E-01..E-03 use the wheel sign: `config/sim/warehouse.yaml` enables wheel odometry.
 
 Driver: `GnssCorridorStudy.Diagnosis` with
-`MSS_GCS_VARIANTS=prealign,trackyaw,prealign_trackyaw,prealign_oracle_shift,prealign_trackyaw_oracle_shift`,
-seeds 42..56, same scene and statistics as section 13 (about 11 min).
+`MSS_GCS_VARIANTS=prealign,trackyaw,prealign_trackyaw,prealign_trackyaw_oracle_shift`, seeds
+42..56, same scene and statistics as section 13.
 
 - `trackyaw` = `ref` + the flag.
 - `prealign_trackyaw` = designs 1 and 2.
 - `prealign_trackyaw_oracle_shift` adds the shift-displacement oracle.
 
-The `ref`, `prealign` and `prealign_oracle_shift` per-seed lines are identical to sections 13
-and 14, so with the flag off the corridor is unchanged. Two runs of `prealign_trackyaw` (the
-threshold sweep below and the final run) gave identical per-seed lines.
+The `ref` and `prealign` per-seed lines are identical to sections 13 and 14, so with the flag
+off the corridor is unchanged. Measured after fix round 1 of the review (section 15.5); the
+corridor lines are identical before and after the wheel and turn-gate changes of that round
+(straight corridor, no wheel).
 
 ### 15.1 Corridor, 15 paired seeds
 
 | | `ref` | `prealign` | `trackyaw` | `prealign_trackyaw` |
 | --- | --- | --- | --- | --- |
-| seeds with abs(aligner yaw err) > 10 deg at the first factor (target 0) | 2 (51: -178.9, 52: +131.8) | 2 | **0** (max 4.4) | **0** (max 4.4) |
+| seeds with abs(aligner yaw err) > 10 deg at the first factor (target 0) | 2 (51: -178.9, 52: +131.8) | 2 | **0** (max 2.5) | **0** (max 2.5) |
 | median abs(aligner yaw err) at the first factor | 2.9 deg | 2.9 deg | 1.5 deg | 1.5 deg |
 | seeds with abs(`E` yaw err) > 10 deg at the end | 4 (51 to 54) | 2 (51, 52) | 0 | 0 |
-| median abs(`E` - truth x) at the end | 0.82 m | 0.08 m | 2.16 m | 0.10 m |
-| median abs(aligner x err) at the first factor | 0.13 m | 0.13 m | 0.43 m | 0.43 m |
-| GNSS factors, median | 254 | 301 | 227 | 307 |
-| median shift error RMS along x | 1.20 m | 1.19 m | 2.00 m | 0.20 m |
-| seeds with GNSS factor NEES > 6 | 9 | 8 | 12 | 6 |
-| fused ATE median (max) | 1.99 (37.0) m | 1.88 (35.3) m | 3.37 (14.5) m | **0.60 (3.46) m** |
+| median abs(`E` - truth x) at the end | 0.82 m | 0.08 m | 2.39 m | 0.13 m |
+| median abs(aligner x err) at the first factor | 0.13 m | 0.13 m | 0.77 m | 0.77 m |
+| GNSS factors, median | 254 | 301 | 221 | 307 |
+| median shift error RMS along x | 1.20 m | 1.19 m | 2.34 m | 0.71 m |
+| seeds with GNSS factor NEES > 6 | 9 | 8 | 11 | 7 |
+| fused ATE median (max) | 1.99 (37.0) m | 1.88 (35.3) m | 4.66 (15.4) m | **1.66 (3.17) m** |
 
-Predicted sigma: at the first alignment the predicted yaw 1-sigma is 2.55 to 2.92 deg. The
-normalised squared yaw error over the 15 seeds has mean 0.99 (expected 1; the largest error is
-2.1 sigma, seed 49). The unit test over 200 seeded straight tracks gives 0.97.
+Predicted sigma: at the first alignment it is 2.2 to 2.5 deg. The normalised squared yaw error
+over the 15 seeds has mean 0.68, and the largest error is 1.8 sigma. The unit test over 200
+seeded straight tracks gives 0.97.
 
 Paired fused ATE (m; median (max) | wins / losses | 95 % CI of the median paired difference):
 
 | variant | against | fused ATE |
 | --- | --- | --- |
-| `trackyaw` | `ref` | 3.37 (14.5) \| 5/10 \| [-9.56, +1.39] |
-| `prealign_trackyaw` | `ref` | **0.60 (3.46) \| 13/2 \| [-13.94, -0.15]** |
-| `prealign_trackyaw` | `prealign` | 0.60 (3.46) \| 10/5 \| [-2.56, +0.03] |
-| `prealign_trackyaw` | `trackyaw` | 0.60 (3.46) \| 13/2 \| [-4.38, -0.71] |
-| `prealign_trackyaw_oracle_shift` | `ref` | 0.46 (2.15) \| 15/0 \| [-13.99, -0.25] |
-| `prealign_trackyaw_oracle_shift` | `prealign_oracle_shift` | 0.46 (2.15) \| 7/8 \| [-0.38, +0.19] |
+| `trackyaw` | `ref` | 4.66 (15.4) \| 4/11 \| [-8.74, +2.57] (includes 0) |
+| `prealign_trackyaw` | `ref` | **1.66 (3.17) \| 12/3 \| [-13.95, -0.14]** |
+| `prealign_trackyaw` | `prealign` | 1.66 (3.17) \| 8/7 \| [-1.56, +0.35] (includes 0) |
+| `prealign_trackyaw` | `trackyaw` | 1.66 (3.17) \| 15/0 \| [-5.96, -1.11] |
+| `prealign_trackyaw_oracle_shift` | `ref` | 0.69 (2.24) \| 14/1 \| [-13.98, -0.28] |
 
 Against raw GNSS 3-D (fused - raw):
 
-- `trackyaw` is better on 1 of 15 seeds, CI [+0.85, +4.11] (worse);
-- `prealign_trackyaw` 8 of 15, CI [-0.48, +1.47];
-- `prealign_trackyaw_oracle_shift` 11 of 15, CI [-0.50, +0.08].
+- `trackyaw` is better on 1 of 15 seeds, CI [+1.74, +5.94]: **worse than raw GNSS, significant**;
+- `prealign_trackyaw` 6 of 15, CI [-0.42, +1.62];
+- `prealign_trackyaw_oracle_shift` 9 of 15, CI [-0.41, +0.67].
 
-Per seed, fused ATE `prealign` -> `prealign_trackyaw` (m): 42 0.50 -> 0.36, 43 0.32 -> 0.35,
-44 3.07 -> 0.51, 45 2.61 -> 2.33, 46 1.93 -> 0.34, 47 0.30 -> 3.46, 48 0.63 -> 3.03, 49 4.12 ->
-0.54, 50 0.42 -> 0.50, 51 34.8 -> 2.33, 52 35.3 -> 2.74, 53 4.59 -> 0.60, 54 1.88 -> 3.30,
-55 1.68 -> 1.65, 56 0.53 -> 0.30.
+Per seed, fused ATE `prealign` -> `prealign_trackyaw` (m): 42 0.50 -> 3.17, 43 0.32 -> 0.33,
+44 3.07 -> 1.51, 45 2.61 -> 2.96, 46 1.93 -> 0.40, 47 0.30 -> 2.34, 48 0.63 -> 0.86, 49 4.12 ->
+0.42, 50 0.42 -> 2.35, 51 34.8 -> 2.32, 52 35.3 -> 2.54, 53 4.59 -> 0.59, 54 1.88 -> 2.47,
+55 1.68 -> 1.66, 56 0.53 -> 0.28.
 
-Threshold sensitivity (`align_yaw_max_sigma_deg`; fused ATE median (max), m). No seed is above
-10 deg at the first factor in any row.
+The fused ATE is chaotic in the alignment settings:
 
-| threshold | `trackyaw` | `prealign_trackyaw` |
+| version | `trackyaw` | `prealign_trackyaw` |
 | --- | --- | --- |
-| 2 deg | 5.41 (34.8) | 2.33 (5.52) |
-| 3 deg (default) | 3.37 (14.5) | 0.60 (3.46) |
-| 4 deg | 2.84 (25.8) | 0.65 (3.36) |
+| first version, sigma 2 deg | 5.41 (34.8) | 2.33 (5.52) |
+| first version, sigma 3 deg (505fabb) | 3.37 (14.5) | 0.60 (3.46) |
+| first version, sigma 4 deg | 2.84 (25.8) | 0.65 (3.36) |
+| fix round 1 (shipped): + 5 m track, coherence 0.5 | 4.66 (15.4) | 1.66 (3.17) |
 
-- The 2 deg rows were measured before the lever-arm correction of `gnss.md` section 5. On this
-  almost straight corridor the correction changes nothing measurable: the 3 deg rows are
-  identical before and after it.
-- The fused ATE does not vary smoothly with the threshold (2.33 m at 2 deg, 0.60 m at 3 deg). It
-  is the chaotic response of sections 13 and 14, not a tuned optimum.
-- The default comes from the target, not from this table: 3 deg keeps 3 sigma (9 deg) below the
-  10 deg target. 2 deg waits for about 6.4 m of track between the first and the last chunk, 3 deg
-  for about 4.3 m.
+The yaw target is met in every row. The fused ATE moves by a factor of 3 between settings that
+change the yaw at the first factor by about 1 deg. The settings are chosen from the yaw
+requirement and the failure cases, not from this table.
 
 Reading:
 
-- **The target is met.** No seed starts more than 4.4 deg off (`ref`: 2 seeds, 132 and 179 deg),
-  and the predicted sigma is consistent. Seeds 51 and 52 drop from 35 / 37 m to 2.3 / 2.7 m with
-  design 1, and to 14.5 / 12.0 m alone.
-- **Alone, design 2 is worse than `ref`.** The median is 3.37 m (5/10), and it is better than raw
-  GNSS on 1 seed only, with a CI that excludes 0. It aligns later, from a front end that has
-  drifted longer: the translation of `E`'s prior is 0.43 m off at the first factor (`ref`
-  0.13 m), `E` ends 2.2 m off along the axis (`ref` 0.82 m), there are fewer factors and the
-  shift errors grow (median 2.0 m). Without design 1 nothing ties `E`'s translation to
-  keyframe 0.
-- **With design 1 it is the first combination without an oracle whose CI against `ref` excludes
-  0**: 0.60 m median, max 3.46 m (from 37 m), 13/2. Against `prealign` alone it is 10/5, with a
-  CI that touches 0 ([-2.56, +0.03]). The median shift error RMS drops from 1.19 to 0.20 m, and
-  `E` ends 0.10 m from the truth along the axis.
-- **Still not better than raw GNSS** (8/15, CI includes 0). The seeds that lose against
-  `prealign` (47, 48, 54) have shift errors of 1.6 to 3.3 m RMS and GNSS NEES 14 to 47: cause 2
-  of section 13.4. With the exact shift (`prealign_trackyaw_oracle_shift`) every seed is at or
-  below 2.15 m, and 11 of 15 are better than raw GNSS, CI [-0.50, +0.08]. Design 3 remains.
-- **No graph flip remains** with designs 1 and 2: `E` ends within 0.6 deg of the true yaw on
-  every seed. Tying `E`'s yaw prior sigma to the predicted sigma (13.6 item 2, last point) is
-  therefore not needed and not done; it would need a yaw sigma per call in `graph.hpp`
-  (ADR-023).
+- **The target is met.** No seed starts more than 2.5 deg off (`ref`: 2 seeds at 132 and
+  179 deg), and the predicted sigma is consistent or conservative here.
+- **Alone, design 2 is worse than raw GNSS** (1/15, CI [+1.74, +5.94]). Against `ref` the
+  median rises from 1.99 to 4.66 m (4/11), but that paired CI includes 0 ([-8.74, +2.57]) and
+  the maximum improves from 37.0 to 15.4 m. It aligns later, from a front end that has drifted
+  longer: the translation of `E`'s prior is 0.77 m off at the first factor (`ref` 0.13 m), and
+  without design 1 nothing ties `E`'s translation to keyframe 0.
+- **With design 1 the CI against `ref` excludes 0**: 1.66 m median, max 3.17 m (from 37 m),
+  12/3. Against `prealign` alone it is 8/7 with a CI that includes 0. The median shift error
+  drops from 1.19 to 0.71 m.
+- **Still not better than raw GNSS** (6/15, CI includes 0). With the exact shift
+  (`prealign_trackyaw_oracle_shift`) the median is 0.69 m: design 3 remains.
+- **No graph flip remains** with designs 1 and 2 (`E` ends within 0.6 deg on every seed), so the
+  yaw prior sigma of `E` is not tied to the predicted sigma (ADR-023).
 
 ### 15.2 Box world, 15 paired seeds
 
@@ -872,36 +881,48 @@ per-seed values, 20000 resamples, Python `random.Random(7)`.
 
 | case | ATE median off / on | wins / losses (on vs off) | 95 % CI of the median difference |
 | --- | --- | --- | --- |
-| GNSS | 0.01019 / 0.01016 m | 7/8 | [-0.00003, +0.00001] m |
-| GNSS + wheel | 0.00645 / 0.00641 m | 8/3 (4 ties) | [-0.00005, +0.00000] m |
+| GNSS (fallback direction) | 0.01019 / 0.01016 m | 7/8 | [-0.00003, +0.00001] m |
+| GNSS + wheel (wheel sign) | 0.00645 / 0.00641 m | 8/3 (4 ties) | [-0.00005, +0.00000] m |
 
-Unchanged. The alignment comes later on this short circle: 7 to 19 GNSS factors per run, against
-38 to 45 with the flag off. On a 2 m circle each 2 s chunk moves the antenna about 1 m along a
-chord, so with 0.5 m fixes the 3 deg sigma needs about 12 s of motion. The lever-arm correction
-is active here: without it the chord bias would be about 5.7 deg.
+The ATE is unchanged. The alignment comes later on this short circle: 7 to 19 GNSS factors per
+run, against 38 to 45 with the flag off. The circle (29 deg per chunk) passes the 45 deg turn
+gate, and the lever-arm correction is active.
+
+Yaw at the first alignment, GNSS + wheel, seeds 42..56 (component-test scene): errors 0.2 to
+7.4 deg at sigmas of 2.5 to 3.0 deg, normalised squared error mean 1.66. So the sigma is about
+1.3 times optimistic on this circle; the cause is not measured. Every seed is within 3 sigma
+(largest 2.5 sigma). The corridor (0.68) does not show this.
 
 ### 15.3 Integration and bench
 
-- Flag off: E-01..E-03 through `tools/run_integration.py`, all gates pass, ATE 0.002183 m. The
-  `est.tum` md5 values equal those of main 65a04e5 run on the same datasets (E-01 / E-02
+- **Flag off:** E-01..E-03 through `tools/run_integration.py`, all gates pass, ATE 0.002183 m.
+  The `est.tum` md5 values equal those of main 65a04e5 run on the same datasets (E-01 / E-02
   `d1b1e4ba9c87f38d39f4a27fb521081e`, E-03 `ca02a49fde59a5a99fbe73129c630226`).
-- Flag on (`config/sim/warehouse.yaml` plus the flag; GNSS sigma_h 1.5 m on a 1.67 m circle):
-  E-01 0.002196 m (+0.013 mm, limit 0.002621 m), E-03 0.002169 m. There are 65 GNSS factors
-  against 223 with the flag off: at 1.5 m per fix the 3 deg sigma takes about 30 s of the 60 s
-  run.
-- Both flags: E-01 0.002192 m, E-03 0.002178 m, 188 factors (123 pre-alignment fixes attached,
-  102 dropped by the full 128-fix buffer).
+- **Flag on** (`config/sim/warehouse.yaml` plus the flag; GNSS sigma_h 1.5 m on a 1.67 m circle,
+  wheel sign): E-01 0.002196 m (+0.013 mm, limit 0.002621 m), E-03 0.002169 m. There are 65
+  GNSS factors against 223 with the flag off: at 1.5 m per fix the 3 deg sigma takes most of
+  the run.
+- **Both flags:** E-01 0.002199 m, E-03 0.002176 m.
 
-E-01 bench, median of 5 interleaved runs (scan p50 / p95, replay wall, CPU):
+  | buffer (`gnss.prealign_max_fixes`) | pre-alignment fixes attached | dropped | GNSS factors |
+  | --- | --- | --- | --- |
+  | 128 | 123 | 102 | 188 |
+  | 256 (new default) | 221 | 0 | 286 |
+  | 512 | 221 | 0 | 286 |
 
-| build | p50 / p95 | wall | CPU |
+  The default is raised to 256 (ADR-023 decision 8). Flag-off output is unchanged: the buffer
+  is reserved only when `attach_prealign_fixes` is true.
+
+E-01 bench, median of 5 interleaved runs:
+
+| build | scan p50 / p95 | replay wall | CPU |
 | --- | --- | --- | --- |
-| main 65a04e5 | 4.37 / 5.95 ms | 3.95 s | 2.74 s |
-| branch, flag off | 4.33 / 5.72 ms | 3.87 s | 2.72 s |
-| branch, flag on | 4.37 / 5.81 ms | 3.86 s | 2.69 s |
-| branch, both flags | 4.32 / 5.96 ms | 3.82 s | 2.69 s |
+| main 65a04e5 | 4.44 / 6.10 ms | 3.85 s | 2.82 s |
+| branch, flag off | 4.43 / 5.94 ms | 3.74 s | 2.81 s |
+| branch, flag on | 4.38 / 5.77 ms | 3.56 s | 2.71 s |
+| branch, both flags | 4.39 / 6.06 ms | 3.73 s | 2.76 s |
 
-Within noise: the aligner runs once per fix (5 Hz), O(1).
+Within noise.
 
 ### 15.4 Recommendation on the default
 
@@ -909,10 +930,29 @@ The brief's two conditions for flipping hold: the corridor target is met (0 of 1
 10 deg) and the box world is unchanged. The recommendation is still to keep the flag off, like
 design 1:
 
-- alone it makes the corridor fused ATE worse (median 1.99 -> 3.37 m), and it delays the
-  alignment where the fixes are noisy relative to the path (E-01: 65 of 223 factors);
-- its benefit appears together with design 1 (0.60 m median, CI against `ref` excludes 0), and
-  design 1 is off until design 3.
+- alone it is worse than raw GNSS in the corridor (CI excludes 0), and it delays the alignment
+  where the fixes are noisy relative to the path (E-01: 65 of 223 factors);
+- its benefit appears together with design 1 (CI against `ref` excludes 0), and design 1 is off
+  until design 3.
 
-So turn both on together with design 3, after the full set is re-measured. Design 3 should be
-measured against `prealign_trackyaw` as its baseline.
+Turn both on together with design 3, with `prealign_max_fixes` sized to the expected alignment
+delay (256 covers E-01), after the full set is re-measured. Design 3 should be measured against
+`prealign_trackyaw` as its baseline.
+
+### 15.5 Fix round 1 of the review
+
+The review of the first version (505fabb) found four inputs that gave a confidently wrong yaw.
+None is reachable with the flag off. All four are fixed and pinned by unit tests:
+
+| finding | first version | fix | test |
+| --- | --- | --- | --- |
+| fast turn (> 1.57 rad/s at 10-fix chunks) | 180 deg flip, sigma < 0.5 deg | unwrapped heading to measure the turn, 45 deg turn gate | `FastTurnNeverFlips` |
+| tight arc with lever arm (R = 0.2 m) | -3.96 deg, sigma about 1 deg | closed-form lever correction | `TightArcWithLeverArmExact` |
+| net backward motion before confidence | 180 deg flip | wheel-speed sign per segment; fallback without wheel data, documented | `WheelSignResolvesBackwardMotion`, `NetBackwardMotionBeforeConfidenceFlips` |
+| zero declared covariance | aligned at once, 45 of 100 runs > 10 deg off | rejected; variance floor 0.25 m^2 | `ZeroCovarianceNeverAligns`, `VarianceFloor` (48 -> 0 of 100) |
+| parked robot, drifting GNSS | 13 of 100 aligned | 5 m minimum track (6 of 100) plus coherence 0.5 (0 of 100) | `ParkedDriftingGnssNeverAligns` |
+
+One more defect was found while measuring this round: wheel noise at rest has a random sign.
+Used as a direction, it alternated `a_k` over the static segments, and E-01 got only 8 GNSS
+factors. Segments with less than 0.2 m of wheel travel are now skipped as stationary
+(`StationaryWheelNoiseDoesNotDelay`).

@@ -189,10 +189,18 @@ alignment, the static ones of the IMU initialisation window included, in a buffe
 aligned, so the translation of the GNSS frame is tied to keyframe 0 by measurements.
 `gnss.align_yaw_from_track` (ADR-023, default off) takes the yaw of the w->e alignment from the
 direction of the GNSS track against the body heading instead of fitting front-end positions
-(`docs/derivations/gnss.md` section 5): fixes are grouped in chunks of
-`gnss.align_yaw_chunk_fixes`, the alignment waits until the predicted yaw 1-sigma is at most
-`gnss.align_yaw_max_sigma_deg` (it then replaces `align_min_pairs` / `align_min_spread_m`), and
-`gnss.align_yaw_reverse_nsigma` decides when a segment is reverse motion.
+(`docs/derivations/gnss.md` section 5). Its keys:
+
+- `gnss.align_yaw_chunk_fixes`: fixes per chunk.
+- `gnss.align_yaw_max_sigma_deg`, `gnss.align_yaw_min_track_m` and
+  `gnss.align_yaw_min_coherence`: the alignment waits until the predicted yaw 1-sigma, the
+  track length and the track coherence pass them. They replace `align_min_pairs` and
+  `align_min_spread_m`.
+- `gnss.align_yaw_max_turn_deg`: segments that turn more are not used.
+- `gnss.align_yaw_min_var_m2`: floor on the declared fix variance.
+- `gnss.align_yaw_min_wheel_travel_m`: below it a segment counts as stationary.
+- `gnss.align_yaw_reverse_nsigma`: detects reverse motion when no wheel data exists. With
+  wheel odometry the direction of travel comes from the sign of the wheel speed.
 `gnss.enabled` is off in `config/default.yaml` until multipath and outage are evaluated; the
 sim scenarios turn it on by overlay. `backend.gnss_frame_variable` (ADR-019, default on)
 estimates `T_e_w` as one graph variable shared by all GNSS factors, with a prior from

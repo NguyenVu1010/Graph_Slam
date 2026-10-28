@@ -466,5 +466,37 @@ TEST(GnssFusionTrackYaw, FlagSelectsTrackAligner) {
   }
 }
 
+// ADR-023 addendum: GnssFusion::on_fix passes the wheel travel to the track aligner. A body
+// driving backwards (x_b along +x, moving along -x) from the start: without wheel data the
+// forward assumption gives 180 deg; with the wheel travel the yaw is right.
+TEST(GnssFusionTrackYaw, WheelTravelGivesDirection) {
+  for (const bool wheel : {false, true}) {
+    gnss::GnssConfig c = fusion_cfg();
+    c.align_yaw_from_track = true;
+    GnssFusion f(c, kPbg);
+    for (int k = 0; k < 150 && !f.aligned(); ++k) {
+      Pose truth;
+      truth.p = Vec3(-0.1 * k, 0.0, 0.0);  // heading 0, moving backwards
+      GnssMeasurement m;
+      m.t = Timestamp{k * kSec / 5};
+      m.p_e_g = truth_T_e_w() * (truth * kPbg);
+      m.cov = Vec3(0.01, 0.01, 0.04).asDiagonal();
+      m.status = 0;
+      const double travel =
+          wheel ? (k == 0 ? 0.0 : -0.1) : std::numeric_limits<double>::quiet_NaN();
+      (void)f.on_fix(m, truth, kZeroP, nullptr, travel);
+    }
+    ASSERT_TRUE(f.aligned()) << wheel;
+    const double err = std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z());
+    if (wheel) {
+      EXPECT_LT(err, 1e-6);
+      EXPECT_EQ(f.track_aligner().n_no_wheel_segments(), 0);
+    } else {
+      EXPECT_GT(err, 3.0);  // the documented fallback
+      EXPECT_GT(f.track_aligner().n_no_wheel_segments(), 0);
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mss::pipeline::detail
