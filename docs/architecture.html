@@ -287,8 +287,7 @@ const DATA = {
     open: [
       "Trong hành lang, dung hợp LiDAR + GNSS chưa chắc tốt hơn GNSS thô (0,51 / 0,59 / 1,70 m trên seed 42, 43, 44 so với khoảng 0,87 m của GNSS thô; trên main trung vị 15 seed là 3,47 m). Cần một PR chẩn đoán (gnss_fusion_study.md mục 12).",
       "PR 4b-2: bộ phát hiện theo sigma được giữ trên nhánh, chưa gộp, đến khi sửa rò rỉ cạnh của map (1,15 % thông tin dọc trục hành lang từ cạnh tường-sàn; degeneracy.md mục 7).",
-      "S2 (Gazebo): E-04 với degeneracy bật trôi theo phương đứng (ATE 2,13 m, gần hết theo z); E-01 chỉ LiDAR + IMU lệch đứng +0,10 m trong 10 s đầu; bench chưa xuất hướng suy biến bị cờ; chỉnh lại unobserved_var_m2 (hiện 0,001 m²) theo nhiều bản ghi Gazebo, ứng viên 0,01 m².",
-      "Chưa có: luồng ADR-005, loop closure (LoopDetector), xuất bản đồ, nối ros2_node với pipeline; tái neo trọng lực định kỳ (lessons.md 1.13)."
+      "S2 (Gazebo): E-04 với degeneracy bật trôi theo phương đứng (ATE 2,13 m, gần hết theo z); E-01 chỉ LiDAR + IMU lệch đứng +0,10 m trong 10 s đầu; bench chưa xuất hướng suy biến bị cờ; chỉnh lại unobserved_var_m2 (hiện 0,001 m²) theo nhiều bản ghi Gazebo, ứng viên 0,01 m²."
     ]
   },
 
@@ -518,6 +517,7 @@ const DATA = {
         { name: "test_estimator: 15 case (BoundedQueue, push_*, run_once thứ tự khóa, ScanWaitsForImuCoverage, start/stop no-op)", file: "tests/unit/test_estimator.cpp", ok: true },
         { name: "test_pipeline_internals: 34 case (internals 26: ImuBuffer, ImuTrajectory, Frames, KeyframeStore, KeyframePolicy; gnss_fusion 8 gồm RealignsAfterMaxConsecutiveRejects, AcceptedFixResetsRejectCount)", file: "tests/unit/test_pipeline_internals.cpp, test_pipeline_gnss_fusion.cpp", ok: true },
         { name: "test_pipeline_component: 29 case (gồm factor trọng lực, cổng đứng yên, hạt giống factor tương đối, box world, GNSS + wheel, hành lang có GNSS, CorridorOutageRealignsAfterRejects, MapSpacingCountersInStats, LidarFactorCovarianceConsistent, không cấp phát, các đường bỏ scan / fix)", file: "tests/component/test_pipeline_component.cpp", ok: true },
+        { name: "test_imu_only_study: 7 case (nghiên cứu quan sát IMU-only, ADR-020 và ADR-021, gồm RelativeFactorSeeds; chạy khi MSS_IMU_STUDY=1)", file: "tests/component/test_imu_only_study.cpp", ok: true },
         { name: "test_interfaces_compile: 1 case (mọi header giao diện biên dịch được)", file: "tests/unit/test_interfaces_compile.cpp", ok: true } ],
       fns: [
         { id: "load", name: "load_config", real: true, sig: "common::Result<Config> load_config(const std::filesystem::path& default_yaml, const std::optional<std::filesystem::path>& overlay = std::nullopt)", stage: 0, note: "Gộp default + overlay, _deg → _rad, validate, không ném; liệt kê mọi lỗi dạng <dotted.key>: <reason>. Gán backend.single_thread = deterministic." },
