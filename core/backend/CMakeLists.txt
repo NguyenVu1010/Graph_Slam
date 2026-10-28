@@ -6,8 +6,8 @@
 if(MSS_WITH_GTSAM)
   add_library(mss_backend STATIC
     src/graph.cpp src/conversions.cpp src/validate.cpp
-    src/imu_factor.cpp src/gnss_factor.cpp src/odom_factor.cpp src/relative_pose_factor.cpp
-    src/static_gravity_factor.cpp)
+    src/imu_factor.cpp src/gnss_factor.cpp src/odom_factor.cpp src/pose_prior_factor.cpp
+    src/relative_pose_factor.cpp src/static_gravity_factor.cpp)
   target_link_libraries(mss_backend PRIVATE gtsam mss::odom)
   # GTSAM already links TBB; the explicit link is for <tbb/global_control.h> in graph.cpp
   # (ADR-018). PRIVATE, but a STATIC library exports it as $<LINK_ONLY:TBB::tbb>, so
