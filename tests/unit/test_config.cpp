@@ -212,6 +212,19 @@ TEST(Config, ScanMatchCollinearityGateRange) {
   }
 }
 
+TEST(Config, ScanMatchUnobservedVariances) {
+  const auto ok = load_config(kDefault);
+  ASSERT_TRUE(ok.is_ok()) << ok.reason();
+  EXPECT_DOUBLE_EQ(ok.value().scan_match.unobserved_var_m2, 0.001);
+  EXPECT_DOUBLE_EQ(ok.value().scan_match.unobserved_var_rad2, 1e-4);
+  for (const char* key : {"unobserved_var_m2", "unobserved_var_rad2"}) {
+    const auto cfg = parse_config(
+        read_file(kDefault), overlay(std::string("    scan_match:\n      ") + key + ": 0.0\n"));
+    ASSERT_FALSE(cfg.is_ok()) << key;
+    EXPECT_TRUE(mentions(cfg.reason(), std::string("scan_match.") + key)) << cfg.reason();
+  }
+}
+
 // ADR-018: backend.single_thread is not a YAML key; it follows `deterministic` (ADR-008).
 TEST(Config, DeterministicSetsBackendSingleThread) {
   const std::string base = read_file(kDefault);
