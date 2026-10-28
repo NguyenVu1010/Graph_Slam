@@ -63,11 +63,14 @@ Việc tiếp theo: PR 4e riêng, nhỏ (factor LiDAR với Jacobian `Jr^-1` đ�
 GTSAM). Tiêu chí nhận: lần đối chứng "x removed, no backend feedback" của nghiên cứu nằm trong
 sigma của chính nó. PR 4b (dùng ngữ nghĩa "không quan sát") cần nó.
 
-## Ghi chú (PR 4e, 2026-10-28): ba dạng factor tương đối cho LiDAR và loop, chờ quyết định
+## Ghi chú (PR 4e, 2026-10-28): ba dạng factor tương đối cho LiDAR và loop, đã quyết định (ADR-021)
 
-Trạng thái: **đang chờ quyết định của owner**. PR 4e thêm khoá `backend.relative_factor` với ba
-dạng; mặc định `between` (hành vi trước PR 4e, `est.tum` của E-01 trùng md5 với main). Hai dạng
-chính xác là tùy chọn đã đánh giá, chưa được chọn. Đạo hàm và số liệu đầy đủ:
+Trạng thái: **owner đã quyết định (2026-10-28): mặc định `decoupled`**, xem
+[ADR-021](021-relative-factor-decoupled.md). PR 4e thêm khoá `backend.relative_factor` với ba
+dạng; khi PR 4e merge, mặc định là `between` (hành vi trước PR 4e, `est.tum` của E-01 trùng md5
+với main) và hai dạng chính xác là tùy chọn đã đánh giá. ADR-021 đổi mặc định sang `decoupled`;
+`between` và `se3_exact` vẫn chọn được để so sánh. Phần đánh giá dưới đây giữ nguyên như lúc
+viết. Đạo hàm và số liệu đầy đủ:
 `docs/derivations/backend_factors.md` §5 và §5a.
 
 Ba dạng (cùng nhiễu `Gaussian::Covariance(P cov P^T)` và cùng kernel Cauchy cho loop):
@@ -129,4 +132,4 @@ Hệ quả, chung cho mọi lựa chọn: dạng chính xác tốn thêm một `
 (một lần mỗi keyframe và mỗi lần relinearize), không đo được trên E-01. PR 4b dùng ngữ nghĩa
 "không quan sát" (một trục tịnh tiến tự do), nên phụ thuộc vào quyết định này.
 
-Quyết định: chờ owner.
+Quyết định: `decoupled` là mặc định ([ADR-021](021-relative-factor-decoupled.md)).

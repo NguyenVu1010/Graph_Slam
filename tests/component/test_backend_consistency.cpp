@@ -15,7 +15,7 @@
 //     exact Jacobians one Gauss-Newton step per keyframe stays consistent (NEES in [0.5, 2]).
 //   - decoupled: R_Z = R_true Exp(-n_phi), p_Z = t_true - R_Z n_rho (the decoupled residual is
 //     n at the truth). Proves the same for the decoupled form.
-//   - between (control, the default form): the SE(3) noise as for se3_exact; its Jacobian
+//   - between (control, the default before ADR-021): the SE(3) noise as for se3_exact; its Jacobian
 //     omits Jr^-1, and the run fails or leaves [0.5, 2]. Documents the Jacobian defect. Which
 //     chart keeps a free translation axis free (decoupled) is shown analytically in section 5
 //     and by the study's acceptance control, not by this test.
@@ -198,7 +198,7 @@ INSTANTIATE_TEST_SUITE_P(BackendComponent,
                                       : std::string("decoupled");
                          });
 
-// Control: the default form under the SE(3) noise is not consistent (fails or leaves [0.5, 2]).
+// Control: the between form under the SE(3) noise is not consistent (fails or leaves [0.5, 2]).
 TEST(BackendComponent, UnobservedAxisBetweenFactorControlIsInconsistent) {
   const auto [nees, worst_run, ok] = nees_over_seeds(RelativeFactor::kBetween);
   RecordProperty("nees_x_mean", std::to_string(nees));

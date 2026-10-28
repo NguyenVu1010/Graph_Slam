@@ -877,8 +877,8 @@ stays a precondition that the guards do not fully enforce (ADR-020).
   +5772 m with sigma 14 m). Cause: `BetweenFactor<Pose3>`'s approximate Jacobian and, dominant,
   the SE(3) residual's `V(phi)^-1` coupling of a large unobserved translation residual into the
   observed components; the exact Jacobian alone (`se3_exact`) removes the divergence but stays
-  16 sigma over-confident. Three forms are selectable in PR 4e (`backend.relative_factor`),
-  decision pending (ADR-015 PR 4e note);
+  16 sigma over-confident. Three forms are selectable (`backend.relative_factor`); default
+  `decoupled` per ADR-021, which keeps the free axis within its sigma (-8.7 m, sigma 24.5 m);
 - a start in steady straight acceleration in a scene that does not observe the travel axis,
   without wheel odometry (section 12): undetectable, so starting at rest is a precondition;
 - a start in motion that the rest gate passes (a straight acceleration): the factor is kept,

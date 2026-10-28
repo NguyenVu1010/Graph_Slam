@@ -207,14 +207,15 @@ that keyframe against `backend.static_gravity_chi2_gate`, counters `n_gravity_fa
 and `n_gravity_factor_unchecked`) was evaluated and ships off: at rest it removed the factor
 in 6 of 15 GNSS-corridor runs, with statistics that overlap those of starts in motion.
 
-`backend.relative_factor` (PR 4e, default `between`) selects the form of the LiDAR and loop
-relative-pose factors: `between` (`gtsam::BetweenFactor<Pose3>`, whose Jacobian omits the
-`Jr^-1` of the `Logmap`; the behaviour before PR 4e), `se3_exact` (the same SE(3) residual
-with exact Jacobians) or `decoupled` (translation and rotation residuals separate, exact
+`backend.relative_factor` (default `decoupled`, ADR-021) selects the form of the LiDAR and
+loop relative-pose factors: `decoupled` (translation and rotation residuals separate, exact
+Jacobians), `between` (`gtsam::BetweenFactor<Pose3>`, whose Jacobian omits the `Jr^-1` of the
+`Logmap`; the behaviour before ADR-021) or `se3_exact` (the same SE(3) residual with exact
 Jacobians). All three read the scan matcher's covariance the same way to first order and
 differ only at large residuals; for a free translation axis `decoupled` keeps the axis free at
-any rotation. The exact forms are evaluated options, decision pending (ADR-015 PR 4e note,
-`docs/derivations/backend_factors.md` section 5); any other value is a config error.
+any rotation, which is why it is the default. `between` and `se3_exact` remain selectable for
+comparison (`docs/derivations/backend_factors.md` section 5); any other value is a config
+error.
 
 Plane-fit gates and map spacing (ADR-007 amendment), all evaluated and off by default (the
 shipped behaviour is bit-identical to main): `scan_match.plane_min_eig_ratio` (`[0, 1)`)
