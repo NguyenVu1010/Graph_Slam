@@ -422,6 +422,8 @@ Config read_config(Reader& r) {
   r.field("gnss.align_min_spread_m", c.gnss.align_min_spread_m, Range::kPositive);
   r.field("gnss.chi2_gate", c.gnss.chi2_gate, Range::kPositive);
   r.field("gnss.max_consecutive_rejects", c.gnss.max_consecutive_rejects, Range::kAtLeastOne);
+  r.field("gnss.attach_prealign_fixes", c.gnss.attach_prealign_fixes);
+  r.field("gnss.prealign_max_fixes", c.gnss.prealign_max_fixes, Range::kAtLeastOne);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);
