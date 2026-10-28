@@ -34,12 +34,44 @@ so their noise is `P Sigma_m P^T` (checked by
 
 Centred on the keyframe guess `x0`:
 
-- `PriorFactor<Pose3>(X(0), x0.T_w_b)`, error `Logmap(x0^-1 T)` in `[phi, rho]`, sigmas
+- `PosePriorFactor(X(0), x0.T_w_b)` (§2b), error `Logmap(x0^-1 T)` in `[phi, rho]`, sigmas
   `[prior_rot_sigma_rad x3, prior_pos_sigma_m x3]`. In mss order this is the header's
   `diag(prior_pos^2 x3, prior_rot^2 x3)` on the `[rho, phi]` tangent of `T_w_b`.
 - `PriorFactor<Vector3>(V(0), x0.v_w_b)`, sigma `prior_vel_sigma_mps x3`.
 - `PriorFactor<ConstantBias>(B(0), x0.bias)`, sigmas
   `[prior_bias_acc_sigma_mps2 x3, prior_bias_gyro_sigma_radps x3]`.
+
+## 2b. Pose prior (`detail::PosePriorFactor`)
+
+Every pose prior in `Graph` uses it: keyframe 0 (§2), the re-anchor prior of an orphaned
+component (§9) and the prior of the GNSS frame variable `E` (§6b). Variable `X` (Pose3,
+right perturbation `[dphi, drho]`), prior `X0` (a fixed pose of the same frames):
+
+    e   = P r_m,   r_m = Log(X0^-1 X)            ([rho, phi] -> [phi, rho], rad / m)
+    H   = P Jr^-1(r_m) P                          (6x6, d e / d xi_g)
+
+`r_m` and `Jr^-1(r_m)` come from `odom::relative_pose_residual(X0, X, Identity)` (its
+`J_r_xi_j`); the permutation is that of §1, as in `Se3RelativePoseFactor` (§5).
+
+Why not `gtsam::PriorFactor<Pose3>`: it returns the same error `-Local(X, X0) =
+Logmap(X0^-1 X)` (with `GTSAM_POSE3_EXPMAP`), so the cost and the `[phi, rho]` sigmas are
+unchanged, but its Jacobian is the identity, which is `Jr^-1(r_m)` only at `r_m = 0`. The
+error of the identity grows with the residual: about `1/2 |phi|` in the rotation block plus a
+`1/2 [rho]_x` coupling of rotation into translation. At 30 deg / 10 m and 90 deg / 5 m it
+is more than 30 % (relative Frobenius, control test below). Where it matters:
+
+- keyframe 0 sits about 1.8 sigma from its prior in B-04; there the identity Jacobian put
+  0.087 of error into the cost gradient, so the Gauss-Newton fixed point that iSAM2
+  converges to was not the cost minimum (true gradient 0.09);
+- the prior of `E` has a loose yaw (`gnss_frame_yaw_sigma_rad`) and position sigma, so `E`
+  moves far from it: in the GNSS fusion study, up to 38 deg of yaw and 1.9 m (box world,
+  GNSS 2 m) and 5.2 m (corridor);
+- a re-anchor prior is centred on a guess, not on an estimate.
+
+The SE(3) Log residual of `PriorFactor<Pose3>` is kept, not the decoupled chart of §5: the
+prior sigmas are set for it and are a regularisation, not a measured covariance in another
+chart, and keeping the residual makes this a pure linearisation fix (same cost at every
+point, no YAML flag).
 
 ## 3. IMU factor (`detail::ImuPreintFactor`)
 
@@ -234,7 +266,8 @@ backend last-keyframe x error (marginal sigma).
 `se3_exact` removes the divergence but is over-confident on the circle (its sigma drops from 14
 to 1.75 m); `decoupled` stays within its sigma in both scenes.
 
-Shipped configuration, seeds 42..56 paired against `between` (median (max) | wins / losses |
+Shipped configuration measured at db84bf9 (before the exact pose prior, §2b), seeds 42..56
+paired against `between` (median (max) | wins / losses |
 95 % bootstrap CI of the median difference, form - between; lower is better; box NEES
 expectation 6). `scan_match.cov_scale` 4.7 was calibrated with `between`; the box NEES of the
 exact forms stays within 7.8 +/- 1 at 4.7, so no recalibrated rows were needed.
@@ -248,7 +281,10 @@ exact forms stays within 7.8 +/- 1 at 4.7, so no recalibrated rows were needed.
 | 20 s circle x free, along-x RMS (m) | 1.36 (2.84) | 1.33 (5.81) \| 8/7 \| [-0.91, +1.13] | 1.68 (3.25) \| 6/9 \| [-0.84, +1.35] |
 | 20 s straight x free, \|end x err\| (m) | 2.72 (6.28) | 3.26 (5.90) \| 6/9 \| [-0.39, +0.40] | 3.38 (8.18) \| 5/10 \| [-0.26, +0.82] |
 
-Every CI contains 0. These IMU-only and corridor scenes are chaotic: the same decoupled form
+Every CI contains 0 at db84bf9. After the exact pose prior (2026-10-28, PR #28) the 60 s
+corridor + GNSS row reads: between 1.87 (15.32); se3_exact 2.66 (28.01) | 4/11 |
+[+0.06, +0.59], the only CI that excludes 0; decoupled 3.47 (29.13) | 4/11 | [-0.08, +0.56].
+These IMU-only and corridor scenes are chaotic: the same decoupled form
 evaluated with a different floating-point order of the same products (an earlier env-gated
 build) gave a circle median of 3.30 m instead of 2.30 m. `CorridorImuOnlyAlongAxisWithin
 DeadReckoning` (seeds 42..44, run at `between` in PR 4e) circle end errors: between -1.29 / +0.38 /
@@ -293,8 +329,8 @@ that of section 6. For `E`, `R_e_w Exp(dphi) q ~= R_e_w q - R_e_w skew(q) dphi` 
 
     d r / [dphi, drho]_E = [ -R_e_w skew(q) ,  R_e_w ]
 
-`E` gets one prior when it is created (first accepted `add_gnss_factor`, kept with the
-keyframe-0 priors), centred on the aligner's `T_e_w` of that call, GTSAM order
+`E` gets one prior (`PosePriorFactor`, §2b) when it is created (first accepted
+`add_gnss_factor`, kept with the keyframe-0 priors), centred on the aligner's `T_e_w` of that call, GTSAM order
 `[phi, rho]`, diagonal sigmas
 
     [tilt, tilt, yaw, pos, pos, pos]  =  [gnss_frame_tilt_sigma_rad (x2),
@@ -348,8 +384,9 @@ mrad)^2) is about 0.2 % of the factor's at the shipped noise (1 / (0.84 mrad)^2)
 double count is negligible.
 
 Consistency check (ADR-020; evaluated and shipped off, `backend.static_gravity_check_keyframes:
-0`): with a value > 0, after that keyframe is optimised, `Graph::static_gravity_chi2()` returns the factor's **innovation statistic**
-against the rest of the graph. In whitened units (`W` the factor's square-root
+0`): with a value > 0, after that keyframe is optimised, `Graph::static_gravity_chi2()`
+returns the factor's **innovation statistic** against the rest of the graph.
+In whitened units (`W` the factor's square-root
 information), with `e = W r` at the estimate, `J = W dr/d[X_k, B_k]`, `P` the joint marginal
 covariance of `(X_k, B_k)` with the factor and `P_rest` without it:
 
@@ -446,7 +483,7 @@ that tied the keyframes added since the last success to the anchored graph, and 
 never adds them again. Every keyframe whose pose is not in iSAM2 after a failure is marked
 orphaned. In each `optimize()`, the keys of the pending factors are split into connected
 components (by shared factors); a component that holds no key already in iSAM2 and not
-`X(0)`, and contains an orphaned keyframe, gets a `PriorFactor<Pose3>` on its lowest pose
+`X(0)`, and contains an orphaned keyframe, gets a `PosePriorFactor` (§2b) on its lowest pose
 key (the oldest keyframe of the island), centred on that keyframe's guess, with the
 first-keyframe sigmas (§2), and one warning line. A keyframe stops being orphaned once its
 pose is in iSAM2. Components without an orphaned keyframe are not anchored, so an
@@ -473,6 +510,7 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §6 GNSS Jacobian and sign | B-01 `BackendFactors.B01_GnssFactorJacobians`, `BackendFactors.B01_GnssFactorZeroWhenConsistent` |
 | §7 rank-3 odom whitening and Jacobians | B-01 `BackendFactors.B01_OdomFactorRotatedSingularCov`, `BackendFactors.B01_OdomFactorZeroCovRejected` |
 | §5 exact Jacobians of `se3_exact` and `decoupled` (numerical < 1e-6 and `EXPECT_CORRECT_FACTOR_JACOBIANS`, small and 30 deg / 5 m residuals; known residual and whitened error); `se3_exact` = GTSAM's exact `Logmap` chain and the `between` error; `between` control at the large residual | B-01 `BackendFactors.B01_Se3RelativePoseFactorJacobians`, `BackendFactors.B01_DecoupledRelativePoseFactorJacobians`, `BackendFactors.B01_Se3RelativePoseFactorMatchesGtsamExactChain`, `BackendFactors.B01_BetweenFactorJacobianApproximateAtLargeResidual` |
+| §2b pose prior: numerical < 1e-6 and `EXPECT_CORRECT_FACTOR_JACOBIANS` at small residuals and at 30 deg yaw / 10 m and 90 deg tilted / 5 m; error equal to `PriorFactor<Pose3>` to 1e-12; zero at the prior; `PriorFactor<Pose3>` control (> 1e-2 relative at the large offsets) | B-01 `BackendFactors.B01_PosePriorFactorJacobians`, `BackendFactors.B01_PriorFactorPose3JacobianApproximateAtLargeResidual` |
 | §5 Cauchy wrap of both exact forms (numerical at zero error; `sqrt(w)` scaling at 0.1 and at the large residual) | B-01 `BackendFactors.B01_RelativePoseRobustLoopJacobians` |
 | §5 permuted noise and Cauchy wrap of the `between` form (numerical at zero error; `sqrt(w)` scaling at 0.1) | B-01 `BackendFactors.B01_BetweenAndRobustLoopJacobians` |
 | §5 estimate consistent with its marginal along an unobserved axis, per form (each under its own noise model); `between` control | `BackendComponent/UnobservedAxis.EstimateConsistentWithMarginal/{se3_exact,decoupled}`, `BackendComponent.UnobservedAxisBetweenFactorControlIsInconsistent` |
@@ -485,5 +523,7 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §9 | `BackendGraph.ImuGapReanchorsVelocityAndBias`, `BackendGraph.OptimizeFailureDropsPendingFactorsKeepsKeyframes`, `BackendGraph.LatestKeyframeWithoutFactorsReturnsGuessAndNanCov` |
 | input validation (including an unknown `relative_factor`) | `BackendGraph.RejectsBadCovariances`, `BackendApi.ConstructorRejectsInvalidConfig` |
 | §5 robust loop | B-03 `BackendIsam.B03_OutlierLoopDragsLessThanTenCm`, `BackendIsam.B03_ControlNonRobustOutlierDragsMoreThanTenCm` |
-| iSAM2 vs the batch solution (LM, then Gauss-Newton to the fixed point of the linearisation, gradient < 1e-5), per relative-factor form | B-04 `BackendIsam.B04_IsamMatchesBatchReference` |
+| iSAM2 vs the batch solution (LM, then Gauss-Newton to the fixed point of the linearisation, gradient < 1e-5), per relative-factor form; for `se3_exact` and `decoupled` that point is the true cost minimum (central-difference gradient < 1e-5 at the reference and at the iSAM2 estimate; §2b); `between` control (true gradient > 0.1) | B-04 `BackendIsam.B04_IsamMatchesBatchReference` |
+| §2b, §6b frame variable `E` about 20 deg / 3 m from its prior: iSAM2 = batch minimum < 1e-6, true gradient < 1e-5; control with `PriorFactor<Pose3>` on `E` | `BackendIsam.FrameVariableMatchesBatchAtLargePriorResidual` |
+| §2b, §9 re-anchor prior about 20 deg / 2.4 m from its guess: iSAM2 = batch minimum < 1e-6, true gradient < 1e-5; control with `PriorFactor<Pose3>` fails the 1e-6 limit | `BackendIsam.ReanchorPriorMatchesBatchAtLargeResidual` |
 | determinism (single-thread TBB in `deterministic` mode: ADR-018), diagnostics | `BackendIsam.RepeatedOptimizeIsStableAndDeterministic`, `BackendDeterminism.SingleThreadLimitIsProcessLifetime`, `BackendDeterminism.SingleThreadRunsAreBitIdentical`, `BackendDeterminism.MultiThreadRunsReported`, `BackendIsam.DegeneracyReportIsDiagnosticOnly` |

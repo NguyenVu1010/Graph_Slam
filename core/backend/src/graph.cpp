@@ -44,6 +44,7 @@
 #include "gnss_factor.hpp"
 #include "imu_factor.hpp"
 #include "odom_factor.hpp"
+#include "pose_prior_factor.hpp"
 #include "relative_pose_factor.hpp"
 #include "static_gravity_factor.hpp"
 #include "study_seams.hpp"
@@ -270,10 +271,8 @@ struct Graph::Impl {
     Vec6 pose_sigmas;
     pose_sigmas << Vec3::Constant(cfg.prior_rot_sigma_rad),
         Vec3::Constant(cfg.prior_pos_sigma_m);  // GTSAM order [phi, rho]
-    pending_priors.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(
-        detail::pose_key(0),
-        detail::to_gtsam(x.T_w_b),
-        gtsam::noiseModel::Diagonal::Sigmas(pose_sigmas));
+    pending_priors.emplace_shared<detail::PosePriorFactor>(
+        detail::pose_key(0), x.T_w_b, gtsam::noiseModel::Diagonal::Sigmas(pose_sigmas));
     push_velocity_bias_priors(0, pending_priors);
   }
 
@@ -398,9 +397,9 @@ struct Graph::Impl {
       Vec6 pose_sigmas;
       pose_sigmas << Vec3::Constant(cfg.prior_rot_sigma_rad),
           Vec3::Constant(cfg.prior_pos_sigma_m);  // GTSAM order [phi, rho]
-      graph.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(
+      graph.emplace_shared<detail::PosePriorFactor>(
           detail::pose_key(c.lowest_pose),
-          detail::to_gtsam(guesses[c.lowest_pose].T_w_b),
+          guesses[c.lowest_pose].T_w_b,
           gtsam::noiseModel::Diagonal::Sigmas(pose_sigmas));
       common::log_warn("backend: optimize: keyframe " + std::to_string(c.lowest_pose) +
                        " re-anchored with a pose prior (disconnected after a failed optimize)");
@@ -605,10 +604,8 @@ void Graph::add_gnss_factor(common::KeyId k,
       Vec6 sigmas;
       sigmas << m.cfg.gnss_frame_tilt_sigma_rad, m.cfg.gnss_frame_tilt_sigma_rad,
           m.cfg.gnss_frame_yaw_sigma_rad, Vec3::Constant(m.cfg.gnss_frame_pos_sigma_m);
-      m.pending_priors.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(
-          detail::frame_key(),
-          detail::to_gtsam(T_e_w),
-          gtsam::noiseModel::Diagonal::Sigmas(sigmas));
+      m.pending_priors.emplace_shared<detail::PosePriorFactor>(
+          detail::frame_key(), T_e_w, gtsam::noiseModel::Diagonal::Sigmas(sigmas));
       m.T_e_w_guess = T_e_w;
       m.have_frame = true;
     }
