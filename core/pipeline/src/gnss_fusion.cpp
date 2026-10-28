@@ -79,7 +79,8 @@ std::size_t GnssFusion::collect(common::Timestamp t_k,
     pending_.pop(f);
     // p_e_g' = p_e_g + R_e_w (T_w_bk p_b_g - T_w_b(t_fix) p_b_g), cov unchanged.
     const common::Vec3 p_w_g_fix = f.T_w_b_fix * p_b_g_;
-    const common::Vec3 shift_w = p_w_g_k - p_w_g_fix;
+    const common::Vec3 shift_w =
+        shift_oracle_ != nullptr ? (*shift_oracle_)(f.m.t, t_k) : common::Vec3(p_w_g_k - p_w_g_fix);
     out[n] = f.m;
     out[n].p_e_g = f.m.p_e_g + T_e_w_.R * shift_w;
     ++n;

@@ -40,3 +40,10 @@ if(MSS_WITH_GTSAM)
   mss_add_test(test_backend_consistency test_backend_consistency.cpp)
   target_include_directories(test_backend_consistency PRIVATE ${CMAKE_SOURCE_DIR}/tests/unit)
 endif()
+
+# GNSS corridor fusion diagnosis (docs/derivations/gnss_fusion_study.md section 13): skipped
+# unless MSS_GNSS_CORRIDOR_STUDY=1.
+mss_add_test(test_gnss_corridor_study test_gnss_corridor_study.cpp)
+target_include_directories(test_gnss_corridor_study PRIVATE ${CMAKE_SOURCE_DIR}/core/pipeline/src)
+target_compile_definitions(test_gnss_corridor_study PRIVATE
+  MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)
