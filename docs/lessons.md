@@ -150,6 +150,15 @@ Format of an entry: **symptom** → cause → fix → rule.
   factors on a free axis at metre residuals, not only at the measurement. Check every analytic
   Jacobian against numerical differences at small and at large residuals. Read the build flags
   of a dependency before trusting its defaults.
+- **Same defect in `PriorFactor<Pose3>` (PR #28).** `gtsam::PriorFactor<Pose3>` also
+  returns an identity Jacobian for its `Logmap` error, on keyframe 0, the re-anchor priors and
+  the GNSS frame variable `E` (whose prior allows tens of degrees of yaw). It was found only
+  because B-04 compared two optimisers that accept steps by different criteria: LM by the true
+  cost, Gauss-Newton and iSAM2 by the linearisation; they disagreed by up to 1.8e-6
+  (velocity), above the 1e-6 limit. Fixed by
+  `PosePriorFactor` (same residual, exact Jacobian). Rule: audit every library factor in the
+  graph, not only the one that failed; a disagreement between two optimisers at 1e-6 is a
+  signal, not noise.
 
 ### 1.10 Failure paths in the optimiser must re-anchor (PR #11)
 
