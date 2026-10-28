@@ -110,7 +110,7 @@ Mỗi bảng ghi đầu vào và tiêu chí đạt. Các ngưỡng là giá tr�
 | B-01 | Jacobian factor tự viết | Mọi factor custom | Qua `EXPECT_CORRECT_FACTOR_JACOBIANS` của GTSAM |
 | B-02 | Pose graph vòng vuông | 4 cạnh + 1 loop, nhiễu biết trước | Hội tụ về nghiệm đúng |
 | B-03 | Loop sai | Thêm một loop outlier | Robust kernel giữ đồ thị không bị kéo lệch quá \[x\] m |
-| B-04 | iSAM2 so với batch | Cùng một đồ thị | Kết quả iSAM2 khớp nghiệm batch (LM rồi Gauss-Newton tới điểm cố định, gradient < 1e-5) < 1e-6, kiểm tra với cả ba dạng factor tương đối |
+| B-04 | iSAM2 so với batch | Cùng một đồ thị | Kết quả iSAM2 khớp nghiệm batch < 1e-6 với cả ba dạng factor tương đối. Hai dạng chính xác: cực tiểu LM của chi phí thật (gradient sai phân trung tâm < 1e-4). `between`: LM rồi Gauss-Newton tới điểm cố định của phép tuyến tính hoá (gradient < 1e-5) |
 
 ### ros2\_node
 

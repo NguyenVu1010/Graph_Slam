@@ -30,6 +30,7 @@
 #include "graph_scenarios.hpp"
 #include "imu_factor.hpp"
 #include "odom_factor.hpp"
+#include "pose_prior_factor.hpp"
 #include "relative_pose_factor.hpp"
 
 namespace mss::backend {
@@ -268,8 +269,8 @@ void build_batch(const B04Inputs& in,
   bias_sigmas << Vec3::Constant(cfg.prior_bias_acc_sigma_mps2),
       Vec3::Constant(cfg.prior_bias_gyro_sigma_radps);
   const NavState& x0 = in.guess[0];
-  graph.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(
-      pose_key(0), detail::to_gtsam(x0.T_w_b), gtsam::noiseModel::Diagonal::Sigmas(pose_sigmas));
+  graph.emplace_shared<detail::PosePriorFactor>(
+      pose_key(0), x0.T_w_b, gtsam::noiseModel::Diagonal::Sigmas(pose_sigmas));
   graph.emplace_shared<gtsam::PriorFactor<gtsam::Vector3>>(
       vel_key(0),
       gtsam::Vector3(x0.v_w_b),
@@ -321,7 +322,27 @@ void build_batch(const B04Inputs& in,
           gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(in.loop.cov)))));
 }
 
-constexpr int kB04GaussNewtonIterations = 10;  // fixed Gauss-Newton steps after LM (B04)
+constexpr int kB04GaussNewtonIterations = 10;  // Gauss-Newton steps after LM (B04, between)
+constexpr double kB04GradientStep = 1e-6;      // central-difference step of the cost gradient
+
+// Norm of the gradient of the true cost graph.error() at `values`, by central differences
+// along every tangent coordinate (independent of the factors' analytic Jacobians).
+double cost_gradient_norm(const gtsam::NonlinearFactorGraph& graph, const gtsam::Values& values) {
+  const gtsam::VectorValues zero = values.zeroVectors();
+  double sum_sq = 0.0;
+  for (const auto& entry : zero) {
+    for (Eigen::Index i = 0; i < entry.second.size(); ++i) {
+      gtsam::VectorValues plus = zero;
+      gtsam::VectorValues minus = zero;
+      plus.at(entry.first)(i) = kB04GradientStep;
+      minus.at(entry.first)(i) = -kB04GradientStep;
+      const double d = (graph.error(values.retract(plus)) - graph.error(values.retract(minus))) /
+                       (2.0 * kB04GradientStep);
+      sum_sq += d * d;
+    }
+  }
+  return std::sqrt(sum_sq);
+}
 
 std::string sci(double v) {  // scientific notation for RecordProperty
   std::array<char, 32> buf{};
@@ -330,8 +351,8 @@ std::string sci(double v) {  // scientific notation for RecordProperty
 }
 
 // Every relative-factor form (default decoupled, ADR-021; between and se3_exact selectable):
-// iSAM2 agrees with the batch solution of the same factors (LM, then Gauss-Newton to the
-// fixed point of the linearisation).
+// iSAM2 agrees with the batch solution of the same factors. Exact forms: the batch LM minimum
+// of the true cost. between: LM, then Gauss-Newton to the fixed point of the linearisation.
 TEST(BackendIsam, B04_IsamMatchesBatchReference) {
   const B04Inputs in = b04_inputs();
   for (const RelativeFactor form :
@@ -353,21 +374,28 @@ TEST(BackendIsam, B04_IsamMatchesBatchReference) {
     params.relativeErrorTol = 1e-15;
     params.absoluteErrorTol = 1e-15;
     params.maxIterations = 100;
-    // The reference is the batch Gauss-Newton fixed point of the same linearisation iSAM2
-    // uses. Plain LM is not a valid reference: gtsam::PriorFactor<Pose3> (keyframe 0) returns
-    // an identity Jacobian for its Logmap residual (and so does BetweenFactor<Pose3> in the
-    // between form), so the linearisation's fixed point is not the cost minimum (true cost
-    // gradient about 0.09 there for decoupled, 0.68 for between), and LM, which accepts steps by
-    // the true cost, stalls at its lambda bound away from it. LM gives the start; fixed
-    // Gauss-Newton iterations (linearize, solve, retract) reach the fixed point, which is asserted.
+    // Every pose factor of the exact forms has an exact Jacobian (PosePriorFactor on keyframe
+    // 0, se3_exact / decoupled relative factors), so the fixed point of the linearisation
+    // iSAM2 uses is the stationary point of the cost, and plain LM is the reference: its
+    // true-cost gradient (central differences) is asserted. The between form keeps
+    // BetweenFactor<Pose3>, whose Jacobian is exact only at zero residual: its fixed point
+    // is not the cost minimum (true-cost gradient about 0.66 there), so its reference is
+    // LM followed by fixed Gauss-Newton iterations (linearize, solve, retract) to that
+    // fixed point, asserted by the gradient of the linearisation.
     gtsam::Values batch = gtsam::LevenbergMarquardtOptimizer(graph, init, params).optimize();
-    for (int it = 0; it < kB04GaussNewtonIterations; ++it) {
-      batch = batch.retract(graph.linearize(batch)->optimize());
+    double grad_norm = 0.0;
+    if (form == RelativeFactor::kBetween) {
+      for (int it = 0; it < kB04GaussNewtonIterations; ++it) {
+        batch = batch.retract(graph.linearize(batch)->optimize());
+      }
+      grad_norm = graph.linearize(batch)->gradientAtZero().vector().norm();
+      ASSERT_LT(grad_norm, 1e-5);  // the fixed point is reached
+    } else {
+      grad_norm = cost_gradient_norm(graph, batch);
+      ASSERT_LT(grad_norm, 1e-4);  // LM reached the cost minimum
     }
-    const double grad_norm = graph.linearize(batch)->gradientAtZero().vector().norm();
     RecordProperty("reference_gradient_norm_form_" + std::to_string(static_cast<int>(form)),
                    sci(grad_norm));
-    ASSERT_LT(grad_norm, 1e-5);  // the reference is converged
 
     double worst = 0.0;  // largest pose / velocity / bias difference over the keyframes
     for (KeyId k = 0; k < 6; ++k) {

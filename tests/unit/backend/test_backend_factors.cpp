@@ -13,6 +13,7 @@
 #include <gtsam/linear/JacobianFactor.h>
 #include <gtsam/linear/LossFunctions.h>
 #include <gtsam/linear/NoiseModel.h>
+#include <gtsam/nonlinear/PriorFactor.h>
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/slam/BetweenFactor.h>
 
@@ -28,6 +29,7 @@
 #include "graph_scenarios.hpp"
 #include "imu_factor.hpp"
 #include "odom_factor.hpp"
+#include "pose_prior_factor.hpp"
 #include "relative_pose_factor.hpp"
 #include "static_gravity_factor.hpp"
 
@@ -567,6 +569,76 @@ TEST(BackendFactors, B01_BetweenFactorJacobianApproximateAtLargeResidual) {
   }
   EXPECT_GT(worst, 0.1);
   RecordProperty("between_factor_worst_rel_jacobian_error", std::to_string(worst));
+}
+
+// Pose prior (backend_factors.md section 2b). Offsets X = X0 * D with D: 30 deg yaw and a
+// 10 m translation (the GNSS frame variable T_e_w at its yaw / position sigmas, ADR-019),
+// and 90 deg about a tilted axis with 5 m.
+std::vector<Pose> large_prior_offsets() {
+  const double yaw_rad = 30.0 * EIGEN_PI / 180.0;
+  const double quarter_rad = 0.5 * EIGEN_PI;
+  return {pose_from(Vec3(0.0, 0.0, yaw_rad), Vec3(8.0, -6.0, 0.0)),
+          pose_from(quarter_rad * Vec3(1.0, -2.0, 2.0).normalized(), Vec3(3.0, 4.0, 0.0))};
+}
+
+// Prior noise of the keyframe-0 site shape: [phi, rho] sigmas (rad, m).
+gtsam::SharedNoiseModel prior_noise() {
+  Vec6 sigmas;
+  sigmas << 0.01, 0.01, 0.5, 0.2, 0.2, 0.3;
+  return gtsam::noiseModel::Diagonal::Sigmas(sigmas);
+}
+
+gtsam::Values single_pose(const Pose& X) {
+  gtsam::Values v;
+  v.insert(pose_key(0), to_gtsam(X));
+  return v;
+}
+
+// Jacobian (EXPECT_CORRECT_FACTOR_JACOBIANS and relative error < 1e-6) at small residuals and
+// at the large offsets; residual and cost equal to gtsam::PriorFactor<Pose3> (same Logmap,
+// same [phi, rho] order) to 1e-12; zero at the prior.
+TEST(BackendFactors, B01_PosePriorFactorJacobians) {
+  std::mt19937 rng(kSeed);
+  const gtsam::SharedNoiseModel noise = prior_noise();
+  std::vector<Pose> offsets = large_prior_offsets();
+  for (int rep = 0; rep < 20; ++rep) {
+    offsets.push_back(common::se3_exp(random_vec6(rng, 0.05)));
+  }
+  for (std::size_t i = 0; i < offsets.size(); ++i) {
+    SCOPED_TRACE(i);
+    const Pose X0 = random_pose(rng);
+    const gtsam::Values v = single_pose(X0 * offsets[i]);
+    const PosePriorFactor f(pose_key(0), X0, noise);
+    const gtsam::PriorFactor<gtsam::Pose3> ref(pose_key(0), to_gtsam(X0), noise);
+    MSS_EXPECT_CORRECT_FACTOR_JACOBIANS(f, v);
+    EXPECT_LT(max_relative_jacobian_error(f, v), kRelJacTol);
+    EXPECT_LT((f.unwhitenedError(v) - ref.unwhitenedError(v)).norm(), 1e-12);
+    EXPECT_NEAR(f.error(v), ref.error(v), 1e-12 * std::max(1.0, ref.error(v)));
+    const Vec6 r_m = common::se3_log(offsets[i]);  // [rho, phi]
+    Vec6 e_expect;
+    e_expect << r_m.tail<3>(), r_m.head<3>();  // [phi, rho]
+    EXPECT_LT((f.unwhitenedError(v) - e_expect).norm(), 1e-9);
+  }
+  const Pose X0 = random_pose(rng);
+  const PosePriorFactor f(pose_key(0), X0, noise);
+  EXPECT_LT(f.unwhitenedError(single_pose(X0)).norm(), 1e-12);
+}
+
+// Control (why PosePriorFactor exists): gtsam::PriorFactor<Pose3> returns an identity
+// Jacobian, exact at zero residual only; at the large offsets it is off by more than 1e-2
+// relative.
+TEST(BackendFactors, B01_PriorFactorPose3JacobianApproximateAtLargeResidual) {
+  std::mt19937 rng(kSeed);
+  const gtsam::SharedNoiseModel noise = prior_noise();
+  double best = 1e9;  // smallest error over the large offsets: each must fail the check
+  for (const Pose& D : large_prior_offsets()) {
+    const Pose X0 = random_pose(rng);
+    const gtsam::PriorFactor<gtsam::Pose3> ref(pose_key(0), to_gtsam(X0), noise);
+    EXPECT_LT(max_relative_jacobian_error(ref, single_pose(X0)), kRelJacTol);
+    best = std::min(best, max_relative_jacobian_error(ref, single_pose(X0 * D)));
+  }
+  EXPECT_GT(best, 1e-2);
+  RecordProperty("prior_factor_pose3_min_rel_jacobian_error", std::to_string(best));
 }
 
 }  // namespace
