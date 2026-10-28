@@ -102,6 +102,8 @@ python tools/mutate_bag.py <in_bag> <out_bag> --drop 0.05 --reorder 0.02        
 PYTHONPATH=eval python -m mss_eval.noise_report <bag_dir> sim/noise/<profile>.yaml --out results/<run-id>/noise  # declared vs measured noise
 ```
 
+Gazebo simulation (desktop only; worlds, robot template, driver, `tools/record_scenario.sh`): `sim/README.md`, section Gazebo.
+
 ### Integration tests (E-01..E-03, PF-01)
 
 `tools/run_integration.py` synthesises a bag, runs the noise bridge and `bag_to_mssdata.py`

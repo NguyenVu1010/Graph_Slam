@@ -350,3 +350,68 @@ def test_timeout_kills_the_container(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert f"docker kill {name} attempted (see bench.log)" in res["E-01"]["note"]
     log = (out / "E-01" / "bench.log").read_text(encoding="utf-8")
     assert f"--name {name}" in log and "kill" in log
+
+
+def test_bridged_bag_source(bridged_bag: tuple[Path, object], tmp_path: Path) -> None:
+    """--bridged replaces the synthetic data by a recorded bridge output (bag/ + gt.tum)."""
+    bridged, _ = bridged_bag
+    out = tmp_path / "results"
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out), "--bridged", str(bridged)]
+    code = main([*argv, "--scenario", str(_scenario(tmp_path))])
+    summary = (out / "summary.md").read_text(encoding="utf-8")
+    assert code == 0, summary
+    res = json.loads((out / "integration.json").read_text(encoding="utf-8"))
+    src = res["data_source"]
+    assert src["generator"] == "recorded bag (bridge output)"
+    assert src["scenario_world_trajectory_used"] is True
+    assert src["scenario"] == "E-01" and src["mutate"]["drop_fraction"] == 0.05
+    assert res["E-01"]["ate_rmse_m"] < 1e-6 and res["E-02"]["identical"] is True
+    assert "E-03 processed" in res["E-03"]["note"]
+    assert not (out / "data" / "raw").exists()  # nothing synthesised
+    assert "Data: recorded bag" in summary
+
+
+def test_bridged_dir_without_bag_is_setup_error(tmp_path: Path) -> None:
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(tmp_path / "r")]
+    argv += ["--bridged", str(tmp_path), "--scenario", str(_scenario(tmp_path))]
+    assert main(argv) == 2
+
+
+def test_bridged_refuses_duration_override(
+    bridged_bag: tuple[Path, object], tmp_path: Path
+) -> None:
+    bridged, _ = bridged_bag
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(tmp_path / "r")]
+    argv += ["--bridged", str(bridged), "--duration-s", "5", "--scenario", str(_scenario(tmp_path))]
+    assert main(argv) == 2
+
+
+def test_bridged_recording_must_match_the_scenario(
+    bridged_bag: tuple[Path, object], tmp_path: Path
+) -> None:
+    bridged, _ = bridged_bag
+    rec = tmp_path / "rec"
+    shutil.copytree(bridged, rec)
+    (rec / "assets").mkdir()
+    meta = {"profile": "sim/noise/default.yaml", "pipeline_config": "config/sim/corridor.yaml"}
+    (rec / "assets" / "assets.yaml").write_text(yaml.safe_dump(meta))
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(tmp_path / "r"), "--bridged"]
+    assert main([*argv, str(rec), "--scenario", str(_scenario(tmp_path))]) == 2  # E-01 vs corridor
+    meta["pipeline_config"] = "config/sim/warehouse.yaml"
+    (rec / "assets" / "assets.yaml").write_text(yaml.safe_dump(meta))
+    out = tmp_path / "ok"
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out), "--bridged", str(rec)]
+    assert main([*argv, "--scenario", str(_scenario(tmp_path)), "--tests", "E-01"]) == 0
+
+
+def test_bridged_e03_without_prep_is_setup_error(
+    bridged_bag: tuple[Path, object], tmp_path: Path
+) -> None:
+    """--bridged needs no prep for E-01/E-02, but E-03 still needs prep.mutate."""
+    bridged, _ = bridged_bag
+    no_prep = _scenario(tmp_path, prep=False)
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--bridged", str(bridged)]
+    assert main([*argv, "--out", str(tmp_path / "a"), "--scenario", str(no_prep)]) == 2
+    out = tmp_path / "b"
+    e01 = [*argv, "--out", str(out), "--scenario", str(no_prep), "--tests", "E-01,E-02"]
+    assert main(e01) == 0

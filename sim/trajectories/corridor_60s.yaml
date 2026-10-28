@@ -1,0 +1,8 @@
+# E-04 route in sim/worlds/corridor.sdf (ADR-011 section 5): straight down the corridor
+# centre line from the spawn pose of corridor.planes.yaml into the end room (x > 60).
+# 51 m at 0.9 m/s: about 63 s with the 5 s still start. Same schema as warehouse_lap_60s.yaml.
+waypoints:
+  - [12.0, 0.0]
+  - [63.0, 0.0]
+speed_mps: 0.9
+lookahead_m: 1.5

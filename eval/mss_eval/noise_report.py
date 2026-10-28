@@ -2,7 +2,7 @@
 
     python -m mss_eval.noise_report <bag_dir> <profile.yaml> --out <dir>
         [--planes planes.yaml] [--pipeline-config cfg.yaml] [--static-s 5]
-        [--allan-gate] [--odom-gate]
+        [--allan-gate] [--odom-gate] [--render-table sim/noise/render/<world>.yaml]
 
 Writes ``<out>/noise_report.html`` and ``<out>/noise_report.json``; exits 1 when a gated row
 fails, so a bag with the wrong noise is never packaged. Reads MCAP with ``rosbags`` directly and
@@ -26,6 +26,9 @@ from rosbags.typesys import Stores, get_typestore
 from scipy.spatial.transform import Rotation
 
 from mss_eval.noise_measure import (
+    DEFAULT_EDGE_JUMP_M,
+    INCIDENCE_BINS_COS,
+    RANGE_BINS_M,
     Report,
     Row,
     Section,
@@ -35,9 +38,15 @@ from mss_eval.noise_measure import (
     gnss_section,
     imu_section,
     lidar_section,
+    neighbour_incidence_cos,
     odom_section,
+    plane_edge_mask,
+    plane_ranges,
     ray_residuals,
     scan_to_world,
+)
+from mss_eval.noise_measure import (
+    cells as cells_grid,
 )
 from mss_eval.pointcloud import cloud_to_arrays
 from mss_eval.report_html import render
@@ -91,8 +100,8 @@ def _t_b_l(tf_msg: Any) -> np.ndarray | None:
     return None
 
 
-def _read_bag(path: Path) -> _Bag:
-    """Everything except LiDAR clouds (those are streamed by ``_lidar_pass``)."""
+def read_bag(path: Path) -> _Bag:
+    """Everything except LiDAR clouds (those are streamed by ``lidar_pass``)."""
     with Reader(path) as reader:
         bag = _Bag({c.topic: c.msgtype for c in reader.connections})
         conns = [c for c in reader.connections if c.topic != _LIDAR]
@@ -119,16 +128,29 @@ def _read_bag(path: Path) -> _Bag:
     return bag
 
 
-def _lidar_pass(
+@dataclass
+class LidarSamples:
+    """Per-point LiDAR measurements against the reference planes (all scans concatenated)."""
+
+    residual: np.ndarray  # along-ray residual to the nearest plane, m
+    cos: np.ndarray  # |n . u| to that plane
+    range_m: np.ndarray  # noise-free range to the plane intersection (``plane_ranges``), m
+    edge: np.ndarray  # bool, point at a silhouette (``plane_edge_mask``)
+    n_nan: int
+    n_not_inf: int
+    incidence: np.ndarray | None  # neighbour-normal incidence of surviving points (dropout)
+
+
+def lidar_pass(
     path: Path,
     bag: _Bag,
     traj: Trajectory | None,
     planes: tuple[np.ndarray, np.ndarray] | None,
     min_range_m: float,
-) -> tuple[np.ndarray, np.ndarray, int, int]:
-    """Record LiDAR stamps; with planes and GT, return (residuals, cos, n_nan, n_not_inf)."""
-    dists: list[np.ndarray] = []
-    coss: list[np.ndarray] = []
+    edge_jump_m: float,
+) -> LidarSamples:
+    """Record LiDAR stamps; with planes and GT, measure every point against the planes."""
+    cols: dict[str, list[np.ndarray]] = {"res": [], "cos": [], "rng": [], "edge": [], "inc": []}
     n_nan = n_not_inf = 0
     t_b_l = bag.T_b_l
     with Reader(path) as reader:
@@ -139,18 +161,38 @@ def _lidar_pass(
             bag.stamps.setdefault(_LIDAR, []).append(stamp)
             if planes is None or traj is None or t_b_l is None:
                 continue
-            xyz, t_off, _, _, _ = cloud_to_arrays(msg)
+            xyz, t_off, _, height, width = cloud_to_arrays(msg)
             n_nan += int(np.isnan(xyz).any(axis=1).sum())
             n_not_inf += int((~np.isinf(xyz).any(axis=1)).sum())
             ok = np.isfinite(xyz).all(axis=1) & (np.linalg.norm(xyz, axis=1) >= min_range_m)
+            organized = height > 1 and height * width == len(xyz)
+            if organized:
+                inc = neighbour_incidence_cos(xyz, height, width)[ok]
+                cols["inc"].append(inc.astype(np.float32))
             t_i = stamp + (t_off[ok].astype(np.int64) if t_off is not None else 0)
             p_w, o_w = scan_to_world(xyz[ok], np.broadcast_to(t_i, ok.sum()), traj, t_b_l)
             res, cos = ray_residuals(p_w, o_w, *planes)
-            dists.append(res.astype(np.float32))
-            coss.append(cos.astype(np.float32))
-    if not dists:
-        return np.empty(0, np.float32), np.empty(0, np.float32), n_nan, n_not_inf
-    return np.concatenate(dists), np.concatenate(coss), n_nan, n_not_inf
+            if organized:
+                edge = plane_edge_mask(xyz, ok, p_w, *planes, height, width, edge_jump_m)
+            else:
+                edge = np.zeros(len(p_w), dtype=bool)
+            cols["res"].append(res.astype(np.float32))
+            cols["cos"].append(cos.astype(np.float32))
+            cols["rng"].append(plane_ranges(p_w, o_w, *planes).astype(np.float32))
+            cols["edge"].append(edge)
+
+    def cat(key: str, dtype: type) -> np.ndarray:
+        return np.concatenate(cols[key]) if cols[key] else np.empty(0, dtype)
+
+    return LidarSamples(
+        cat("res", np.float32),
+        cat("cos", np.float32),
+        cat("rng", np.float32),
+        cat("edge", bool),
+        n_nan,
+        n_not_inf,
+        cat("inc", np.float32) if cols["inc"] else None,
+    )
 
 
 def _bag_section(bag: _Bag, bridge_report: dict | None) -> Section:
@@ -217,8 +259,14 @@ def _pipeline_params(path: Path | None) -> dict:
 
 
 def load_planes(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Planes ``n . p = d`` from YAML; ``n`` and ``d`` are scaled by the same ``1/|n|``."""
+    """Planes ``n . p = d`` from YAML; ``n`` and ``d`` are scaled by the same ``1/|n|``.
+
+    The YAML is a list of ``{n, d}`` or a world sidecar (``sim/worlds/<world>.planes.yaml``), a
+    mapping whose ``planes`` key holds that list.
+    """
     items = yaml.safe_load(Path(path).read_text())
+    if isinstance(items, dict):
+        items = items["planes"]
     normals = np.array([p["n"] for p in items], dtype=float).reshape(-1, 3)
     d = np.array([p["d"] for p in items], dtype=float)
     norms = np.linalg.norm(normals, axis=1)
@@ -227,6 +275,41 @@ def load_planes(path: Path) -> tuple[np.ndarray, np.ndarray]:
         msg = f"{path}: plane {int(bad[0])} has a zero-norm normal n"
         raise ValueError(msg)
     return normals / norms[:, None], d / norms
+
+
+def sidecar_world(path: Path) -> str | None:
+    """World name of a planes sidecar (``world`` key), None for a bare list of planes."""
+    data = yaml.safe_load(Path(path).read_text())
+    return str(data["world"]) if isinstance(data, dict) and "world" in data else None
+
+
+def load_render_table(path: Path, world: str | None = None) -> list:
+    """``cells`` of a LiDAR render table (``sim/noise/render/<world>.yaml``, written by
+    ``tools/calibrate_lidar_render.py``), validated: non-empty, ``world`` equal to ``world``
+    (when given), bins equal to ``RANGE_BINS_M`` / ``INCIDENCE_BINS_COS``, every cell on that
+    grid, ``n > 0`` and a finite ``sigma >= 0``. Raises ``ValueError`` naming the problem."""
+    data = yaml.safe_load(Path(path).read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a mapping")
+    cells = data.get("cells")
+    if not isinstance(cells, list) or not cells:
+        raise ValueError(f"{path}: cells: expected a non-empty list")
+    if world is not None and data.get("world") != world:
+        raise ValueError(f"{path}: world {data.get('world')!r} != planes world {world!r}")
+    if [float(v) for v in data.get("range_bins_m", [])] != list(RANGE_BINS_M):
+        raise ValueError(f"{path}: range_bins_m != {list(RANGE_BINS_M)}")
+    if [float(v) for v in data.get("incidence_bins_cos", [])] != list(INCIDENCE_BINS_COS):
+        raise ValueError(f"{path}: incidence_bins_cos != {list(INCIDENCE_BINS_COS)}")
+    grid = {tuple(float(v) for v in c) for c in cells_grid()}
+    for i, c in enumerate(cells):
+        ok = isinstance(c, list) and len(c) == 6 and all(isinstance(v, (int, float)) for v in c)
+        if not ok:
+            raise ValueError(f"{path}: cells[{i}]: expected [r_lo, r_hi, cos_lo, cos_hi, n, sigma]")
+        if tuple(float(v) for v in c[:4]) not in grid:
+            raise ValueError(f"{path}: cells[{i}]: {c[:4]} is not a cell of the bin grid")
+        if not (c[4] > 0 and math.isfinite(c[5]) and c[5] >= 0):
+            raise ValueError(f"{path}: cells[{i}]: need n > 0 and a finite sigma >= 0")
+    return cells
 
 
 def _resolve(bag_dir: Path) -> tuple[Path, Path]:
@@ -254,22 +337,38 @@ def run(
     static_s: float = 5.0,
     allan_gate: bool = False,
     odom_gate: bool = False,
+    render_table: Path | None = None,
 ) -> Report:
-    """Measure, write ``noise_report.html`` and ``noise_report.json`` into ``out_dir``."""
+    """Measure, write ``noise_report.html`` and ``noise_report.json`` into ``out_dir``.
+
+    ``render_table``: the world's measured LiDAR render cells (``load_render_table``, checked
+    against the ``world`` of ``planes``); without it the render error is taken as 0 and every
+    range-sigma cell with enough points is gated against the declared sigma alone.
+    """
     bag_path, side_dir = _resolve(Path(bag_dir))
     prof = yaml.safe_load(Path(profile).read_text())
     pipe = _pipeline_params(pipeline_config)
     br_path = side_dir / "bridge_report.json"
     bridge_report = json.loads(br_path.read_text()) if br_path.exists() else None
 
-    bag = _read_bag(bag_path)
+    bag = read_bag(bag_path)
     traj = None
     if bag.gt:
         t, p, q = zip(*bag.gt, strict=True)
         traj = Trajectory(np.array(t, dtype=np.int64), np.array(p), np.array(q))
     plane_arrays = load_planes(planes) if planes is not None else None
+    world = sidecar_world(planes) if planes is not None else None
+    render_cells = load_render_table(render_table, world) if render_table is not None else None
     min_range = float(prof["lidar"].get("min_range_m", 0.0))
-    dists, coss, n_nan, n_not_inf = _lidar_pass(bag_path, bag, traj, plane_arrays, min_range)
+    lid = prof["lidar"]
+    samples = lidar_pass(
+        bag_path,
+        bag,
+        traj,
+        plane_arrays,
+        min_range,
+        float(lid.get("edge_jump_m", DEFAULT_EDGE_JUMP_M)),
+    )
 
     sections: list[Section] = []
     if bag.imu:
@@ -312,7 +411,18 @@ def run(
             sections.append(gnss)
         if plane_arrays is not None and bag.T_b_l is not None:
             sections.append(
-                lidar_section(dists, coss, n_nan, n_not_inf, prof["lidar"], pipe.get("lidar"))
+                lidar_section(
+                    samples.residual,
+                    samples.cos,
+                    samples.n_nan,
+                    samples.n_not_inf,
+                    lid,
+                    pipe.get("lidar"),
+                    samples.incidence,
+                    samples.range_m,
+                    samples.edge,
+                    render_cells,
+                )
             )
         if len(bag.odom) > 1:
             t, v, w = zip(*bag.odom, strict=True)
@@ -358,11 +468,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("bag_dir", type=Path, help="bridge output dir (with bag/) or the bag itself")
     ap.add_argument("profile", type=Path, help="declared noise profile, sim/noise/*.yaml")
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--planes", type=Path, help="YAML list of {n: [x, y, z], d: m}, n . p = d")
+    ap.add_argument("--planes", type=Path, help="planes n . p = d: YAML list or world sidecar")
     ap.add_argument("--pipeline-config", type=Path, help="pipeline YAML (lever arm, beliefs)")
     ap.add_argument("--static-s", type=float, default=5.0, help="initial static window, s")
     ap.add_argument("--allan-gate", action="store_true", help="gate on Allan deviation")
     ap.add_argument("--odom-gate", action="store_true", help="gate odom drift to 1-3 %%")
+    ap.add_argument(
+        "--render-table", type=Path, help="LiDAR render cells, sim/noise/render/<world>.yaml"
+    )
     args = ap.parse_args(argv)
     report = run(
         args.bag_dir,
@@ -373,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
         static_s=args.static_s,
         allan_gate=args.allan_gate,
         odom_gate=args.odom_gate,
+        render_table=args.render_table,
     )
     failed = [f"{s.name}: {r.name}" for s in report.sections for r in s.rows if r.ok is False]
     print("PASS" if report.passed else "FAIL\n  " + "\n  ".join(failed))

@@ -5,7 +5,7 @@ import pytest
 import yaml
 
 from mss_sim.config_overlay import merge_overlay
-from mss_sim.scenario import ScenarioError, load_scenario
+from mss_sim.scenario import ScenarioError, load_route, load_scenario
 
 REPO = Path(__file__).resolve().parents[2]
 E01 = REPO / "sim/scenarios/E-01.yaml"
@@ -150,3 +150,66 @@ def test_merge_overlay_deep_and_null_base() -> None:
     out = merge_overlay(base, {"a": {"y": 3}, "b": {"new": 1}})
     assert out == {"a": {"x": 1, "y": 3}, "b": {"new": 1}}
     assert base == {"a": {"x": 1, "y": 2}, "b": None}  # inputs untouched
+
+
+def test_e01_route_loaded() -> None:
+    route = load_scenario(E01).route
+    assert route is not None
+    assert route.waypoints[0] == (-8.0, 0.8)
+    assert route.waypoints[-1] == route.waypoints[0]  # a closed lap
+    assert (route.speed_mps, route.lookahead_m) == (0.5, 1.0)
+
+
+def test_e04_loads_with_variant() -> None:
+    sc = load_scenario(REPO / "sim/scenarios/E-04.yaml")
+    assert sc.world == "corridor"
+    assert sc.pipeline_config == REPO / "config/sim/corridor.yaml"
+    assert sc.pipeline_config_variants == {
+        "degeneracy_on": REPO / "config/sim/corridor_degeneracy_on.yaml"
+    }
+    assert sc.route is not None and sc.route.waypoints[-1][0] > 60.0  # ends in the room
+    assert load_scenario(E01).pipeline_config_variants == {}
+
+
+def _route_file(tmp_path: Path, data: dict) -> Path:
+    f = tmp_path / "traj.yaml"
+    f.write_text(yaml.safe_dump(data))
+    return f
+
+
+def _route(**over: object) -> dict:
+    data: dict = {"waypoints": [[0.0, 0.0], [1.0, 0.0]], "speed_mps": 0.5, "lookahead_m": 1.0}
+    data.update(over)
+    return data
+
+
+@pytest.mark.parametrize(
+    ("data", "match"),
+    [
+        (_route(waypoints=[[0.0, 0.0]]), r"waypoints: needs >= 2"),
+        (_route(waypoints=[[0.0, 0.0], [0.0, 0.0]]), r"waypoints\[1\]: repeats"),
+        (_route(waypoints=[[0.0, 0.0], [1.0]]), r"waypoints\[1\]: expected \[x_m, y_m\]"),
+        (_route(speed_mps=0), r"speed_mps: must be a finite number > 0"),
+        (_route(lookahead_m=-1.0), r"lookahead_m"),
+        ({"waypoints": [[0, 0], [1, 0]], "speed_mps": 0.5}, r"lookahead_m: missing"),
+    ],
+)
+def test_bad_route_rejected(tmp_path: Path, data: dict, match: str) -> None:
+    with pytest.raises(ScenarioError, match=match):
+        load_route(_route_file(tmp_path, data))
+
+
+def test_missing_trajectory_file_rejected(tmp_path: Path) -> None:
+    def mutate(d: dict) -> None:
+        d["trajectory"] = "sim/trajectories/does_not_exist.yaml"
+
+    with pytest.raises(ScenarioError, match=r"trajectory .*file not found"):
+        load_scenario(_write(tmp_path, mutate))
+
+
+def test_empty_variants_rejected(tmp_path: Path) -> None:
+    def mutate(d: dict) -> None:
+        d["pipeline_config_variants"] = {}
+
+    with pytest.raises(ScenarioError, match=r"pipeline_config_variants"):
+        load_scenario(_write(tmp_path, mutate))

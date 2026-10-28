@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,9 @@ class BridgeReport:
     n_odom_errors: int
     n_gt_clamped: int
     n_gnss_rejected: int
+    # n_odom_errors by reason (WheelQuantizer.errors): missing_joint, non_finite,
+    # stamp_not_increasing.
+    odom_errors: dict[str, int] = field(default_factory=dict)
 
 
 def _t_b_l_from_tf(tf_msgs: Iterable[Any]) -> tuple[np.ndarray, str]:
@@ -209,7 +212,12 @@ def run_bridge(
 
     gt.to_tum(out_dir / "gt.tum")
     report = BridgeReport(
-        counts, n_dropped_gnss, quantizer.n_errors, gt.n_clamped, degrader.n_rejected
+        counts,
+        n_dropped_gnss,
+        quantizer.n_errors,
+        gt.n_clamped,
+        degrader.n_rejected,
+        dict(quantizer.errors),
     )
     (out_dir / "bridge_report.json").write_text(json.dumps(asdict(report), indent=2))
     return report
