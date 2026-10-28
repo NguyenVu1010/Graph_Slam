@@ -1,0 +1,151 @@
+<?xml version="1.0"?>
+<!--
+  Corridor world (ADR-011 section 5, scenario E-04): a 60 x 2.5 m corridor with two plain parallel
+  walls, floor and ceiling, closed at x = 0, opening at x = 60 into a 6 x 6 m end room.
+  Hand-written. World frame w = ENU frame e (spherical_coordinates below, heading 0), z up.
+  Corridor: x in [0, 60], y in [-1.25, 1.25]. End room: x in [60, 66], y in [-3, 3].
+  Floor z = 0; ceiling height 3.0 m (corridor and room).
+  Every box is axis-aligned; the reference planes of corridor.planes.yaml lie on box faces.
+  Physics: DART, 1 ms step, no real-time lock (section 4). Floor: concrete, mu = 0.8.
+-->
+<sdf version="1.10">
+  <world name="corridor">
+    <physics name="dart_1ms" type="dart">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>0</real_time_factor>
+      <real_time_update_rate>0</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.80665</gravity>
+    <!-- Must equal origin_lla of the scenarios that use this world (test_worlds.py). -->
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>21.0278</latitude_deg>
+      <longitude_deg>105.8342</longitude_deg>
+      <elevation>12.0</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics">
+      <engine><filename>gz-physics-dartsim-plugin</filename></engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <!-- The render engine comes from the gz sim command line (render-engine-server option). -->
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors"/>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat"/>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>false</shadows>
+    </scene>
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Floor under corridor and room: top face z = 0. -->
+    <model name="floor">
+      <static>true</static>
+      <pose>33 0 -0.05 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>66.4 6.4 0.1</size></box></geometry>
+          <surface><friction><ode><mu>0.8</mu><mu2>0.8</mu2></ode></friction></surface>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>66.4 6.4 0.1</size></box></geometry>
+          <material><ambient>0.5 0.5 0.5 1</ambient><diffuse>0.5 0.5 0.5 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Ceiling over corridor and room: bottom face z = 3. -->
+    <model name="ceiling">
+      <static>true</static>
+      <pose>33 0 3.05 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>66.4 6.4 0.1</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>66.4 6.4 0.1</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.8 0.8 0.8 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Closed start of the corridor: face x = 0. -->
+    <model name="wall_start">
+      <static>true</static>
+      <pose>-0.1 0 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 2.9 3</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 2.9 3</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- The two plain parallel corridor walls: faces y = +1.25 and y = -1.25, x in [0, 60]. -->
+    <model name="corridor_wall_north">
+      <static>true</static>
+      <pose>30 1.35 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>60 0.2 3</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>60 0.2 3</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="corridor_wall_south">
+      <static>true</static>
+      <pose>30 -1.35 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>60 0.2 3</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>60 0.2 3</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- End room walls. West wall in two parts around the corridor opening: face x = 60. -->
+    <model name="room_wall_west_north">
+      <static>true</static>
+      <pose>59.9 2.325 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 1.75 3</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 1.75 3</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="room_wall_west_south">
+      <static>true</static>
+      <pose>59.9 -2.325 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 1.75 3</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 1.75 3</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="room_wall_east">
+      <static>true</static>
+      <pose>66.1 0 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 6.4 3</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 6.4 3</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="room_wall_north">
+      <static>true</static>
+      <pose>63 3.1 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6.4 0.2 3</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>6.4 0.2 3</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="room_wall_south">
+      <static>true</static>
+      <pose>63 -3.1 1.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6.4 0.2 3</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>6.4 0.2 3</size></box></geometry></visual>
+      </link>
+    </model>
+  </world>
+</sdf>

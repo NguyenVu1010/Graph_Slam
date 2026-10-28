@@ -15,6 +15,7 @@ BELIEVED = Kinematics(wheel_radius_m=0.101, track_m=0.399)
 
 def _noise(sigma: float = 0.0) -> OdomNoise:
     return OdomNoise(
+        rate_hz=50.0,
         ticks_per_rev=4096,
         speed_sigma_mps=sigma,
         kinematics_true=TRUE,
@@ -155,3 +156,60 @@ def test_integrate_pose_arc_midpoint_exact() -> None:
 
 def test_integrate_pose_empty() -> None:
     assert integrate_pose([]).shape == (0, 3)
+
+
+def test_1khz_joint_states_give_50hz_odom_with_window_quantisation() -> None:
+    """Gazebo publishes joint states every physics step; the encoder is read at rate_hz."""
+    q = WheelQuantizer(_noise(), np.random.default_rng(1))
+    dt_1khz = 1_000_000
+    n = 20_000  # 20 s at 1 kHz
+    vel = _wheels(0.5, 0.0)
+    out = []
+    for i in range(n + 1):
+        tw = q.step(T0 + i * dt_1khz, NAMES, vel)
+        if tw is not None:
+            out.append((T0 + i * dt_1khz, tw))
+    stamps = np.array([t for t, _ in out])
+    assert len(out) == n // 20  # 50 Hz
+    assert np.all(np.diff(stamps) == DT_NS)
+    v = np.array([tw.v_mps for _, tw in out])
+    # One tick per 20 ms window, believed radius: q = (2 pi / 4096) / 0.02 s * r_believed.
+    # The ticks per window alternate between floor and ceil of k = rate * window / rad_per_tick;
+    # with fraction f = k - floor(k) the velocity std is q * sqrt(f (1 - f)).
+    rad_per_tick = 2 * math.pi / 4096
+    q_tick = rad_per_tick / 0.02 * BELIEVED.wheel_radius_m
+    k = vel[0] * 0.02 / rad_per_tick
+    f = k - math.floor(k)
+    assert np.std(v) == pytest.approx(q_tick * math.sqrt(f * (1 - f)), rel=0.05)
+    assert np.std(v) < 0.01  # below the profile's speed_sigma_mps
+    assert np.mean(v) == pytest.approx(0.5 * BELIEVED.wheel_radius_m / TRUE.wheel_radius_m, 1e-3)
+    assert q.n_errors == 0
+
+
+def test_errors_counted_per_reason() -> None:
+    q = WheelQuantizer(_noise(), np.random.default_rng(1))
+    q.step(T0, NAMES, [1.0, 1.0])
+    q.step(T0 + DT_NS, ["x"], [1.0])
+    q.step(T0 + DT_NS, NAMES, [math.inf, 1.0])
+    q.step(T0, NAMES, [1.0, 1.0])
+    assert q.errors == {"missing_joint": 1, "non_finite": 1, "stamp_not_increasing": 1}
+    assert q.n_errors == 3
+
+
+def test_non_divisor_input_rate_still_reads_at_50hz() -> None:
+    """3 ms joint states (not a divisor of 20 ms): reads stay on the 20 ms grid (50 Hz on
+    average) and each twist uses the actual elapsed time, so the speed is unbiased."""
+    q = WheelQuantizer(_noise(), np.random.default_rng(2))
+    dt_ns = 3_000_000
+    n = int(20e9 // dt_ns)  # 20 s
+    vel = _wheels(0.5, 0.0)
+    out = []
+    for i in range(n + 1):
+        tw = q.step(T0 + i * dt_ns, NAMES, vel)
+        if tw is not None:
+            out.append((T0 + i * dt_ns, tw))
+    assert abs(len(out) - 1000) <= 1  # 20 s x 50 Hz (a 21 ms window would give 952)
+    gaps = np.diff([t for t, _ in out])
+    assert gaps.min() >= 18_000_000 and gaps.max() <= 21_000_000
+    v = np.array([tw.v_mps for _, tw in out])
+    assert np.mean(v) == pytest.approx(0.5 * BELIEVED.wheel_radius_m / TRUE.wheel_radius_m, 1e-3)

@@ -22,6 +22,13 @@ gnss:
   degraded_factor: 3.0
 lidar:
   range_sigma_m: 0.02
+  # range_sigma_m is what the noise layer adds (Gazebo LiDAR noise, exactly); what gpu_lidar
+  # renders on top is measured per world in sim/noise/render/<world>.yaml. The next two keys are
+  # for the noise report only. edge_jump_m: 5 declared sigma, so a neighbour that far from the
+  # point's plane is on another surface (silhouette), not noise. min_incidence_cos 0.3: below
+  # it (> 72.5 deg) the along-ray residual d / |n.u| amplifies the plane distance > 3x.
+  edge_jump_m: 0.10
+  min_incidence_cos: 0.3
   dropout_p: 0.02
   dropout_p_grazing: 0.3
   grazing_deg: 80.0
@@ -30,6 +37,7 @@ lidar:
   near_fraction: 0.001
   min_range_m: 0.5
 odom:
+  rate_hz: 50.0                      # encoder read rate; /wheel/odom rate (bridge, offline)
   ticks_per_rev: 4096
   speed_sigma_mps: 0.01
   kinematics_true:

@@ -1,0 +1,33 @@
+# LiDAR render table for world 'corridor' (tools/calibrate_lidar_render.py).
+# cells: [range lo m, range hi m, |n.u| lo, |n.u| hi, points, sigma m].
+world: corridor
+scenario: E-04
+timestamp_utc: '2026-10-27T20:12:39Z'
+gazebo: Gazebo Sim, version 8.15.0
+render_engine: ogre2
+lidar: {beams: 16, vertical_fov_deg: 30.0, horizontal_samples: 720, max_range_m: 100.0, range_resolution_m: 0.01}
+declared_range_sigma_m: 0.02
+what: gpu_lidar range error alone (Gazebo noise 0, raw bag), per cell; measured, not tuned. Re-run when
+  the world, trajectory, sensor or Gazebo version changes.
+raw_bag_sha256: {metadata.yaml: e256993fe894e460b3626d8d984d8ef521012bc7c7348620f2ef366c9d880aa1, raw_bag_0.mcap.zstd: 7ffaf00bd5bde4aef133acd0bd93646295824073bd12e3f0b163d1590ec06943,
+  raw_bag_1.mcap.zstd: 485f9ec8ff6979f087177c25cdb6369553a4c53d42dbdb45aa5e55960bf6f204, raw_bag_2.mcap.zstd: 9d6fb1471159d01e54e41c10bdb02ca1531715ee303a8ec7bf2c52ee46db5c74,
+  raw_bag_3.mcap.zstd: 19cdbb6bd7e68cdebe7850959bec43c17d735498ecb7de8133a152fe8e8a9bf6}
+selection: {edge_jump_m: 0.1, min_incidence_cos: 0.3, outlier_cut: '5 x the cell sigma, from 0.1 m, iterated
+    once', range: noise-free plane range, min_points: 1000}
+range_bins_m: [0.5, 2.0, 5.0, 10.0, 20.0, 40.0, 100.0]
+incidence_bins_cos: [0.3, 0.5, 0.7, 0.9, 1.0]
+cells:
+- [0.5, 2.0, 0.3, 0.5, 2402, 0.007615]
+- [0.5, 2.0, 0.5, 0.7, 458671, 0.001918]
+- [0.5, 2.0, 0.7, 0.9, 1623639, 0.001551]
+- [0.5, 2.0, 0.9, 1.0, 1898004, 0.000796]
+- [2.0, 5.0, 0.3, 0.5, 851986, 0.015055]
+- [2.0, 5.0, 0.5, 0.7, 697078, 0.00541]
+- [2.0, 5.0, 0.7, 0.9, 479432, 0.003672]
+- [2.0, 5.0, 0.9, 1.0, 508324, 0.001914]
+- [5.0, 10.0, 0.3, 0.5, 10119, 0.030994]
+- [5.0, 10.0, 0.5, 0.7, 10506, 0.013622]
+- [5.0, 10.0, 0.7, 0.9, 4616, 0.005268]
+- [5.0, 10.0, 0.9, 1.0, 43952, 0.003905]
+- [10.0, 20.0, 0.9, 1.0, 28569, 0.003462]
+- [20.0, 40.0, 0.9, 1.0, 6572, 0.002017]

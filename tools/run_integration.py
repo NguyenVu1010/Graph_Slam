@@ -10,9 +10,14 @@ Data: a synthetic box circle, not the warehouse lap. ``mss_sim.synth`` drives a 
 radius R = V / W after a still phase and a speed ramp inside a box, all taken from the
 scenario's ``prep`` block (E-01: 0.5 / 0.3 = 1.67 m, 5 s still, 2 s ramp, 16 x 10 x 4 m), with
 the scenario's seed, duration, origin, noise profile and ``T_b_l`` (pipeline overlay); the
-scenario's ``world`` and ``trajectory`` are not used yet. A scenario without ``prep`` is a
-setup error. ``integration.json`` records these parameters under ``data_source`` so a baseline
-is never compared across datasets.
+scenario's ``world`` and ``trajectory`` are not used. A scenario without ``prep`` is a setup
+error. ``--bridged <dir>`` replaces the synthetic data by a recorded bridge output (``bag/`` +
+``gt.tum``, e.g. ``tools/record_scenario.sh``; ENU origin = scenario ``origin_lla``); ``prep``
+is then needed only for E-03, ``--duration-s`` is refused (the recording sets the duration), and
+when the directory holds ``assets/assets.yaml`` (a ``record_scenario.sh`` run) its profile and
+pipeline config must be the scenario's. ``integration.json`` records these parameters under
+``data_source``, so a reader can tell which dataset a result and a baseline came from (the gates
+do not compare them).
 
 Chain: synthetic bag -> noise bridge with the scenario -> ``bag_to_mssdata.py``; E-03 adds
 ``mutate_bag.py`` (``prep.mutate``; E-01: 5 % drops, 2 % reordering, seed 42) before the
@@ -57,6 +62,8 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from bag_to_mssdata import convert
 from mss_eval.ate import ate, plot_xy
@@ -116,9 +123,73 @@ def _repo_relative(path: Path) -> str:
         return resolved.as_posix()
 
 
-def prepare(scenario: Path, out: Path, duration_s: float | None) -> Prepared:
-    """Synthesise, bridge and convert the scenario's bag under ``out / "data"``."""
+def _mutate_e03(
+    cfg: Any, bag: Path, data: Path, overlay: Path, origin_lla: tuple | None
+) -> Path | None:
+    """E-03 dataset: ``mutate_bag.mutate`` with ``prep.mutate`` (``cfg``), then convert."""
+    if cfg is None:
+        return None
+    report = mutate(
+        bag,
+        data / "bag_e03",
+        drop_fraction=cfg.drop_fraction,
+        reorder_fraction=cfg.reorder_fraction,
+        window_ns=cfg.window_ns,
+        seed=cfg.seed,
+    )
+    (data / "mutate_report.json").write_text(
+        json.dumps(asdict(report), indent=2) + "\n", encoding="utf-8"
+    )
+    convert(data / "bag_e03", data / "mssdata_e03", origin_lla=origin_lla, pipeline_config=overlay)
+    return data / "mssdata_e03"
+
+
+def _check_recording(bridged: Path, sc: Any) -> None:
+    """A ``record_scenario.sh`` directory must come from ``sc``: same profile and overlay."""
+    meta_path = bridged / "assets" / "assets.yaml"
+    if not meta_path.is_file():
+        return  # a bridge output without the recording's assets: nothing to cross-check
+    meta = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
+    for key, expected in (("profile", sc.profile), ("pipeline_config", sc.pipeline_config)):
+        if meta.get(key) != _repo_relative(expected):
+            msg = (
+                f"--bridged {bridged}: recorded with {key} {meta.get(key)!r}, but scenario "
+                f"{sc.id} uses {_repo_relative(expected)!r}"
+            )
+            raise SetupError(msg)
+
+
+def prepare(
+    scenario: Path, out: Path, duration_s: float | None, bridged_dir: Path | None = None
+) -> Prepared:
+    """Synthesise, bridge and convert the scenario's bag under ``out / "data"``.
+
+    ``bridged_dir``: convert that recorded bridge output (``bag/`` + ``gt.tum``, e.g. from
+    ``tools/record_scenario.sh``) instead; ``prep`` then only gives E-03's ``prep.mutate``, and
+    the ENU origin is the scenario's ``origin_lla`` (= the world origin of the Gazebo worlds).
+    """
     sc = load_scenario(scenario)
+    if bridged_dir is not None:
+        bridged = Path(bridged_dir).resolve()
+        if not (bridged / "bag").is_dir() or not (bridged / "gt.tum").is_file():
+            raise SetupError(f"--bridged {bridged_dir}: needs bag/ and gt.tum")
+        _check_recording(bridged, sc)
+        data = out / "data"
+        data.mkdir(parents=True, exist_ok=True)
+        lla, overlay = sc.origin_lla, sc.pipeline_config
+        convert(bridged / "bag", data / "mssdata", origin_lla=lla, pipeline_config=overlay)
+        mut = sc.prep.mutate if sc.prep is not None else None
+        e03 = _mutate_e03(mut, bridged / "bag", data, overlay, lla)
+        source = {
+            "generator": "recorded bag (bridge output)",
+            "scenario": sc.id,
+            "scenario_world_trajectory_used": True,
+            "bridged": _repo_relative(bridged),
+            "mutate": None if mut is None else asdict(mut),
+            "duration_s": sc.duration_s,
+            "seed": sc.seed,
+        }
+        return Prepared(data / "mssdata", e03, bridged / "gt.tum", overlay, source)
     if sc.prep is None:
         raise SetupError(f"scenario {sc.id}: missing prep block")
     prep = sc.prep
@@ -144,21 +215,7 @@ def prepare(scenario: Path, out: Path, duration_s: float | None) -> Prepared:
     bridged = data / "bridged"
     run_bridge(data / "raw", sc, load_profile(sc.profile), bridged, seed=sc.seed)
     convert(bridged / "bag", data / "mssdata", pipeline_config=sc.pipeline_config)
-    mssdata_e03 = None
-    if prep.mutate is not None:
-        report = mutate(
-            bridged / "bag",
-            data / "bag_e03",
-            drop_fraction=prep.mutate.drop_fraction,
-            reorder_fraction=prep.mutate.reorder_fraction,
-            window_ns=prep.mutate.window_ns,
-            seed=prep.mutate.seed,
-        )
-        (data / "mutate_report.json").write_text(
-            json.dumps(asdict(report), indent=2) + "\n", encoding="utf-8"
-        )
-        mssdata_e03 = data / "mssdata_e03"
-        convert(data / "bag_e03", mssdata_e03, pipeline_config=sc.pipeline_config)
+    mssdata_e03 = _mutate_e03(prep.mutate, bridged / "bag", data, sc.pipeline_config, None)
     source = {
         "generator": "mss_sim.synth.write_synthetic_raw_bag (synthetic box circle)",
         "scenario": sc.id,
@@ -423,14 +480,23 @@ def _fmt(value: Any, digits: int) -> str:
 def _summary(
     results: dict[str, dict[str, Any]], mutate_report: dict[str, Any], source: dict[str, Any]
 ) -> str:
+    data_line = (
+        f"Data: recorded bag {source.get('bridged')} (scenario {source['scenario']}, "
+        f"{source['duration_s']} s, seed {source['seed']}; integration.json `data_source`)."
+    )
+    if "bridged" not in source:
+        data_line = (
+            f"Data: synthetic box circle, R = V/W = {source['speed_mps']}/"
+            f"{source['omega_radps']} = {source['radius_m']:.2f} m, "
+            f"box half-extents {source['box_half_m']} m, "
+            f"{source['static_s']} s still + {source['ramp_s']} s ramp, {source['duration_s']} s, "
+            f"seed {source['seed']}; scenario {source['scenario']} world/trajectory not used yet "
+            "(integration.json `data_source`)."
+        )
     lines = [
         "# Integration E-01..E-03, PF-01",
         "",
-        f"Data: synthetic box circle, R = V/W = {source['speed_mps']}/{source['omega_radps']} = "
-        f"{source['radius_m']:.2f} m, box half-extents {source['box_half_m']} m, "
-        f"{source['static_s']} s still + {source['ramp_s']} s ramp, {source['duration_s']} s, "
-        f"seed {source['seed']}; scenario {source['scenario']} world/trajectory not used yet "
-        "(integration.json `data_source`).",
+        data_line,
         "",
         "| test | result | ATE RMSE [m] | pairs | bench exit | p50 / p95 [ms] | note |",
         "| --- | --- | --- | --- | --- | --- | --- |",
@@ -470,6 +536,9 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     )
     ap.add_argument("--plots", action="store_true", help="write traj_xy.png per test")
     ap.add_argument("--path-style", choices=("native", "wsl"), default="native")
+    ap.add_argument(
+        "--bridged", type=Path, help="recorded bridge output (bag/ + gt.tum) instead of synthetic"
+    )
     return ap.parse_args(argv)
 
 
@@ -484,9 +553,11 @@ def _setup(args: argparse.Namespace) -> tuple[list[str], list[str], dict]:
         sc = load_scenario(args.scenario)
     except (OSError, ScenarioError) as e:
         raise SetupError(f"scenario {args.scenario}: {e}") from e
-    if sc.prep is None:
+    if sc.prep is None and args.bridged is None:
         raise SetupError(f"scenario {sc.id}: missing prep block")
-    if "E-03" in tests and sc.prep.mutate is None:
+    if args.bridged is not None and args.duration_s is not None:
+        raise SetupError("--duration-s cannot be used with --bridged (the recording sets it)")
+    if "E-03" in tests and (sc.prep is None or sc.prep.mutate is None):
         raise SetupError(f"scenario {sc.id}: prep.mutate is required for E-03")
     try:
         baselines = json.loads(args.baselines.read_text(encoding="utf-8"))
@@ -504,7 +575,7 @@ def _run(args: argparse.Namespace) -> int:
     tests, bench_cmd, baselines = _setup(args)
     out: Path = args.out.resolve()
     try:
-        prep = prepare(args.scenario, out, args.duration_s)
+        prep = prepare(args.scenario, out, args.duration_s, args.bridged)
     except (OSError, ValueError, KeyError) as e:
         raise SetupError(f"data preparation failed: {e}") from e
 

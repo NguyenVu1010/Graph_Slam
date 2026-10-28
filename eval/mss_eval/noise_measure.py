@@ -365,6 +365,75 @@ def estimate_range_sigma(distances: np.ndarray, sigma_declared: float) -> float:
     return float(np.std(d, ddof=1)) if len(d) > 1 else float("nan")
 
 
+def plane_edge_mask(
+    xyz: np.ndarray,
+    ok: np.ndarray,
+    p_w: np.ndarray,
+    normals: np.ndarray,
+    offsets: np.ndarray,
+    height: int,
+    width: int,
+    jump_m: float,
+) -> np.ndarray:
+    """Edge flag for each ``ok`` point of an organized scan (same order as ``p_w``).
+
+    A point is an edge point when one of its four grid neighbours (+-1 column, wrapping in
+    azimuth; +-1 ring) lies farther than ``jump_m`` from the point's own nearest reference plane
+    (``n . p = d``), or has no return (inf). That catches silhouettes of shelves, columns and
+    boxes in front of a wall, whose depth texels mix both surfaces, without flagging oblique
+    planes (adjacent-beam ranges on a plane differ by r * dphi * tan(theta), 0.45 m at 30 m and
+    60 deg) and without cutting the noise tails (``jump_m`` = 5 declared sigma). A neighbour
+    without a usable point (dropped: NaN, or below the minimum range) also makes the point an
+    edge point: its surface is unknown, and the rule must select the same points on a bag with
+    dropout (the report) as on the raw calibration bag without it.
+    """
+    n = len(xyz)
+    grid_p = np.full((n, 3), np.nan)
+    grid_p[ok] = p_w
+    k = np.full(n, -1)
+    k[ok] = np.argmin(np.abs(p_w @ normals.T - offsets[None, :]), axis=1)
+    no_return = np.isinf(xyz).any(axis=1)
+    missing = ~ok & ~no_return  # dropped or below the minimum range
+    nrm = np.where(k[:, None] >= 0, normals[np.maximum(k, 0)], np.nan)
+    off = np.where(k >= 0, offsets[np.maximum(k, 0)], np.nan)
+    grid_p = grid_p.reshape(height, width, 3)
+    no_return = no_return.reshape(height, width)
+    missing = missing.reshape(height, width)
+    edge = np.zeros((height, width), dtype=bool)
+    nrm = nrm.reshape(height, width, 3)
+    off = off.reshape(height, width)
+    for axis, step in ((1, 1), (1, -1), (0, 1), (0, -1)):
+        nb_p = np.roll(grid_p, step, axis=axis)
+        nb_inf = np.roll(no_return, step, axis=axis)
+        nb_missing = np.roll(missing, step, axis=axis)
+        if axis == 0:  # rings do not wrap: the first/last ring has no neighbour on that side
+            row = 0 if step == 1 else height - 1
+            nb_p[row] = np.nan
+            nb_inf[row] = False
+            nb_missing[row] = False
+        with np.errstate(invalid="ignore"):
+            dist = np.abs(np.einsum("hwi,hwi->hw", nb_p, nrm) - off)
+        edge |= (np.isfinite(dist) & (dist > jump_m)) | nb_inf | nb_missing
+    return edge.reshape(-1)[ok]
+
+
+def plane_ranges(
+    p_w: np.ndarray, o_w: np.ndarray, normals: np.ndarray, offsets: np.ndarray
+) -> np.ndarray:
+    """Range from the LiDAR origin to the ray's intersection with its nearest plane, m.
+
+    The noise-free range of each point (the measured range minus its along-ray error), so a
+    range bin selects points on geometry, not on their own noise.
+    """
+    k = np.argmin(np.abs(p_w @ normals.T - offsets[None, :]), axis=1)
+    ray = p_w - o_w
+    u = ray / np.maximum(np.linalg.norm(ray, axis=1, keepdims=True), _MIN_COS)
+    n = normals[k]
+    n_u = np.einsum("ij,ij->i", n, u)
+    n_u = np.where(np.abs(n_u) < _MIN_COS, _MIN_COS, n_u)
+    return (offsets[k] - np.einsum("ij,ij->i", n, o_w)) / n_u
+
+
 def ray_residuals(
     p_w: np.ndarray, o_w: np.ndarray, normals: np.ndarray, offsets: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -399,6 +468,40 @@ def scan_to_world(
     return p_w, r_w_b @ T_b_l[:3, 3] + p_w_b
 
 
+def neighbour_incidence_cos(xyz: np.ndarray, height: int, width: int) -> np.ndarray:
+    """Incidence cosine ``|n . p| / (|n| |p|)`` per point of an organized cloud, NaN if unknown.
+
+    ``n`` is the cross product of the column (azimuth, wrapping) and row (ring) neighbour
+    differences, as the bridge's grazing model estimates it; a non-finite neighbour makes the point
+    unknown. Dropped points (NaN) are first refilled by linear interpolation along their
+    ring between the nearest returns, so the higher dropout at grazing incidence does not hide the
+    grazing points' normals; no-return points (inf) stay unknown, as in the bridge. The cosine then
+    covers every surface, not only the reference planes, so the grazing share is not biased in a
+    cluttered world.
+    """
+    p = np.asarray(xyz, dtype=float).reshape(height, width, 3).copy()
+    cols = np.arange(width)
+    for row in p:
+        nan = np.isnan(row).any(axis=1)
+        good = np.isfinite(row).all(axis=1)
+        if nan.any() and good.sum() >= 2:
+            for k in range(3):
+                row[nan, k] = np.interp(cols[nan], cols[good], row[good, k], period=width)
+    with np.errstate(invalid="ignore", divide="ignore"):  # inf - inf at no-return points
+        d_col = np.roll(p, -1, axis=1) - np.roll(p, 1, axis=1)
+        d_row = np.empty_like(p)
+        d_row[1:-1] = p[2:] - p[:-2]
+        d_row[0] = p[1] - p[0]
+        d_row[-1] = p[-1] - p[-2]
+        normal = np.cross(d_col, d_row).reshape(-1, 3)
+        p = p.reshape(-1, 3)
+        cos = np.abs(np.einsum("ij,ij->i", normal, p)) / (
+            np.linalg.norm(normal, axis=1) * np.linalg.norm(p, axis=1)
+        )
+    cos[~np.isfinite(cos)] = np.nan
+    return np.clip(cos, 0.0, 1.0)
+
+
 def expected_dropout(cos: np.ndarray, lidar_cfg: dict) -> tuple[float, float]:
     """Declared-model NaN fraction ``(p_exp, g)`` from incidence cosines of surviving points.
 
@@ -414,6 +517,180 @@ def expected_dropout(cos: np.ndarray, lidar_cfg: dict) -> tuple[float, float]:
     return p + (p_g - p) * g + float(lidar_cfg.get("nan_fraction", 0.0)), g
 
 
+RANGE_BINS_M = (0.5, 2.0, 5.0, 10.0, 20.0, 40.0, 100.0)
+INCIDENCE_BINS_COS = (0.3, 0.5, 0.7, 0.9, 1.0)  # |n . u| bin edges; the last bin includes 1.0
+_MIN_BIN_POINTS = 100  # a bin with fewer points gets no row
+MIN_GATE_POINTS = 1000  # a bin with fewer points is shown but not gated
+DEFAULT_EDGE_JUMP_M = 0.10  # profile lidar.edge_jump_m when absent (5 declared sigma)
+DEFAULT_MIN_INCIDENCE_COS = 0.3  # profile lidar.min_incidence_cos when absent
+CELL_OUTLIER_SIGMAS = 5.0  # a cell keeps |d| <= this x its expected sigma
+
+
+def range_sigma_selection(cos: np.ndarray, edge: np.ndarray, lidar_cfg: dict) -> np.ndarray:
+    """Points used for the range sigma: not a silhouette point, ``|n.u| >= min_incidence_cos``.
+
+    The outlier cut is per cell (``cell_sigma``), at ``CELL_OUTLIER_SIGMAS`` x the cell sigma.
+    """
+    min_cos = float(lidar_cfg.get("min_incidence_cos", DEFAULT_MIN_INCIDENCE_COS))
+    return ~edge & (cos >= min_cos)
+
+
+def cell_sigma(d: np.ndarray, expected: float | None, start_m: float) -> tuple[float, int]:
+    """Robust sigma of residuals ``d``: keep ``|d| <= 5 s`` and recompute, once.
+
+    ``s`` is ``expected`` when known (the report: the cell's expected sigma), else the sigma
+    within ``start_m`` (the calibration: render error unknown). Returns (sigma, points kept).
+    """
+    s0 = expected
+    if s0 is None:
+        first = d[np.abs(d) <= start_m]
+        s0 = float(np.std(first, ddof=1)) if len(first) > 1 else float("nan")
+    kept = d[np.abs(d) <= CELL_OUTLIER_SIGMAS * s0]
+    if expected is None and len(kept) > 1:  # iterate once on the first estimate
+        s1 = float(np.std(kept, ddof=1))
+        kept = d[np.abs(d) <= CELL_OUTLIER_SIGMAS * s1]
+    sigma = float(np.std(kept, ddof=1)) if len(kept) > 1 else float("nan")
+    return sigma, int(len(kept))
+
+
+def cells() -> list[tuple[float, float, float, float]]:
+    """(range lo, range hi, |n.u| lo, |n.u| hi) of every cell; the last |n.u| bin includes 1."""
+    rb, cb = RANGE_BINS_M, INCIDENCE_BINS_COS
+    return [
+        (r_lo, r_hi, c_lo, c_hi)
+        for r_lo, r_hi in zip(rb[:-1], rb[1:], strict=True)
+        for c_lo, c_hi in zip(cb[:-1], cb[1:], strict=True)
+    ]
+
+
+def in_cell(ranges_m: np.ndarray, cos: np.ndarray, cell: tuple) -> np.ndarray:
+    """Points of a cell; ``ranges_m`` are the noise-free plane ranges (``plane_ranges``)."""
+    r_lo, r_hi, c_lo, c_hi = cell
+    in_cos = (cos >= c_lo) & ((cos < c_hi) | (c_hi >= 1.0))
+    return (ranges_m >= r_lo) & (ranges_m < r_hi) & in_cos
+
+
+def build_render_table(
+    residuals: np.ndarray,
+    cos: np.ndarray,
+    ranges_m: np.ndarray,
+    keep: np.ndarray,
+    start_m: float,
+    min_points: int = MIN_GATE_POINTS,
+) -> list[list[float]]:
+    """Renderer sigma per (range bin x incidence bin) cell from a recording with the Gazebo
+    noise at 0: rows ``[r_lo, r_hi, cos_lo, cos_hi, n_points, sigma_m]`` for the cells with at
+    least ``min_points`` points after the outlier cut (``cell_sigma`` from ``start_m``); other
+    cells stay out of the table. ``ranges_m``: noise-free plane ranges."""
+    table = []
+    for cell in cells():
+        d = residuals[keep & in_cell(ranges_m, cos, cell)]
+        if len(d) < min_points:
+            continue
+        sigma, n = cell_sigma(d, None, start_m)
+        if n >= min_points:
+            table.append([*cell, n, round(sigma, 6)])
+    return table
+
+
+def render_sigma(
+    render_table: list | None, ranges_m: np.ndarray, cos: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per point: renderer sigma of its table cell, and whether that cell is calibrated."""
+    sigma = np.zeros(len(cos))
+    known = np.zeros(len(cos), dtype=bool)
+    for r_lo, r_hi, c_lo, c_hi, _n, s in render_table or []:
+        m = in_cell(ranges_m, cos, (r_lo, r_hi, c_lo, c_hi))
+        sigma[m] = float(s)
+        known[m] = True
+    return sigma, known
+
+
+def range_sigma_rows(
+    residuals: np.ndarray,
+    cos: np.ndarray,
+    ranges_m: np.ndarray,
+    edge: np.ndarray,
+    lidar_cfg: dict,
+    render_table: list | None = None,
+) -> list[Row]:
+    """Exclusion shares, one row per (range x incidence) cell, and a check that one is gated.
+
+    ``ranges_m``: noise-free plane ranges (``plane_ranges``). Expected per cell:
+    ``sqrt(sigma_declared^2 + sigma_render(cell)^2)`` from ``render_table``
+    (``build_render_table`` rows); outliers cut at ``CELL_OUTLIER_SIGMAS`` x that expected
+    sigma. A cell is gated +-15 % when it has at least ``MIN_GATE_POINTS`` points and, if a
+    table is given, a calibrated entry (a table cell left empty at calibration is shown, not
+    gated). Without any table the render error is taken as 0 and every cell is gated. A final
+    row fails when no cell could be gated.
+    """
+    s_decl = float(lidar_cfg["range_sigma_m"])
+    min_cos = float(lidar_cfg.get("min_incidence_cos", DEFAULT_MIN_INCIDENCE_COS))
+    jump = lidar_cfg.get("edge_jump_m", DEFAULT_EDGE_JUMP_M)
+    n = max(len(residuals), 1)
+    keep = range_sigma_selection(cos, edge, lidar_cfg)
+    s_render, known = render_sigma(render_table, ranges_m, cos)
+    rows = [
+        Row(
+            "edge points excluded",
+            None,
+            float(edge.sum() / n),
+            "informational",
+            None,
+            f"a neighbour > {jump} m off the plane of the point, dropped or without return",
+        ),
+        Row(
+            "low-incidence points excluded",
+            None,
+            float(((cos < min_cos) & ~edge).sum() / n),
+            "informational",
+            None,
+            f"|n.u| < {min_cos:g}",
+        ),
+    ]
+    n_gated = 0
+    for cell in cells():
+        sel = keep & in_cell(ranges_m, cos, cell)
+        if sel.sum() < _MIN_BIN_POINTS:
+            continue
+        calibrated = render_table is None or bool(known[sel].all())
+        expected = float(np.hypot(s_decl, s_render[sel][0] if calibrated else 0.0))
+        sigma, n_kept = cell_sigma(residuals[sel], expected, 0.0)
+        gated = calibrated and n_kept >= MIN_GATE_POINTS
+        if gated:
+            tol = "±15 %"
+            n_gated += 1
+        elif not calibrated:
+            tol = "not gated: no calibrated render cell"
+        else:
+            tol = f"not gated: < {MIN_GATE_POINTS} points"
+        r_lo, r_hi, c_lo, c_hi = cell
+        rows.append(
+            Row(
+                f"range_sigma_m r [{r_lo:g}, {r_hi:g}) m |n.u| [{c_lo:g}, {c_hi:g}]",
+                expected,
+                sigma,
+                tol,
+                _rel_ok(sigma, expected, _SIGMA_TOL) if gated else None,
+                f"{n_kept} points (|d| <= {CELL_OUTLIER_SIGMAS:g} x expected); expected = "
+                "sqrt(σ_declared² + σ_render(cell)²)",
+            )
+        )
+    rows.append(
+        Row(
+            "range sigma cells gated",
+            ">= 1",
+            n_gated,
+            "required",
+            n_gated >= 1,
+            ""
+            if n_gated
+            else "no range-sigma cell could be gated: the LiDAR range noise is unchecked",
+        )
+    )
+    return rows
+
+
 def lidar_section(
     residuals: np.ndarray,
     cos: np.ndarray,
@@ -421,21 +698,33 @@ def lidar_section(
     n_not_inf: int,
     lidar_cfg: dict,
     pipeline_lidar: dict | None,
+    incidence_cos: np.ndarray | None = None,
+    ranges_m: np.ndarray | None = None,
+    edge: np.ndarray | None = None,
+    render_table: list | None = None,
 ) -> Section:
+    """``cos``: plane incidence of each residual; ``incidence_cos``: neighbour-normal incidence of
+    the surviving points (``neighbour_incidence_cos``) for the grazing share, else ``cos``; an
+    unknown incidence (NaN: a neighbour without return) counts as non-grazing, as in the bridge.
+    With ``ranges_m`` the range sigma is gated per (range x incidence) cell after edge
+    exclusion (``range_sigma_rows``; ``edge`` from ``plane_edge_mask``, none if omitted;
+    ``render_table`` the measured renderer cells) and the pooled row is informational;
+    without it the pooled row is gated."""
     s_decl = float(lidar_cfg["range_sigma_m"])
     use = residuals[cos > _MIN_RAY_COS]
     sigma = estimate_range_sigma(use, s_decl)
     frac = n_nan / n_not_inf if n_not_inf else float("nan")
-    p_exp, g = expected_dropout(cos, lidar_cfg)
+    inc = cos if incidence_cos is None else np.nan_to_num(incidence_cos, nan=1.0)
+    p_exp, g = expected_dropout(inc, lidar_cfg)
     rows = [
         Row(
             "range_sigma_m",
             s_decl,
             sigma,
-            "±15 %",
-            _rel_ok(sigma, s_decl, _SIGMA_TOL),
+            "±15 %" if ranges_m is None else "informational (gated per cell)",
+            _rel_ok(sigma, s_decl, _SIGMA_TOL) if ranges_m is None else None,
             f"along-ray residual, |n·u| > {_MIN_RAY_COS:g}, |d| ≤ {_OUTLIER_SIGMAS:g} σ_declared;"
-            f" {len(use)} points",
+            f" {len(use)} points, edges not excluded",
             (pipeline_lidar or {}).get("range_sigma_m"),
         ),
         Row(
@@ -445,9 +734,13 @@ def lidar_section(
             "±20 % rel.",
             _rel_ok(frac, p_exp, _DROPOUT_TOL),
             f"NaN share of non-inf points vs p_exp = {p_exp:.4g} = dropout_p + "
-            f"(dropout_p_grazing - dropout_p)·g + nan_fraction, grazing share g = {g:.3g}",
+            f"(dropout_p_grazing - dropout_p)·g + nan_fraction, grazing share g = {g:.3g}"
+            + (" (neighbour normals, all surfaces)" if incidence_cos is not None else ""),
         ),
     ]
+    if ranges_m is not None:
+        edge_mask = np.zeros(len(residuals), dtype=bool) if edge is None else edge
+        rows += range_sigma_rows(residuals, cos, ranges_m, edge_mask, lidar_cfg, render_table)
     fig, (a,) = _axes(1, width_in=6.5)
     lim = _OUTLIER_SIGMAS * s_decl
     _hist_vs_gauss(a, use, s_decl, lim, f"declared σ = {s_decl:g} m")

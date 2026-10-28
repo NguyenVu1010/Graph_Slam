@@ -1,0 +1,245 @@
+<?xml version="1.0"?>
+<!--
+  GENERATED from sim/models/robot.sdf.j2 by tools/gen_sim_assets.py. Do not edit the output.
+  Robot of ADR-011 section 2. Profile: {{ profile_path }}; pipeline overlay: {{ pipeline_path }}.
+
+  Frames (docs/conventions.md): the model frame IS the body frame b = IMU link "{{ frames.body }}";
+  its origin sits at the wheel-axle height (wheel radius above the floor). LiDAR l =
+  "{{ frames.lidar }}" at T_b_l, GNSS antenna g = "{{ frames.gnss }}" at p_b_g.
+
+  Body inertia (solid box, mass m, sides x, y, z, about its centre):
+    Ixx = m (y^2 + z^2) / 12,  Iyy = m (x^2 + z^2) / 12,  Izz = m (x^2 + y^2) / 12.
+  Wheel inertia (solid cylinder, mass m, radius r, width w, about its centre):
+    I_axial = m r^2 / 2,  I_radial = m (3 r^2 + w^2) / 12.
+
+  IMU noise, continuous -> Gazebo discrete at f = {{ imu.rate_hz }} Hz:
+    stddev = N * sqrt(f)                        (white noise density N)
+    bias_stddev = initial bias sigma            (drawn once per run from the gz seed)
+    dynamic_bias_stddev = K,  dynamic_bias_correlation_time = tau
+  The dynamic bias is first-order Gauss-Markov: b(k+1) = exp(-dt/tau) b(k) + w(k) with
+  var(w) = K^2 tau / 2 (1 - exp(-2 dt / tau)). For dt << t << tau the bias increments have
+  variance K^2 t, a random walk of density K; the stationary sigma is K sqrt(tau / 2).
+  With tau = {{ imu.bias_corr_time_s }} s the Allan deviation follows the random walk over
+  tau_Allan in [0.01, 100] s only (ADR-011 section 3).
+
+  LiDAR range noise: stddev = the profile's lidar.range_sigma_m. gpu_lidar adds its own range
+  error on top (sim/noise/render/<world>.yaml, measured; the noise report expects both).
+-->
+<sdf version="1.10">
+  <model name="{{ robot.model_name }}">
+    <self_collide>false</self_collide>
+
+    <link name="{{ frames.body }}">
+      <inertial>
+        <pose>0 0 {{ robot.body.center_z_m }} 0 0 0</pose>
+        <mass>{{ robot.body.mass_kg }}</mass>
+        <inertia>
+          <ixx>{{ body_inertia.ixx }}</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>{{ body_inertia.iyy }}</iyy><iyz>0</iyz>
+          <izz>{{ body_inertia.izz }}</izz>
+        </inertia>
+      </inertial>
+      <collision name="body_collision">
+        <pose>0 0 {{ robot.body.center_z_m }} 0 0 0</pose>
+        <geometry><box><size>{{ robot.body.size_m | join(' ') }}</size></box></geometry>
+      </collision>
+      <visual name="body_visual">
+        <pose>0 0 {{ robot.body.center_z_m }} 0 0 0</pose>
+        <geometry><box><size>{{ robot.body.size_m | join(' ') }}</size></box></geometry>
+        <material><ambient>0.2 0.3 0.8 1</ambient><diffuse>0.2 0.3 0.8 1</diffuse></material>
+      </visual>
+{% for c in casters %}
+      <!-- Caster: frictionless sphere touching the floor. -->
+      <collision name="{{ c.name }}_collision">
+        <pose>{{ c.x }} 0 {{ c.z }} 0 0 0</pose>
+        <geometry><sphere><radius>{{ robot.caster.radius_m }}</radius></sphere></geometry>
+        <surface>
+          <friction>
+            <ode><mu>0</mu><mu2>0</mu2></ode>
+          </friction>
+        </surface>
+      </collision>
+{% endfor %}
+
+      <sensor name="imu" type="imu">
+        <gz_frame_id>{{ frames.body }}</gz_frame_id>
+        <always_on>true</always_on>
+        <update_rate>{{ imu.rate_hz }}</update_rate>
+        <topic>/imu/data</topic>
+        <imu>
+          <angular_velocity>
+{% for axis in ('x', 'y', 'z') %}
+            <{{ axis }}>
+              <noise type="gaussian">
+                <mean>0</mean>
+                <stddev>{{ imu_noise.gyro_stddev }}</stddev>
+                <bias_mean>0</bias_mean>
+                <bias_stddev>{{ imu_noise.gyro_bias_stddev }}</bias_stddev>
+                <dynamic_bias_stddev>{{ imu_noise.gyro_dynamic_bias_stddev }}</dynamic_bias_stddev>
+                <dynamic_bias_correlation_time>{{ imu_noise.bias_correlation_time_s }}</dynamic_bias_correlation_time>
+              </noise>
+            </{{ axis }}>
+{% endfor %}
+          </angular_velocity>
+          <linear_acceleration>
+{% for axis in ('x', 'y', 'z') %}
+            <{{ axis }}>
+              <noise type="gaussian">
+                <mean>0</mean>
+                <stddev>{{ imu_noise.acc_stddev }}</stddev>
+                <bias_mean>0</bias_mean>
+                <bias_stddev>{{ imu_noise.acc_bias_stddev }}</bias_stddev>
+                <dynamic_bias_stddev>{{ imu_noise.acc_dynamic_bias_stddev }}</dynamic_bias_stddev>
+                <dynamic_bias_correlation_time>{{ imu_noise.bias_correlation_time_s }}</dynamic_bias_correlation_time>
+              </noise>
+            </{{ axis }}>
+{% endfor %}
+          </linear_acceleration>
+        </imu>
+      </sensor>
+
+      <!-- LiDAR l at T_b_l. SDF pose: x y z roll pitch yaw, R = Rz(yaw) Ry(pitch) Rx(roll),
+           converted from the overlay quaternion (Hamilton w, x, y, z). -->
+      <sensor name="lidar" type="gpu_lidar">
+        <pose>{{ lidar_pose | join(' ') }}</pose>
+        <gz_frame_id>{{ frames.lidar }}</gz_frame_id>
+        <always_on>true</always_on>
+        <update_rate>{{ lidar.rate_hz }}</update_rate>
+        <topic>/lidar</topic>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>{{ robot.lidar.horizontal_samples }}</samples>
+              <resolution>1</resolution>
+              <min_angle>{{ lidar.h_min_rad }}</min_angle>
+              <max_angle>{{ lidar.h_max_rad }}</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>{{ robot.lidar.beams }}</samples>
+              <resolution>1</resolution>
+              <min_angle>{{ lidar.v_min_rad }}</min_angle>
+              <max_angle>{{ lidar.v_max_rad }}</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>{{ lidar.min_range_m }}</min>
+            <max>{{ robot.lidar.max_range_m }}</max>
+            <resolution>{{ robot.lidar.range_resolution_m }}</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>{{ lidar.range_sigma_m }}</stddev>
+          </noise>
+        </lidar>
+      </sensor>
+
+      <!-- GNSS antenna g at p_b_g. Noise OFF: the raw bag holds the clean fix; the offline
+           degrader (sim/mss_sim/gnss.py) adds the profile noise. -->
+      <sensor name="gnss" type="navsat">
+        <pose>{{ p_b_g | join(' ') }} 0 0 0</pose>
+        <gz_frame_id>{{ frames.gnss }}</gz_frame_id>
+        <always_on>true</always_on>
+        <update_rate>{{ gnss_rate_hz }}</update_rate>
+        <topic>/gnss/fix</topic>
+      </sensor>
+    </link>
+{% for w in wheels %}
+
+    <!-- Wheel link rolled by pi/2 about x so the cylinder axis (link z) is the body y axis. -->
+    <link name="{{ w.name }}">
+      <pose>0 {{ w.y }} 0 {{ half_pi }} 0 0</pose>
+      <inertial>
+        <mass>{{ robot.wheel.mass_kg }}</mass>
+        <inertia>
+          <ixx>{{ wheel_inertia.radial }}</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>{{ wheel_inertia.radial }}</iyy><iyz>0</iyz>
+          <izz>{{ wheel_inertia.axial }}</izz>
+        </inertia>
+      </inertial>
+      <collision name="{{ w.name }}_collision">
+{% if robot.wheel.collision_shape == 'sphere' %}
+        <!-- Sphere of the wheel radius: one contact point in the wheel's mid-plane, so the
+             contact track is the true track (a cylinder contacts the floor at a rim). -->
+        <geometry><sphere><radius>{{ kinematics.wheel_radius_m }}</radius></sphere></geometry>
+{% else %}
+        <geometry><cylinder><radius>{{ kinematics.wheel_radius_m }}</radius><length>{{ robot.wheel.width_m }}</length></cylinder></geometry>
+{% endif %}
+        <surface>
+          <friction>
+            <ode><mu>{{ robot.wheel.mu }}</mu><mu2>{{ robot.wheel.mu }}</mu2></ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="{{ w.name }}_visual">
+        <geometry><cylinder><radius>{{ kinematics.wheel_radius_m }}</radius><length>{{ robot.wheel.width_m }}</length></cylinder></geometry>
+        <material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse></material>
+      </visual>
+    </link>
+
+    <joint name="{{ w.joint }}" type="revolute">
+      <parent>{{ frames.body }}</parent>
+      <child>{{ w.name }}</child>
+      <axis>
+        <xyz expressed_in="__model__">0 1 0</xyz>
+        <limit>
+          <lower>-1e16</lower>
+          <upper>1e16</upper>
+          <effort>{{ robot.wheel.motor_torque_limit_nm }}</effort>
+        </limit>
+        <dynamics>
+          <damping>{{ robot.wheel.joint_damping_nms_per_rad }}</damping>
+          <friction>{{ robot.wheel.joint_friction_nm }}</friction>
+        </dynamics>
+      </axis>
+    </joint>
+{% endfor %}
+
+    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+      <left_joint>{{ wheels[0].joint }}</left_joint>
+      <right_joint>{{ wheels[1].joint }}</right_joint>
+      <wheel_separation>{{ kinematics.track_m }}</wheel_separation>
+      <wheel_radius>{{ kinematics.wheel_radius_m }}</wheel_radius>
+      <topic>/cmd_vel</topic>
+      <max_linear_velocity>{{ robot.drive.max_linear_velocity_mps }}</max_linear_velocity>
+      <min_linear_velocity>-{{ robot.drive.max_linear_velocity_mps }}</min_linear_velocity>
+      <max_linear_acceleration>{{ robot.drive.max_linear_acceleration_mps2 }}</max_linear_acceleration>
+      <min_linear_acceleration>-{{ robot.drive.max_linear_acceleration_mps2 }}</min_linear_acceleration>
+      <max_angular_velocity>{{ robot.drive.max_angular_velocity_radps }}</max_angular_velocity>
+      <min_angular_velocity>-{{ robot.drive.max_angular_velocity_radps }}</min_angular_velocity>
+      <max_angular_acceleration>{{ robot.drive.max_angular_acceleration_radps2 }}</max_angular_acceleration>
+      <min_angular_acceleration>-{{ robot.drive.max_angular_acceleration_radps2 }}</min_angular_acceleration>
+    </plugin>
+
+    <!-- Wheel joint states: the offline bridge quantises encoders from them. -->
+    <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
+      <topic>/joint_states</topic>
+{% for w in wheels %}
+      <joint_name>{{ w.joint }}</joint_name>
+{% endfor %}
+    </plugin>
+
+    <!-- Wheel slip: compliance 0 adds no slip. The plugin can only add slip (grass, wet patch
+         of the outdoor world), never correct odometry. wheel_normal_force = total mass * g / 2
+         is an upper bound: the casters at floor height carry part of the load. -->
+    <plugin filename="gz-sim-wheel-slip-system" name="gz::sim::systems::WheelSlip">
+{% for w in wheels %}
+      <wheel link_name="{{ w.name }}">
+        <slip_compliance_lateral>{{ robot.wheel_slip.slip_compliance_lateral }}</slip_compliance_lateral>
+        <slip_compliance_longitudinal>{{ robot.wheel_slip.slip_compliance_longitudinal }}</slip_compliance_longitudinal>
+        <wheel_normal_force>{{ wheel_normal_force_n }}</wheel_normal_force>
+        <wheel_radius>{{ kinematics.wheel_radius_m }}</wheel_radius>
+      </wheel>
+{% endfor %}
+    </plugin>
+
+    <!-- Ground truth: pose and twist of the model frame (= body b) in world, no noise. -->
+    <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+      <odom_frame>{{ frames.world }}</odom_frame>
+      <robot_base_frame>{{ frames.body }}</robot_base_frame>
+      <odom_topic>/ground_truth</odom_topic>
+      <odom_publish_frequency>{{ robot.ground_truth_rate_hz }}</odom_publish_frequency>
+      <dimensions>3</dimensions>
+    </plugin>
+  </model>
+</sdf>

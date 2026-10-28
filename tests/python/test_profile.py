@@ -90,3 +90,13 @@ def test_multipath_amp_min_above_max_rejected(tmp_path: Path) -> None:
     bad["gnss"]["multipath_amp_min_m"] = bad["gnss"]["multipath_amp_max_m"] + 1.0
     with pytest.raises(ProfileError, match=r"gnss\.multipath_amp_min_m"):
         load_profile(_write(tmp_path, bad))
+
+
+def test_min_incidence_cos_validated(tmp_path: Path) -> None:
+    base = yaml.safe_load(Path("sim/noise/default.yaml").read_text())
+    assert "render_model" not in base["lidar"]  # measured per world in sim/noise/render/
+    f = tmp_path / "p.yaml"
+    data = {**base, "lidar": {**base["lidar"], "min_incidence_cos": 1.5}}
+    f.write_text(yaml.safe_dump(data))
+    with pytest.raises(ProfileError, match="min_incidence_cos"):
+        load_profile(f)

@@ -28,7 +28,7 @@ _TOP = {
     "gnss_zones",
     "topics",
 }
-_OPTIONAL = frozenset({"prep"})
+_OPTIONAL = frozenset({"prep", "pipeline_config_variants"})
 
 
 class ScenarioError(ValueError):
@@ -74,6 +74,15 @@ class Prep:
 
 
 @dataclass(frozen=True)
+class Route:
+    """Driver route (``sim/trajectories/*.yaml``): world-frame waypoints, metres."""
+
+    waypoints: tuple[tuple[float, float], ...]
+    speed_mps: float  # cruise target before the +-10 % variation
+    lookahead_m: float  # pure-pursuit lookahead distance
+
+
+@dataclass(frozen=True)
 class Scenario:
     id: str
     world: str
@@ -87,6 +96,9 @@ class Scenario:
     gnss_zones: list[GnssZone]
     topics: list[str]
     prep: Prep | None = None
+    route: Route | None = None  # the loaded ``trajectory`` file
+    # Extra pipeline overlays run on the same bag, e.g. degeneracy on/off (ADR-011 section 5).
+    pipeline_config_variants: dict[str, Path] = field(default_factory=dict)
 
 
 def _num(value: Any, path: str) -> float:
@@ -223,8 +235,50 @@ def _zones(raw: Any) -> list[GnssZone]:
     return zones
 
 
+def load_route(path: Path) -> Route:
+    """Load and validate a trajectory YAML (``waypoints``, ``speed_mps``, ``lookahead_m``)."""
+    where = f"trajectory ({Path(path).name})"
+    if not Path(path).is_file():
+        raise ScenarioError(f"{where}: file not found")
+    data = _mapping(
+        yaml.safe_load(Path(path).read_text()), where, {"waypoints", "speed_mps", "lookahead_m"}
+    )
+    raw = _list(data["waypoints"], f"{where}.waypoints")
+    if len(raw) < 2:
+        raise ScenarioError(f"{where}.waypoints: needs >= 2 waypoints, got {len(raw)}")
+    points: list[tuple[float, float]] = []
+    for i, v in enumerate(raw):
+        p = f"{where}.waypoints[{i}]"
+        if not isinstance(v, list) or len(v) != 2:
+            raise ScenarioError(f"{p}: expected [x_m, y_m]")
+        xy = (_num(v[0], p), _num(v[1], p))
+        if not all(math.isfinite(c) for c in xy):
+            raise ScenarioError(f"{p}: must be finite, got {v!r}")
+        if points and xy == points[-1]:
+            raise ScenarioError(f"{p}: repeats the previous waypoint")
+        points.append(xy)
+    return Route(
+        waypoints=tuple(points),
+        speed_mps=_pos(data["speed_mps"], f"{where}.speed_mps"),
+        lookahead_m=_pos(data["lookahead_m"], f"{where}.lookahead_m"),
+    )
+
+
+def _variants(raw: Any) -> dict[str, Path]:
+    if not isinstance(raw, dict) or not raw:
+        raise ScenarioError("pipeline_config_variants: expected a non-empty mapping name -> path")
+    return {
+        _str(k, "pipeline_config_variants"): _REPO / _str(v, f"pipeline_config_variants.{k}")
+        for k, v in raw.items()
+    }
+
+
 def load_scenario(path: Path) -> Scenario:
-    """Load and validate a scenario YAML. Referenced files are resolved but need not exist."""
+    """Load and validate a scenario YAML.
+
+    Referenced files are resolved against the repo root; the trajectory is loaded and validated
+    (``route``), the profile and pipeline configs need not exist.
+    """
     data = yaml.safe_load(Path(path).read_text())
     data = _mapping(data, "<root>", _TOP, _OPTIONAL)
     seed = data["seed"]
@@ -244,12 +298,13 @@ def load_scenario(path: Path) -> Scenario:
     if not (-90 <= lla[0] <= 90 and -180 <= lla[1] <= 180):
         raise ScenarioError(f"origin_lla: latitude/longitude out of range, got {lla_raw}")
     topics = [_str(t, f"topics[{i}]") for i, t in enumerate(_list(data["topics"], "topics"))]
+    trajectory = _REPO / _str(data["trajectory"], "trajectory")
     return Scenario(
         id=_str(data["id"], "id"),
         world=_str(data["world"], "world"),
         profile=_REPO / _str(data["profile"], "profile"),
         pipeline_config=_REPO / _str(data["pipeline_config"], "pipeline_config"),
-        trajectory=_REPO / _str(data["trajectory"], "trajectory"),
+        trajectory=trajectory,
         seed=seed,
         duration_s=duration,
         origin_lla=lla,
@@ -257,4 +312,10 @@ def load_scenario(path: Path) -> Scenario:
         gnss_zones=_zones(data["gnss_zones"]),
         topics=topics,
         prep=_prep(data["prep"]) if "prep" in data else None,
+        route=load_route(trajectory),
+        pipeline_config_variants=(
+            _variants(data["pipeline_config_variants"])
+            if "pipeline_config_variants" in data
+            else {}
+        ),
     )
