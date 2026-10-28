@@ -266,7 +266,8 @@ backend last-keyframe x error (marginal sigma).
 `se3_exact` removes the divergence but is over-confident on the circle (its sigma drops from 14
 to 1.75 m); `decoupled` stays within its sigma in both scenes.
 
-Shipped configuration, seeds 42..56 paired against `between` (median (max) | wins / losses |
+Shipped configuration measured at db84bf9 (before the exact pose prior, §2b), seeds 42..56
+paired against `between` (median (max) | wins / losses |
 95 % bootstrap CI of the median difference, form - between; lower is better; box NEES
 expectation 6). `scan_match.cov_scale` 4.7 was calibrated with `between`; the box NEES of the
 exact forms stays within 7.8 +/- 1 at 4.7, so no recalibrated rows were needed.
@@ -280,7 +281,10 @@ exact forms stays within 7.8 +/- 1 at 4.7, so no recalibrated rows were needed.
 | 20 s circle x free, along-x RMS (m) | 1.36 (2.84) | 1.33 (5.81) \| 8/7 \| [-0.91, +1.13] | 1.68 (3.25) \| 6/9 \| [-0.84, +1.35] |
 | 20 s straight x free, \|end x err\| (m) | 2.72 (6.28) | 3.26 (5.90) \| 6/9 \| [-0.39, +0.40] | 3.38 (8.18) \| 5/10 \| [-0.26, +0.82] |
 
-Every CI contains 0. These IMU-only and corridor scenes are chaotic: the same decoupled form
+Every CI contains 0 at db84bf9. After the exact pose prior (2026-10-28, PR #28) the 60 s
+corridor + GNSS row reads: between 1.87 (15.32); se3_exact 2.66 (28.01) | 4/11 |
+[+0.06, +0.59], the only CI that excludes 0; decoupled 3.47 (29.13) | 4/11 | [-0.08, +0.56].
+These IMU-only and corridor scenes are chaotic: the same decoupled form
 evaluated with a different floating-point order of the same products (an earlier env-gated
 build) gave a circle median of 3.30 m instead of 2.30 m. `CorridorImuOnlyAlongAxisWithin
 DeadReckoning` (seeds 42..44, run at `between` in PR 4e) circle end errors: between -1.29 / +0.38 /
@@ -380,8 +384,8 @@ mrad)^2) is about 0.2 % of the factor's at the shipped noise (1 / (0.84 mrad)^2)
 double count is negligible.
 
 Consistency check (ADR-020; evaluated and shipped off, `backend.static_gravity_check_keyframes:
-0`): with a value > 0, after that keyframe is optimised, `Graph::static_gravity_chi2()` returns the factor's **innovation statistic**
-against the rest of the graph. In whitened units (`W` the factor's square-root
+0`): with a value > 0, after that keyframe is optimised, `Graph::static_gravity_chi2()`
+returns the factor's **innovation statistic** against the rest of the graph. In whitened units (`W` the factor's square-root
 information), with `e = W r` at the estimate, `J = W dr/d[X_k, B_k]`, `P` the joint marginal
 covariance of `(X_k, B_k)` with the factor and `P_rest` without it:
 
@@ -518,5 +522,6 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §9 | `BackendGraph.ImuGapReanchorsVelocityAndBias`, `BackendGraph.OptimizeFailureDropsPendingFactorsKeepsKeyframes`, `BackendGraph.LatestKeyframeWithoutFactorsReturnsGuessAndNanCov` |
 | input validation (including an unknown `relative_factor`) | `BackendGraph.RejectsBadCovariances`, `BackendApi.ConstructorRejectsInvalidConfig` |
 | §5 robust loop | B-03 `BackendIsam.B03_OutlierLoopDragsLessThanTenCm`, `BackendIsam.B03_ControlNonRobustOutlierDragsMoreThanTenCm` |
-| iSAM2 vs the batch solution, per relative-factor form: for `se3_exact` and `decoupled` the LM minimum of the true cost (central-difference gradient < 1e-4; every pose factor has an exact Jacobian, §2b); for `between` LM, then Gauss-Newton to the fixed point of the linearisation (gradient < 1e-5) | B-04 `BackendIsam.B04_IsamMatchesBatchReference` |
+| iSAM2 vs the batch solution (LM, then Gauss-Newton to the fixed point of the linearisation, gradient < 1e-5), per relative-factor form; for `se3_exact` and `decoupled` that point is the true cost minimum (central-difference gradient < 1e-5 at the reference and at the iSAM2 estimate; §2b); `between` control (true gradient > 0.1) | B-04 `BackendIsam.B04_IsamMatchesBatchReference` |
+| §2b, §6b frame variable `E` about 20 deg / 3 m from its prior: iSAM2 = batch minimum < 1e-6, true gradient < 1e-5; control with `PriorFactor<Pose3>` on `E` | `BackendIsam.FrameVariableMatchesBatchAtLargePriorResidual` |
 | determinism (single-thread TBB in `deterministic` mode: ADR-018), diagnostics | `BackendIsam.RepeatedOptimizeIsStableAndDeterministic`, `BackendDeterminism.SingleThreadLimitIsProcessLifetime`, `BackendDeterminism.SingleThreadRunsAreBitIdentical`, `BackendDeterminism.MultiThreadRunsReported`, `BackendIsam.DegeneracyReportIsDiagnosticOnly` |

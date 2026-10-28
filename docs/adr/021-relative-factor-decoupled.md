@@ -91,7 +91,11 @@ SE(3) là
 | tròn 20 s, x tự do, RMS dọc x (m) | 1,36 (2,84) | 1,33 (5,81) \| 8/7 \| [-0,91; +1,13] | 1,68 (3,25) \| 6/9 \| [-0,84; +1,35] |
 | thẳng 20 s, x tự do, \|sai số x cuối\| (m) | 2,72 (6,28) | 3,26 (5,90) \| 6/9 \| [-0,39; +0,40] | 3,38 (8,18) \| 5/10 \| [-0,26; +0,82] |
 
-Mọi khoảng tin cậy chứa 0: trên các cảnh đang có, không dạng nào khác `between` có ý nghĩa thống
+Bảng trên đo tại db84bf9 (trước prior tư thế chính xác). Sau PR #28 (2026-10-28), dòng hành
+lang 60 s + GNSS là: between 1,87 (15,32); se3_exact 2,66 (28,01) | 4/11 | [+0,06; +0,59],
+khoảng duy nhất không chứa 0; decoupled 3,47 (29,13) | 4/11 | [-0,08; +0,56].
+
+Tại db84bf9 mọi khoảng tin cậy chứa 0: trên các cảnh đang có, không dạng nào khác `between` có ý nghĩa thống
 kê. Các cảnh này hỗn loạn (cùng dạng `decoupled`, chỉ đổi thứ tự phép nhân dấu phẩy động, cho
 trung vị tròn 3,30 thay vì 2,30 m), nên chênh lệch trung vị nhỏ không quyết định. Quyết định dựa
 trên lần đối chứng (mục Vấn đề) và cơ chế, không dựa trên các trung vị này. Test tổng hợp
@@ -160,14 +164,16 @@ p95 cao hơn 0,15 ms, trong độ trải giữa các lần chạy (main 5,72 đ�
   mét, không chỉ tại phép đo.
 - Loop dùng cùng dạng bên trong kernel Cauchy.
 - Test `BackendIsam.B04_IsamMatchesBatchReference` dựng tham chiếu batch theo dạng
-  đã cấu hình và chạy cho cả ba dạng (cập nhật 2026-10-28, xem dòng bên dưới). Với hai
-  dạng chính xác, tham chiếu là cực tiểu LM của chi phí thật, test khẳng định gradient sai phân
-  trung tâm của chi phí < 1e-4 (đo được 1,7e-5) và iSAM2 khớp trong 3,3e-9. Với `between`,
-  `BetweenFactor<Pose3>` vẫn có Jacobian gần đúng, nên điểm cố định của phép tuyến tính hoá
-  không phải cực tiểu của chi phí (gradient thật 0,66 tại đó); tham chiếu là LM rồi 10 vòng
-  Gauss-Newton (linearize / giải / retract) tới điểm cố định, gradient của phép tuyến tính
-  hoá < 1e-5 (đo được 4,7e-8), iSAM2 khớp trong 1,4e-10. Giới hạn 1e-6 không đổi.
-- 2026-10-28 (PR `fix(backend): exact-Jacobian pose prior`, sau #27): `gtsam::PriorFactor<Pose3>`
+  đã cấu hình và chạy cho cả ba dạng (cập nhật 2026-10-28, xem dòng bên dưới). Tham chiếu
+  là điểm cố định Gauss-Newton batch của cùng phép tuyến tính hoá mà iSAM2 dùng: LM, rồi 10
+  vòng linearize / giải / retract; gradient của phép tuyến tính hoá < 1e-5 (đo được 2,4e-8 /
+  5,9e-8 / 4,7e-8 cho decoupled / se3_exact / between), iSAM2 khớp trong 1,4e-10. Với hai dạng
+  chính xác, mọi factor tư thế có Jacobian đúng, nên điểm đó cũng là cực tiểu của chi phí thật:
+  test khẳng định gradient sai phân trung tâm < 1e-5 tại tham chiếu (2,2e-6) và tại ước lượng
+  iSAM2 (1,5e-6); với `gtsam::PriorFactor<Pose3>` trên keyframe 0 giá trị này là 0,09 và test
+  trượt. `between` (`BetweenFactor<Pose3>` vẫn gần đúng) là đối chứng: gradient thật 0,66 > 0,1.
+  Giới hạn 1e-6 không đổi.
+- 2026-10-28 (PR #28, `fix(backend): exact-Jacobian pose prior`): `gtsam::PriorFactor<Pose3>`
   cũng trả Jacobian đơn vị cho phần dư `Logmap` (cùng lỗi với `BetweenFactor<Pose3>`). Nó được
   thay bằng `detail::PosePriorFactor` (cùng phần dư, Jacobian `P Jr^-1 P` chính xác) ở cả ba
   chỗ: keyframe 0, prior re-anchor và prior của biến khung GNSS `T_e_w`
