@@ -259,6 +259,10 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
         "gnss: chi-square rejected gnss.max_consecutive_rejects fixes in a row, "
         "aligner restarted");
   }
+  if (observer() != nullptr && fusion_.n_alignments() != n_alignments_seen_) {
+    n_alignments_seen_ = fusion_.n_alignments();
+    observer()->on_alignment(m.t, fusion_.T_e_w(), fusion_.align_yaw_sigma_rad());
+  }
   if (observer() != nullptr && outcome == FixOutcome::kAccepted) {
     observer()->on_fix_accepted(m.t, fusion_.T_e_w());
   }

@@ -122,3 +122,81 @@ Observability: `sigma_yaw ~ sigma_h / sqrt(sum |a_c,h|^2)`. A straight 30 m path
 and 5 Hz has 151 fixes and `sum |a_c,h|^2 ~ n L^2 / 12 ~ 151 * 900 / 12 ~ 1.13e4 m^2`, so at
 `sigma_h = 1.0` m `sigma_yaw ~ 1 / 106 rad ~ 0.54 deg`. G-03 therefore uses
 `sigma_h = 0.2` m (1-sigma about 0.11 deg) to test the 0.5 deg requirement with margin.
+
+## 5. Yaw of `T_e_w` from the track direction (ADR-023)
+
+Code: `GnssTrackYawAligner` in `core/gnss/src/track_yaw.cpp`, used instead of section 4 when
+`gnss.align_yaw_from_track` is true.
+
+Why. Section 4 fits the front-end positions `p_w_g,i`. Along a LiDAR-degenerate axis their
+along-axis part is IMU dead reckoning; in the corridor of `gnss_fusion_study.md` section 13 its
+velocity even changes sign before the first alignment (seed 51: -1.7 m/s against +0.5 m/s true,
+at a heading error below 0.2 deg), and the fit starts 180 deg off. The heading, from the gyro
+and the LiDAR rotation, is accurate there. So this estimator takes the yaw from the heading and
+the GNSS track only.
+
+Model. As section 4, `R_e_w = Rz(yaw)`. The body moves along its forward axis `x_b`: the
+horizontal velocity of the body in w is `s(t) h(t)` with `h = unit((R_w_b x_b)_h)` and a
+speed `s(t)` that is not used. Then, in e, the horizontal antenna displacement over an interval
+is `Rz(yaw) * integral s h dt` (plus the lever-arm term below).
+
+Chunks. Consecutive fixes are grouped by `m = gnss.align_yaw_chunk_fixes`. Per chunk `k`: the
+mean horizontal fix position `c_k` (e, shifted by the first fix for conditioning), the unit mean
+heading `h_k = unit(sum h_i)` (w), and the per-axis variance of `c_k`,
+`v_k = sum_i (cov_i(0,0) + cov_i(1,1)) / 2 / m^2`.
+
+Segments. Segment `k` joins chunks `k` and `k + 1`: `b_k = c_{k+1} - c_k` (e) and
+`a_k = unit(h_k + h_{k+1})` (w). Maximising `sum b_k^T Rz(yaw) a_k` (2-D Procrustes with the
+w-side vectors of unit length, so each segment weighs by its GNSS length) gives
+
+    yaw = atan2(sum a_k x b_k, sum a_k . b_k)        (x: 2-D cross product)
+
+On an arc of constant curvature and speed the two chunk centroids lie at the same radius, so the
+chord `b_k` is along the tangent at the mid angle, which is `a_k`: turns are exact in that
+case. Speed changes inside a segment bend the chord slightly away from `a_k`.
+
+Noise. `c_k` enters segment `k - 1` with `+a_{k-1}` and segment `k` with `-a_k`, so the noise
+of `sum a x b` is `sum_k (a_{k-1} - a_k) x n_k` with `a_{-1} = a_K = 0` (K the last chunk).
+For isotropic horizontal noise (variance `v_k` per axis) and `S = |(sum a.b, sum a x b)|`:
+
+    sigma_yaw = sqrt(sum_k v_k |a_{k-1} - a_k|^2) / S
+
+On a straight line `a` is constant, the sum telescopes to the first and the last chunk, and
+`sigma_yaw = sqrt(v_0 + v_K) / L` with `L` the distance between them. At 0.5 m per axis and
+`m = 10`, `v = 0.025 m^2`, so `L = 6.4 m` gives 2 deg. Heading noise is neglected: the
+front-end heading error in the corridor is below 0.2 deg. The running sums give
+`sum v_k |a_{k-1} - a_k|^2` in O(1): chunk `k`'s term is added when segment `k` is formed, the
+last chunk's `v_K |a_{K-1}|^2 = v_K` at evaluation.
+
+Acceptance. A transform is returned once `sigma_yaw <= gnss.align_yaw_max_sigma_deg`. This
+replaces `align_min_pairs` and `align_min_spread_m`: no motion, or a frozen receiver, gives
+`S ~ 0` and no transform.
+
+Sign and reversals. The forward-motion assumption fixes the sign: the yaw maps the heading
+onto the GNSS displacement, not onto its opposite. Once `sigma_yaw` is within the threshold,
+a new segment with `(Rz(yaw) a_k) . b'_k < -n sqrt(v_k + v_{k+1})`
+(`n = gnss.align_yaw_reverse_nsigma`) is reverse motion and enters with `-a_k`. Before that,
+back-and-forth motion cancels in the sums and delays the alignment. A body that drives
+backwards from the start aligns 180 deg off (not handled; the wheel-speed sign could resolve
+it).
+
+Lever arm. The segment joins antenna positions, the heading is the body's. The antenna also
+moves by the rotation of the lever arm, `l_k = m_{k+1} - m_k` with `m_k` the chunk mean of
+`(R_w_b p_b_g)_h` (w, known). On an arc of curvature `kappa` this turns the chord by about
+`p_x kappa` (0.2 m x 0.5 1/m = 5.7 deg on the box world's 2 m circle), so it is removed:
+`b'_k = b_k - Rz(yaw) l_k`. The yaw now appears on both sides; with `Rz l = cos l + sin J l`,
+
+    sum a x b' = sum a x b - (cos yaw sum a x l + sin yaw sum a . l)
+    sum a . b' = sum a . b - (cos yaw sum a . l - sin yaw sum a x l)
+
+so two more running sums suffice, and the yaw is the fixed point of
+`yaw = atan2(sum a x b', sum a . b')`, iterated 4 times from the uncorrected value (each
+iteration shrinks the error by about `|l_k| / |b_k|`, about 0.1 on the 2 m circle). `S` in
+`sigma_yaw` uses the corrected sums; `l_k` carries no noise term (the heading is taken as
+exact).
+
+Translation. As section 4, `p_e_w = mean(p_e_g) - Rz(yaw) mean(p_w_g)` over all fixes. It still
+carries the front-end along-axis offset; `gnss.attach_prealign_fixes` (ADR-022) anchors the
+translation of the graph's `E` by measurements.
+
+Roll and pitch stay zero: `E`'s tight tilt prior of ADR-019 is unchanged.

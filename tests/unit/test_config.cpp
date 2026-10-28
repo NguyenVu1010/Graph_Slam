@@ -273,6 +273,27 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   ASSERT_FALSE(bad_buf.is_ok());
   EXPECT_TRUE(mentions(bad_buf.reason(), "gnss.prealign_max_fixes: must be >= 1 (got 0)"))
       << bad_buf.reason();
+  // ADR-023: off by default (previous behaviour); chunk >= 2, sigma (deg -> rad) and n > 0.
+  EXPECT_FALSE(cfg.value().gnss.align_yaw_from_track);
+  EXPECT_EQ(cfg.value().gnss.align_yaw_chunk_fixes, 10);
+  EXPECT_NEAR(
+      cfg.value().gnss.align_yaw_max_sigma_rad, 3.0 * 3.14159265358979323846 / 180.0, 1e-12);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_reverse_nsigma, 3.0);
+  const auto bad_chunk =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_yaw_chunk_fixes: 1\n"));
+  ASSERT_FALSE(bad_chunk.is_ok());
+  EXPECT_TRUE(mentions(bad_chunk.reason(), "gnss.align_yaw_chunk_fixes: must be >= 2 (got 1)"))
+      << bad_chunk.reason();
+  const auto bad_sigma =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_yaw_max_sigma_deg: 0\n"));
+  ASSERT_FALSE(bad_sigma.is_ok());
+  EXPECT_TRUE(mentions(bad_sigma.reason(), "gnss.align_yaw_max_sigma_deg: must be > 0 (got 0)"))
+      << bad_sigma.reason();
+  const auto bad_n =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_yaw_reverse_nsigma: -1\n"));
+  ASSERT_FALSE(bad_n.is_ok());
+  EXPECT_TRUE(mentions(bad_n.reason(), "gnss.align_yaw_reverse_nsigma: must be > 0 (got -1)"))
+      << bad_n.reason();
 }
 
 // Ruling on the static-init threshold: it must exceed the per-sample accelerometer noise

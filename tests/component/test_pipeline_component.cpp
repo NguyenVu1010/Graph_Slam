@@ -310,6 +310,81 @@ TEST(PipelineComponent, PrealignFixesAnchorFrameAlongAxis) {
   }
 }
 
+// Records the aligner T_e_w given with the first GNSS factor (the centre of E's prior) and the
+// first alignment's predicted yaw sigma.
+class AlignObserver : public detail::CoreObserver {
+ public:
+  void on_alignment(Timestamp /*t*/, const common::Pose& /*T_e_w*/, double yaw_sigma_rad) override {
+    if (n_alignments_++ == 0) {
+      sigma_rad_ = yaw_sigma_rad;
+    }
+  }
+  void on_gnss_factor(Timestamp /*t_k*/,
+                      const common::GnssMeasurement& /*m*/,
+                      const common::Pose& T_e_w) override {
+    if (!have_first_) {
+      first_ = T_e_w;
+      have_first_ = true;
+    }
+  }
+  int n_alignments_ = 0;
+  double sigma_rad_ = std::numeric_limits<double>::quiet_NaN();
+  bool have_first_ = false;
+  common::Pose first_;
+};
+
+// ADR-023 (gnss.align_yaw_from_track): on corridor seeds 51 and 52 GnssAligner gives E's prior a
+// yaw 179 / 132 deg off at the first GNSS factor (gnss_fusion_study.md section 13: the front
+// end's along-axis velocity changes sign before the alignment). With the flag the yaw is taken
+// from the GNSS track against the heading: within 10 deg (brief), and within 3 times the
+// predicted sigma at the first alignment. Negative control: off, both are above 90 deg (the
+// flag-off path is the unchanged previous code).
+TEST(PipelineComponent, TrackYawAlignsCorridorFlipSeeds) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "the front end follows the backend; measured with GTSAM";
+  }
+  constexpr double kTargetDeg = 10.0;  // deg, brief of design 2
+  for (const std::uint32_t seed : {51U, 52U}) {
+    BoxWorldParams p = corridor_params();
+    p.seed = seed;
+    const fs::path dir = test_dir() / ("seed" + std::to_string(seed));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const common::Pose T_true = test::box_T_e_w(p);
+    for (const bool on : {false, true}) {
+      const Config cfg =
+          box_config(p,
+                     true,
+                     false,
+                     dir / (on ? "on" : "off"),
+                     std::string("    preprocess:\n      max_range_m: 10.0\n") + kCorridorRelaxYaml,
+                     on ? "      align_yaw_from_track: true\n" : "");
+      AlignObserver obs;
+      detail::CoreTestHooks hooks;
+      hooks.observer = &obs;
+      {
+        const HooksScope scope(&hooks);
+        (void)replay(dir / "data", cfg);
+      }
+      ASSERT_TRUE(obs.have_first_) << "seed " << seed << " on " << on;
+      const double err_deg = std::abs(wrap_deg(yaw_of(T_true.R.transpose() * obs.first_.R)));
+      std::printf(
+          "[ track yaw ] seed %u on %d: aligner yaw error at the first factor %.2f deg, "
+          "predicted sigma %.2f deg\n",
+          seed,
+          on ? 1 : 0,
+          err_deg,
+          obs.sigma_rad_ * kRadToDeg);
+      if (on) {
+        EXPECT_LT(err_deg, kTargetDeg) << "seed " << seed;
+        EXPECT_LT(err_deg, 3.0 * obs.sigma_rad_ * kRadToDeg) << "seed " << seed;
+      } else {
+        EXPECT_GT(err_deg, 90.0) << "seed " << seed;
+        EXPECT_TRUE(std::isnan(obs.sigma_rad_));
+      }
+    }
+  }
+}
+
 TEST(PipelineComponent, BoxWorldAteWithinTolerance) {
   run_box_world(false);
 }

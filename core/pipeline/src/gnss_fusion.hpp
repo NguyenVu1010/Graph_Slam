@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <vector>
 
 #include <Eigen/StdVector>
@@ -35,7 +36,8 @@ struct EarlyFactor {
   common::Timestamp t_k{};
 };
 
-/// GNSS fusion front: pre-gate, chi-square innovation gate (G-02), w->e alignment and the
+/// GNSS fusion front: pre-gate, chi-square innovation gate (G-02), w->e alignment (GnssAligner,
+/// or GnssTrackYawAligner with gnss.align_yaw_from_track, ADR-023) and the
 /// fixes waiting for the next keyframe (docs/derivations/pipeline.md section 5).
 /// With `gnss.attach_prealign_fixes` (ADR-022) it also keeps the fixes received before the
 /// first alignment in a bounded buffer, assigns each to its nearest keyframe in time and
@@ -133,6 +135,14 @@ class GnssFusion {
       const std::function<common::Vec3(common::Timestamp, common::Timestamp)>* oracle) {
     shift_oracle_ = oracle;
   }
+  /// Times the fusion went from not aligned to aligned (first alignment and each realign).
+  [[nodiscard]] std::uint64_t n_alignments() const { return n_alignments_; }
+  /// ADR-023: predicted yaw 1-sigma (rad) of the track-yaw aligner at its last chunk boundary;
+  /// NaN when gnss.align_yaw_from_track is false (GnssAligner reports none).
+  [[nodiscard]] double align_yaw_sigma_rad() const {
+    return cfg_.align_yaw_from_track ? track_aligner_.yaw_sigma_rad()
+                                     : std::numeric_limits<double>::quiet_NaN();
+  }
   /// Latest aligner estimate (identity until aligned()). Maps w to e.
   [[nodiscard]] const common::Pose& T_e_w() const { return T_e_w_; }
   /// Accepted fixes dropped from the full pending queue so far.
@@ -185,6 +195,8 @@ class GnssFusion {
   std::uint64_t n_realign_ = 0;
   common::Vec3 p_b_g_;
   gnss::GnssAligner aligner_;
+  gnss::GnssTrackYawAligner track_aligner_;  // ADR-023, used when cfg_.align_yaw_from_track
+  std::uint64_t n_alignments_ = 0;
   bool aligned_ = false;
   common::Pose T_e_w_;
   BoundedQueue<PendingFix, kMaxAuxQueue> pending_;

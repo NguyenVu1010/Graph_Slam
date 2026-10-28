@@ -10,6 +10,7 @@ GnssFusion::GnssFusion(const gnss::GnssConfig& cfg, const common::Vec3& p_b_g)
       chi2_gate_(cfg.chi2_gate),
       p_b_g_(p_b_g),
       aligner_(cfg),
+      track_aligner_(cfg),
       early_open_(cfg.attach_prealign_fixes) {
   if (cfg.attach_prealign_fixes) {
     early_.reserve(static_cast<std::size_t>(cfg.prealign_max_fixes));
@@ -55,6 +56,7 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
       // fix can pull it back. Restart the alignment on the current front end; the new
       // factors share the graph's T_e_w with the old ones (ADR-019) and pull the chain back.
       aligner_ = gnss::GnssAligner(cfg_);
+      track_aligner_ = gnss::GnssTrackYawAligner(cfg_);
       aligned_ = false;
       consecutive_rejects_ = 0;
       ++n_realign_;
@@ -62,11 +64,16 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
       consecutive_rejects_ = 0;
     }
   }
-  const common::Result<common::Pose> T = forced_
-                                             ? common::Result<common::Pose>::error("forced T_e_w")
-                                             : aligner_.update(m.p_e_g, T_w_b_fix, p_b_g_);
+  // ADR-023: the track-yaw aligner replaces GnssAligner when gnss.align_yaw_from_track.
+  const common::Result<common::Pose> T =
+      forced_                     ? common::Result<common::Pose>::error("forced T_e_w")
+      : cfg_.align_yaw_from_track ? track_aligner_.update(m.p_e_g, m.cov, T_w_b_fix, p_b_g_)
+                                  : aligner_.update(m.p_e_g, T_w_b_fix, p_b_g_);
   if (T.is_ok()) {
     T_e_w_ = T.value();
+    if (!aligned_) {
+      ++n_alignments_;
+    }
     aligned_ = true;
   }
   if (!aligned_) {

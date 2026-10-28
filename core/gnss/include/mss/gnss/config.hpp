@@ -26,6 +26,13 @@ struct GnssConfig {
   // (dropped); load_config overwrites both from YAML.
   bool attach_prealign_fixes = false;
   int prealign_max_fixes = 1;  // fixes, capacity of the pre-alignment buffer (>= 1)
+  // ADR-023: the yaw of T_e_w from the GNSS track direction against the body heading
+  // (GnssTrackYawAligner) instead of GnssAligner's fit of front-end positions. The struct
+  // default keeps the previous behaviour; load_config overwrites all four from YAML.
+  bool align_yaw_from_track = false;
+  int align_yaw_chunk_fixes = 10;                                         // fixes per chunk (>= 2)
+  double align_yaw_max_sigma_rad = 3.0 * 3.14159265358979323846 / 180.0;  // rad, 1-sigma to align
+  double align_yaw_reverse_nsigma = 3.0;  // sigmas: a segment this far backwards reverses (> 0)
 };
 
 }  // namespace mss::gnss

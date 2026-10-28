@@ -187,6 +187,12 @@ a row the aligner restarts, so a front end that drifted during an outage can re-
 alignment, the static ones of the IMU initialisation window included, in a buffer of
 `gnss.prealign_max_fixes` fixes and adds them as factors on their nearest keyframes once
 aligned, so the translation of the GNSS frame is tied to keyframe 0 by measurements.
+`gnss.align_yaw_from_track` (ADR-023, default off) takes the yaw of the w->e alignment from the
+direction of the GNSS track against the body heading instead of fitting front-end positions
+(`docs/derivations/gnss.md` section 5): fixes are grouped in chunks of
+`gnss.align_yaw_chunk_fixes`, the alignment waits until the predicted yaw 1-sigma is at most
+`gnss.align_yaw_max_sigma_deg` (it then replaces `align_min_pairs` / `align_min_spread_m`), and
+`gnss.align_yaw_reverse_nsigma` decides when a segment is reverse motion.
 `gnss.enabled` is off in `config/default.yaml` until multipath and outage are evaluated; the
 sim scenarios turn it on by overlay. `backend.gnss_frame_variable` (ADR-019, default on)
 estimates `T_e_w` as one graph variable shared by all GNSS factors, with a prior from

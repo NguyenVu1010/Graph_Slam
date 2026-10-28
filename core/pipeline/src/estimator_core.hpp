@@ -56,6 +56,12 @@ class CoreObserver {
   virtual void on_gnss_factor(common::Timestamp /*t_k*/,
                               const common::GnssMeasurement& /*m*/,
                               const common::Pose& /*T_e_w*/) {}
+  /// The GNSS fusion became aligned (first time or after a realign) with the fix at `t`:
+  /// `T_e_w` the aligner estimate, `yaw_sigma_rad` its predicted yaw 1-sigma (NaN for
+  /// GnssAligner; ADR-023 study).
+  virtual void on_alignment(common::Timestamp /*t*/,
+                            const common::Pose& /*T_e_w*/,
+                            double /*yaw_sigma_rad*/) {}
   /// A fix was accepted; `T_e_w` is the aligner estimate after it.
   virtual void on_fix_accepted(common::Timestamp /*t*/, const common::Pose& /*T_e_w*/) {}
   /// Scan at `t` matched: the IMU-predicted body pose, the matched one and the match result
@@ -261,6 +267,7 @@ class EstimatorCore {
   bool backend_failure_streak_ = false;
   bool imu_nonfinite_streak_ = false;
   bool gnss_reject_streak_ = false;
+  std::uint64_t n_alignments_seen_ = 0;  // observer only: alignments reported so far
   bool gnss_late_streak_ = false;
   bool uncovered_streak_ = false;
 

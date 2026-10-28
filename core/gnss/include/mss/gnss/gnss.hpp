@@ -143,4 +143,104 @@ class GnssAligner {
   double sum_e_h_sq_m2_ = 0.0;                        // m^2, sum |b_h|^2
 };
 
+/// ADR-023: estimates `T_e_w` with its yaw taken from the direction of the GNSS track (e side)
+/// against the body heading in w, without the front end's along-track positions
+/// (docs/derivations/gnss.md section 5).
+///
+/// Why: along a LiDAR-degenerate axis the front-end positions are IMU dead reckoning, whose
+/// along-axis velocity can even change sign; GnssAligner fits them and can start 180 deg off
+/// (gnss_fusion_study.md section 13). The heading (gyro + LiDAR rotation) stays accurate there.
+///
+/// Model: R_e_w = Rz(yaw) (4 DoF, w and e gravity-aligned, as GnssAligner); the body moves
+/// along its forward axis x_b. Fixes are grouped in chunks of GnssConfig::align_yaw_chunk_fixes
+/// consecutive fixes; per chunk the mean horizontal fix position c_k (e) and the mean unit
+/// horizontal heading of R_w_b x_b (w). Segment k joins chunks k and k+1: b_k = c_{k+1} - c_k,
+/// a_k = unit(h_k + h_{k+1}) (times -1 when a reversal is detected, below), and
+///   yaw = atan2(sum a_k x b_k, sum a_k . b_k)      (2-D cross / dot products).
+/// The chunk means telescope along a straight line, so the noise of the estimate is that of the
+/// first and last chunk means plus the heading changes in between:
+///   sigma_yaw = sqrt(sum_k var_k |a_{k-1} - a_k|^2) / |(sum a.b, sum a x b)|
+/// with var_k the per-axis variance of chunk mean k (mean of the fixes' horizontal variances / n)
+/// and a_{-1} = a_K = 0. A transform is returned once sigma_yaw <= align_yaw_max_sigma_rad.
+/// Sign: the body is assumed to move forward at the start. Once the estimate is confident
+/// (sigma_yaw <= the threshold), a new segment whose along-heading component, rotated into e,
+/// is below -align_yaw_reverse_nsigma times its own sigma is a reversal: its a_k is negated
+/// (counted in n_reversals()). Turns are handled by the per-segment heading.
+/// Translation: p_e_w = mean(p_e_g) - R_e_w mean(p_w_g) over all fixes, as GnssAligner.
+/// Lever arm: p_w_g = T_w_b p_b_g in the translation. The antenna's rotation about the body
+/// origin, l_k = mean(R_w_b p_b_g)_{k+1} - mean(R_w_b p_b_g)_k (horizontal, w), is removed from
+/// each segment as b_k - Rz(yaw) l_k, solved by a fixed-point iteration on two more running sums.
+/// Not handled: a robot that drives backwards from the start aligns 180 deg off.
+///
+/// O(1) memory, no allocation. Ownership/threading: single-threaded; owned by
+/// pipeline::Estimator (backend thread) when gnss.align_yaw_from_track is true.
+class GnssTrackYawAligner {
+ public:
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+  /// Stores align_yaw_chunk_fixes, align_yaw_max_sigma_rad and align_yaw_reverse_nsigma
+  /// (validated by load_config). Errors: none. Hot path: no. Tests: test_gnss_track_yaw.
+  explicit GnssTrackYawAligner(const GnssConfig& cfg);
+
+  /// Adds one fix and returns the current `T_e_w` estimate when available.
+  /// Frames: `p_e_g` antenna in e, `cov_e` its covariance in e (m^2; only the mean of its two
+  ///   horizontal diagonal terms is used); `T_w_b` body pose in w at the fix time; `p_b_g`
+  ///   lever arm in b. Result: T_e_w maps w to e.
+  /// Errors (Result::error), first failure returned:
+  ///   1. "non-finite input" (fix NOT added);
+  ///   2. "heading undefined" when the body x axis is within about 1e-6 rad of vertical
+  ///      (fix NOT added);
+  ///   3. "not enough track" until two chunks are complete and their segment has a non-zero
+  ///      along-track sum (fix IS added);
+  ///   4. "yaw sigma too large" while sigma_yaw > align_yaw_max_sigma_rad (fix IS added).
+  /// The yaw is re-estimated when a chunk completes; between chunks the last yaw is returned with
+  /// the translation updated by the new fix.
+  /// Hot path: no (per fix); no allocation, no logging. Tests: test_gnss_track_yaw.
+  common::Result<common::Pose> update(const common::Vec3& p_e_g,
+                                      const common::Mat3& cov_e,
+                                      const common::Pose& T_w_b,
+                                      const common::Vec3& p_b_g);
+
+  /// Predicted 1-sigma of the yaw (rad) at the last chunk boundary; +inf before it is defined.
+  [[nodiscard]] double yaw_sigma_rad() const { return yaw_sigma_rad_; }
+  /// Segments taken as reverse motion so far.
+  [[nodiscard]] int n_reversals() const { return n_reversals_; }
+
+ private:
+  void close_chunk();
+
+  int chunk_fixes_;        // fixes per chunk, from GnssConfig
+  double max_sigma_rad_;   // rad, from GnssConfig
+  double reverse_nsigma_;  // sigmas, from GnssConfig
+  // Current chunk (positions shifted by ref_e_ for conditioning).
+  int n_chunk_ = 0;
+  Eigen::Vector2d chunk_sum_e_ = Eigen::Vector2d::Zero();  // m
+  Eigen::Vector2d chunk_sum_h_ = Eigen::Vector2d::Zero();  // unit headings, w
+  Eigen::Vector2d chunk_sum_l_ = Eigen::Vector2d::Zero();  // m, horizontal R_w_b p_b_g, w
+  double chunk_sum_var_m2_ = 0.0;                          // m^2, sum of per-fix variances
+  // Previous complete chunk and the last segment direction.
+  bool have_prev_ = false;
+  Eigen::Vector2d prev_c_ = Eigen::Vector2d::Zero();  // m, mean position (shifted)
+  Eigen::Vector2d prev_m_ = Eigen::Vector2d::Zero();  // m, mean horizontal lever arm, w
+  Eigen::Vector2d prev_h_ = Eigen::Vector2d::Zero();  // unit mean heading, w
+  double prev_var_m2_ = 0.0;                          // m^2, per-axis variance of prev_c_
+  Eigen::Vector2d prev_a_ = Eigen::Vector2d::Zero();  // last segment direction (0 before one)
+  // Segment sums (b uncorrected; the lever-arm correction uses the two sums of a and l).
+  double sum_dot_m_ = 0.0;       // m, sum a . b
+  double sum_cross_m_ = 0.0;     // m, sum a x b
+  double sum_al_dot_m_ = 0.0;    // m, sum a . l (l: lever-arm displacement of the segment, w)
+  double sum_al_cross_m_ = 0.0;  // m, sum a x l
+  double noise_q_m2_ = 0.0;      // m^2, sum var_k |a_{k-1} - a_k|^2 over closed coefficients
+  int n_reversals_ = 0;
+  double yaw_rad_ = 0.0;
+  double yaw_sigma_rad_ = 0.0;  // set to +inf in the constructor
+  bool have_yaw_ = false;
+  // Translation: all fixes, shifted by the first one (as GnssAligner).
+  int n_fixes_ = 0;
+  common::Vec3 ref_w_ = common::Vec3::Zero();  // m, first p_w_g
+  common::Vec3 ref_e_ = common::Vec3::Zero();  // m, first p_e_g
+  common::Vec3 sum_w_ = common::Vec3::Zero();  // m
+  common::Vec3 sum_e_ = common::Vec3::Zero();  // m
+};
+
 }  // namespace mss::gnss

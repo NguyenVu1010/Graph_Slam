@@ -432,5 +432,39 @@ TEST(GnssFusionPrealign, RealignDoesNotAttachTwice) {
   EXPECT_EQ(f.n_prealign_attached(), 9U);
 }
 
+// ADR-023: gnss.align_yaw_from_track switches the fusion to GnssTrackYawAligner. Straight line
+// at 0.5 m/s, 5 Hz, whose front-end along-axis positions run backwards (the corridor seeds 51 /
+// 52 of gnss_fusion_study.md section 13): flag off flips by 180 deg, flag on does not, and the
+// alignment counter and the predicted yaw sigma are reported.
+TEST(GnssFusionTrackYaw, FlagSelectsTrackAligner) {
+  for (const bool on : {false, true}) {
+    gnss::GnssConfig c = fusion_cfg();
+    c.align_yaw_from_track = on;
+    GnssFusion f(c, kPbg);
+    for (int k = 0; k < 150 && !f.aligned(); ++k) {
+      Pose truth;
+      truth.p = Vec3(0.1 * k, 0.0, 0.0);  // heading 0 (identity R)
+      GnssMeasurement m;
+      m.t = Timestamp{k * kSec / 5};
+      m.p_e_g = truth_T_e_w() * (truth * kPbg);
+      m.cov = Vec3(0.01, 0.01, 0.04).asDiagonal();
+      m.status = 0;
+      Pose fe = truth;
+      fe.p.x() = -0.5 * truth.p.x();  // dead reckoning with the wrong sign
+      (void)f.on_fix(m, fe, kZeroP);
+    }
+    ASSERT_TRUE(f.aligned()) << on;
+    EXPECT_EQ(f.n_alignments(), 1U);
+    const double err = std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z());
+    if (on) {
+      EXPECT_LT(err, 1e-6);  // noise-free fixes
+      EXPECT_LE(f.align_yaw_sigma_rad(), c.align_yaw_max_sigma_rad);
+    } else {
+      EXPECT_GT(err, 3.0);  // about pi: the position fit flips
+      EXPECT_TRUE(std::isnan(f.align_yaw_sigma_rad()));
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mss::pipeline::detail

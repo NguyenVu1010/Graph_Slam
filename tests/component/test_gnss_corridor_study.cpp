@@ -8,7 +8,8 @@
 // force_T_e_w and gnss_shift_oracle and their combinations), paired against the reference
 // variant and the shift oracles against the same frame without them (bootstrap 95 % CI of the
 // median per-seed difference, fixed seed). The `prealign` variant is `ref` with
-// gnss.attach_prealign_fixes (ADR-022, section 14). Writes
+// gnss.attach_prealign_fixes (ADR-022, section 14); `trackyaw` is `ref` with
+// gnss.align_yaw_from_track (ADR-023, section 15), `prealign_trackyaw` has both. Writes
 // results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-corridor-study">/gnss_corridor_study.md.
 // MSS_GCS_VARIANTS: comma-separated variant names to run (default all; the reference first is
 // always run); MSS_GCS_FIRST_SEED / MSS_GCS_LAST_SEED: seed range (default 42..56).
@@ -87,6 +88,13 @@ class CorridorObserver : public detail::CoreObserver {
     }
     E_last_ = T_e_w;
   }
+  void on_alignment(Timestamp /*t*/, const common::Pose& T_e_w, double yaw_sigma_rad) override {
+    if (n_alignments_ == 0) {
+      align_T_ = T_e_w;
+      align_sigma_rad_ = yaw_sigma_rad;
+    }
+    ++n_alignments_;
+  }
   void on_fix_accepted(Timestamp t, const common::Pose& /*T_e_w*/) override {
     if (n_accepted_ == 0) {
       t_first_accepted_ = t;
@@ -140,7 +148,10 @@ class CorridorObserver : public detail::CoreObserver {
   common::Pose aligner_last_;  // the aligner T_e_w given with the last GNSS factor
   std::uint64_t n_gnss_ = 0;
   std::uint64_t n_accepted_ = 0;
-  std::map<std::int64_t, Vec3> raw_fix_;  // dataset fixes by t (ns)
+  std::uint64_t n_alignments_ = 0;
+  common::Pose align_T_;                   // aligner T_e_w at the first alignment
+  double align_sigma_rad_ = std::nan("");  // its predicted yaw sigma (ADR-023 only)
+  std::map<std::int64_t, Vec3> raw_fix_;   // dataset fixes by t (ns)
   double shift_sq_ = 0.0;
   double shift_max_ = 0.0;
   std::uint64_t n_shift_big_ = 0;
@@ -179,6 +190,8 @@ struct SeedResult {
   double nees_gnss = 0.0;                       // mean GNSS factor NEES vs truth (exp. 3)
   double shift_rms_x = 0.0, shift_max_x = 0.0;  // m, keyframe-shift error along w x
   std::uint64_t n_shift_big = 0;                // factors with |shift error| > kShiftBigM
+  // First alignment (ADR-023): aligner yaw error vs truth and its predicted 1-sigma (deg).
+  double align0_dyaw_deg = std::nan(""), align0_sigma_deg = std::nan("");
 };
 
 // Errors of published estimates (estimate - truth) in w: RMS per axis and per 10 s window.
@@ -342,6 +355,11 @@ void fused_run(const BoxWorldParams& p,
     in_w(obs.E_prior_, obs.E_last_, r.E_prior_dx, r.E_prior_dyaw_deg);
     in_w(T_true, obs.E_last_, r.E_true_dx, r.E_true_dyaw_deg);
   }
+  if (obs.n_alignments_ > 0) {
+    double dx = 0.0;
+    in_w(T_true, obs.align_T_, dx, r.align0_dyaw_deg);
+    r.align0_sigma_deg = obs.align_sigma_rad_ * 180.0 / 3.14159265358979323846;
+  }
   if (obs.n_gnss_ > 0) {
     in_w(T_true, obs.E_prior_, r.align_first_dx, r.align_first_dyaw_deg);
     in_w(T_true, obs.aligner_last_, r.align_last_dx, r.align_last_dyaw_deg);
@@ -472,6 +490,13 @@ TEST(GnssCorridorStudy, Diagnosis) {
       {"prealign_oracle_shift", "prealign + shift-displacement oracle (gnss_shift_oracle, also for "
        "the pre-alignment fixes)", deg_on, "", "      attach_prealign_fixes: true\n", false, "on",
        true},
+      {"trackyaw", "gnss.align_yaw_from_track (ADR-023): T_e_w yaw from the GNSS track direction "
+       "against the body heading", deg_on, "", "      align_yaw_from_track: true\n", false, "on"},
+      {"prealign_trackyaw", "prealign + trackyaw (designs 1 and 2)", deg_on, "",
+       "      attach_prealign_fixes: true\n      align_yaw_from_track: true\n", false, "on"},
+      {"prealign_trackyaw_oracle_shift", "prealign + trackyaw + shift-displacement oracle", deg_on,
+       "", "      attach_prealign_fixes: true\n      align_yaw_from_track: true\n", false, "on",
+       true},
   };
   // clang-format on
   if (const char* sel = std::getenv("MSS_GCS_VARIANTS"); sel != nullptr) {
@@ -524,7 +549,7 @@ TEST(GnssCorridorStudy, Diagnosis) {
           "nees_x %.3f frac3s %.3f kf_rms_x %.4f Eprior_dx %.4f Eprior_dyaw %.4f Etrue_dx %.4f "
           "Etrue_dyaw %.4f align_first_dx %.4f align_first_dyaw %.4f align_last_dx %.4f "
           "align_last_dyaw %.4f match_fail %llu nees_gnss %.3f shift_rms %.4f shift_max %.4f "
-          "shift_big %llu win",
+          "shift_big %llu align0_dyaw %.3f align0_sigma %.3f win",
           v.name.c_str(),
           seed,
           r.ate,
@@ -557,7 +582,9 @@ TEST(GnssCorridorStudy, Diagnosis) {
           r.nees_gnss,
           r.shift_rms_x,
           r.shift_max_x,
-          static_cast<unsigned long long>(r.n_shift_big));
+          static_cast<unsigned long long>(r.n_shift_big),
+          r.align0_dyaw_deg,
+          r.align0_sigma_deg);
       for (const double w : r.win_x) {
         std::printf(" %.4f", w);
       }
@@ -670,7 +697,7 @@ TEST(GnssCorridorStudy, Diagnosis) {
   }
   // Interaction: the shift oracle against the same frame without it (section 13.3, H5).
   rep.line("");
-  rep.line("## Shift oracle paired against the same frame without it (fused ATE, m)");
+  rep.line("## Selected pairs: shift oracle, designs 1 and 2 (fused ATE, m)");
   rep.line("");
   rep.line("| variant | against | fused ATE |");
   rep.line("| --- | --- | --- |");
@@ -686,6 +713,11 @@ TEST(GnssCorridorStudy, Diagnosis) {
        {std::pair<const char*, const char*>{"oracle_shift", "ref"},
         std::pair<const char*, const char*>{"prealign_oracle_shift", "oracle_shift"},
         std::pair<const char*, const char*>{"prealign_oracle_shift", "prealign"},
+        std::pair<const char*, const char*>{"trackyaw", "ref"},
+        std::pair<const char*, const char*>{"prealign_trackyaw", "prealign"},
+        std::pair<const char*, const char*>{"prealign_trackyaw", "trackyaw"},
+        std::pair<const char*, const char*>{"prealign_trackyaw_oracle_shift",
+                                            "prealign_oracle_shift"},
         std::pair<const char*, const char*>{"oracle_shift_truth_init", "frame_truth_init"},
         std::pair<const char*, const char*>{"oracle_shift_truth_fixed", "frame_truth_fixed"}}) {
     const int a = index_of(with);
@@ -701,16 +733,14 @@ TEST(GnssCorridorStudy, Diagnosis) {
 }
 
 // Box world with GNSS (gnss_fusion_study.md sections 9 and 11, default box world: 2 m circle,
-// GNSS 0.5 m at 5 Hz), seeds 42..56, gnss.attach_prealign_fixes off against on, paired
-// (section 14). Skipped unless MSS_GNSS_BOX_PAIRS=1 (GTSAM build); about 4 min. Writes
-// results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-box-pairs">/gnss_box_pairs.md.
-TEST(GnssCorridorStudy, BoxWorldPrealignPairs) {
-  const char* on = std::getenv("MSS_GNSS_BOX_PAIRS");
-  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
-    GTEST_SKIP() << "set MSS_GNSS_BOX_PAIRS=1 (GTSAM build)";
-  }
-  StudyReport rep("gnss_box_pairs.md", "MSS_GNSS_CORRIDOR_RUN_ID", "gnss-box-pairs");
-  rep.line("# Box world with GNSS, gnss.attach_prealign_fixes off / on (GnssCorridorStudy)");
+// GNSS 0.5 m at 5 Hz), seeds 42..56, a GNSS switch off against on, paired. `on_keys`: the
+// gnss-section lines of "on"; `file`, `default_id`: report file and default run id. About 4 min.
+void box_world_pairs(const char* title,
+                     const std::string& on_keys,
+                     const char* file,
+                     const char* default_id) {
+  StudyReport rep(file, "MSS_GNSS_CORRIDOR_RUN_ID", default_id);
+  rep.line(std::string("# Box world with GNSS, ") + title + " off / on (GnssCorridorStudy)");
   rep.line("");
   rep.line(
       "| case | seed | ATE off (m) | ATE on (m) | GNSS factors off / on | attached | dropped |");
@@ -728,9 +758,8 @@ TEST(GnssCorridorStudy, BoxWorldPrealignPairs) {
       const fs::path dir = rep.dir() / c.name / ("seed" + std::to_string(seed));
       ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
       const ReplayResult a = replay(dir / "data", box_config(p, true, c.wheel, dir / "off"));
-      const ReplayResult b = replay(
-          dir / "data",
-          box_config(p, true, c.wheel, dir / "on", "", "      attach_prealign_fixes: true\n"));
+      const ReplayResult b =
+          replay(dir / "data", box_config(p, true, c.wheel, dir / "on", "", on_keys));
       off.push_back(trajectory_errors(p, a.estimates).ate_m);
       with.push_back(trajectory_errors(p, b.estimates).ate_m);
       char buf[256];
@@ -749,6 +778,33 @@ TEST(GnssCorridorStudy, BoxWorldPrealignPairs) {
     }
     rep.line(std::string("| ") + c.name + " on vs off | " + paired(with, off) + " | | | |");
   }
+}
+
+// gnss.attach_prealign_fixes (section 14). Skipped unless MSS_GNSS_BOX_PAIRS=1 (GTSAM build).
+// Writes results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-box-pairs">/gnss_box_pairs.md.
+TEST(GnssCorridorStudy, BoxWorldPrealignPairs) {
+  const char* on = std::getenv("MSS_GNSS_BOX_PAIRS");
+  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_GNSS_BOX_PAIRS=1 (GTSAM build)";
+  }
+  box_world_pairs("gnss.attach_prealign_fixes",
+                  "      attach_prealign_fixes: true\n",
+                  "gnss_box_pairs.md",
+                  "gnss-box-pairs");
+}
+
+// gnss.align_yaw_from_track (section 15; the 2 m circle exercises the lever-arm correction of
+// gnss.md section 5). Skipped unless MSS_GNSS_BOX_TRACKYAW=1 (GTSAM build). Writes
+// results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-box-trackyaw">/gnss_box_trackyaw.md.
+TEST(GnssCorridorStudy, BoxWorldTrackYawPairs) {
+  const char* on = std::getenv("MSS_GNSS_BOX_TRACKYAW");
+  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_GNSS_BOX_TRACKYAW=1 (GTSAM build)";
+  }
+  box_world_pairs("gnss.align_yaw_from_track",
+                  "      align_yaw_from_track: true\n",
+                  "gnss_box_trackyaw.md",
+                  "gnss-box-trackyaw");
 }
 
 }  // namespace

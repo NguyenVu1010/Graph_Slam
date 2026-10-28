@@ -82,6 +82,24 @@ mss_node:
       # the oldest fix is dropped (farthest from the static window), after it the new one (so
       # the static ones stay); both counted in Stats::n_gnss_prealign_dropped.
       prealign_max_fixes: 128
+      # ADR-023: take the yaw of T_e_w from the direction of the GNSS track against the body
+      # heading (gyro + LiDAR) instead of fitting front-end positions, whose along-axis part is
+      # IMU dead reckoning in a degenerate corridor. false: GnssAligner (previous behaviour).
+      # Evaluation (gnss_fusion_study.md section 15, 15 paired seeds): corridor seeds starting
+      # > 10 deg off 2 -> 0 (max 4.4 deg); fused ATE median 1.99 -> 3.37 m alone, 0.60 m with
+      # attach_prealign_fixes (CI against the reference excludes 0); box world unchanged; E-01
+      # 0.002183 -> 0.002196 m (65 of 223 GNSS factors: later alignment). Off until design 3,
+      # then on together with attach_prealign_fixes.
+      align_yaw_from_track: false
+      # Fixes per chunk of the track (>= 2); segments join consecutive chunk means. 10 = 2 s at
+      # 5 Hz.
+      align_yaw_chunk_fixes: 10
+      # Predicted yaw 1-sigma needed before the track-yaw aligner returns T_e_w, deg (> 0).
+      # Replaces align_min_pairs / align_min_spread_m when align_yaw_from_track is true.
+      align_yaw_max_sigma_deg: 3.0
+      # A segment whose along-heading motion is below -this x its sigma, once the yaw is within
+      # the threshold above, is taken as reverse motion (> 0, sigmas).
+      align_yaw_reverse_nsigma: 3.0
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m
