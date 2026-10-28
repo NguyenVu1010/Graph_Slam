@@ -265,12 +265,12 @@
 // cycles[].stages[].refs: "module.fn" phải trỏ tới một fn có trong modules
 // ============================================================================
 const DATA = {
-  repo: { commit: "bd7da25", date: "2026-10-28", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
-  ci: { run: 40673319429, jobs: [
+  repo: { commit: "a8a2bf9", date: "2026-10-28", branch: "main", url: "https://github.com/NguyenVu1010/Graph_Slam" },
+  ci: { run: 40678308993, jobs: [
     { name: "lint", ok: true, note: "clang-format 18 + ruff" },
     { name: "core-no-gtsam", ok: true, note: "CMake + GTest, -Werror, MSS_WITH_GTSAM=OFF" },
     { name: "python", ok: true, note: "pip install -e + pytest" },
-    { name: "docker-full", ok: true, note: "ROS 2 Jazzy + GTSAM 4.2.0; colcon build 3 gói (multi_sensor_slam, mss_core, mss_ros2) -Werror; ctest; ros2 launch mss_ros2 mss.launch.py giữ 15 s; tích hợp E-01..E-03, PF-01: ATE 0,002184 / 0,002184 / 0,002181 m, p95 xử lý scan 8,0 / 8,1 / 8,3 ms trên runner, chấm với eval/baselines.json (xấu hơn 20 % thì fail)" } ] },
+    { name: "docker-full", ok: true, note: "ROS 2 Jazzy + GTSAM 4.2.0; colcon build 3 gói (multi_sensor_slam, mss_core, mss_ros2) -Werror; ctest; ros2 launch mss_ros2 mss.launch.py giữ 15 s; tích hợp có cổng baseline (PR #30), PASS: E-01 ATE 0,002184 m (baseline 0,002184, giới hạn 0,002621), p50 / p95 6,701 / 8,228 ms; E-02 giống E-01 từng byte, 6,671 / 8,223 ms; E-03 ATE 0,002181 m chấm theo baseline E-01 (baseline riêng 0,002181, không chấm), 6,711 / 9,260 ms; PF-01 ok, p95 8,228 ms so với baseline 8,040 ms (cảnh báo trên 9,648)" } ] },
 
   // status: các PR đã gộp sau lần cập nhật trước (#23 đến #30) và các việc còn mở; hiển thị ở tab Tổng quan
   status: {
