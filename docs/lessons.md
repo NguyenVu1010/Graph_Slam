@@ -227,7 +227,7 @@ Format of an entry: **symptom** → cause → fix → rule.
 - **Rule.** Rank options on several runs (seeds or recordings), never on one chaotic run; a
   difference that grows from 1e-13 to metres is the signature. See 1.12.
 
-### 1.16 Choose the initialisation method from the sensors the platform actually has (PR design 2, ADR-023, `derivations/gnss_fusion_study.md` section 15)
+### 1.16 Choose the initialisation method from the sensors the platform actually has (PR #34, ADR-023, `derivations/gnss_fusion_study.md` section 15)
 
 - **Symptom.** The GNSS frame yaw from the track direction (design 2) flipped 180° in review
   probes in two cases:
@@ -275,7 +275,7 @@ Format of an entry: **symptom** → cause → fix → rule.
   take a decisive quantity (a sign, a scale, an initial yaw) from a state that the diagnosis
   already showed is unobserved.
 
-### 1.17 Wait for observability by a condition, not by skipping frames (PRs #33 and design 2, ADR-022, ADR-023)
+### 1.17 Wait for observability by a condition, not by skipping frames (PRs #33 and #34, ADR-022, ADR-023)
 
 - **Symptom.** The GNSS frame yaw can't be found while the robot is still: the fixes are a noise
   cloud around one point. Skipping the first N frames until the heading "settles" looks like the
