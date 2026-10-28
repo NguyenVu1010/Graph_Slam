@@ -187,6 +187,10 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"n_map_rebuilds\": %" PRIu64
                ",\n"
+               "  \"n_degenerate_keyframes\": %" PRIu64
+               ",\n"
+               "  \"n_degenerate_rot_keyframes\": %" PRIu64
+               ",\n"
                "  \"n_gnss_factors\": %" PRIu64
                ",\n"
                "  \"n_odom_factors\": %" PRIu64
@@ -246,6 +250,8 @@ bool write_json(const fs::path& path,
                st.n_skipped_scans,
                st.n_uncovered_scans,
                st.n_map_rebuilds,
+               st.n_degenerate_keyframes,
+               st.n_degenerate_rot_keyframes,
                st.n_gnss_factors,
                st.n_odom_factors,
                st.n_gnss_late,

@@ -49,33 +49,51 @@ namespace {
 
 using namespace ct;  // NOLINT(google-build-using-namespace): shared test helpers
 
-// GNSS must help where the LiDAR drifts: LiDAR + IMU drifts by metres; GNSS (0.5 m, 5 Hz)
-// must halve the ATE. The relative bound loosens when the LiDAR-only run gets worse, so the
-// fused ATE also has an absolute guard: <= 1.2 x the 1.820 m measured on main 0d1df78
-// (with scan_match.plane_min_eig_ratio 0.01 it was 5.2 m, map.md / scan_match.md).
+// GNSS must help where the LiDAR drifts (owner decision on review I3 of PR 4b): a 120 m
+// corridor with the end walls out of range, 60 s, GNSS 0.5 m at 5 Hz, no wheel, degeneracy on
+// with the absolute detector and an "unobserved" variance of 1000 m^2 along the corridor axis
+// (kCorridorRelaxYaml). Why 1000 m^2: the LiDAR factor must not resist an along-axis GNSS
+// correction as large as the along-axis drift over the run, which reaches tens of metres in this
+// corridor (LiDAR-only ATE 8 to 67 m over seeds 42..44), so its std must be of the order of the
+// 30 m drive or more: 1000 m^2 is a 32 m std per keyframe step, far above the 0.5 m GNSS sigma.
+// It is not taken from the sweep, which is chaotic (degeneracy.md section 7: worst fused ATE over
+// three seeds 1.70 m at 1000 m^2, 2.94 m at 100, 3.38 m at 1e4, 23.9 m at 1). The response is
+// chaotic in the seed, so the test asserts robust properties over seeds 42, 43, 44: on every
+// seed no chi-square lock-out (> 200 GNSS factors) and fused ATE <= 0.5 x LiDAR-only ATE, and
+// the median fused ATE <= 1.2 x the 1.820 m of main 0d1df78. Open item (gnss_fusion_study.md):
+// the fused ATE is 2 to 2.5 x worse than raw GNSS alone (about 0.87 m), also on main.
 TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
-  const BoxWorldParams p = corridor_params();
-  const fs::path dir = test_dir();
-  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
-  const CorridorRun lidar_only = run_corridor(p, dir / "data", dir / "lidar_only", false);
-  const CorridorRun with_gnss = run_corridor(p, dir / "data", dir / "gnss", true);
-  EXPECT_GE(lidar_only.ate_m, 0.3);
-  if (kWithGtsam) {  // the stub backend adds no factor: nothing to correct with
-    EXPECT_LE(with_gnss.ate_m, 0.5 * lidar_only.ate_m);
+  std::vector<double> fused_m;
+  for (const std::uint32_t seed : {42U, 43U, 44U}) {
+    BoxWorldParams p = corridor_params();
+    p.seed = seed;
+    const fs::path dir = test_dir() / ("seed" + std::to_string(seed));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const CorridorRun lidar_only = run_corridor(p, dir / "data", dir / "lidar_only", false);
+    const CorridorRun with_gnss = run_corridor(p, dir / "data", dir / "gnss", true);
+    EXPECT_GE(lidar_only.ate_m, 0.3) << "seed " << seed;
+    if (kWithGtsam) {  // the stub backend adds no factor: nothing to correct with
+      EXPECT_LE(with_gnss.ate_m, 0.5 * lidar_only.ate_m) << "seed " << seed;
+      // About 300 fixes after the first estimate; a chi-square lock-out shows up here.
+      EXPECT_GT(with_gnss.stats.n_gnss_factors, 200U) << "seed " << seed;
+    }
+    fused_m.push_back(with_gnss.ate_m);
+  }
+  if (kWithGtsam) {
+    std::sort(fused_m.begin(), fused_m.end());
     constexpr double kMainFusedAteM = 1.820;  // m, CorridorDriftCorrectedByGnss on 0d1df78
-    EXPECT_LE(with_gnss.ate_m, 1.2 * kMainFusedAteM);
-    // About 300 fixes after the first estimate; a chi-square lock-out shows up here.
-    EXPECT_GT(with_gnss.stats.n_gnss_factors, 200U);
+    std::printf("[ corridor ] fused ATE median %.3f m over seeds 42..44\n", fused_m[1]);
+    EXPECT_LE(fused_m[1], 1.2 * kMainFusedAteM);
   }
 }
 
-// Degeneracy at its shipped relax_factor. With the shipped degeneracy.enabled false this
-// geometry gives a singular Hessian at every scan (no keyframe, nothing to fuse), so the
-// run turns degeneracy on as PR 4b does by default.
+// Degeneracy with its shipped settings (absolute detector, unobserved_var_m2 0.001 m^2,
+// PR 4b). With the shipped degeneracy.enabled false this geometry gives a singular Hessian at
+// every scan (no keyframe, nothing to fuse), so the run turns degeneracy on.
 const char* const kCorridorDefaultDegeneracyYaml = "    degeneracy:\n      enabled: true\n";
 
 // Review I-1: the corridor with the shipped degeneracy covariance. The LiDAR factor claims
-// millimetres along the unobservable axis, so GNSS cannot correct it (study section 8), but
+// centimetres (0.001 m^2) along the unobservable axis, so GNSS barely corrects it, but
 // it must not make it worse: GNSS-on ATE <= 1.2 x LiDAR-only. The lock-out guard restarts
 // the aligner here without any outage (1 restart at gnss.max_consecutive_rejects 60, 2 at
 // 25): the front end drifts along the axis while its pose covariance P stays optimistic, so
@@ -130,6 +148,221 @@ TEST(PipelineComponent, BoxWorldAteWithinTolerance) {
 
 TEST(PipelineComponent, BoxWorldWithGnssAndWheelWithinTolerance) {
   run_box_world(true);
+}
+
+// Corridor replay (PR 4b, docs/derivations/scan_match.md section 6): the box world with the
+// x walls moved beyond preprocess.max_range_m, so walls y = +-5 m, floor and ceiling remain
+// and the world x axis is unobserved by the LiDAR. Neighbourhoods across the wall-floor and
+// wall-ceiling edges leak about 1.15 % of the translational information onto the axis
+// (scan_match.md section 3); the absolute detector (eig_threshold 100) still flags the axis
+// in every keyframe. With the axis flagged the scan-match covariance along x is "unobserved", so
+// the wheel odometry and IMU factors decide x. Errors are RMS over all estimates, no alignment.
+struct AxisErrors {
+  double along_m = 0.0;    // RMS of the x error
+  double lateral_m = 0.0;  // RMS of the y error
+  std::size_t n = 0;
+  std::uint64_t match_failures = 0;
+  std::uint64_t keyframes = 0;
+  std::uint64_t degenerate_keyframes = 0;
+};
+
+AxisErrors corridor_errors(const std::string& extra_overlay, const std::string& tag) {
+  BoxWorldParams p;
+  p.box_half_m.x() = 1000.0;  // m, beyond preprocess.max_range_m (100 m): x walls never seen
+  const fs::path dir = test_dir() / tag;
+  fs::create_directories(dir);
+  {
+    std::ofstream f(dir / "overlay.yaml");
+    f << test::box_overlay_yaml(p, false) << extra_overlay;
+  }
+  const auto cfg = load_config(kDefault, dir / "overlay.yaml");
+  EXPECT_TRUE(cfg.is_ok()) << cfg.reason();
+  EXPECT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const ReplayResult r = replay(dir / "data", cfg.value());
+  AxisErrors e;
+  double sx = 0.0;
+  double sy = 0.0;
+  for (const Estimate& x : r.estimates) {
+    const Vec3 d = x.state.T_w_b.p - test::box_truth(p, x.state.t).T_w_b.p;
+    sx += d.x() * d.x();
+    sy += d.y() * d.y();
+  }
+  e.n = r.estimates.size();
+  e.along_m = e.n == 0 ? 1e9 : std::sqrt(sx / static_cast<double>(e.n));
+  e.lateral_m = e.n == 0 ? 1e9 : std::sqrt(sy / static_cast<double>(e.n));
+  e.match_failures = r.stats.n_match_failures;
+  e.keyframes = r.stats.n_keyframes;
+  e.degenerate_keyframes = r.stats.n_degenerate_keyframes;
+  std::printf(
+      "[ corridor ] %s: along-axis RMS %.4f m, lateral RMS %.4f m, %zu estimates, "
+      "%llu keyframes, %llu match failures\n",
+      tag.c_str(),
+      e.along_m,
+      e.lateral_m,
+      e.n,
+      static_cast<unsigned long long>(e.keyframes),
+      static_cast<unsigned long long>(e.match_failures));
+  return e;
+}
+
+TEST(PipelineComponent, CorridorFollowsWheelAlongAxis) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend (wheel factor in the graph)";
+  }
+  const std::string wheel = "    wheel_odom:\n      enabled: true\n";
+  const std::string deg_abs = "    degeneracy:\n      enabled: true\n";
+  const AxisErrors on = corridor_errors(wheel + deg_abs, "absolute_wheel");
+  const AxisErrors off =
+      corridor_errors(wheel + "    degeneracy:\n      enabled: false\n", "deg_off_wheel");
+  EXPECT_GT(on.keyframes, 5U);
+  EXPECT_EQ(on.degenerate_keyframes, on.keyframes - 1);  // every LiDAR factor (not keyframe 0)
+  EXPECT_EQ(on.match_failures, 0U);
+  // Measured on 3f90e34: absolute 3.8 mm along / 0.8 mm lateral; off (H nearly singular
+  // along x, the Gauss-Newton step wanders) 0.30 m / 3.3 mm.
+  EXPECT_LT(on.along_m, 0.03);
+  EXPECT_LT(on.lateral_m, 0.01);
+  EXPECT_LT(on.along_m, off.along_m);
+}
+
+// Corridor without wheel odometry, absolute detector (it flags the axis, see above) and the
+// config/default.yaml unobserved variances: only the IMU observes the axis. Measured 0.021 m
+// along-axis RMS on 3f90e34 with the ADR-020 gravity-direction factor and the ADR-021
+// decoupled relative factor (0.160 m on 94b9f16 without them); degeneracy.md section 7:
+// 0.073 m at 1e-4, 0.14 m at 0.01, 2.2 m at 0.1, 0.82 m at 1.0, 6.1 m with degeneracy off.
+// Deterministic (seed 42, deterministic: true); measured with the WSL GTSAM in ~/opt.
+TEST(PipelineComponent, CorridorImuOnlyAlongAxisBounded) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "needs the GTSAM backend";
+  }
+  const AxisErrors e =
+      corridor_errors("    degeneracy:\n      enabled: true\n", "imu_only_absolute");
+  EXPECT_GT(e.keyframes, 5U);
+  EXPECT_EQ(e.match_failures, 0U);
+  EXPECT_LT(e.along_m, 0.1);
+  EXPECT_LT(e.lateral_m, 0.01);
+}
+
+// Degeneracy study behind docs/derivations/degeneracy.md section 7 (tables). Runs only with
+// MSS_DEGENERACY_STUDY=1 and GTSAM (about 2 min); prints one [study] line per setting and
+// scene. Scenes: corridor (x walls out of range) with wheel odometry, corridor IMU only, box
+// LiDAR only, box with GNSS and wheel, and the box with a 3x footprint (48 x 30 m) in both
+// modes. Not a pass/fail check.
+TEST(DegeneracyStudy, Tables) {
+  const char* flag = std::getenv("MSS_DEGENERACY_STUDY");
+  if (flag == nullptr || std::string(flag) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_DEGENERACY_STUDY=1 (GTSAM build)";
+  }
+  const auto vars = [](const char* m2, const char* rad2) {
+    return std::string("    scan_match:\n      unobserved_var_m2: ") + m2 +
+           "\n      unobserved_var_rad2: " + rad2 + "\n";
+  };
+  std::vector<std::pair<std::string, std::string>> settings = {
+      {"off", "    degeneracy:\n      enabled: false\n"},
+      {"absolute 100", "    degeneracy:\n      enabled: true\n"},
+  };
+  for (const char* v : {"1.0e-4", "0.01", "0.1", "1.0"}) {
+    const std::string rad2 = std::to_string(std::stod(v) / 10.0);
+    settings.emplace_back(std::string("absolute 100 var ") + v,
+                          "    degeneracy:\n      enabled: true\n" + vars(v, rad2.c_str()));
+  }
+  // MSS_DEGENERACY_STUDY_FILTER: run only the settings whose name contains this text.
+  const char* filter = std::getenv("MSS_DEGENERACY_STUDY_FILTER");
+
+  const char* scene_names[] = {"corridor+wheel",
+                               "corridor imu-only",
+                               "box lidar-only",
+                               "box gnss+wheel",
+                               "box3x lidar-only",
+                               "box3x gnss+wheel"};
+  for (std::size_t s = 0; s < settings.size(); ++s) {
+    if (filter != nullptr && settings[s].first.find(filter) == std::string::npos) {
+      continue;
+    }
+    for (int scene = 0; scene < 6; ++scene) {
+      BoxWorldParams p;
+      if (scene < 2) {
+        p.box_half_m.x() = 1000.0;  // m, beyond preprocess.max_range_m
+      }
+      if (scene >= 4) {  // 48 x 30 m footprint, same height: ranges 3x larger
+        p.box_half_m.x() *= 3.0;
+        p.box_half_m.y() *= 3.0;
+      }
+      std::string overlay = test::box_overlay_yaml(p, scene == 3 || scene == 5);
+      if (scene == 0) {
+        overlay += "    wheel_odom:\n      enabled: true\n";
+      }
+      overlay += settings[s].second;
+      const fs::path dir = test_dir() / ("s" + std::to_string(s) + "_" + std::to_string(scene));
+      fs::create_directories(dir);
+      {
+        std::ofstream f(dir / "overlay.yaml");
+        f << overlay;
+      }
+      const auto cfg = load_config(kDefault, dir / "overlay.yaml");
+      ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+      ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+      const ReplayResult r = replay(dir / "data", cfg.value());
+      double sx = 0.0;
+      double sy = 0.0;
+      double s3 = 0.0;
+      for (const Estimate& x : r.estimates) {
+        const Vec3 d = x.state.T_w_b.p - test::box_truth(p, x.state.t).T_w_b.p;
+        sx += d.x() * d.x();
+        sy += d.y() * d.y();
+        s3 += d.squaredNorm();
+      }
+      const double n = std::max(1.0, static_cast<double>(r.estimates.size()));
+      std::printf(
+          "[study] %-32s %-18s ATE %.4f m, along-x %.4f m, lateral-y %.4f m, "
+          "%llu keyframes (%llu degenerate, %llu rotation), %llu match failures\n",
+          settings[s].first.c_str(),
+          scene_names[scene],
+          std::sqrt(s3 / n),
+          std::sqrt(sx / n),
+          std::sqrt(sy / n),
+          static_cast<unsigned long long>(r.stats.n_keyframes),
+          static_cast<unsigned long long>(r.stats.n_degenerate_keyframes),
+          static_cast<unsigned long long>(r.stats.n_degenerate_rot_keyframes),
+          static_cast<unsigned long long>(r.stats.n_match_failures));
+    }
+  }
+}
+
+// Unobserved-variance sweep of the #19 GNSS corridor scenario (CorridorDriftCorrectedByGnss,
+// kCorridorRelaxYaml), degeneracy.md section 7. Runs only with MSS_DEGENERACY_STUDY=1 and
+// GTSAM; prints one [gnss-study] line per seed and variance. Not a pass/fail check.
+TEST(DegeneracyStudy, GnssCorridorVariance) {
+  const char* flag = std::getenv("MSS_DEGENERACY_STUDY");
+  if (flag == nullptr || std::string(flag) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_DEGENERACY_STUDY=1 (GTSAM build)";
+  }
+  for (const std::uint32_t seed : {42U, 43U, 44U}) {
+    BoxWorldParams p = corridor_params();
+    p.seed = seed;
+    const fs::path dir = test_dir() / ("seed" + std::to_string(seed));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    for (const char* v : {"1.0", "10.0", "100.0", "1000.0", "1.0e4"}) {
+      const std::string rad2 = std::to_string(std::stod(v) / 100.0);
+      const std::string yaml = std::string("    degeneracy:\n      enabled: true\n") +
+                               "    scan_match:\n      unobserved_var_m2: " + v +
+                               "\n      unobserved_var_rad2: " + rad2 + "\n";
+      const CorridorRun lidar =
+          run_corridor(p, dir / "data", dir / (std::string("lidar_") + v), false, "", yaml);
+      const CorridorRun fused =
+          run_corridor(p, dir / "data", dir / (std::string("gnss_") + v), true, "", yaml);
+      std::printf(
+          "[gnss-study] seed %u var %s m^2: LiDAR-only ATE %.3f m (%llu kf), fused ATE "
+          "%.3f m (%llu kf, %llu gnss factors, %llu realign)\n",
+          seed,
+          v,
+          lidar.ate_m,
+          static_cast<unsigned long long>(lidar.stats.n_keyframes),
+          fused.ate_m,
+          static_cast<unsigned long long>(fused.stats.n_keyframes),
+          static_cast<unsigned long long>(fused.stats.n_gnss_factors),
+          static_cast<unsigned long long>(fused.stats.n_gnss_realign));
+    }
+  }
 }
 
 // Review I-3: GNSS alone (no wheel) at sigma 0.1 / 0.5 / 2.0 m must not degrade the LiDAR

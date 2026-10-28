@@ -67,7 +67,7 @@ Mỗi bảng ghi đầu vào và tiêu chí đạt. Các ngưỡng là giá tr�
 | --- | --- | --- | --- |
 | D-01 | Phát hiện hành lang | Hai tường song song + sàn | Bị gắn cờ suy biến; hướng suy biến lệch trục hành lang < 5° |
 | D-02 | Không báo nhầm | Phòng đủ 6 mặt | Không bị gắn cờ |
-| D-03 | Cập nhật có chiếu | Trường hợp D-01 | Bước cập nhật theo hướng suy biến = 0; covariance theo hướng đó được nới ≥ k lần |
+| D-03 | Cập nhật có chiếu | Trường hợp D-01 | Bước cập nhật theo hướng suy biến = 0; covariance theo hướng đó là "không quan sát": bằng `unobserved_var_m2` (hướng tịnh tiến thuần), không tương quan với các hướng khác, không nhỏ hơn `relax_factor` lần giá trị đã chuẩn hoá (ADR-004, ghi chú 2026-10-27) |
 
 ### imu — preintegration
 

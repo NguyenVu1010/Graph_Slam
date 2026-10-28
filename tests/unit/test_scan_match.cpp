@@ -233,6 +233,8 @@ TEST(ScanMatcher, ConstructorRejectsInvalidConfig) {
   expect_throw([](ScanMatchConfig& s) { s.min_inliers = 5; });
   expect_throw([](ScanMatchConfig& s) { s.cov_scale = 0.0; });
   expect_throw([](ScanMatchConfig& s) { s.min_residual_sigma_m = 0.0; });
+  expect_throw([](ScanMatchConfig& s) { s.unobserved_var_m2 = 0.0; });
+  expect_throw([](ScanMatchConfig& s) { s.unobserved_var_rad2 = -1.0; });
   expect_throw(
       [](ScanMatchConfig& s) { s.rot_tol_rad = std::numeric_limits<double>::quiet_NaN(); });
   EXPECT_THROW(ScanMatcher(c.scan_match, c.degeneracy, 0), std::invalid_argument);

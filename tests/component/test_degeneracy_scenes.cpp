@@ -26,7 +26,7 @@ constexpr double kAxisTolRad = 5.0 * kDegToRad;  // D-01 criterion
 constexpr double kPointSigmaM = 0.01;
 constexpr double kNormalSigma = 0.01;
 constexpr std::uint32_t kSeed = 42;
-// config/default.yaml values with the feature flag on.
+// Absolute mode, eig_threshold 100 (the pre-PR-4b default) with the feature flag on.
 constexpr DegeneracyConfig kCfg{true, 100.0, 10.0};
 
 common::Vec6 corridor_axis6() {
@@ -65,7 +65,7 @@ TEST(DegeneracyScenes, D02_RoomNotFlagged) {
   EXPECT_GT(r.eigvals(0), kCfg.eig_threshold);
 }
 
-TEST(DegeneracyScenes, D03_ProjectedUpdateAndRelaxedCovariance) {
+TEST(DegeneracyScenes, D03_ProjectedUpdateAndUnobservedCovariance) {
   const common::Mat6 H = corridor_hessian();
   const common::DegeneracyReport r = analyze(H, kCfg);
   ASSERT_TRUE(r.degenerate[0]);
@@ -75,8 +75,22 @@ TEST(DegeneracyScenes, D03_ProjectedUpdateAndRelaxedCovariance) {
   EXPECT_LT(std::abs(v0.dot(out)), 1e-12 * delta.norm());  // D-03: update along it is 0
   const common::PoseCovariance cov = H.inverse();
   const common::PoseCovariance relaxed = relax_covariance(cov, r, kCfg);
-  // D-03: covariance along the degenerate direction grows >= relax_factor times.
+  // relax_covariance (kept for other callers): grows >= relax_factor times.
   EXPECT_GE(v0.dot(relaxed * v0), kCfg.relax_factor * (1.0 - 1e-9) * v0.dot(cov * v0));
+  // D-03 as used by scan_match: the degenerate direction becomes "unobserved" with
+  // variance v0^T D v0, D = diag(var_m2 I3, var_rad2 I3) (the axis is within 5 deg of a
+  // pure translation, so close to var_m2); observed directions unchanged to 1e-9 relative.
+  constexpr double kVarM2 = 0.001;   // m^2, config/default.yaml scan_match.unobserved_var_m2
+  constexpr double kVarRad2 = 1e-4;  // rad^2, scan_match.unobserved_var_rad2
+  const common::PoseCovariance unobs = unobserved_covariance(cov, r, kCfg, kVarM2, kVarRad2, 0.0);
+  const double want = kVarM2 * v0.head<3>().squaredNorm() + kVarRad2 * v0.tail<3>().squaredNorm();
+  EXPECT_NEAR(v0.dot(unobs * v0) / want, 1.0, 1e-9);
+  EXPECT_NEAR(v0.dot(unobs * v0), kVarM2, 1e-2 * kVarM2);
+  for (int j = 1; j < 6; ++j) {
+    const common::Vec6 v_j = r.eigvecs.col(j);
+    EXPECT_NEAR(v_j.dot(unobs * v_j) / v_j.dot(cov * v_j), 1.0, 1e-9) << "direction " << j;
+    EXPECT_NEAR(v_j.dot(unobs * v0), 0.0, 1e-9 * kVarM2) << "direction " << j;
+  }
 }
 
 TEST(DegeneracyScenes, D03_DisabledIsIdentity) {

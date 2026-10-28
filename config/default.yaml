@@ -130,11 +130,31 @@ mss_node:
       # gnss_fusion_study.md section 3); test LidarFactorCovarianceConsistent keeps it in [3, 12].
       cov_scale: 4.7
       min_residual_sigma_m: 0.005  # floor on the residual sigma used for the covariance, m
+      # Cov along a degenerate direction ("unobserved"; docs/derivations/degeneracy.md section 7,
+      # absolute detector, corridor replay along-axis RMS with wheel / IMU only, main 3f90e34 with
+      # the ADR-020 gravity-direction factor and the ADR-021 decoupled relative factor): 1e-4 m^2
+      # -> 3.4 mm / 0.073 m, 0.001 -> 3.8 mm / 0.021 m, 0.01 -> 3.9 mm / 0.14 m, 0.1 -> 3.9 mm /
+      # 2.2 m, 1.0 -> 3.9 mm / 0.82 m; degeneracy off 0.30 m / 6.1 m.
+      # On the recorded Gazebo E-04 bag the default is below the floor relax_factor * c /
+      # eig_threshold (about 1.2e-3 m^2 there), so it gives the pre-PR-4b relaxed covariance;
+      # 0.01 / 0.1 m^2 gave 0.41 / 0.34 m ATE there, but one chaotic bag does not choose a value.
+      # Kept at 0.001 (owner decision); retune over several Gazebo recordings in S2, candidate
+      # 0.01 m^2 (section 7).
+      unobserved_var_m2: 0.001   # m^2 (3.2 cm std per keyframe step)
+      unobserved_var_rad2: 1.0e-4  # rad^2 (0.57 deg std)
 
     degeneracy:
-      enabled: false             # flag: off until evaluated (D-03)
+      # Evaluated on main 3f90e34 (docs/derivations/degeneracy.md section 7), kept OFF (owner
+      # decision; retune in S2). Absolute 100 flags the corridor axis of the box-world corridor
+      # (along-axis 3.8 mm with wheel, off 0.30 m) but costs E-01 2.18 -> 2.45 mm and box
+      # GNSS + wheel 5.4 -> 6.0 mm, and on the Gazebo E-04 bag it lifts z by about 1.1 m at
+      # start-up (S2 item).
+      enabled: false             # flag (D-03)
       eig_threshold: 100.0       # absolute eigenvalue of H below which a direction is degenerate
-      relax_factor: 10.0         # covariance inflation along degenerate directions (>= 1)
+      # >= 1. Floor of the unobserved variance: relax_factor * c / eig_threshold, with
+      # c = cov_scale * max(sigma_r^2, min_residual_sigma_m^2) (the pre-PR-4b relaxed value);
+      # also the factor of degeneracy::relax_covariance.
+      relax_factor: 10.0
 
     loop_closure:
       enabled: false

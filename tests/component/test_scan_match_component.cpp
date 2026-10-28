@@ -550,8 +550,8 @@ struct CorridorFixture {
 
 // Test_CI_CD D-03 inside the matcher: an exactly degenerate corridor (lambda = 0 along x) is
 // solved (not "singular Hessian"), the observable DoF are recovered, the estimate does not
-// move along the axis and the covariance there is relaxed: relax_factor times the regularised
-// value cov_scale * sigma_r^2 / eig_threshold, larger than every unflagged variance.
+// move along the axis, and the covariance there is "unobserved": exactly unobserved_var_m2
+// (known answer, derivation section 6), decoupled, observed directions unchanged.
 TEST(ScanMatchComponent, D03_CorridorProjectedNotSingular) {
   CorridorFixture f;
   ScanMatcher matcher(f.cfg.scan_match, f.cfg.degeneracy, f.cfg.realtime.max_points_per_scan);
@@ -577,39 +577,42 @@ TEST(ScanMatchComponent, D03_CorridorProjectedNotSingular) {
   const Vec3 axis_l = m.T_w_l.R.transpose() * Vec3::UnitX();
   EXPECT_GT(std::abs(v0.head<3>().dot(axis_l)), std::cos(5.0 * kDegToRad));
 
-  // cov = relax_covariance(c * H_reg^-1), c = cov_scale * max(sigma_r^2, floor^2) > 0.
-  // H_reg shares H's eigenvectors, so along unflagged v_j: v_j^T cov v_j = c / lambda_j;
-  // along flagged v_k: relax_factor * c / eig_threshold.
-  const double tau = f.cfg.degeneracy.eig_threshold;
-  const double relax = f.cfg.degeneracy.relax_factor;
-  double c = -1.0;
-  double min_unflagged_var = std::numeric_limits<double>::infinity();
-  double max_unflagged_var = 0.0;
+  // cov = P (c A^-1) P + sum_k flagged (v_k^T D v_k) v_k v_k^T, c = cov_scale * s2 > 0, P the
+  // projector onto the unflagged directions. On the observed subspace P cov P = c (Q^T H Q)^-1
+  // (Q an orthonormal basis of it), so P cov H P = c P (1e-9 relative, both modes); the flagged
+  // direction is decoupled; along the corridor axis the variance is unobserved_var_m2.
+  const double var_m2 = f.cfg.scan_match.unobserved_var_m2;
+  Mat6 proj = Mat6::Identity();
   for (int k = 0; k < 6; ++k) {
     if (report.degenerate[static_cast<std::size_t>(k)]) {
-      continue;
+      const Vec6 v_k = report.eigvecs.col(k);
+      proj -= v_k * v_k.transpose();
     }
-    const Vec6 v_k = report.eigvecs.col(k);
-    const double var_k = v_k.dot(m.cov * v_k);
-    const double c_k = var_k * report.eigvals(k);
-    if (c < 0.0) {
-      c = c_k;
-    }
-    EXPECT_NEAR(c_k / c, 1.0, 1e-6) << "direction " << k;
-    min_unflagged_var = std::min(min_unflagged_var, var_k);
-    max_unflagged_var = std::max(max_unflagged_var, var_k);
   }
+  const Mat6 m_obs = proj * m.cov * m.H * proj;
+  const double c = m_obs.trace() / proj.trace();
   ASSERT_GT(c, 0.0);
+  EXPECT_LT((m_obs - c * proj).norm(), 1e-9 * c);
+  const Mat6 cov_obs = proj * m.cov * proj;
+  EXPECT_LT((cov_obs * v0).norm(), 1e-12 * var_m2);
+  EXPECT_LT((m.cov * v0 - v0.dot(m.cov * v0) * v0).norm(), 1e-12 * var_m2);
+  const Eigen::SelfAdjointEigenSolver<Mat6> es_obs(cov_obs);
+  const double max_unflagged_var = es_obs.eigenvalues()(5);
+  // Known answer: v0^T D v0 with D = diag(var_m2 I3, var_rad2 I3); v0 is the corridor axis up
+  // to a small rotation part from the fit, so this is var_m2 to about 1e-7.
+  const double want = var_m2 * v0.head<3>().squaredNorm() +
+                      f.cfg.scan_match.unobserved_var_rad2 * v0.tail<3>().squaredNorm();
   const double var_axis = v0.dot(m.cov * v0);
-  std::printf("D-03 cov: axis var %.3e m^2, unflagged var [%.3e, %.3e], c %.3e\n",
-              var_axis,
-              min_unflagged_var,
-              max_unflagged_var,
-              c);
-  EXPECT_NEAR(var_axis * tau / (relax * c), 1.0, 1e-6);
-  EXPECT_GE(var_axis, relax * c / tau * (1.0 - 1e-9));
-  EXPECT_GT(var_axis, min_unflagged_var);
-  EXPECT_GT(var_axis, max_unflagged_var);
+  std::printf(
+      "D-03 cov: axis var %.9e m^2 (unobserved_var_m2 %.3e, |v0.phi| %.2e), max "
+      "unflagged var %.3e\n",
+      var_axis,
+      var_m2,
+      v0.tail<3>().norm(),
+      max_unflagged_var);
+  EXPECT_NEAR(var_axis / want, 1.0, 1e-9);
+  EXPECT_NEAR(var_axis / var_m2, 1.0, 1e-6);
+  EXPECT_GT(var_axis, 1e3 * max_unflagged_var);
 }
 
 // Enabled with nothing flagged (6-sided room): bitwise equal to disabled. The scan is the
