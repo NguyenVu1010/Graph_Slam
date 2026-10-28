@@ -60,9 +60,9 @@ using namespace ct;  // NOLINT(google-build-using-namespace): shared test helper
 // three seeds 1.70 m at 1000 m^2, 2.94 m at 100, 3.38 m at 1e4, 23.9 m at 1). The response is
 // chaotic in the seed, so the test asserts robust properties over seeds 42, 43, 44: on every
 // seed no chi-square lock-out (> 200 GNSS factors) and fused ATE <= 0.5 x LiDAR-only ATE, and
-// the median fused ATE <= 2.18 m (owner decision). Open item (gnss_fusion_study.md section 12):
-// the fused ATE is not consistently better than raw GNSS alone (about 0.87 m): 0.51 / 0.59 /
-// 1.70 m over seeds 42..44 (0.6x to 2x), and a 15-seed median of 3.47 m on main (4x).
+// the median fused ATE <= 2.18 m (owner decision). Open item (gnss_fusion_study.md sections 12
+// and 13): the fused ATE is not consistently better than raw GNSS alone (about 0.87 m): 0.51 /
+// 0.59 / 1.70 m over seeds 42..44 (0.6x to 2x), and a median of 1.99 m over seeds 42..56.
 TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
   std::vector<double> fused_m;
   for (const std::uint32_t seed : {42U, 43U, 44U}) {
