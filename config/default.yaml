@@ -74,11 +74,13 @@ mss_node:
       # nearest keyframe in time. false: they are dropped (previous behaviour). Evaluation
       # (gnss_fusion_study.md section 14, 15 paired seeds): corridor median abs(E - truth) along
       # the axis 0.82 -> 0.08 m, fused ATE median 1.99 -> 1.88 m (CI includes 0); box world
-      # unchanged (0.01019 m both); E-01 0.002183 -> 0.002198 m. Off until design 3 (shift
+      # unchanged (0.01019 m both); E-01 0.002183 -> 0.002198 m. With the exact shift (study
+      # oracle) the corridor gives 0.345 m, 14/1, CI excludes 0: off until design 3 (shift
       # covariance) is in.
       attach_prealign_fixes: false
-      # Bound of that buffer, fixes (>= 1); 128 = 25.6 s at 5 Hz. When full, later fixes are
-      # dropped and counted (Stats::n_gnss_prealign_dropped), so the static ones stay.
+      # Bound of that buffer, fixes (>= 1); 128 = 25.6 s at 5 Hz. When full before keyframe 0
+      # the oldest fix is dropped (farthest from the static window), after it the new one (so
+      # the static ones stay); both counted in Stats::n_gnss_prealign_dropped.
       prealign_max_fixes: 128
     wheel_odom:
       enabled: false

@@ -120,9 +120,12 @@ struct CoreCounters {
   std::uint64_t n_gnss_ring_overflow = 0;        ///< deferred fixes overwritten (ring full)
   std::uint64_t n_gnss_unfused_eof = 0;  ///< deferred fixes left at end of data (no IMU after)
   std::uint64_t n_gnss_realign = 0;      ///< aligner restarts (gnss.max_consecutive_rejects)
-  std::uint64_t n_gnss_prealign_attached = 0;    ///< pre-alignment fixes added as factors (ADR-022)
-  std::uint64_t n_gnss_prealign_dropped = 0;     ///< pre-alignment fixes dropped (ADR-022)
-  std::uint64_t n_gnss_prealign_rejected = 0;    ///< of those kept: chi-square rejected (ADR-022)
+  // ADR-022, see Estimator::Stats.
+  std::uint64_t n_gnss_prealign_attached = 0;
+  std::uint64_t n_gnss_prealign_static = 0;
+  std::uint64_t n_gnss_prealign_dropped = 0;
+  std::uint64_t n_gnss_prealign_not_static = 0;
+  std::uint64_t n_gnss_prealign_rejected = 0;
   std::uint64_t n_nonfinite_imu = 0;             ///< IMU samples dropped (non-finite acc or gyro)
   std::uint64_t n_odom_factors = 0;              ///< wheel factors added
   std::uint64_t n_odom_rejected = 0;             ///< wheel deltas dropped by the time check

@@ -205,11 +205,17 @@ std::map<std::int64_t, double> fix_errors_x(const BoxWorldParams& p, const fs::p
 // the first optimisation with E on: the static ones on keyframe 0 (its pose held by its prior),
 // the others on the first keyframes, which the IMU places from rest to centimetres. So E's
 // along-axis offset from the truth after that optimisation (x of T_true^-1 E, in w) is the
-// mean along-axis error of the fixes of that first batch, within two standard errors
-// 2 sigma / sqrt(n) (95 %; keyframe 0 is the init scan: its static-window fixes are all on it).
-// Measured: |E - mean| 0.081 / 0.001 / 0.005 / 0.030 m against 2 sigma / sqrt(n) of about 0.13
-// m over seeds 42 / 46 / 48 / 50; off, E - truth is +0.49 / +0.97 / +0.12 / +0.84 m.
-// Off: no pre-alignment factor, and the offset is the aligner's.
+// mean along-axis error (from the dataset truth) of the fixes of that first batch. The
+// difference is not a sampling error of that mean: it is the mean along-axis error of the
+// batch's keyframes (IMU from rest, keyframe 0's prior) plus the pull of E's loose prior. The
+// tolerance 2 sigma / sqrt(n) (about 0.13 m) is only a conservative scale for that.
+// Measured |E - mean| 0.081 / 0.001 / 0.005 / 0.030 m on seeds 42 / 46 / 48 / 50.
+// Checks: (1) that bound; (2) negative control: off, E is farther from that mean than on (off,
+// E - truth is +0.49 / +0.97 / +0.12 / +0.84 m); (3) the brief's static-only form: within
+// 2 sigma / sqrt(n_static) (about 0.30 m) of the mean error of the static-window fixes
+// (measured 1.0 to 1.3 sigma / sqrt(n_static)); (4) every static-window fix is a factor on
+// keyframe 0 (Stats::n_gnss_prealign_static) unless the chi-square gate rejected it at release
+// (2 of 11 on seed 46).
 TEST(PipelineComponent, PrealignFixesAnchorFrameAlongAxis) {
   if (!kWithGtsam) {
     GTEST_SKIP() << "the stub backend has no frame variable";
@@ -227,6 +233,8 @@ TEST(PipelineComponent, PrealignFixesAnchorFrameAlongAxis) {
     Timestamp t_kf0{};
     std::array<std::uint64_t, 2> attached = {0, 0};
     std::array<std::size_t, 2> at_kf0 = {0, 0};
+    std::uint64_t static_attached = 0;
+    std::uint64_t rejected = 0;
     for (int on = 0; on < 2; ++on) {
       const Config cfg =
           box_config(p,
@@ -256,19 +264,28 @@ TEST(PipelineComponent, PrealignFixesAnchorFrameAlongAxis) {
           sum += err_x.at(t.ns);
         }
         batch_n = obs.first_batch_t_.size();
+        static_attached = rr.stats.n_gnss_prealign_static;
+        rejected = rr.stats.n_gnss_prealign_rejected;
         batch_mean_x = batch_n > 0 ? sum / static_cast<double>(batch_n) : 0.0;
       }
     }
     // Fixes of the static initialisation window [t_kf0 - imu.init_window_s, t_kf0].
     std::size_t n_static = 0;
+    double static_sum_x = 0.0;
     for (const auto& [t_ns, e] : err_x) {
-      n_static += t_ns >= t_kf0.ns - test::box_ns(2.0) && t_ns <= t_kf0.ns ? 1U : 0U;
+      if (t_ns >= t_kf0.ns - test::box_ns(2.0) && t_ns <= t_kf0.ns) {
+        ++n_static;
+        static_sum_x += e;
+      }
     }
+    ASSERT_GT(n_static, 0U);
+    const double static_mean_x = static_sum_x / static_cast<double>(n_static);
+    const double sigma_static = p.gnss_sigma_m / std::sqrt(static_cast<double>(n_static));
     const double sigma_mean = p.gnss_sigma_m / std::sqrt(static_cast<double>(batch_n));
     std::printf(
         "[ prealign ] seed %u: first batch %zu fixes, mean along-x error %+.3f m (sigma %.3f); "
         "E - truth along x after alignment: off %+.3f m, on %+.3f m; on: %llu attached, %zu on "
-        "keyframe 0 (%zu static)\n",
+        "keyframe 0 (%zu static, mean along-x error %+.3f m, sigma %.3f)\n",
         seed,
         batch_n,
         batch_mean_x,
@@ -277,14 +294,19 @@ TEST(PipelineComponent, PrealignFixesAnchorFrameAlongAxis) {
         dx[1],
         static_cast<unsigned long long>(attached[1]),
         at_kf0[1],
-        n_static);
+        n_static,
+        static_mean_x,
+        sigma_static);
     EXPECT_EQ(attached[0], 0U);
     EXPECT_EQ(at_kf0[0], 0U);
     // The static-window fixes, plus the still-static ones after keyframe 0 nearer to it.
     EXPECT_GE(at_kf0[1], n_static);
-    EXPECT_GT(n_static, 0U);
     EXPECT_GT(batch_n, n_static);
+    EXPECT_LE(static_attached, static_cast<std::uint64_t>(n_static));
+    EXPECT_GE(static_attached + rejected, static_cast<std::uint64_t>(n_static));
     EXPECT_LT(std::abs(dx[1] - batch_mean_x), 2.0 * sigma_mean) << "seed " << seed;
+    EXPECT_LT(std::abs(dx[1] - batch_mean_x), std::abs(dx[0] - batch_mean_x)) << "seed " << seed;
+    EXPECT_LT(std::abs(dx[1] - static_mean_x), 2.0 * sigma_static) << "seed " << seed;
   }
 }
 

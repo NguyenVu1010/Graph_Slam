@@ -77,14 +77,17 @@ class GnssFusion {
                       std::array<common::GnssMeasurement, kMaxAuxQueue>& out);
 
   /// ADR-022: a fix received before keyframe 0 exists (no front-end pose yet). It must pass
-  /// gnss::gate_fix and is kept until on_first_keyframe(); when the buffer is full the oldest
-  /// buffered fix is dropped and counted. Ignored unless attach_prealign_fixes.
-  void on_preinit_fix(const common::GnssMeasurement& m);
+  /// gnss::gate_fix (its literal reason is returned, nothing kept) and is kept until
+  /// on_first_keyframe(); when the buffer is full the oldest buffered fix is dropped and
+  /// counted in n_prealign_dropped(). Ignored (ok) unless attach_prealign_fixes and before
+  /// the first alignment. No allocation.
+  common::Status on_preinit_fix(const common::GnssMeasurement& m);
 
   /// ADR-022: keyframe 0 (`id` at `t_k`, pose `T_w_b0`, covariance `P0`) was added. When
   /// `static_ok` (keyframe 0 is the IMU initialisation scan, so the body was at rest over the
   /// initialisation window) the fixes from on_preinit_fix() with `static_from <= t <= t_k`
-  /// are assigned to it with no shift (pose `T_w_b0`); the others are dropped and counted.
+  /// are assigned to it with no shift (pose `T_w_b0`); the others are dropped and counted in
+  /// n_prealign_not_static().
   /// Records keyframe 0 as the previous keyframe of on_keyframe().
   void on_first_keyframe(common::KeyId id,
                          common::Timestamp t_k,
@@ -98,7 +101,10 @@ class GnssFusion {
   /// time of the previous keyframe (set_keyframe_reference()) and this one; a tie goes to the
   /// previous one. Its shift is the front-end antenna displacement from the fix to that
   /// keyframe: T_w_ref p_b_g - T_w_b_fix p_b_g (previous keyframe, its reference pose) or
-  /// T_w_bk p_b_g - T_w_b_fix p_b_g (this one, as collect()).
+  /// T_w_bk p_b_g - T_w_b_fix p_b_g (this one, as collect()). T_w_b_fix was predicted from the
+  /// front-end state of the last scan before the fix, so a backward shift also carries the
+  /// scan-match chain from T_w_ref to that scan. With set_shift_oracle() both shifts come from
+  /// the oracle (test-only).
   void on_keyframe(common::KeyId id, common::Timestamp t_k, const common::Pose& T_w_bk);
 
   /// ADR-022: the reference pose of keyframe `id` after its optimisation (the state later
@@ -121,7 +127,8 @@ class GnssFusion {
   }
   /// Test-only (CoreTestHooks::gnss_shift_oracle): collect() takes the antenna displacement
   /// in w from the fix time to the keyframe time from `oracle(t_fix, t_k)` instead of the
-  /// front-end poses. `oracle` must outlive this object; nullptr restores the default.
+  /// front-end poses; so does on_keyframe() for the pre-alignment fixes. `oracle` must outlive this
+  /// object; nullptr restores the default.
   void set_shift_oracle(
       const std::function<common::Vec3(common::Timestamp, common::Timestamp)>* oracle) {
     shift_oracle_ = oracle;
@@ -134,11 +141,14 @@ class GnssFusion {
   /// the aligner is rebuilt empty (no allocation), aligned() becomes false and the rejected
   /// fix is the first pair of the new alignment (pipeline.md section 5).
   [[nodiscard]] std::uint64_t n_realign() const { return n_realign_; }
-  /// ADR-022 counters: pre-alignment fixes released as factors; dropped (buffer full, or
-  /// received before keyframe 0 and not in its static window); rejected by the chi-square
-  /// gate at release.
+  /// ADR-022 counters: pre-alignment fixes released as factors (of those: static fixes on
+  /// keyframe 0); dropped because the buffer was full; received before keyframe 0 but not
+  /// in its static window, or keyframe 0 not at rest; rejected by the chi-square gate at
+  /// release.
   [[nodiscard]] std::uint64_t n_prealign_attached() const { return n_prealign_attached_; }
+  [[nodiscard]] std::uint64_t n_prealign_static() const { return n_prealign_static_; }
   [[nodiscard]] std::uint64_t n_prealign_dropped() const { return n_prealign_dropped_; }
+  [[nodiscard]] std::uint64_t n_prealign_not_static() const { return n_prealign_not_static_; }
   [[nodiscard]] std::uint64_t n_prealign_rejected() const { return n_prealign_rejected_; }
   /// Fixes now in the pre-alignment buffer.
   [[nodiscard]] std::size_t n_prealign_buffered() const { return early_.size(); }
@@ -159,6 +169,7 @@ class GnssFusion {
     common::Timestamp t_k{};       // its time
     bool preinit = false;          // received before keyframe 0 (no pose yet)
     bool assigned = false;
+    bool static_kf0 = false;  // a static-window fix on keyframe 0
   };
   // G-02 chi-square gate of `m` at body pose `T_w_b` with covariance `P_w_b` (P := 0 when
   // any entry is non-finite) against T_e_w_.
@@ -189,7 +200,9 @@ class GnssFusion {
   common::Timestamp prev_kf_t_{};
   common::Pose prev_kf_T_;
   std::uint64_t n_prealign_attached_ = 0;
+  std::uint64_t n_prealign_static_ = 0;
   std::uint64_t n_prealign_dropped_ = 0;
+  std::uint64_t n_prealign_not_static_ = 0;
   std::uint64_t n_prealign_rejected_ = 0;
 };
 

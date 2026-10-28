@@ -112,12 +112,19 @@ std::size_t GnssFusion::collect(common::Timestamp t_k,
   return n;
 }
 
-void GnssFusion::on_preinit_fix(const common::GnssMeasurement& m) {
-  if (!early_open_ || !gnss::gate_fix(m, max_cov_m2_).is_ok()) {
-    return;
+common::Status GnssFusion::on_preinit_fix(const common::GnssMeasurement& m) {
+  if (!early_open_) {
+    return common::Status::ok();
+  }
+  common::Status gate = gnss::gate_fix(m, max_cov_m2_);
+  if (!gate.is_ok()) {
+    return gate;
   }
   if (early_.size() == early_.capacity()) {
-    early_.erase(early_.begin());  // oldest first: it is the least likely to be static
+    // Oldest first: it is the least likely to be static. O(capacity) moves of one entry
+    // (about 0.6 kB each, no allocation) per fix, only while waiting for the IMU
+    // initialisation with a full buffer: cheap at GNSS rates.
+    early_.erase(early_.begin());
     ++n_prealign_dropped_;
   }
   EarlyFix e;
@@ -126,6 +133,7 @@ void GnssFusion::on_preinit_fix(const common::GnssMeasurement& m) {
   e.shift_w.setZero();
   e.preinit = true;
   early_.push_back(e);
+  return common::Status::ok();
 }
 
 void GnssFusion::on_first_keyframe(common::KeyId id,
@@ -139,7 +147,7 @@ void GnssFusion::on_first_keyframe(common::KeyId id,
     EarlyFix& e = early_[i];
     if (e.preinit) {
       if (!static_ok || e.m.t < static_from || e.m.t > t_k) {
-        ++n_prealign_dropped_;
+        ++n_prealign_not_static_;
         continue;
       }
       // At rest at keyframe 0's pose: no shift.
@@ -150,6 +158,7 @@ void GnssFusion::on_first_keyframe(common::KeyId id,
       e.t_k = t_k;
       e.assigned = true;
       e.preinit = false;
+      e.static_kf0 = true;
     }
     early_[kept++] = e;
   }
@@ -164,12 +173,15 @@ void GnssFusion::on_keyframe(common::KeyId id, common::Timestamp t_k, const comm
       continue;
     }
     const common::Vec3 p_w_g_fix = e.T_w_b_fix * p_b_g_;
+    // Test-only: the shift oracle replaces the front-end displacement, as in collect().
     if (have_prev_kf_ && e.m.t.ns - prev_kf_t_.ns <= t_k.ns - e.m.t.ns) {
-      e.shift_w = prev_kf_T_ * p_b_g_ - p_w_g_fix;
+      e.shift_w = shift_oracle_ != nullptr ? (*shift_oracle_)(e.m.t, prev_kf_t_)
+                                           : common::Vec3(prev_kf_T_ * p_b_g_ - p_w_g_fix);
       e.kf = prev_kf_;
       e.t_k = prev_kf_t_;
     } else {
-      e.shift_w = p_w_g_k - p_w_g_fix;
+      e.shift_w = shift_oracle_ != nullptr ? (*shift_oracle_)(e.m.t, t_k)
+                                           : common::Vec3(p_w_g_k - p_w_g_fix);
       e.kf = id;
       e.t_k = t_k;
     }
@@ -207,6 +219,7 @@ std::size_t GnssFusion::take_prealign(std::array<EarlyFactor, kMaxAuxQueue>& out
     out[n].m.p_e_g = e.m.p_e_g + T_e_w_.R * e.shift_w;
     out[n].kf = e.kf;
     out[n].t_k = e.t_k;
+    n_prealign_static_ += e.static_kf0 ? 1U : 0U;
     ++n;
   }
   early_.resize(kept);

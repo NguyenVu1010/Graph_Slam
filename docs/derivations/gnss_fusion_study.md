@@ -629,9 +629,17 @@ factors once the aligner has a transform:
 
 Details and alternatives: ADR-022.
 
-Driver: `GnssCorridorStudy.Diagnosis` with `MSS_GCS_VARIANTS=prealign` (variant `prealign` =
-`ref` + the flag), seeds 42..56, same scene and statistics as section 13. The `ref` per-seed
-lines are identical to section 13.1, so with the flag off the corridor is unchanged.
+Driver: `GnssCorridorStudy.Diagnosis` with
+`MSS_GCS_VARIANTS=oracle_shift,prealign,prealign_oracle_shift`, seeds 42..56, same scene and
+statistics as section 13 (about 6 min).
+
+- `prealign` = `ref` + the flag.
+- `prealign_oracle_shift` = `prealign` + the shift-displacement oracle of section 13
+  (`gnss_shift_oracle`), which now also replaces the front-end shift of the pre-alignment fixes
+  (`GnssFusion::on_keyframe`, test-only, the same seam as `collect()`).
+
+The `ref` per-seed lines are identical to section 13.1, so with the flag off the corridor is
+unchanged. The `prealign` lines are identical between two runs.
 
 ### 14.1 Corridor, 15 paired seeds
 
@@ -648,6 +656,28 @@ lines are identical to section 13.1, so with the flag off the corridor is unchan
 | seeds with GNSS factor NEES > 6 | 9 | 8 | |
 | along-x RMS per 10 s window, median | 0.10 / 1.45 / 3.80 / 0.97 / 1.58 / 1.40 / 1.02 | 0.10 / 0.66 / 0.68 / 0.86 / 0.93 / 0.95 / 0.72 | |
 
+Does the shift error explain the losses? The same frame with and without the shift oracle
+(fused ATE, m; median (max) | wins / losses | 95 % CI of the median paired difference):
+
+| variant | against | fused ATE |
+| --- | --- | --- |
+| `oracle_shift` | `ref` | 1.44 (39.1) \| 8/7 \| [-0.97, +0.20] |
+| `prealign` | `ref` | 1.88 (35.3) \| 10/5 \| [-2.78, +0.61] |
+| `prealign_oracle_shift` | `ref` | **0.345 (36.6) \| 14/1 \| [-2.82, -0.26]** |
+| `prealign_oracle_shift` | `oracle_shift` | 0.345 \| 14/1 \| [-2.27, -0.31] |
+| `prealign_oracle_shift` | `prealign` | 0.345 \| 13/2 \| [-2.26, -0.15] |
+
+With the exact shift, `prealign` is better than raw GNSS on 11 of 15 seeds (CI [-0.60, +0.59]),
+its median abs(`E` - truth x) is 0.065 m, and only one seed has a GNSS factor NEES above 6
+(51). The seeds that lose with `prealign`, fused ATE in m:
+
+| seed | `ref` | `prealign` | `prealign_oracle_shift` | `oracle_shift` |
+| --- | --- | --- | --- | --- |
+| 44 | 1.70 | 3.07 | 1.47 | 0.41 |
+| 45 | 1.99 | 2.61 | 0.27 | |
+| 46 | 1.24 | 1.93 | 0.35 | |
+| 49 | 0.77 | 4.12 | 0.80 | |
+
 Per seed, fused ATE `ref` -> `prealign` (m): 42 0.51 -> 0.50, 43 0.59 -> 0.32, 44 1.70 -> 3.07,
 45 1.99 -> 2.61, 46 1.24 -> 1.93, 47 0.65 -> 0.30, 48 3.76 -> 0.63, 49 0.77 -> 4.12, 50 3.20 ->
 0.42, 51 35.6 -> 34.8, 52 37.0 -> 35.3, 53 14.5 -> 4.59, 54 27.7 -> 1.88, 55 3.91 -> 1.68, 56
@@ -661,10 +691,20 @@ Reading:
 - **The graph flips from a good start are gone.** Seeds 53 and 54 (section 13.3, H2) end within
   0.5 deg of the true yaw, and their ATE drops from 14.5 / 27.7 m to 4.6 / 1.9 m. The two
   initialisation flips (51, 52) remain: the aligner is unchanged, so they are design 2's.
-- **Fused ATE does not improve significantly** (CI includes 0). The seeds that get worse (44,
-  45, 46, 49; 49 from 0.77 to 4.12 m) are those whose shift error grows (1.4 to 3.2 m RMS, GNSS
-  NEES 10 to 43): with `E` now anchored, the factors corrupted by the front-end shift (cause 2)
-  pull the keyframes instead of the frame. That is design 3's target.
+- **Fused ATE does not improve significantly** (CI includes 0). Four seeds get worse (44, 45,
+  46, 49; 49 from 0.77 to 4.12 m), with shift error RMS 1.4 to 3.2 m and GNSS NEES 10 to 43.
+  The shift error is endogenous (it is the front end's along-axis displacement error, which
+  follows the estimate): on seeds 46 and 49 the variant creates it (0.14 -> 1.38 m and 0.21 ->
+  3.20 m RMS; seed 49 also loses 6 keyframes, which lengthens the shifts), on 48, 50 and 53 it
+  removes it. So the correlation alone does not say which way the cause runs.
+- **The shift oracle decides it.** With the exact shift the same anchoring gives 0.345 m
+  median, 14/1 against `ref` with a CI that excludes 0, 13/2 against `prealign`, and seeds 45,
+  46 and 49 return to 0.27 to 0.80 m with GNSS NEES about 2.9. So the losses come from the
+  front-end shift (cause 2), and designs 1 and 3 are complementary: neither alone is
+  significant, together (with the oracle standing in for design 3) they are.
+- **Not explained by the shift:** seed 44 stays at 1.47 m with the exact shift, against 0.41 m
+  for `oracle_shift` without anchoring; the initialisation flips of seeds 51 and 52 remain
+  (design 2).
 - Not better than raw GNSS (6/15). Acceptance of the set (13.6, item 5) needs designs 2 and 3.
 
 ### 14.2 Box world, 15 paired seeds
@@ -685,9 +725,13 @@ Unchanged (CI within 0.05 mm of 0, both sides). The CI is from the 5-decimal per
 
 - Flag off: E-01..E-03 `est.tum` md5 equal to main d09cbd3 (E-01 / E-02
   `d1b1e4ba9c87f38d39f4a27fb521081e`, E-03 `ca02a49fde59a5a99fbe73129c630226`); all gates pass.
-- Flag on (E-01 has GNSS: `config/sim/warehouse.yaml` enables it): E-01 ATE 0.002198 m against
-  0.002183 m off (limit 0.002621 m), 62 pre-alignment factors, 3 rejected by the chi-square gate
-  at release, none dropped; E-03 0.002187 m against 0.002183 m.
+- Flag on (E-01 has GNSS: `config/sim/warehouse.yaml` enables it at sigma_h 1.5 m, sigma_v
+  3 m; the data starts with 5 s at rest and a 2 s ramp): E-01 ATE 0.002198 m against 0.002183 m
+  off (+0.015 mm, limit 0.002621 m), E-03 0.002187 m against 0.002183 m. 62 pre-alignment
+  factors: 10 static-window fixes on keyframe 0 and 52 later fixes on their nearest keyframes
+  with the front-end shift; 3 more rejected by the chi-square gate at release, none dropped. In
+  a run where the LiDAR dominates and the ATE is 2 mm, these 62 weak factors re-weight the start
+  slightly.
 - E-01 bench, median of 5 interleaved runs, scan p50 / p95, replay wall, CPU: main 4.49 / 6.08
   ms, 3.86 s, 2.82 s; branch off 4.45 / 5.93 ms, 3.74 s, 2.78 s; branch on 4.40 / 6.12 ms,
   3.79 s, 2.80 s. Within noise.
@@ -697,5 +741,8 @@ Unchanged (CI within 0.05 mm of 0, both sides). The CI is from the 5-decimal per
 Both conditions of the brief for flipping hold: the box world is unchanged and the corridor
 frame target is met. The flag still ships off: the corridor fused ATE is not significantly
 better (CI [-2.78, +0.61] m), four seeds get worse by 0.6 to 3.3 m through the shift error, and
-E-01 is 0.7 % worse. Recommendation: turn it on together with design 3 (shift covariance), which
-targets exactly the seeds that lose here, and re-measure the set.
+E-01 is 0.7 % worse. Ruling (controller, 2026-10-28): the default stays off, design 1 merges
+alone, and design 3 is measured against `prealign` as its baseline (`prealign` + shift
+covariance against `prealign`; the oracle row above is the bound it aims at). The flag is
+turned on with design 3, or in a dedicated follow-up, after the full set (corridor, box world,
+E-01..E-03) is re-measured.

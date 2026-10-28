@@ -231,7 +231,7 @@ Vec3 residual_at(const EarlyFactor& e, const Pose& T_w_bk) {
 // Flag off: the not-aligned fixes are dropped as before, nothing is buffered or released.
 TEST(GnssFusionPrealign, OffKeepsNothing) {
   GnssFusion f(fusion_cfg(), kPbg);
-  f.on_preinit_fix(fix_for(0, body_at(0)));
+  (void)f.on_preinit_fix(fix_for(0, body_at(0)));
   f.on_first_keyframe(0, at_s(0), body_at(0), kZeroP, at_s(-2), true);
   ASSERT_EQ(align(f, 10), 1);
   f.on_keyframe(1, at_s(10), body_at(10));
@@ -240,6 +240,32 @@ TEST(GnssFusionPrealign, OffKeepsNothing) {
   EXPECT_EQ(f.n_prealign_buffered(), 0U);
   EXPECT_EQ(f.n_prealign_attached(), 0U);
   EXPECT_EQ(f.n_prealign_dropped(), 0U);
+  EXPECT_EQ(f.n_prealign_not_static(), 0U);
+}
+
+// Tie rule: a fix exactly halfway between two keyframes goes to the earlier one; just after
+// halfway, to the later one.
+TEST(GnssFusionPrealign, TieGoesToEarlierKeyframe) {
+  GnssFusion f(prealign_cfg(), kPbg);
+  f.on_first_keyframe(0, at_s(0), body_at(0), kZeroP, at_s(-2), true);
+  const Pose T = body_at(0);  // fixes consistent with this pose, so the gate passes
+  GnssMeasurement half = fix_for(0, T);
+  half.t = Timestamp{5 * kSec / 2};  // 2.5 s, halfway between 0 and 5 s
+  GnssMeasurement after = fix_for(0, T);
+  after.t = Timestamp{5 * kSec / 2 + 1};  // 1 ns later
+  ASSERT_FALSE(f.on_fix(half, T, kZeroP).is_ok());
+  ASSERT_FALSE(f.on_fix(after, T, kZeroP).is_ok());
+  f.on_keyframe(1, at_s(5), body_at(5));
+  for (int k = 6; k <= 13; ++k) {  // 8 more pairs: aligned at the 10th
+    (void)f.on_fix(fix_for(k, body_at(k)), body_at(k), kZeroP);
+  }
+  ASSERT_TRUE(f.aligned());
+  std::array<EarlyFactor, kMaxAuxQueue> out{};
+  ASSERT_EQ(f.take_prealign(out), 2U);  // 6..12 wait for a keyframe after them
+  EXPECT_EQ(out[0].m.t, half.t);
+  EXPECT_EQ(out[0].kf, 0U);
+  EXPECT_EQ(out[1].m.t, after.t);
+  EXPECT_EQ(out[1].kf, 1U);
 }
 
 // Fixes 1..9 arrive before the alignment (fix 10). Keyframes 0 (t = 0), 1 (t = 5 s) and
@@ -291,7 +317,8 @@ TEST(GnssFusionPrealign, AttachedToNearestKeyframeOnceAligned) {
 
 // Fixes received before keyframe 0: those of the static window [static_from, t_k] are
 // attached to keyframe 0 unshifted; an older one and every one when the window is not known
-// to be static are dropped and counted. The chi-square gate runs at release: a 5 m jump is
+// to be static are dropped and counted (n_prealign_not_static). A fix failing gate_fix
+// returns its reason and is not kept. The chi-square gate runs at release: a 5 m jump is
 // rejected and counted.
 TEST(GnssFusionPrealign, StaticWindowFixesGoToKeyframeZero) {
   const Pose T0 = body_at(0);
@@ -303,19 +330,24 @@ TEST(GnssFusionPrealign, StaticWindowFixesGoToKeyframeZero) {
       if (k == -1) {
         m.p_e_g += Vec3(5.0, 0.0, 0.0);
       }
-      f.on_preinit_fix(m);
+      (void)f.on_preinit_fix(m);
     }
     GnssMeasurement late = fix_for(0, T0);
     late.t = Timestamp{kSec / 10};  // after keyframe 0's time
-    f.on_preinit_fix(late);
+    EXPECT_TRUE(f.on_preinit_fix(late).is_ok());
+    GnssMeasurement no_fix = fix_for(0, T0);
+    no_fix.status = -1;
+    EXPECT_EQ(f.on_preinit_fix(no_fix).reason(), "no fix");
     EXPECT_EQ(f.n_prealign_buffered(), 5U);
     f.on_first_keyframe(0, at_s(0), T0, kZeroP, at_s(-2), true);
-    EXPECT_EQ(f.n_prealign_dropped(), 2U);  // t = -3 s and t = 0.1 s
+    EXPECT_EQ(f.n_prealign_not_static(), 2U);  // t = -3 s and t = 0.1 s
+    EXPECT_EQ(f.n_prealign_dropped(), 0U);
     EXPECT_EQ(f.n_prealign_buffered(), 3U);
     ASSERT_EQ(align(f, 10), 1);
     std::array<EarlyFactor, kMaxAuxQueue> out{};
     ASSERT_EQ(f.take_prealign(out), 2U);  // t = -2 s and t = 0; the -1 s jump rejected
     EXPECT_EQ(f.n_prealign_rejected(), 1U);
+    EXPECT_EQ(f.n_prealign_static(), 2U);
     for (std::size_t i = 0; i < 2; ++i) {
       EXPECT_EQ(out[i].kf, 0U);
       EXPECT_EQ(out[i].t_k, at_s(0));
@@ -324,38 +356,53 @@ TEST(GnssFusionPrealign, StaticWindowFixesGoToKeyframeZero) {
   }
   {
     GnssFusion f(prealign_cfg(), kPbg);
-    f.on_preinit_fix(fix_for(0, T0));
+    (void)f.on_preinit_fix(fix_for(0, T0));
     f.on_first_keyframe(0, at_s(0), T0, kZeroP, at_s(-2), false);  // not the init scan
-    EXPECT_EQ(f.n_prealign_dropped(), 1U);
+    EXPECT_EQ(f.n_prealign_not_static(), 1U);
     EXPECT_EQ(f.n_prealign_buffered(), 0U);
   }
 }
 
 // The buffer is bounded and reserved once: before keyframe 0 the oldest fix is dropped,
-// after it the newest (the static ones stay); no allocation on any of these paths.
+// after it the newest (the static ones stay); no allocation on any of these paths, the
+// release (chi-square gate, shift, compaction) included.
 TEST(GnssFusionPrealign, BufferBoundedNoAllocation) {
   GnssFusion f(prealign_cfg(4), kPbg);
   std::array<EarlyFactor, kMaxAuxQueue> out{};
   GnssMeasurement m = fix_for(0, body_at(0));
+  std::size_t before_aligned = 1;
+  std::size_t released = 0;
+  std::size_t after_release = 1;
   AllocCounter::reset();
   {
     const EigenMallocGuard guard;
     for (int k = -9; k <= 0; ++k) {
       m.t = at_s(k);
-      f.on_preinit_fix(m);
+      (void)f.on_preinit_fix(m);
     }
     f.on_first_keyframe(0, at_s(0), body_at(0), kZeroP, at_s(-3), true);
     for (int k = 1; k <= 6; ++k) {
       (void)f.on_fix(fix_for(k, body_at(k)), body_at(k), kZeroP);
     }
     f.on_keyframe(1, at_s(6), body_at(6));
-    (void)f.take_prealign(out);
+    before_aligned = f.take_prealign(out);
+    for (int k = 7; k <= 10; ++k) {  // pairs 7..10: aligned at fix 10
+      (void)f.on_fix(fix_for(k, body_at(k)), body_at(k), kZeroP);
+    }
+    f.on_keyframe(2, at_s(10), body_at(10));
+    released = f.take_prealign(out);
+    after_release = f.take_prealign(out);
   }
   EXPECT_EQ(AllocCounter::count(), 0U);
-  // Pre-init: 10 fixes into 4 slots (6 oldest dropped), kept t = -3..0 all static.
-  // After keyframe 0: buffer full, fixes 1..6 dropped.
-  EXPECT_EQ(f.n_prealign_dropped(), 12U);
-  EXPECT_EQ(f.n_prealign_buffered(), 4U);  // not aligned yet: nothing released
+  EXPECT_EQ(before_aligned, 0U);  // not aligned yet: nothing released
+  EXPECT_TRUE(f.aligned());
+  // Pre-init: 10 fixes into 4 slots (6 oldest dropped), kept t = -3..0, all static, released
+  // once aligned. After keyframe 0 the buffer is full: fixes 1..9 dropped.
+  EXPECT_EQ(released, 4U);
+  EXPECT_EQ(after_release, 0U);
+  EXPECT_EQ(f.n_prealign_static(), 4U);
+  EXPECT_EQ(f.n_prealign_dropped(), 15U);
+  EXPECT_EQ(f.n_prealign_buffered(), 0U);
 }
 
 // A realign (gnss.max_consecutive_rejects) neither refills the buffer nor releases the early

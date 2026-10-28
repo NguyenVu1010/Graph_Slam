@@ -469,6 +469,9 @@ TEST(GnssCorridorStudy, Diagnosis) {
       {"prealign", "gnss.attach_prealign_fixes (ADR-022): fixes before the first alignment, the "
        "static ones on keyframe 0, added as factors once aligned", deg_on, "",
        "      attach_prealign_fixes: true\n", false, "on"},
+      {"prealign_oracle_shift", "prealign + shift-displacement oracle (gnss_shift_oracle, also for "
+       "the pre-alignment fixes)", deg_on, "", "      attach_prealign_fixes: true\n", false, "on",
+       true},
   };
   // clang-format on
   if (const char* sel = std::getenv("MSS_GCS_VARIANTS"); sel != nullptr) {
@@ -681,6 +684,8 @@ TEST(GnssCorridorStudy, Diagnosis) {
   };
   for (const auto& [with, without] :
        {std::pair<const char*, const char*>{"oracle_shift", "ref"},
+        std::pair<const char*, const char*>{"prealign_oracle_shift", "oracle_shift"},
+        std::pair<const char*, const char*>{"prealign_oracle_shift", "prealign"},
         std::pair<const char*, const char*>{"oracle_shift_truth_init", "frame_truth_init"},
         std::pair<const char*, const char*>{"oracle_shift_truth_fixed", "frame_truth_fixed"}}) {
     const int a = index_of(with);

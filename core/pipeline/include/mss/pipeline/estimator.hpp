@@ -71,11 +71,15 @@ class Estimator {
     std::uint64_t n_gnss_ring_overflow = 0;  ///< GNSS fixes dropped: waiting-for-IMU ring full
     std::uint64_t n_gnss_unfused_eof = 0;    ///< GNSS fixes after the last IMU sample at flush()
     std::uint64_t n_gnss_realign = 0;  ///< GNSS aligner restarts after gnss.max_consecutive_rejects
-    /// gnss.attach_prealign_fixes (ADR-022): fixes received before the first alignment added
-    /// as factors, dropped (buffer full, or before keyframe 0 outside its static window) and
-    /// rejected by the chi-square gate when released
+    /// gnss.attach_prealign_fixes (ADR-022), fixes received before the first alignment:
+    /// added as factors; of those, static-window fixes on keyframe 0; dropped because the
+    /// buffer (gnss.prealign_max_fixes) was full; received before keyframe 0 but outside its
+    /// static window, or keyframe 0 not at rest; rejected by the chi-square gate at release.
+    /// A fix before keyframe 0 that fails gate_fix counts in n_gnss_rejected.
     std::uint64_t n_gnss_prealign_attached = 0;
+    std::uint64_t n_gnss_prealign_static = 0;
     std::uint64_t n_gnss_prealign_dropped = 0;
+    std::uint64_t n_gnss_prealign_not_static = 0;
     std::uint64_t n_gnss_prealign_rejected = 0;
     std::uint64_t n_nonfinite_imu = 0;  ///< IMU samples dropped (non-finite acc or gyro)
     /// keyframe-0 gravity factor not added: the init window failed the rest gate (ADR-020)

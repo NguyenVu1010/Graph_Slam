@@ -202,7 +202,9 @@ void EstimatorCore::on_gnss(const common::GnssMeasurement& m) {
   }
   if (!has_estimate_) {
     if (early_out_ != nullptr) {  // ADR-022: kept for keyframe 0 (static window)
-      fusion_.on_preinit_fix(m);
+      if (!fusion_.on_preinit_fix(m).is_ok()) {
+        ++counters_.n_gnss_rejected;  // gate_fix, as on the live path (literal, no log)
+      }
       sync_prealign_counters();
     }
     return;
@@ -284,7 +286,9 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
 
 void EstimatorCore::sync_prealign_counters() {
   counters_.n_gnss_prealign_attached = fusion_.n_prealign_attached();
+  counters_.n_gnss_prealign_static = fusion_.n_prealign_static();
   counters_.n_gnss_prealign_dropped = fusion_.n_prealign_dropped();
+  counters_.n_gnss_prealign_not_static = fusion_.n_prealign_not_static();
   counters_.n_gnss_prealign_rejected = fusion_.n_prealign_rejected();
 }
 
