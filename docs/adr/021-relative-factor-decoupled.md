@@ -42,7 +42,8 @@ sai số x của keyframe cuối và sigma biên tự báo.
 | `se3_exact` | -28 m | 1,75 m | 16 sigma |
 | `decoupled` | -8,7 m | 24,5 m | 0,36 sigma |
 
-Chỉ `decoupled` nằm trong sigma của chính nó (cảnh thẳng: 0,54 / 0,31 / 0,18 sigma).
+Trên cảnh tròn chỉ `decoupled` nằm trong sigma của chính nó; trên cảnh thẳng cả ba đều nằm
+trong (0,54 / 0,31 / 0,18 sigma).
 
 ## Cơ chế
 
@@ -60,8 +61,8 @@ SE(3) là
   hàng tịnh tiến, mà các hàng này được cân bằng sigma tịnh tiến cỡ cm. Góc quay được quan sát
   tốt trở thành thông tin giả dọc trục tịnh tiến tự do.
 - `decoupled` đọc tịnh tiến và quay riêng (`r_p = t_E`, `r_phi = phi`), đúng chart mà `cov` được
-  tính: hàm chi phí point-to-plane tuyến tính theo độ dời `dt` ở mọi góc quay, nên hướng tự do
-  vẫn tự do ở mọi phần dư.
+  tính: phần dư point-to-plane tuyến tính theo `dt` và hàm chi phí phẳng dọc hướng tự do ở mọi
+  góc quay, nên hướng tự do vẫn tự do ở mọi phần dư.
 - `se3_exact` dùng Jacobian đúng của phần dư SE(3), nên hết phân kỳ nhưng vẫn mang cánh tay đòn:
   tự tin quá 16 sigma.
 - `between` cộng thêm đạo hàm `Logmap` gần đúng (bỏ `Jr^-1(e) = I + ad(e)/2 + ...`, mà `ad(e)`
@@ -159,8 +160,14 @@ p95 cao hơn 0,15 ms, trong độ trải giữa các lần chạy (main 5,72 đ�
   mét, không chỉ tại phép đo.
 - Loop dùng cùng dạng bên trong kernel Cauchy.
 - Test `BackendIsam.B04_IsamMatchesBatchLevenbergMarquardt` dựng tham chiếu batch theo dạng
-  đã cấu hình và chạy cho cả ba dạng. Với hai dạng chính xác, LM dừng ở cận trên lambda trước
-  điểm dừng (độ chênh chi phí nó so sánh cỡ 1e-9, ngang nhiễu tính chi phí), nên tham chiếu
-  thêm một bước Gauss-Newton sau LM; giới hạn 1e-6 không đổi.
+  đã cấu hình và chạy cho cả ba dạng. Tham chiếu là điểm cố định Gauss-Newton batch của cùng
+  phép tuyến tính hoá mà iSAM2 dùng: LM, rồi 10 vòng linearize / giải / retract, và test khẳng
+  định gradient của tham chiếu < 1e-5 (đo được 2,4e-7 với hai dạng chính xác, 4,5e-8 với
+  `between`). LM thuần không phải tham chiếu hợp lệ: `gtsam::PriorFactor<Pose3>` (keyframe 0)
+  trả Jacobian đơn vị cho phần dư `Logmap` (dạng `between` cũng vậy với `BetweenFactor<Pose3>`),
+  nên điểm cố định của phép tuyến tính hoá không phải cực tiểu của chi phí (gradient thật cỡ
+  0,09 tại ước lượng iSAM2, so với 7,9e-7 theo Jacobian), và LM, vốn nhận bước theo chi phí
+  thật, rời điểm đó rồi dừng ở cận trên lambda. Giới hạn 1e-6 không đổi; chênh lệch đo được cỡ
+  1e-10 ở cả ba dạng.
 - Chi phí: một `Jr^-1` SO(3) (3x3) mỗi lần tính factor, không đo được trên E-01.
 - Với suy biến quay (không phải tịnh tiến), không chart nào chính xác; chưa có cảnh đánh giá.
