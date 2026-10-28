@@ -1,4 +1,4 @@
-// B-03 (robust outlier loop), B-04 (iSAM2 vs batch Levenberg-Marquardt), determinism.
+// B-03 (robust outlier loop), B-04 (iSAM2 vs the batch Gauss-Newton fixed point), determinism.
 // Derivation: docs/derivations/backend_factors.md.
 #include <algorithm>
 #include <array>
@@ -332,7 +332,7 @@ std::string sci(double v) {  // scientific notation for RecordProperty
 // Every relative-factor form (default decoupled, ADR-021; between and se3_exact selectable):
 // iSAM2 agrees with the batch solution of the same factors (LM, then Gauss-Newton to the
 // fixed point of the linearisation).
-TEST(BackendIsam, B04_IsamMatchesBatchLevenbergMarquardt) {
+TEST(BackendIsam, B04_IsamMatchesBatchReference) {
   const B04Inputs in = b04_inputs();
   for (const RelativeFactor form :
        {RelativeFactor::kDecoupled, RelativeFactor::kBetween, RelativeFactor::kSe3Exact}) {
@@ -357,9 +357,9 @@ TEST(BackendIsam, B04_IsamMatchesBatchLevenbergMarquardt) {
     // uses. Plain LM is not a valid reference: gtsam::PriorFactor<Pose3> (keyframe 0) returns
     // an identity Jacobian for its Logmap residual (and so does BetweenFactor<Pose3> in the
     // between form), so the linearisation's fixed point is not the cost minimum (true cost
-    // gradient about 0.09 there), and LM, which accepts steps by the true cost, stalls at its
-    // lambda bound away from it. LM gives the start; fixed Gauss-Newton iterations
-    // (linearize, solve, retract) reach the fixed point, which is asserted.
+    // gradient about 0.09 there for decoupled, 0.68 for between), and LM, which accepts steps by
+    // the true cost, stalls at its lambda bound away from it. LM gives the start; fixed
+    // Gauss-Newton iterations (linearize, solve, retract) reach the fixed point, which is asserted.
     gtsam::Values batch = gtsam::LevenbergMarquardtOptimizer(graph, init, params).optimize();
     for (int it = 0; it < kB04GaussNewtonIterations; ++it) {
       batch = batch.retract(graph.linearize(batch)->optimize());

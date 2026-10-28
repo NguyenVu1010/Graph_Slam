@@ -159,7 +159,7 @@ p95 cao hơn 0,15 ms, trong độ trải giữa các lần chạy (main 5,72 đ�
   `MatchResult::cov` trong `scan_matcher.hpp`), và được test trên một trục tự do ở phần dư cỡ
   mét, không chỉ tại phép đo.
 - Loop dùng cùng dạng bên trong kernel Cauchy.
-- Test `BackendIsam.B04_IsamMatchesBatchLevenbergMarquardt` dựng tham chiếu batch theo dạng
+- Test `BackendIsam.B04_IsamMatchesBatchReference` dựng tham chiếu batch theo dạng
   đã cấu hình và chạy cho cả ba dạng. Tham chiếu là điểm cố định Gauss-Newton batch của cùng
   phép tuyến tính hoá mà iSAM2 dùng: LM, rồi 10 vòng linearize / giải / retract, và test khẳng
   định gradient của tham chiếu < 1e-5 (đo được 2,4e-7 với hai dạng chính xác, 4,5e-8 với
