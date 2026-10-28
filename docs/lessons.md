@@ -122,7 +122,7 @@ Format of an entry: **symptom** → cause → fix → rule.
 - **Rule.** Evaluate every geometric gate with the sensor noise model on, and prefer a
   noise-aware form (`λ_min > ρ·λ_mid + n·(k·σ_range)²`) over a pure ratio.
 
-### 1.9 The residual's chart, not only its Jacobian, decides a free axis (PR 4e, ADR-015 note)
+### 1.9 The residual's chart, not only its Jacobian, decides a free axis (PR 4e, ADR-021)
 
 - **Symptom.** In a control run with the LiDAR constraint removed along one axis the estimate
   ended at +5772 m while the marginal sigma claimed 14 m.
@@ -134,13 +134,22 @@ Format of an entry: **symptom** → cause → fix → rule.
   over-confident (-28 m, sigma 1.75 m). Translation and rotation residuals kept separate
   (`decoupled`, the SO(3) x R3 chart, the same covariance to first order) keep the free axis
   free: -8.7 m, sigma 24.5 m.
-- **Fix.** `backend.relative_factor` (`between`, `se3_exact`, `decoupled`); default `between`,
-  the choice of default is the owner's (ADR-015 PR 4e note).
-- **Rule.** An exact Jacobian is necessary but not sufficient. Check every analytic Jacobian
-  against numerical differences at small and at large residuals, and test the residual form
-  on a free axis: check that the residual's chart matches the structure of the error (a free
-  translation stays free at any rotation). Read the build flags of a dependency before trusting
-  its defaults.
+- **Mechanism.** The SE(3) Log residual's translation row is
+  `rho = V(phi)^-1 t ~= t - 1/2 phi x t`. With a metre-scale `t` along the free axis, the term
+  `1/2 [t]_x` is a lever arm: it moves the rotation perturbation into the translation rows,
+  which are weighted by the centimetre translation sigma. The well-observed rotation then
+  leaks into the free translation axis as information it does not have. The scan matcher's
+  covariance was computed for translation and rotation read separately, so only `decoupled`
+  uses it in its own chart. `between` also uses the approximate `Logmap` derivative, which is
+  why it diverges instead of being only over-confident.
+- **Fix.** `backend.relative_factor` (`between`, `se3_exact`, `decoupled`); default `decoupled`
+  (ADR-021). `between` and `se3_exact` remain selectable for comparison.
+- **Rule.** An exact Jacobian is necessary but not sufficient. A covariance is only meaningful
+  in the chart it was computed in; at large residuals the SE(3) Log chart and the SO(3) x R3
+  chart diverge. State the chart of every covariance that crosses a module interface, and test
+  factors on a free axis at metre residuals, not only at the measurement. Check every analytic
+  Jacobian against numerical differences at small and at large residuals. Read the build flags
+  of a dependency before trusting its defaults.
 
 ### 1.10 Failure paths in the optimiser must re-anchor (PR #11)
 

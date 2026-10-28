@@ -96,14 +96,25 @@ whose Log moves by `-Jri R_j^T R_i dphi`. `B_i` gyro bias: `dR'^T <- Exp(-u) dR'
 rejects a random walk `<= 0` with `std::invalid_argument`: a zero sigma is a hard constraint
 that the iSAM2 Cholesky factorisation cannot handle.
 
-## 5. LiDAR and loop factors (`backend.relative_factor`, PR 4e: decision pending)
+## 5. LiDAR and loop factors (`backend.relative_factor`, default `decoupled`, ADR-021)
 
 Variables `X_i = T_w_bi`, `X_j = T_w_bj`; measurement `Z = T_bi_bj` (scan matching or loop
 closure) with `cov`, the 6x6 `[rho, phi]` covariance of the right perturbation of `Z` in
 `b_j`. For LiDAR it is the scan matcher's covariance (degeneracy relaxation already applied),
-converted from `l` to `b` by the pipeline with the adjoint of `T_b_l`. Three forms are
-selectable; `between` is the default (the behaviour before PR 4e) and the two exact forms are
-evaluated options until the owner's ruling (ADR-015, PR 4e note). All three return a
+converted from `l` to `b` by the pipeline with the adjoint of `T_b_l`.
+
+**Chart of the covariance.** The scan matcher builds `cov = cov_scale * max(sigma_r^2,
+min_residual_sigma_m^2) * A^-1` (`scan_matcher.hpp`, `MatchResult::cov`), with `A` the
+Gauss-Newton Hessian `sum w J_r_xi^T J_r_xi` of the point-to-plane cost (or its regularised
+form when degeneracy handling is on, then relaxed along flagged directions) at the solution,
+in the `[rho, phi]` tangent of the right perturbation `T_w_l <- T_w_l Exp(xi)`. It is a
+first-order object at the solution: at `xi = 0` the SE(3) chart and the SO(3) x R3 chart
+coincide (`V(0) = I`), but along a free translation the point-to-plane cost is flat in
+`dt` at every rotation, which is the SO(3) x R3 chart (see "Unobserved axis" below). The
+default form `decoupled` reads `cov` in that chart (ADR-021).
+
+Three forms are selectable: `decoupled` is the default (ADR-021); `between` (the behaviour
+before ADR-021) and `se3_exact` remain selectable for comparison. All three return a
 GTSAM-ordered residual `[rotation, translation]` and use the same noise,
 `noiseModel::Gaussian::Covariance(P cov P^T)` (`permute_cov`), so the whitened cost is
 `r^T cov^-1 r` with `r` in mss order.
@@ -201,7 +212,7 @@ its own covariance keeps a weight above 0.5. A `backend.loop_cauchy_k` YAML key 
 loop module. Degeneracy report: diagnostics only (one debug log line per degenerate keyframe,
 with the running count); the factor is unchanged.
 
-### 5a. Evaluation (PR 4e, decision pending)
+### 5a. Evaluation (PR 4e; decided in ADR-021)
 
 Synthetic consistency (`BackendComponent/UnobservedAxis.*`, 50 seeds x 24 keyframes on a
 circle, a noisy IMU chain, LiDAR factors with `(1 km)^2` along world x, one optimize() per
@@ -216,7 +227,7 @@ backend last-keyframe x error (marginal sigma).
 
 | form | circle | straight |
 | --- | --- | --- |
-| between (default) | +5772.3 m (14.05): 411 sigma | +11.37 m (20.90): 0.54 sigma |
+| between | +5772.3 m (14.05): 411 sigma | +11.37 m (20.90): 0.54 sigma |
 | se3_exact | -28.23 m (1.75): 16 sigma | +7.47 m (24.28): 0.31 sigma |
 | decoupled | -8.71 m (24.46): 0.36 sigma | +4.36 m (24.48): 0.18 sigma |
 
@@ -240,7 +251,7 @@ exact forms stays within 7.8 +/- 1 at 4.7, so no recalibrated rows were needed.
 Every CI contains 0. These IMU-only and corridor scenes are chaotic: the same decoupled form
 evaluated with a different floating-point order of the same products (an earlier env-gated
 build) gave a circle median of 3.30 m instead of 2.30 m. `CorridorImuOnlyAlongAxisWithin
-DeadReckoning` (seeds 42..44, default `between`) circle end errors: between -1.29 / +0.38 /
+DeadReckoning` (seeds 42..44, run at `between` in PR 4e) circle end errors: between -1.29 / +0.38 /
 -1.45 m, se3_exact -13.63 / -2.60 / -7.33 m (its median 7.33 m would fail the 3 sigma_DR 2.11 m
 limit), decoupled +2.30 / -0.78 / -0.08 m.
 
@@ -250,7 +261,13 @@ median of 5 (scan p50 / p95, replay wall, CPU): main 4.83 / 6.57 ms, 4.54 s, 3.0
 4.84 / 6.35 ms, 4.46 s, 3.03 s; se3_exact 4.74 / 6.50 ms, 4.23 s, 3.01 s; decoupled 4.75 / 6.53
 ms, 4.34 s, 3.04 s (optimize() is not timed separately; no measurable cost).
 
-Decision pending (ADR-015, PR 4e note).
+Decision (ADR-021): `decoupled` is the default. It is the only form that meets the acceptance
+control; on the shipped scenes no form is statistically different. With `decoupled` as the
+default, `CorridorImuOnlyAlongAxisWithinDeadReckoning` passes with unchanged limits:
+circle median end error 0.780 m (limit 2.113 m), median RMS 0.742 m (3.0 m); straight 0.815 m
+(1.86 m) and 1.430 m (1.88 m). E-01..E-03 2.185 / 2.185 / 2.179 mm, `est.tum` of E-01 / E-03
+md5-equal to the PR 4e decoupled run; E-01 bench (median of 5, interleaved) main / this branch:
+scan p50 4.40 / 4.39 ms, p95 5.77 / 5.92 ms, wall 3.67 / 3.60 s, CPU 2.73 / 2.73 s.
 
 ## 6. GNSS position factor (`detail::GnssPositionFactor`)
 
@@ -457,7 +474,7 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §7 rank-3 odom whitening and Jacobians | B-01 `BackendFactors.B01_OdomFactorRotatedSingularCov`, `BackendFactors.B01_OdomFactorZeroCovRejected` |
 | §5 exact Jacobians of `se3_exact` and `decoupled` (numerical < 1e-6 and `EXPECT_CORRECT_FACTOR_JACOBIANS`, small and 30 deg / 5 m residuals; known residual and whitened error); `se3_exact` = GTSAM's exact `Logmap` chain and the `between` error; `between` control at the large residual | B-01 `BackendFactors.B01_Se3RelativePoseFactorJacobians`, `BackendFactors.B01_DecoupledRelativePoseFactorJacobians`, `BackendFactors.B01_Se3RelativePoseFactorMatchesGtsamExactChain`, `BackendFactors.B01_BetweenFactorJacobianApproximateAtLargeResidual` |
 | §5 Cauchy wrap of both exact forms (numerical at zero error; `sqrt(w)` scaling at 0.1 and at the large residual) | B-01 `BackendFactors.B01_RelativePoseRobustLoopJacobians` |
-| §5 permuted noise and Cauchy wrap of the default `between` (numerical at zero error; `sqrt(w)` scaling at 0.1) | B-01 `BackendFactors.B01_BetweenAndRobustLoopJacobians` |
+| §5 permuted noise and Cauchy wrap of the `between` form (numerical at zero error; `sqrt(w)` scaling at 0.1) | B-01 `BackendFactors.B01_BetweenAndRobustLoopJacobians` |
 | §5 estimate consistent with its marginal along an unobserved axis, per form (each under its own noise model); `between` control | `BackendComponent/UnobservedAxis.EstimateConsistentWithMarginal/{se3_exact,decoupled}`, `BackendComponent.UnobservedAxisBetweenFactorControlIsInconsistent` |
 | §5 `backend.relative_factor` parsing | `Config.RelativeFactorKey` |
 | §2, §8 priors and marginal order | `BackendGraph.MarginalCovIsMssOrder` |
@@ -468,5 +485,5 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §9 | `BackendGraph.ImuGapReanchorsVelocityAndBias`, `BackendGraph.OptimizeFailureDropsPendingFactorsKeepsKeyframes`, `BackendGraph.LatestKeyframeWithoutFactorsReturnsGuessAndNanCov` |
 | input validation (including an unknown `relative_factor`) | `BackendGraph.RejectsBadCovariances`, `BackendApi.ConstructorRejectsInvalidConfig` |
 | §5 robust loop | B-03 `BackendIsam.B03_OutlierLoopDragsLessThanTenCm`, `BackendIsam.B03_ControlNonRobustOutlierDragsMoreThanTenCm` |
-| iSAM2 vs batch LM | B-04 `BackendIsam.B04_IsamMatchesBatchLevenbergMarquardt` |
+| iSAM2 vs the batch solution (LM, then Gauss-Newton to the fixed point of the linearisation, gradient < 1e-5), per relative-factor form | B-04 `BackendIsam.B04_IsamMatchesBatchReference` |
 | determinism (single-thread TBB in `deterministic` mode: ADR-018), diagnostics | `BackendIsam.RepeatedOptimizeIsStableAndDeterministic`, `BackendDeterminism.SingleThreadLimitIsProcessLifetime`, `BackendDeterminism.SingleThreadRunsAreBitIdentical`, `BackendDeterminism.MultiThreadRunsReported`, `BackendIsam.DegeneracyReportIsDiagnosticOnly` |

@@ -1554,10 +1554,10 @@ TEST(PipelineComponent, ImuStaticGravityLatencySplit) {
 
 // PR 4e (ADR-015 note, backend_factors.md section 5), MSS_IMU_STUDY=1: the three forms of
 // the LiDAR / loop relative-pose factor (backend.relative_factor) over seeds 42..56 on the
-// scenes of section 10e (score_seed), paired against `between` (the default): medians, wins /
-// losses and the bootstrap 95 % CI of the median difference. Then the acceptance control of
-// the exploratory controls (deg on, x removed, no backend feedback, gravity factor off) per
-// form and scene. MSS_RF_COV_SCALE_SE3 / MSS_RF_COV_SCALE_DEC add a row of that form at that
+// scenes of section 10e (score_seed), paired against `between` (the default before ADR-021):
+// medians, wins / losses and the bootstrap 95 % CI of the median difference. Then the acceptance
+// control of the exploratory controls (deg on, x removed, no backend feedback, gravity factor off)
+// per form and scene. MSS_RF_COV_SCALE_SE3 / MSS_RF_COV_SCALE_DEC add a row of that form at that
 // scan_match.cov_scale (the recalibration of the box NEES). Writes relative_factor_seeds.md.
 TEST(PipelineComponent, RelativeFactorSeeds) {
   const char* on = std::getenv("MSS_IMU_STUDY");
@@ -1572,7 +1572,7 @@ TEST(PipelineComponent, RelativeFactorSeeds) {
     std::string cov_scale;  // scan_match.cov_scale, empty: default (4.7)
   };
   std::vector<Variant> variants = {
-      {"between (default)", "between", ""},
+      {"between", "between", ""},
       {"se3_exact", "se3_exact", ""},
       {"decoupled", "decoupled", ""},
   };

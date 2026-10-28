@@ -1,8 +1,10 @@
-// B-03 (robust outlier loop), B-04 (iSAM2 vs batch Levenberg-Marquardt), determinism.
+// B-03 (robust outlier loop), B-04 (iSAM2 vs the batch Gauss-Newton fixed point), determinism.
 // Derivation: docs/derivations/backend_factors.md.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <optional>
 #include <random>
 #include <string>
@@ -28,6 +30,7 @@
 #include "graph_scenarios.hpp"
 #include "imu_factor.hpp"
 #include "odom_factor.hpp"
+#include "relative_pose_factor.hpp"
 
 namespace mss::backend {
 namespace {
@@ -230,8 +233,27 @@ void feed_b04(Graph& g, const B04Inputs& in, int extra) {
   }
 }
 
+// The LiDAR / loop factor of the configured form (backend.relative_factor), as Graph builds it.
+gtsam::NonlinearFactor::shared_ptr relative_factor_of(RelativeFactor form,
+                                                      gtsam::Key x_i,
+                                                      gtsam::Key x_j,
+                                                      const Pose& T_bi_bj,
+                                                      const gtsam::SharedNoiseModel& noise) {
+  switch (form) {
+    case RelativeFactor::kSe3Exact:
+      return boost::make_shared<detail::Se3RelativePoseFactor>(x_i, x_j, T_bi_bj, noise);
+    case RelativeFactor::kDecoupled:
+      return boost::make_shared<detail::DecoupledRelativePoseFactor>(x_i, x_j, T_bi_bj, noise);
+    case RelativeFactor::kBetween:
+      break;
+  }
+  return boost::make_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
+      x_i, x_j, detail::to_gtsam(T_bi_bj), noise);
+}
+
 // The same factors as Graph builds them (backend_factors.md sections 2-7), for the batch
-// reference. Initial values: the keyframe guesses.
+// reference, with the LiDAR / loop form of cfg.relative_factor. Initial values: the keyframe
+// guesses.
 void build_batch(const B04Inputs& in,
                  const BackendConfig& cfg,
                  const imu::ImuConfig& imu_cfg,
@@ -273,11 +295,12 @@ void build_batch(const B04Inputs& in,
         bias_key(k),
         gtsam::imuBias::ConstantBias(),
         gtsam::noiseModel::Diagonal::Sigmas(rw));
-    graph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
+    graph.push_back(relative_factor_of(
+        cfg.relative_factor,
         pose_key(k - 1),
         pose_key(k),
-        detail::to_gtsam(in.lidar[k - 1]),
-        gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(in.lidar_cov)));
+        in.lidar[k - 1],
+        gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(in.lidar_cov))));
   }
   graph.emplace_shared<detail::GnssPositionFactor>(
       pose_key(2), in.fix2.p_e_g, in.fix2.cov, in.T_e_w, in.p_b_g);
@@ -288,43 +311,81 @@ void build_batch(const B04Inputs& in,
   ASSERT_TRUE(odom.has_value());
   ASSERT_EQ(odom->rank(), 3);
   graph.push_back(odom->clone());
-  graph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
+  graph.push_back(relative_factor_of(
+      cfg.relative_factor,
       pose_key(0),
       pose_key(5),
-      detail::to_gtsam(in.loop.T_bi_bj),
+      in.loop.T_bi_bj,
       gtsam::noiseModel::Robust::Create(
           gtsam::noiseModel::mEstimator::Cauchy::Create(kLoopCauchyK),
-          gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(in.loop.cov))));
+          gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(in.loop.cov)))));
 }
 
-TEST(BackendIsam, B04_IsamMatchesBatchLevenbergMarquardt) {
+constexpr int kB04GaussNewtonIterations = 10;  // fixed Gauss-Newton steps after LM (B04)
+
+std::string sci(double v) {  // scientific notation for RecordProperty
+  std::array<char, 32> buf{};
+  std::snprintf(buf.data(), buf.size(), "%.3e", v);
+  return buf.data();
+}
+
+// Every relative-factor form (default decoupled, ADR-021; between and se3_exact selectable):
+// iSAM2 agrees with the batch solution of the same factors (LM, then Gauss-Newton to the
+// fixed point of the linearisation).
+TEST(BackendIsam, B04_IsamMatchesBatchReference) {
   const B04Inputs in = b04_inputs();
-  const BackendConfig cfg = b04_config();
-  Graph g(cfg, default_imu_config(), in.p_b_g);
-  {
-    CapturingLogger log;  // every factor must be accepted
-    feed_b04(g, in, 20);
-    EXPECT_TRUE(log.warnings.empty()) << log.warnings.front();
-  }
+  for (const RelativeFactor form :
+       {RelativeFactor::kDecoupled, RelativeFactor::kBetween, RelativeFactor::kSe3Exact}) {
+    SCOPED_TRACE(static_cast<int>(form));
+    BackendConfig cfg = b04_config();
+    cfg.relative_factor = form;
+    Graph g(cfg, default_imu_config(), in.p_b_g);
+    {
+      CapturingLogger log;  // every factor must be accepted
+      feed_b04(g, in, 20);
+      EXPECT_TRUE(log.warnings.empty()) << log.warnings.front();
+    }
 
-  gtsam::NonlinearFactorGraph graph;
-  gtsam::Values init;
-  build_batch(in, cfg, default_imu_config(), graph, init);
-  gtsam::LevenbergMarquardtParams params;
-  params.relativeErrorTol = 1e-15;
-  params.absoluteErrorTol = 1e-15;
-  params.maxIterations = 100;
-  const gtsam::Values batch = gtsam::LevenbergMarquardtOptimizer(graph, init, params).optimize();
+    gtsam::NonlinearFactorGraph graph;
+    gtsam::Values init;
+    build_batch(in, cfg, default_imu_config(), graph, init);
+    gtsam::LevenbergMarquardtParams params;
+    params.relativeErrorTol = 1e-15;
+    params.absoluteErrorTol = 1e-15;
+    params.maxIterations = 100;
+    // The reference is the batch Gauss-Newton fixed point of the same linearisation iSAM2
+    // uses. Plain LM is not a valid reference: gtsam::PriorFactor<Pose3> (keyframe 0) returns
+    // an identity Jacobian for its Logmap residual (and so does BetweenFactor<Pose3> in the
+    // between form), so the linearisation's fixed point is not the cost minimum (true cost
+    // gradient about 0.09 there for decoupled, 0.68 for between), and LM, which accepts steps by
+    // the true cost, stalls at its lambda bound away from it. LM gives the start; fixed
+    // Gauss-Newton iterations (linearize, solve, retract) reach the fixed point, which is asserted.
+    gtsam::Values batch = gtsam::LevenbergMarquardtOptimizer(graph, init, params).optimize();
+    for (int it = 0; it < kB04GaussNewtonIterations; ++it) {
+      batch = batch.retract(graph.linearize(batch)->optimize());
+    }
+    const double grad_norm = graph.linearize(batch)->gradientAtZero().vector().norm();
+    RecordProperty("reference_gradient_norm_form_" + std::to_string(static_cast<int>(form)),
+                   sci(grad_norm));
+    ASSERT_LT(grad_norm, 1e-5);  // the reference is converged
 
-  for (KeyId k = 0; k < 6; ++k) {
-    const NavState x = state_or_fail(g, k);
-    const Pose T_batch = detail::from_gtsam(batch.at<gtsam::Pose3>(detail::pose_key(k)));
-    EXPECT_LT(common::se3_log(T_batch.inverse() * x.T_w_b).norm(), 1e-6) << "keyframe " << k;
-    EXPECT_LT((batch.at<gtsam::Vector3>(detail::vel_key(k)) - x.v_w_b).norm(), 1e-6);
-    const common::ImuBias b =
-        detail::from_gtsam(batch.at<gtsam::imuBias::ConstantBias>(detail::bias_key(k)));
-    EXPECT_LT((b.ba - x.bias.ba).norm(), 1e-6) << "keyframe " << k;
-    EXPECT_LT((b.bg - x.bias.bg).norm(), 1e-6) << "keyframe " << k;
+    double worst = 0.0;  // largest pose / velocity / bias difference over the keyframes
+    for (KeyId k = 0; k < 6; ++k) {
+      const NavState x = state_or_fail(g, k);
+      const Pose T_batch = detail::from_gtsam(batch.at<gtsam::Pose3>(detail::pose_key(k)));
+      const double d_pose = common::se3_log(T_batch.inverse() * x.T_w_b).norm();
+      const double d_vel = (batch.at<gtsam::Vector3>(detail::vel_key(k)) - x.v_w_b).norm();
+      const common::ImuBias b =
+          detail::from_gtsam(batch.at<gtsam::imuBias::ConstantBias>(detail::bias_key(k)));
+      const double d_ba = (b.ba - x.bias.ba).norm();
+      const double d_bg = (b.bg - x.bias.bg).norm();
+      EXPECT_LT(d_pose, 1e-6) << "keyframe " << k;
+      EXPECT_LT(d_vel, 1e-6) << "keyframe " << k;
+      EXPECT_LT(d_ba, 1e-6) << "keyframe " << k;
+      EXPECT_LT(d_bg, 1e-6) << "keyframe " << k;
+      worst = std::max({worst, d_pose, d_vel, d_ba, d_bg});
+    }
+    RecordProperty("worst_difference_form_" + std::to_string(static_cast<int>(form)), sci(worst));
   }
 }
 
