@@ -174,6 +174,6 @@ cột in đậm là cấu hình phát hành. Các cột có kiểm tra bật ở
   nhân: Jacobian gần đúng của `BetweenFactor<Pose3>` và, chủ yếu, liên hệ `V(phi)^-1` của phần dư
   SE(3) đưa sai số tịnh tiến lớn dọc trục không quan sát vào các thành phần quan sát được. Chỉ
   sửa Jacobian (`se3_exact`) thì hết phân kỳ nhưng vẫn tự tin quá 16 sigma. PR 4e cho chọn ba
-  dạng qua `backend.relative_factor`; mặc định `between`, chờ owner quyết định. PR 4b cần quyết
-  định này.
+  dạng qua `backend.relative_factor`; ADR-021 chọn mặc định `decoupled` (-8,7 m, sigma 24,5 m
+  trong cùng lần đối chứng). PR 4b đánh giá lại trên mặc định mới.
 - Neo lại hướng trọng lực định kỳ ở các cửa sổ đứng yên sau này.

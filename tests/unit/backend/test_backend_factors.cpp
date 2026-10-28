@@ -489,7 +489,7 @@ TEST(BackendFactors, B01_Se3RelativePoseFactorMatchesGtsamExactChain) {
       EXPECT_LT((e - e_ref).norm(), 1e-9);
       EXPECT_LT((H_i - H_i_ref).norm(), 1e-9 * H_i_ref.norm()) << "large " << large;
       EXPECT_LT((H_j - H_j_ref).norm(), 1e-9 * H_j_ref.norm()) << "large " << large;
-      // The default form, BetweenFactor<Pose3>, has the same error.
+      // The between form, BetweenFactor<Pose3>, has the same error.
       const gtsam::BetweenFactor<gtsam::Pose3> between(
           pose_key(0), pose_key(1), to_gtsam(Z), noise);
       EXPECT_LT((between.unwhitenedError(v) - e).norm(), 1e-9);
@@ -497,8 +497,8 @@ TEST(BackendFactors, B01_Se3RelativePoseFactorMatchesGtsamExactChain) {
   }
 }
 
-// The default form (backend.relative_factor: between), not a custom factor: checks the
-// permuted noise path and the Cauchy wrap used for loops.
+// The between form (backend.relative_factor: between, the default before ADR-021), not a
+// custom factor: checks the permuted noise path and the Cauchy wrap used for loops.
 TEST(BackendFactors, B01_BetweenAndRobustLoopJacobians) {
   std::mt19937 rng(kSeed);
   Mat6 S_m = Mat6::Zero();
@@ -549,7 +549,7 @@ TEST(BackendFactors, B01_BetweenAndRobustLoopJacobians) {
   }
 }
 
-// Control (why the exact forms exist): gtsam::BetweenFactor<Pose3>, the default form, fails
+// Control (why the exact forms exist): gtsam::BetweenFactor<Pose3>, the between form, fails
 // the numerical Jacobian check at 30 deg / 5 m (its Jacobian omits Jr^-1 of the Logmap) and
 // passes it at zero error.
 TEST(BackendFactors, B01_BetweenFactorJacobianApproximateAtLargeResidual) {

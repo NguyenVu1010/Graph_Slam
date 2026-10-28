@@ -281,13 +281,18 @@ TEST(Config, GnssGateKeysValidated) {
   EXPECT_TRUE(mentions(gate.reason(), "gnss.chi2_gate: must be > 0 (got -1)")) << gate.reason();
 }
 
-// PR 4e: backend.relative_factor defaults to between (the previous behaviour); the exact forms
-// parse; any other value is a config error naming the key and the allowed values.
+// ADR-021: backend.relative_factor defaults to decoupled; between and se3_exact parse (kept
+// for comparison); any other value is a config error naming the key and the allowed values.
 TEST(Config, RelativeFactorKey) {
   const auto cfg = load_config(kDefault);
   ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
-  EXPECT_EQ(cfg.value().backend.relative_factor, mss::backend::RelativeFactor::kBetween);
+  EXPECT_EQ(cfg.value().backend.relative_factor, mss::backend::RelativeFactor::kDecoupled);
+  EXPECT_EQ(mss::backend::BackendConfig{}.relative_factor,
+            mss::backend::RelativeFactor::kDecoupled);
   const std::string base = read_file(kDefault);
+  const auto btw = parse_config(base, overlay("    backend:\n      relative_factor: between\n"));
+  ASSERT_TRUE(btw.is_ok()) << btw.reason();
+  EXPECT_EQ(btw.value().backend.relative_factor, mss::backend::RelativeFactor::kBetween);
   const auto se3 = parse_config(base, overlay("    backend:\n      relative_factor: se3_exact\n"));
   ASSERT_TRUE(se3.is_ok()) << se3.reason();
   EXPECT_EQ(se3.value().backend.relative_factor, mss::backend::RelativeFactor::kSe3Exact);

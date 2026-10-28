@@ -884,6 +884,10 @@ TEST(PipelineComponent, LidarFactorCovarianceConsistent) {
 //   the factor 3.56 m and 1.85 m. The circle half is the stronger on / off distinction
 //   (without the factor its medians over these seeds are 84.8 m and 34.7 m).
 // Lateral error at the LiDAR level (< 1 cm) on every seed.
+// The numbers above were measured with relative_factor between (PR 4d). With the default
+// decoupled (ADR-021) the same seeds give: circle end 2.30 / 0.78 / 0.08 m (median 0.78 m),
+// RMS median 0.74 m; straight end 0.82 / 0.60 / 8.18 m (median 0.82 m), RMS median 1.43 m.
+// The limits are unchanged.
 TEST(PipelineComponent, CorridorImuOnlyAlongAxisWithinDeadReckoning) {
   if (!kWithGtsam) {
     GTEST_SKIP() << "needs the GTSAM backend (IMU factors in the graph)";
