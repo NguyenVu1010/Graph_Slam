@@ -48,6 +48,8 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -e ".[dev,eval]"
       - run: pytest
+      - name: Gazebo assets generate and parse (no Gazebo, ADR-011 section 9)
+        run: bash tools/ci/check_sim_assets.sh
 
   docker-full:
     # ROS 2 Jazzy + GTSAM. Integration tests E-01..E-03 and PF-01 run here because this job

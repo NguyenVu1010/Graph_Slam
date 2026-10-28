@@ -1,0 +1,271 @@
+<?xml version="1.0"?>
+<!--
+  Warehouse world (ADR-011 section 5): 40 x 25 m inside, ceiling at 6 m, shelves, boxes, columns
+  and one 15 m straight shelf run (model "shelf_run_15m", mildly degenerate along x).
+  Hand-written. World frame w = ENU frame e (spherical_coordinates below, heading 0), origin at the
+  centre of the floor, z up. Inner faces: x = +-20, y = +-12.5, floor z = 0, ceiling z = 6.
+  Every box is axis-aligned; the reference planes of warehouse.planes.yaml lie on box faces
+  (checked by tools/gen_sim_assets.py check_world and tests/python/test_worlds.py).
+  Physics: DART, 1 ms step, no real-time lock (section 4). Floor: concrete, mu = 0.8.
+-->
+<sdf version="1.10">
+  <world name="warehouse">
+    <physics name="dart_1ms" type="dart">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>0</real_time_factor>
+      <real_time_update_rate>0</real_time_update_rate>
+    </physics>
+    <gravity>0 0 -9.80665</gravity>
+    <!-- Must equal origin_lla of the scenarios that use this world (test_worlds.py). -->
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>21.0278</latitude_deg>
+      <longitude_deg>105.8342</longitude_deg>
+      <elevation>12.0</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics">
+      <engine><filename>gz-physics-dartsim-plugin</filename></engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <!-- The render engine comes from the gz sim command line (render-engine-server option). -->
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors"/>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat"/>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>false</shadows>
+    </scene>
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Floor: top face z = 0. -->
+    <model name="floor">
+      <static>true</static>
+      <pose>0 0 -0.05 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>41 26 0.1</size></box></geometry>
+          <surface><friction><ode><mu>0.8</mu><mu2>0.8</mu2></ode></friction></surface>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>41 26 0.1</size></box></geometry>
+          <material><ambient>0.5 0.5 0.5 1</ambient><diffuse>0.5 0.5 0.5 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Ceiling: bottom face z = 6. -->
+    <model name="ceiling">
+      <static>true</static>
+      <pose>0 0 6.05 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>41 26 0.1</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>41 26 0.1</size></box></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.8 0.8 0.8 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Walls, 0.2 m thick, outside the 40 x 25 m interior. -->
+    <model name="wall_east">
+      <static>true</static>
+      <pose>20.1 0 3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 25.4 6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 25.4 6</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-20.1 0 3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 25.4 6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 25.4 6</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="wall_north">
+      <static>true</static>
+      <pose>0 12.6 3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>40.4 0.2 6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>40.4 0.2 6</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="wall_south">
+      <static>true</static>
+      <pose>0 -12.6 3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>40.4 0.2 6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>40.4 0.2 6</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- The 15 m straight shelf run: x in [-10, 5], y in [1.6, 2.4], 2.5 m high. -->
+    <model name="shelf_run_15m">
+      <static>true</static>
+      <pose>-2.5 2.0 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>15 0.8 2.5</size></box></geometry></collision>
+        <visual name="visual">
+          <geometry><box><size>15 0.8 2.5</size></box></geometry>
+          <material><ambient>0.8 0.5 0.1 1</ambient><diffuse>0.8 0.5 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Shelf rows, 0.8 m deep, 2.5 m high. -->
+    <model name="shelf_s1">
+      <static>true</static>
+      <pose>-6 -2.8 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 0.8 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>6 0.8 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="shelf_s2">
+      <static>true</static>
+      <pose>3 -2.8 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>6 0.8 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>6 0.8 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="shelf_n1">
+      <static>true</static>
+      <pose>-10 6 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>10 0.8 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>10 0.8 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="shelf_n2">
+      <static>true</static>
+      <pose>6 6 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>10 0.8 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>10 0.8 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="shelf_s3">
+      <static>true</static>
+      <pose>-10 -7 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>10 0.8 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>10 0.8 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="shelf_s4">
+      <static>true</static>
+      <pose>6 -7 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>10 0.8 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>10 0.8 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <!-- A cross shelf (along y) breaks the symmetry of the x-aligned rows. -->
+    <model name="shelf_cross">
+      <static>true</static>
+      <pose>15 -2 1.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.8 6 2.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.8 6 2.5</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- Columns, 0.4 x 0.4 m, floor to ceiling. -->
+    <model name="column_1">
+      <static>true</static>
+      <pose>-15 9.5 3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.4 0.4 6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.4 0.4 6</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="column_2">
+      <static>true</static>
+      <pose>0 9.5 3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.4 0.4 6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.4 0.4 6</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="column_3">
+      <static>true</static>
+      <pose>15 9.5 3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.4 0.4 6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.4 0.4 6</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="column_4">
+      <static>true</static>
+      <pose>-15 -9.5 3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.4 0.4 6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.4 0.4 6</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="column_5">
+      <static>true</static>
+      <pose>0 -9.5 3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.4 0.4 6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.4 0.4 6</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="column_6">
+      <static>true</static>
+      <pose>15 -9.5 3 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.4 0.4 6</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.4 0.4 6</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!-- Boxes (pallets) on the floor. -->
+    <model name="box_1">
+      <static>true</static>
+      <pose>9 -0.5 0.5 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.2 1.0 1.0</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>1.2 1.0 1.0</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="box_2">
+      <static>true</static>
+      <pose>-15 -4 0.75 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.0 1.0 1.5</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>1.0 1.0 1.5</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="box_3">
+      <static>true</static>
+      <pose>-13 0.5 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.8 1.2 0.8</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.8 1.2 0.8</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="box_4">
+      <static>true</static>
+      <pose>11 10 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>1.2 1.2 1.2</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>1.2 1.2 1.2</size></box></geometry></visual>
+      </link>
+    </model>
+  </world>
+</sdf>

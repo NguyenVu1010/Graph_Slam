@@ -45,7 +45,12 @@ class GnssNoise:
 
 @dataclass(frozen=True)
 class LidarNoise:
-    range_sigma_m: float
+    range_sigma_m: float  # range noise the noise layer adds (Gazebo LiDAR noise), m
+    # Noise report only (eval/mss_eval/noise_measure.py): a point whose grid neighbour lies more
+    # than edge_jump_m from the point's reference plane (or has no return) is a silhouette point;
+    # points with |n.u| below min_incidence_cos are not used for the range sigma.
+    edge_jump_m: float
+    min_incidence_cos: float
     dropout_p: float
     dropout_p_grazing: float
     grazing_deg: float
@@ -63,6 +68,7 @@ class Kinematics:
 
 @dataclass(frozen=True)
 class OdomNoise:
+    rate_hz: float  # encoder read rate = /wheel/odom rate, whatever the joint-state rate
     ticks_per_rev: int
     speed_sigma_mps: float
     kinematics_true: Kinematics
@@ -83,7 +89,13 @@ class NoiseProfile:
 _STRICTLY_POSITIVE = {"rate_hz", "ticks_per_rev", "scan_period_s"}
 _CLOCK_KEYS = ("imu", "lidar", "gnss", "odom")
 # Probabilities / fractions that must lie in [0, 1].
-_UNIT_INTERVAL = {"dropout_p", "dropout_p_grazing", "nan_fraction", "near_fraction"}
+_UNIT_INTERVAL = {
+    "dropout_p",
+    "dropout_p_grazing",
+    "nan_fraction",
+    "near_fraction",
+    "min_incidence_cos",
+}
 # (min, max) field pairs that must satisfy min <= max.
 _ORDERED_PAIRS = (
     ("multipath_amp_min_m", "multipath_amp_max_m"),

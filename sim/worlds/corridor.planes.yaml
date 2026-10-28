@@ -1,0 +1,15 @@
+# Sidecar of sim/worlds/corridor.sdf (ADR-011 section 5). Same schema as warehouse.planes.yaml:
+# planes n . p = d in world metres on box faces (1 mm), robot spawn pose, ENU frame = world.
+world: corridor
+enu_origin_w_m: [0.0, 0.0, 0.0]
+spawn: {x_m: 12.0, y_m: 0.0, yaw_rad: 0.0}
+planes:
+  - {name: floor, n: [0.0, 0.0, 1.0], d: 0.0}
+  - {name: ceiling, n: [0.0, 0.0, 1.0], d: 3.0}
+  - {name: corridor_wall_north, n: [0.0, 1.0, 0.0], d: 1.25}
+  - {name: corridor_wall_south, n: [0.0, 1.0, 0.0], d: -1.25}
+  - {name: wall_start, n: [1.0, 0.0, 0.0], d: 0.0}
+  - {name: room_wall_west, n: [1.0, 0.0, 0.0], d: 60.0}
+  - {name: room_wall_east, n: [1.0, 0.0, 0.0], d: 66.0}
+  - {name: room_wall_north, n: [0.0, 1.0, 0.0], d: 3.0}
+  - {name: room_wall_south, n: [0.0, 1.0, 0.0], d: -3.0}

@@ -1,0 +1,23 @@
+# E-04: corridor (degenerate along the corridor axis), nominal GNSS (ADR-011 section 5).
+# Runs twice on the same bag: pipeline_config (degeneracy off) and the degeneracy_on variant.
+id: E-04
+world: corridor
+profile: sim/noise/default.yaml
+pipeline_config: config/sim/corridor.yaml
+pipeline_config_variants:
+  degeneracy_on: config/sim/corridor_degeneracy_on.yaml
+trajectory: sim/trajectories/corridor_60s.yaml
+seed: 42
+duration_s: 70
+origin_lla: [21.0278, 105.8342, 12.0]  # lat_deg, lon_deg, alt_m; = corridor.sdf spherical_coordinates
+gnss:
+  - {mode: nominal, t_start_s: 0, t_end_s: 70}
+gnss_zones: []
+topics:
+  - /lidar/points
+  - /imu/data
+  - /gnss/fix
+  - /wheel/odom
+  - /ground_truth
+  - /tf_static
+  - /clock

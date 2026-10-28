@@ -1,0 +1,13 @@
+# E-01..E-03 route in sim/worlds/warehouse.sdf (ADR-011 section 5): a 24 m rectangular lap in
+# the aisle south of the 15 m shelf run (shelf face at y = 1.6, robot path at y = 0.8), starting
+# and ending at the spawn pose of warehouse.planes.yaml. About 55 s with the 5 s still start.
+# waypoints: [x_m, y_m] in world; speed_mps: cruise target (+-10 % per 5 m, seeded);
+# lookahead_m: pure-pursuit lookahead.
+waypoints:
+  - [-8.0, 0.8]
+  - [2.0, 0.8]
+  - [2.0, -1.2]
+  - [-8.0, -1.2]
+  - [-8.0, 0.8]
+speed_mps: 0.5
+lookahead_m: 1.0
