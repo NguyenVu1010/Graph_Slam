@@ -61,9 +61,13 @@ class Estimator {
     std::uint64_t n_uncovered_scans = 0;  ///< of those: IMU does not span the scan (EOF,
                                           ///< or IMU starting after the LiDAR)
     std::uint64_t n_map_rebuilds = 0;     ///< VoxelMap rebuilds after a keyframe correction
-    std::uint64_t n_gnss_factors = 0;     ///< GNSS factors added to the graph
-    std::uint64_t n_odom_factors = 0;     ///< wheel-odometry factors added to the graph
-    std::uint64_t n_gnss_late = 0;        ///< GNSS fixes older than the last processed scan
+    std::uint64_t n_degenerate_keyframes = 0;      ///< keyframes whose LiDAR factor had a flagged
+                                                   ///< (degenerate) direction (degeneracy.enabled)
+    std::uint64_t n_degenerate_rot_keyframes = 0;  ///< of those: a flagged direction is mostly
+                                                   ///< rotation (|phi_k| > |rho_k|)
+    std::uint64_t n_gnss_factors = 0;              ///< GNSS factors added to the graph
+    std::uint64_t n_odom_factors = 0;              ///< wheel-odometry factors added to the graph
+    std::uint64_t n_gnss_late = 0;           ///< GNSS fixes older than the last processed scan
     std::uint64_t n_gnss_ring_overflow = 0;  ///< GNSS fixes dropped: waiting-for-IMU ring full
     std::uint64_t n_gnss_unfused_eof = 0;    ///< GNSS fixes after the last IMU sample at flush()
     std::uint64_t n_gnss_realign = 0;  ///< GNSS aligner restarts after gnss.max_consecutive_rejects

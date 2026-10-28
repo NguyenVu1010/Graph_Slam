@@ -103,15 +103,17 @@ void set_core_test_hooks(const CoreTestHooks* hooks);
 
 /// Diagnostic counters of EstimatorCore, all since construction.
 struct CoreCounters {
-  std::uint64_t n_keyframes = 0;             ///< keyframes added to the graph
-  std::uint64_t n_match_failures = 0;        ///< scans whose scan matching failed
-  std::uint64_t n_skipped_scans = 0;         ///< scans that produced no estimate
-  std::uint64_t n_uncovered_scans = 0;       ///< of those: IMU does not span the scan
-  std::uint64_t n_map_rebuilds = 0;          ///< VoxelMap rebuilds (ADR-016)
-  std::uint64_t n_gnss_factors = 0;          ///< GNSS factors added
-  std::uint64_t n_gnss_rejected = 0;         ///< fixes rejected (gate_fix, chi-square, pose)
-  std::uint64_t n_gnss_late = 0;             ///< fixes older than the last processed scan start
-  std::uint64_t n_gnss_ring_overflow = 0;    ///< deferred fixes overwritten (ring full)
+  std::uint64_t n_keyframes = 0;                 ///< keyframes added to the graph
+  std::uint64_t n_match_failures = 0;            ///< scans whose scan matching failed
+  std::uint64_t n_skipped_scans = 0;             ///< scans that produced no estimate
+  std::uint64_t n_uncovered_scans = 0;           ///< of those: IMU does not span the scan
+  std::uint64_t n_map_rebuilds = 0;              ///< VoxelMap rebuilds (ADR-016)
+  std::uint64_t n_degenerate_keyframes = 0;      ///< keyframes with a flagged LiDAR direction
+  std::uint64_t n_degenerate_rot_keyframes = 0;  ///< of those: a rotation-dominant one flagged
+  std::uint64_t n_gnss_factors = 0;              ///< GNSS factors added
+  std::uint64_t n_gnss_rejected = 0;             ///< fixes rejected (gate_fix, chi-square, pose)
+  std::uint64_t n_gnss_late = 0;                 ///< fixes older than the last processed scan start
+  std::uint64_t n_gnss_ring_overflow = 0;        ///< deferred fixes overwritten (ring full)
   std::uint64_t n_gnss_unfused_eof = 0;      ///< deferred fixes left at end of data (no IMU after)
   std::uint64_t n_gnss_realign = 0;          ///< aligner restarts (gnss.max_consecutive_rejects)
   std::uint64_t n_nonfinite_imu = 0;         ///< IMU samples dropped (non-finite acc or gyro)

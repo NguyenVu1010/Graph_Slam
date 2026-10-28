@@ -295,3 +295,13 @@ ATE 12.85 m vs 12.97 m (printed, not asserted). The guard also fires without an 
 this corridor (1 restart at 60, 2 at 25): the front end drifts along the axis while `P` stays
 optimistic. With `relax_factor` 1e8 and `cov_scale` 4.7 the gate no longer locks out in the
 outage (larger `P`), so the test uses the shipped relax.
+
+## 12. Open items
+
+- **In the corridor, fused LiDAR + GNSS is not reliably better than raw GNSS alone.** In the
+  120 m corridor of section 8 (`CorridorDriftCorrectedByGnss`), raw GNSS at 0.5 m per axis is
+  about 0.87 m 3D RMS. With the PR 4b "unobserved" covariance (1000 m^2 along the axis) the
+  fused ATE is 0.51 / 0.59 / 1.70 m over seeds 42, 43, 44: better than raw GNSS on seeds 42 and
+  43, 1.95x worse on seed 44. On main the 15-seed median is 3.47 m (4x worse, ADR-021 table).
+  The defect exists on main, independent of PR 4b; it needs a diagnosis PR. PR 4b re-measured this corridor with its explicit variance
+  (`degeneracy.md` section 7).

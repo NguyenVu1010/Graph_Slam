@@ -229,7 +229,7 @@ inline ReplayResult run_box_world(bool gnss_and_wheel,
 
 // Corridor drift scenario (gnss_fusion_study.md section 8): an almost straight 30 m drive
 // in a 120 m corridor whose end walls are out of range, so the LiDAR has no information
-// along it and degeneracy relaxes that direction (relax_factor 1e8, scenario value).
+// along it and degeneracy marks that direction unobserved (kCorridorRelaxYaml).
 inline BoxWorldParams corridor_params() {
   BoxWorldParams p;
   p.box_half_m = Vec3(60.0, 2.5, 1.5);
@@ -245,10 +245,16 @@ struct CorridorRun {
 };
 
 // Scenario degeneracy overlay: the LiDAR covariance along the unobservable corridor axis
-// must be really large for GNSS to correct it (study section 8). PR 4b replaces this with
-// its scan_match.unobserved_var_m2 / unobserved_var_rad2 keys when it rebases on this PR.
+// must be really large for GNSS to correct it (study section 8). PR 4b: absolute detector
+// (eig_threshold 100) and an "unobserved" variance (scan_match.unobserved_var_m2 / _rad2)
+// in place of relax_factor 1e8. 1000 m^2 is chosen physically: a 32 m std per keyframe step,
+// larger than the along-axis drift scale of this run (tens of metres) and much larger than the
+// 0.5 m GNSS sigma, so the LiDAR factor does not resist the GNSS correction along the axis.
+// The variance sweep (degeneracy.md section 7, DegeneracyStudy.GnssCorridorVariance) is chaotic
+// in the variance, the seed and the rounding; it is evidence only, not how the value was chosen.
 inline const char* const kCorridorRelaxYaml =
-    "    degeneracy:\n      enabled: true\n      relax_factor: 1.0e8\n";
+    "    degeneracy:\n      enabled: true\n"
+    "    scan_match:\n      unobserved_var_m2: 1000.0\n      unobserved_var_rad2: 10.0\n";
 
 // Replays `data` with GNSS (no wheel: wheel speed would observe the corridor axis) on or off;
 // `gnss_keys`: more lines in the gnss section; `degeneracy_yaml`: the degeneracy section

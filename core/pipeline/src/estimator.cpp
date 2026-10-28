@@ -338,6 +338,8 @@ Estimator::Stats Estimator::stats() const {
   out.n_skipped_scans = c.n_skipped_scans;
   out.n_uncovered_scans = c.n_uncovered_scans;
   out.n_map_rebuilds = c.n_map_rebuilds;
+  out.n_degenerate_keyframes = c.n_degenerate_keyframes;
+  out.n_degenerate_rot_keyframes = c.n_degenerate_rot_keyframes;
   out.n_gnss_factors = c.n_gnss_factors;
   out.n_odom_factors = c.n_odom_factors;
   out.n_gnss_late = c.n_gnss_late;
