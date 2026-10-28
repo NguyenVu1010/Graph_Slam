@@ -183,6 +183,10 @@ GNSS fusion keys: `gnss.align_min_pairs` (accepted fixes before the w->e alignme
 `gnss.chi2_gate` (NIS threshold of the chi-square innovation gate, 3 DoF, default the 95 %
 quantile 7.81), `gnss.max_consecutive_rejects` (fixes; after that many chi-square rejections in
 a row the aligner restarts, so a front end that drifted during an outage can re-align).
+`gnss.attach_prealign_fixes` (ADR-022, default off) keeps the fixes received before the first
+alignment, the static ones of the IMU initialisation window included, in a buffer of
+`gnss.prealign_max_fixes` fixes and adds them as factors on their nearest keyframes once
+aligned, so the translation of the GNSS frame is tied to keyframe 0 by measurements.
 `gnss.enabled` is off in `config/default.yaml` until multipath and outage are evaluated; the
 sim scenarios turn it on by overlay. `backend.gnss_frame_variable` (ADR-019, default on)
 estimates `T_e_w` as one graph variable shared by all GNSS factors, with a prior from
