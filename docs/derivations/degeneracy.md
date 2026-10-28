@@ -84,7 +84,8 @@ variance is still a confident value along a direction the scan does not observe
 
 ## 4b. Unobserved covariance
 
-`unobserved_covariance(cov, report, var_m2, var_rad2)`: with `P = I - sum_{k flagged} v_k
+`unobserved_covariance(cov, report, cfg, var_trans_m2, var_rot_rad2, c)` (`var_m2` and
+`var_rad2` below are `var_trans_m2` and `var_rot_rad2`): with `P = I - sum_{k flagged} v_k
 v_k^T` and `D = diag(var_m2 I3, var_rad2 I3)`,
 
     cov' = P cov P + U',   then symmetrised,   U = P_F D P_F,   P_F = I - P,
@@ -111,8 +112,7 @@ If any entry of the lower triangle of H is NaN or Inf (or the eigen solver fails
 report is `lambda = 0`, `V = I` and, when enabled, every direction is flagged. Then
 `delta' = delta - sum_k e_k e_k^T delta = 0` (no update from a broken linearisation) and
 `A = sqrt(f) I`, so `cov' = f cov` (never NaN from H), and `unobserved_covariance` returns
-`D = diag(var_m2 I3, var_rad2 I3)` floored at `relax_factor * c / eig_threshold` whatever `cov`
-is (exactly `D` for `c = 0`, test `UnobservedCovariance.AxisDirectionsGetConfiguredVariance`).
+`D = diag(var_m2 I3, var_rad2 I3)` floored at `relax_factor * c / eig_threshold` for any finite `cov` (exactly `D` for `c = 0`, test `UnobservedCovariance.AxisDirectionsGetConfiguredVariance`).
 The scan matcher's `LLT(H_reg)` fails on a non-finite H ("singular Hessian"). When disabled
 nothing is flagged and the functions are identities.
 
@@ -198,7 +198,7 @@ the along-axis drift over the run, which reaches tens of metres (LiDAR-only ATE 
 its std must be of the order of the 30 m drive or more; 1000 m^2 is 32 m per keyframe step,
 far above the 0.5 m GNSS sigma. The test asserts, over seeds 42, 43, 44: on every seed more
 than 200 GNSS factors (no chi-square lock-out) and fused ATE <= 0.5 x LiDAR-only ATE, and a
-median fused ATE <= 2.18 m (1.2 x the 1.820 m of main 0d1df78).
+median fused ATE <= 2.18 m (owner decision).
 
 | seed | LiDAR-only ATE | fused ATE | ratio | GNSS factors |
 | --- | --- | --- | --- | --- |
@@ -222,15 +222,18 @@ is taken from it:
 A rounding-only change in the unobserved block (the basis-invariant `U = P_F D P_F`) moved
 seed 42 at 1000 m^2 from 1.78 to 0.51 m.
 
-**Open item: fused LiDAR + GNSS ATE in the corridor is 2 to 2.5 x worse than raw GNSS alone**
-(about 0.87 m 3D RMS for 0.5 m per axis; seed 44 gives 1.70 m, and the 0.51 to 0.59 m seeds
-are the lucky ones). The defect exists on main (15-seed median 3.47 m, ADR-021 table) and needs
-a diagnosis PR (`gnss_fusion_study.md`, open items).
+**Open item: in this corridor fusion is not reliably better than raw GNSS alone.** Raw GNSS at
+0.5 m per axis is about 0.87 m 3D RMS. On this branch the fused ATE is 0.51 / 0.59 / 1.70 m over
+seeds 42, 43, 44: better than raw GNSS on seeds 42 and 43, 1.95x worse on seed 44. On main the
+15-seed median is 3.47 m (4x worse, ADR-021 table). It needs a diagnosis PR
+(`gnss_fusion_study.md` section 12).
 
 ### Gazebo E-04 (measurement only)
 
-Recorded E-04 bag (#26, `feat-sim/results/e-04-final`), `config/sim/corridor.yaml` with the
-degeneracy settings changed, `mss_bench` on the mssdata, ATE after the `mss_eval.ate`
+E-04 bag recorded with the #26 pipeline (not committed): `tools/record_scenario.sh
+sim/scenarios/E-04.yaml results/<run-id>/` (`sim/README.md`), then `tools/run_integration.py
+--bridged results/<run-id>/` or `mss_bench` on its `mssdata/` with `config/sim/corridor.yaml`
+and the degeneracy settings changed, ATE after the `mss_eval.ate`
 alignment, split into horizontal and vertical (metres):
 
 | run | ATE | horizontal | vertical | keyframes (flagged) | GNSS factors | realigns |

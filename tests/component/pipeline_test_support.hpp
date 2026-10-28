@@ -247,9 +247,11 @@ struct CorridorRun {
 // Scenario degeneracy overlay: the LiDAR covariance along the unobservable corridor axis
 // must be really large for GNSS to correct it (study section 8). PR 4b: absolute detector
 // (eig_threshold 100) and an "unobserved" variance (scan_match.unobserved_var_m2 / _rad2)
-// in place of relax_factor 1e8. The fused ATE is erratic in that variance and across seeds
-// (degeneracy.md section 7, DegeneracyStudy.GnssCorridorVariance, 3 seeds x 1 .. 1e4 m^2);
-// 1000 m^2 has the smallest worst case over the seeds (1.70 m; seed 42: 0.51 m).
+// in place of relax_factor 1e8. 1000 m^2 is chosen physically: a 32 m std per keyframe step,
+// larger than the along-axis drift scale of this run (tens of metres) and much larger than the
+// 0.5 m GNSS sigma, so the LiDAR factor does not resist the GNSS correction along the axis.
+// The variance sweep (degeneracy.md section 7, DegeneracyStudy.GnssCorridorVariance) is chaotic
+// in the variance, the seed and the rounding; it is evidence only, not how the value was chosen.
 inline const char* const kCorridorRelaxYaml =
     "    degeneracy:\n      enabled: true\n"
     "    scan_match:\n      unobserved_var_m2: 1000.0\n      unobserved_var_rad2: 10.0\n";

@@ -298,10 +298,10 @@ outage (larger `P`), so the test uses the shipped relax.
 
 ## 12. Open items
 
-- **Fused LiDAR + GNSS ATE in the corridor is 2 to 2.5 x worse than raw GNSS alone.** In the
+- **In the corridor, fused LiDAR + GNSS is not reliably better than raw GNSS alone.** In the
   120 m corridor of section 8 (`CorridorDriftCorrectedByGnss`), raw GNSS at 0.5 m per axis is
-  about 0.87 m 3D RMS, but the fused ATE reaches 1.70 m (seed 44) with the PR 4b "unobserved"
-  covariance (1000 m^2 along the axis; seeds 42 and 43 give 0.51 and 0.59 m), and the median
-  over 15 seeds on main is 3.47 m (ADR-021 table). The defect exists on main, independent of
-  PR 4b; it needs a diagnosis PR. PR 4b re-measured this corridor with its explicit variance
+  about 0.87 m 3D RMS. With the PR 4b "unobserved" covariance (1000 m^2 along the axis) the
+  fused ATE is 0.51 / 0.59 / 1.70 m over seeds 42, 43, 44: better than raw GNSS on seeds 42 and
+  43, 1.95x worse on seed 44. On main the 15-seed median is 3.47 m (4x worse, ADR-021 table).
+  The defect exists on main, independent of PR 4b; it needs a diagnosis PR. PR 4b re-measured this corridor with its explicit variance
   (`degeneracy.md` section 7).

@@ -26,7 +26,7 @@ constexpr double kAxisTolRad = 5.0 * kDegToRad;  // D-01 criterion
 constexpr double kPointSigmaM = 0.01;
 constexpr double kNormalSigma = 0.01;
 constexpr std::uint32_t kSeed = 42;
-// Absolute mode, eig_threshold 100 (the pre-PR-4b default) with the feature flag on.
+// config/default.yaml eig_threshold / relax_factor with the flag on.
 constexpr DegeneracyConfig kCfg{true, 100.0, 10.0};
 
 common::Vec6 corridor_axis6() {

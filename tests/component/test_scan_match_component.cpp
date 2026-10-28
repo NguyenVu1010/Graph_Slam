@@ -579,7 +579,7 @@ TEST(ScanMatchComponent, D03_CorridorProjectedNotSingular) {
 
   // cov = P (c A^-1) P + sum_k flagged (v_k^T D v_k) v_k v_k^T, c = cov_scale * s2 > 0, P the
   // projector onto the unflagged directions. On the observed subspace P cov P = c (Q^T H Q)^-1
-  // (Q an orthonormal basis of it), so P cov H P = c P (1e-9 relative, both modes); the flagged
+  // (Q an orthonormal basis of it), so P cov H P = c P (1e-9 relative); the flagged
   // direction is decoupled; along the corridor axis the variance is unobserved_var_m2.
   const double var_m2 = f.cfg.scan_match.unobserved_var_m2;
   Mat6 proj = Mat6::Identity();

@@ -60,8 +60,9 @@ using namespace ct;  // NOLINT(google-build-using-namespace): shared test helper
 // three seeds 1.70 m at 1000 m^2, 2.94 m at 100, 3.38 m at 1e4, 23.9 m at 1). The response is
 // chaotic in the seed, so the test asserts robust properties over seeds 42, 43, 44: on every
 // seed no chi-square lock-out (> 200 GNSS factors) and fused ATE <= 0.5 x LiDAR-only ATE, and
-// the median fused ATE <= 1.2 x the 1.820 m of main 0d1df78. Open item (gnss_fusion_study.md):
-// the fused ATE is 2 to 2.5 x worse than raw GNSS alone (about 0.87 m), also on main.
+// the median fused ATE <= 2.18 m (owner decision). Open item (gnss_fusion_study.md section 12):
+// the fused ATE is not consistently better than raw GNSS alone (about 0.87 m): 0.51 / 0.59 /
+// 1.70 m over seeds 42..44 (0.6x to 2x), and a 15-seed median of 3.47 m on main (4x).
 TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
   std::vector<double> fused_m;
   for (const std::uint32_t seed : {42U, 43U, 44U}) {
@@ -81,9 +82,9 @@ TEST(PipelineComponent, CorridorDriftCorrectedByGnss) {
   }
   if (kWithGtsam) {
     std::sort(fused_m.begin(), fused_m.end());
-    constexpr double kMainFusedAteM = 1.820;  // m, CorridorDriftCorrectedByGnss on 0d1df78
+    constexpr double kMedianFusedAteBoundM = 2.18;  // m, owner decision (b) on PR 4b review I3
     std::printf("[ corridor ] fused ATE median %.3f m over seeds 42..44\n", fused_m[1]);
-    EXPECT_LE(fused_m[1], 1.2 * kMainFusedAteM);
+    EXPECT_LE(fused_m[1], kMedianFusedAteBoundM);
   }
 }
 
