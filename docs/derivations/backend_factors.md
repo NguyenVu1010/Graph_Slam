@@ -385,7 +385,8 @@ double count is negligible.
 
 Consistency check (ADR-020; evaluated and shipped off, `backend.static_gravity_check_keyframes:
 0`): with a value > 0, after that keyframe is optimised, `Graph::static_gravity_chi2()`
-returns the factor's **innovation statistic** against the rest of the graph. In whitened units (`W` the factor's square-root
+returns the factor's **innovation statistic** against the rest of the graph.
+In whitened units (`W` the factor's square-root
 information), with `e = W r` at the estimate, `J = W dr/d[X_k, B_k]`, `P` the joint marginal
 covariance of `(X_k, B_k)` with the factor and `P_rest` without it:
 
