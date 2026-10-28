@@ -34,12 +34,44 @@ so their noise is `P Sigma_m P^T` (checked by
 
 Centred on the keyframe guess `x0`:
 
-- `PriorFactor<Pose3>(X(0), x0.T_w_b)`, error `Logmap(x0^-1 T)` in `[phi, rho]`, sigmas
+- `PosePriorFactor(X(0), x0.T_w_b)` (§2b), error `Logmap(x0^-1 T)` in `[phi, rho]`, sigmas
   `[prior_rot_sigma_rad x3, prior_pos_sigma_m x3]`. In mss order this is the header's
   `diag(prior_pos^2 x3, prior_rot^2 x3)` on the `[rho, phi]` tangent of `T_w_b`.
 - `PriorFactor<Vector3>(V(0), x0.v_w_b)`, sigma `prior_vel_sigma_mps x3`.
 - `PriorFactor<ConstantBias>(B(0), x0.bias)`, sigmas
   `[prior_bias_acc_sigma_mps2 x3, prior_bias_gyro_sigma_radps x3]`.
+
+## 2b. Pose prior (`detail::PosePriorFactor`)
+
+Every pose prior in `Graph` uses it: keyframe 0 (§2), the re-anchor prior of an orphaned
+component (§9) and the prior of the GNSS frame variable `E` (§6b). Variable `X` (Pose3,
+right perturbation `[dphi, drho]`), prior `X0` (a fixed pose of the same frames):
+
+    e   = P r_m,   r_m = Log(X0^-1 X)            ([rho, phi] -> [phi, rho], rad / m)
+    H   = P Jr^-1(r_m) P                          (6x6, d e / d xi_g)
+
+`r_m` and `Jr^-1(r_m)` come from `odom::relative_pose_residual(X0, X, Identity)` (its
+`J_r_xi_j`); the permutation is that of §1, as in `Se3RelativePoseFactor` (§5).
+
+Why not `gtsam::PriorFactor<Pose3>`: it returns the same error `-Local(X, X0) =
+Logmap(X0^-1 X)` (with `GTSAM_POSE3_EXPMAP`), so the cost and the `[phi, rho]` sigmas are
+unchanged, but its Jacobian is the identity, which is `Jr^-1(r_m)` only at `r_m = 0`. The
+error of the identity grows with the residual: about `1/2 |phi|` in the rotation block plus a
+`1/2 [rho]_x` coupling of rotation into translation. At 30 deg / 10 m and 90 deg / 5 m it
+is more than 30 % (relative Frobenius, control test below). Where it matters:
+
+- keyframe 0 sits about 1.8 sigma from its prior in B-04; there the identity Jacobian put
+  0.087 of error into the cost gradient, so the Gauss-Newton fixed point that iSAM2
+  converges to was not the cost minimum (true gradient 0.09);
+- the prior of `E` has a loose yaw (`gnss_frame_yaw_sigma_rad`) and position sigma, so `E`
+  moves far from it: in the GNSS fusion study, up to 38 deg of yaw and 1.9 m (box world,
+  GNSS 2 m) and 5.2 m (corridor);
+- a re-anchor prior is centred on a guess, not on an estimate.
+
+The SE(3) Log residual of `PriorFactor<Pose3>` is kept, not the decoupled chart of §5: the
+prior sigmas are set for it and are a regularisation, not a measured covariance in another
+chart, and keeping the residual makes this a pure linearisation fix (same cost at every
+point, no YAML flag).
 
 ## 3. IMU factor (`detail::ImuPreintFactor`)
 
@@ -293,8 +325,8 @@ that of section 6. For `E`, `R_e_w Exp(dphi) q ~= R_e_w q - R_e_w skew(q) dphi` 
 
     d r / [dphi, drho]_E = [ -R_e_w skew(q) ,  R_e_w ]
 
-`E` gets one prior when it is created (first accepted `add_gnss_factor`, kept with the
-keyframe-0 priors), centred on the aligner's `T_e_w` of that call, GTSAM order
+`E` gets one prior (`PosePriorFactor`, §2b) when it is created (first accepted
+`add_gnss_factor`, kept with the keyframe-0 priors), centred on the aligner's `T_e_w` of that call, GTSAM order
 `[phi, rho]`, diagonal sigmas
 
     [tilt, tilt, yaw, pos, pos, pos]  =  [gnss_frame_tilt_sigma_rad (x2),
@@ -446,7 +478,7 @@ that tied the keyframes added since the last success to the anchored graph, and 
 never adds them again. Every keyframe whose pose is not in iSAM2 after a failure is marked
 orphaned. In each `optimize()`, the keys of the pending factors are split into connected
 components (by shared factors); a component that holds no key already in iSAM2 and not
-`X(0)`, and contains an orphaned keyframe, gets a `PriorFactor<Pose3>` on its lowest pose
+`X(0)`, and contains an orphaned keyframe, gets a `PosePriorFactor` (§2b) on its lowest pose
 key (the oldest keyframe of the island), centred on that keyframe's guess, with the
 first-keyframe sigmas (§2), and one warning line. A keyframe stops being orphaned once its
 pose is in iSAM2. Components without an orphaned keyframe are not anchored, so an
@@ -473,6 +505,7 @@ accepted IMU factor ends at `i`, priors on `V(i)` and `B(i)` with the first-keyf
 | §6 GNSS Jacobian and sign | B-01 `BackendFactors.B01_GnssFactorJacobians`, `BackendFactors.B01_GnssFactorZeroWhenConsistent` |
 | §7 rank-3 odom whitening and Jacobians | B-01 `BackendFactors.B01_OdomFactorRotatedSingularCov`, `BackendFactors.B01_OdomFactorZeroCovRejected` |
 | §5 exact Jacobians of `se3_exact` and `decoupled` (numerical < 1e-6 and `EXPECT_CORRECT_FACTOR_JACOBIANS`, small and 30 deg / 5 m residuals; known residual and whitened error); `se3_exact` = GTSAM's exact `Logmap` chain and the `between` error; `between` control at the large residual | B-01 `BackendFactors.B01_Se3RelativePoseFactorJacobians`, `BackendFactors.B01_DecoupledRelativePoseFactorJacobians`, `BackendFactors.B01_Se3RelativePoseFactorMatchesGtsamExactChain`, `BackendFactors.B01_BetweenFactorJacobianApproximateAtLargeResidual` |
+| §2b pose prior: numerical < 1e-6 and `EXPECT_CORRECT_FACTOR_JACOBIANS` at small residuals and at 30 deg yaw / 10 m and 90 deg tilted / 5 m; error equal to `PriorFactor<Pose3>` to 1e-12; zero at the prior; `PriorFactor<Pose3>` control (> 1e-2 relative at the large offsets) | B-01 `BackendFactors.B01_PosePriorFactorJacobians`, `BackendFactors.B01_PriorFactorPose3JacobianApproximateAtLargeResidual` |
 | §5 Cauchy wrap of both exact forms (numerical at zero error; `sqrt(w)` scaling at 0.1 and at the large residual) | B-01 `BackendFactors.B01_RelativePoseRobustLoopJacobians` |
 | §5 permuted noise and Cauchy wrap of the `between` form (numerical at zero error; `sqrt(w)` scaling at 0.1) | B-01 `BackendFactors.B01_BetweenAndRobustLoopJacobians` |
 | §5 estimate consistent with its marginal along an unobserved axis, per form (each under its own noise model); `between` control | `BackendComponent/UnobservedAxis.EstimateConsistentWithMarginal/{se3_exact,decoupled}`, `BackendComponent.UnobservedAxisBetweenFactorControlIsInconsistent` |

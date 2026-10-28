@@ -160,14 +160,18 @@ p95 cao hơn 0,15 ms, trong độ trải giữa các lần chạy (main 5,72 đ�
   mét, không chỉ tại phép đo.
 - Loop dùng cùng dạng bên trong kernel Cauchy.
 - Test `BackendIsam.B04_IsamMatchesBatchReference` dựng tham chiếu batch theo dạng
-  đã cấu hình và chạy cho cả ba dạng. Tham chiếu là điểm cố định Gauss-Newton batch của cùng
-  phép tuyến tính hoá mà iSAM2 dùng: LM, rồi 10 vòng linearize / giải / retract, và test khẳng
-  định gradient của tham chiếu < 1e-5 (đo được 2,4e-7 với hai dạng chính xác, 4,5e-8 với
-  `between`). LM thuần không phải tham chiếu hợp lệ: `gtsam::PriorFactor<Pose3>` (keyframe 0)
-  trả Jacobian đơn vị cho phần dư `Logmap` (dạng `between` cũng vậy với `BetweenFactor<Pose3>`),
-  nên điểm cố định của phép tuyến tính hoá không phải cực tiểu của chi phí (gradient thật cỡ
-  0,09 tại ước lượng iSAM2, so với 7,9e-7 theo Jacobian), và LM, vốn nhận bước theo chi phí
-  thật, rời điểm đó rồi dừng ở cận trên lambda. Giới hạn 1e-6 không đổi; chênh lệch đo được cỡ
-  1e-10 ở cả ba dạng.
+  đã cấu hình và chạy cho cả ba dạng (cập nhật 2026-10-28, xem dòng bên dưới). Với hai
+  dạng chính xác, tham chiếu là cực tiểu LM của chi phí thật, test khẳng định gradient sai phân
+  trung tâm của chi phí < 1e-4 (đo được 1,7e-5) và iSAM2 khớp trong 3,3e-9. Với `between`,
+  `BetweenFactor<Pose3>` vẫn có Jacobian gần đúng, nên điểm cố định của phép tuyến tính hoá
+  không phải cực tiểu của chi phí (gradient thật 0,66 tại đó); tham chiếu là LM rồi 10 vòng
+  Gauss-Newton (linearize / giải / retract) tới điểm cố định, gradient của phép tuyến tính
+  hoá < 1e-5 (đo được 4,7e-8), iSAM2 khớp trong 1,4e-10. Giới hạn 1e-6 không đổi.
+- 2026-10-28 (PR `fix(backend): exact-Jacobian pose prior`, sau #27): `gtsam::PriorFactor<Pose3>`
+  cũng trả Jacobian đơn vị cho phần dư `Logmap` (cùng lỗi với `BetweenFactor<Pose3>`). Nó được
+  thay bằng `detail::PosePriorFactor` (cùng phần dư, Jacobian `P Jr^-1 P` chính xác) ở cả ba
+  chỗ: keyframe 0, prior re-anchor và prior của biến khung GNSS `T_e_w`
+  (`derivations/backend_factors.md` §2b). Chi phí không đổi, chỉ phép tuyến tính hoá đổi, nên
+  không có cờ YAML.
 - Chi phí: một `Jr^-1` SO(3) (3x3) mỗi lần tính factor, không đo được trên E-01.
 - Với suy biến quay (không phải tịnh tiến), không chart nào chính xác; chưa có cảnh đánh giá.
