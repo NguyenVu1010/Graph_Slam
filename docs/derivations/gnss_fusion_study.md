@@ -501,6 +501,14 @@ Only the oracles do. Of the switches that could be shipped, four do nothing (gat
 fixed, 1e6 m^2, dropping old fixes) and one helps only a little (tight translation prior,
 still 2x raw GNSS). `CorridorDriftCorrectedByGnss` keeps its bounds.
 
+Production behaviour is unchanged. The only core change is the study seam
+`CoreTestHooks::gnss_shift_oracle`, which adds one null-pointer test per collected fix in
+`GnssFusion::collect` (per keyframe), the same pattern as `force_T_e_w`. Against main 9c7da91:
+
+- E-01..E-03 `est.tum` md5 are equal (`tools/run_integration.py`, all gates pass);
+- E-01 bench, median of 5 interleaved runs: scan p50 / p95 4.36 / 5.86 ms vs 4.35 / 5.92 ms;
+  replay wall 3.87 s vs 3.92 s; CPU 2.74 s vs 2.75 s.
+
 ### 13.6 What to build and measure next
 
 Each item is a design change (ADR). Measure it with this driver on the 15 seeds, against
