@@ -1145,6 +1145,9 @@ void score_seed(StudyReport& rep,
   const Round2Run rl = round2_run(pc, dc / "data", dc / ("l" + vd), true, false, yaml, {});
   const Round2Run rb = round2_run(pb, db / "data", db / vd, false, false, yaml, {});
   sc.gnss_ate.push_back(rg.ate_m);
+  // Per-seed corridor ATEs for a paired comparison between two builds (unbuffered).
+  std::printf("PERSEED %s seed %u gnss %.6f lidar %.6f\n", vd.c_str(), seed, rg.ate_m, rl.ate_m);
+  std::fflush(stdout);
   sc.lidar_ate.push_back(rl.ate_m);
   sc.nees.push_back(rb.nees6);
   ImuStudyObserver oc(p1);
