@@ -1,8 +1,10 @@
 // B-03 (robust outlier loop), B-04 (iSAM2 vs batch Levenberg-Marquardt), determinism.
 // Derivation: docs/derivations/backend_factors.md.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <optional>
 #include <random>
 #include <string>
@@ -11,7 +13,6 @@
 #include <gtest/gtest.h>
 #include <gtsam/linear/LossFunctions.h>
 #include <gtsam/linear/NoiseModel.h>
-#include <gtsam/nonlinear/GaussNewtonOptimizer.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/PriorFactor.h>
@@ -320,8 +321,17 @@ void build_batch(const B04Inputs& in,
           gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(in.loop.cov)))));
 }
 
+constexpr int kB04GaussNewtonIterations = 10;  // fixed Gauss-Newton steps after LM (B04)
+
+std::string sci(double v) {  // scientific notation for RecordProperty
+  std::array<char, 32> buf{};
+  std::snprintf(buf.data(), buf.size(), "%.3e", v);
+  return buf.data();
+}
+
 // Every relative-factor form (default decoupled, ADR-021; between and se3_exact selectable):
-// iSAM2 converges to the batch Levenberg-Marquardt optimum of the same factors.
+// iSAM2 agrees with the batch solution of the same factors (LM, then Gauss-Newton to the
+// fixed point of the linearisation).
 TEST(BackendIsam, B04_IsamMatchesBatchLevenbergMarquardt) {
   const B04Inputs in = b04_inputs();
   for (const RelativeFactor form :
@@ -343,29 +353,39 @@ TEST(BackendIsam, B04_IsamMatchesBatchLevenbergMarquardt) {
     params.relativeErrorTol = 1e-15;
     params.absoluteErrorTol = 1e-15;
     params.maxIterations = 100;
-    // LM stalls at its lambda upper bound once the cost changes it compares (about 1e-9 here)
-    // reach the cost-evaluation noise floor; with the exact relative-factor forms that happens
-    // before the stationary point (gradient 1.6e-3 left at the LM result for decoupled, against
-    // < 6e-7 at the iSAM2 estimate). Gauss-Newton from the LM result uses only the
-    // linearisation and finishes the descent, so the reference is the batch stationary point.
-    const gtsam::Values batch_lm =
-        gtsam::LevenbergMarquardtOptimizer(graph, init, params).optimize();
-    gtsam::GaussNewtonParams gn_params;
-    gn_params.relativeErrorTol = 1e-15;
-    gn_params.absoluteErrorTol = 1e-15;
-    gn_params.maxIterations = 20;
-    const gtsam::Values batch = gtsam::GaussNewtonOptimizer(graph, batch_lm, gn_params).optimize();
+    // The reference is the batch Gauss-Newton fixed point of the same linearisation iSAM2
+    // uses. Plain LM is not a valid reference: gtsam::PriorFactor<Pose3> (keyframe 0) returns
+    // an identity Jacobian for its Logmap residual (and so does BetweenFactor<Pose3> in the
+    // between form), so the linearisation's fixed point is not the cost minimum (true cost
+    // gradient about 0.09 there), and LM, which accepts steps by the true cost, stalls at its
+    // lambda bound away from it. LM gives the start; fixed Gauss-Newton iterations
+    // (linearize, solve, retract) reach the fixed point, which is asserted.
+    gtsam::Values batch = gtsam::LevenbergMarquardtOptimizer(graph, init, params).optimize();
+    for (int it = 0; it < kB04GaussNewtonIterations; ++it) {
+      batch = batch.retract(graph.linearize(batch)->optimize());
+    }
+    const double grad_norm = graph.linearize(batch)->gradientAtZero().vector().norm();
+    RecordProperty("reference_gradient_norm_form_" + std::to_string(static_cast<int>(form)),
+                   sci(grad_norm));
+    ASSERT_LT(grad_norm, 1e-5);  // the reference is converged
 
+    double worst = 0.0;  // largest pose / velocity / bias difference over the keyframes
     for (KeyId k = 0; k < 6; ++k) {
       const NavState x = state_or_fail(g, k);
       const Pose T_batch = detail::from_gtsam(batch.at<gtsam::Pose3>(detail::pose_key(k)));
-      EXPECT_LT(common::se3_log(T_batch.inverse() * x.T_w_b).norm(), 1e-6) << "keyframe " << k;
-      EXPECT_LT((batch.at<gtsam::Vector3>(detail::vel_key(k)) - x.v_w_b).norm(), 1e-6);
+      const double d_pose = common::se3_log(T_batch.inverse() * x.T_w_b).norm();
+      const double d_vel = (batch.at<gtsam::Vector3>(detail::vel_key(k)) - x.v_w_b).norm();
       const common::ImuBias b =
           detail::from_gtsam(batch.at<gtsam::imuBias::ConstantBias>(detail::bias_key(k)));
-      EXPECT_LT((b.ba - x.bias.ba).norm(), 1e-6) << "keyframe " << k;
-      EXPECT_LT((b.bg - x.bias.bg).norm(), 1e-6) << "keyframe " << k;
+      const double d_ba = (b.ba - x.bias.ba).norm();
+      const double d_bg = (b.bg - x.bias.bg).norm();
+      EXPECT_LT(d_pose, 1e-6) << "keyframe " << k;
+      EXPECT_LT(d_vel, 1e-6) << "keyframe " << k;
+      EXPECT_LT(d_ba, 1e-6) << "keyframe " << k;
+      EXPECT_LT(d_bg, 1e-6) << "keyframe " << k;
+      worst = std::max({worst, d_pose, d_vel, d_ba, d_bg});
     }
+    RecordProperty("worst_difference_form_" + std::to_string(static_cast<int>(form)), sci(worst));
   }
 }
 
