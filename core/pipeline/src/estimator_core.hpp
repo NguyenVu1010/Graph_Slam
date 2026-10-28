@@ -94,6 +94,10 @@ struct CoreTestHooks {
   std::function<common::PoseCovariance(common::Timestamp, const common::PoseCovariance&)> lidar_cov;
   /// Study: when set, the static-gravity factor covariance is static_gravity_cov(f_b, cov).
   std::function<common::Mat3(const common::Vec3&, const common::Mat3&)> static_gravity_cov;
+  /// Study (gnss_fusion_study.md section 13): when set, a GNSS fix is shifted to its keyframe
+  /// by gnss_shift_oracle(t_fix, t_k), the antenna displacement in w, instead of the front-end
+  /// poses (GnssFusion::collect).
+  std::function<common::Vec3(common::Timestamp, common::Timestamp)> gnss_shift_oracle;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).

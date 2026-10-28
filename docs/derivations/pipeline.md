@@ -183,6 +183,8 @@ leaves it too (`Stats::n_gravity_factor_unchecked`, one info line).
 
 `detail::CoreTestHooks` (`estimator_core.hpp`, `set_core_test_hooks`) lets the studies and
 component tests observe factors, force `T_e_w`, change the keyframe rule, replace a LiDAR
-measurement or covariance, and override the gravity factor's covariance. The core keeps one
+measurement or covariance, override the gravity factor's covariance, and replace the shift
+of a GNSS fix to its keyframe (section 5) with a given displacement (`gnss_shift_oracle`,
+`gnss_fusion_study.md` section 13). The core keeps one
 `const CoreTestHooks*`, read at construction. It is never set outside tests: production
 builds pass nullptr, and every branch on it is a null-pointer test.

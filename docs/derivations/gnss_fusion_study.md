@@ -301,7 +301,311 @@ outage (larger `P`), so the test uses the shipped relax.
 - **In the corridor, fused LiDAR + GNSS is not reliably better than raw GNSS alone.** In the
   120 m corridor of section 8 (`CorridorDriftCorrectedByGnss`), raw GNSS at 0.5 m per axis is
   about 0.87 m 3D RMS. With the PR 4b "unobserved" covariance (1000 m^2 along the axis) the
-  fused ATE is 0.51 / 0.59 / 1.70 m over seeds 42, 43, 44: better than raw GNSS on seeds 42 and
-  43, 1.95x worse on seed 44. On main the 15-seed median is 3.47 m (4x worse, ADR-021 table).
-  The defect exists on main, independent of PR 4b; it needs a diagnosis PR. PR 4b re-measured this corridor with its explicit variance
-  (`degeneracy.md` section 7).
+  fused ATE is 0.51 / 0.59 / 1.70 m over seeds 42, 43, 44. Over seeds 42..56 the median is
+  1.99 m, and four seeds are above 14 m (section 13).
+  - Section 13 diagnoses this. The dominant cause is the GNSS frame `E`, whose initial value
+    comes from front-end dead reckoning along the axis. A frame oracle alone gives 0.30 m, below
+    raw GNSS on 13 of 15 seeds (CI excludes 0).
+  - A secondary, independent cause is the shift of each fix to its keyframe with the front-end
+    poses. Once the frame is right, removing it cuts the tail (max 4.09 to 0.35 m, CI excludes
+    0).
+  - No switch that could be shipped closes the gap, so nothing is fixed yet. Section 13.6
+    lists the designs to build next, smallest first.
+- **With the shipped defaults (degeneracy off), this corridor never moves.** Scan matching
+  succeeds on every scan, but the estimate stays at the start: one keyframe, no GNSS factor,
+  17.35 m ATE (section 13.3, H3). The "3.47 m on main" quoted here before came from the ADR-021
+  table, measured with degeneracy on before PR #29.
+
+## 13. Corridor fusion diagnosis
+
+Driver: `GnssCorridorStudy.Diagnosis` in `tests/component/test_gnss_corridor_study.cpp`.
+
+- It is skipped unless `MSS_GNSS_CORRIDOR_STUDY=1` (GTSAM build), and takes about 17 min on the
+  desktop WSL.
+- It writes `results/<MSS_GNSS_CORRIDOR_RUN_ID or gnss-corridor-study>/gnss_corridor_study.md`,
+  plus a `gnss_factors.csv` and a `keyframes.csv` per run.
+- `MSS_GCS_VARIANTS`, `MSS_GCS_FIRST_SEED` and `MSS_GCS_LAST_SEED` select a subset.
+
+Scene: `corridor_params()` (60 s cruise at 0.5 m/s, GNSS 0.5 m per axis at 5 Hz, no wheel),
+seeds 42..56, GTSAM. Measured at a8a2bf9; the branch was rebased onto 9c7da91 (docs-only
+difference). The runs are deterministic: three full runs gave identical per-seed lines.
+
+The reference (`ref`) is the scene of `CorridorDriftCorrectedByGnss`: degeneracy on, absolute
+detector, 1000 m^2 / 10 rad^2 along flagged directions. The other variants either change one
+switch, or use the oracles of two test seams (named as such in 13.2):
+
+- **`force_T_e_w` (the "aligner-frame oracle").** It puts the true `T_e_w` in four places: the
+  centre of the `E` prior, the chi-square gate, the rotation of the shift, and the frozen
+  factor frame when `gnss_frame_variable` is false. It also turns the aligner off.
+- **`gnss_shift_oracle`.** It replaces only the displacement in w, which `collect()` still
+  rotates into e with the aligner's `R_e_w`.
+
+Metrics, all against the analytic truth without alignment:
+
+- fused ATE of the published estimates, split along the corridor axis (w x), lateral (w y) and
+  vertical (w z);
+- raw GNSS RMS (3-D, and its component along w x) over the fixes after the IMU initialisation;
+- the LiDAR-only ATE of the same data and degeneracy settings;
+- GNSS factors, and fixes not accepted after the first accepted one (chi-square rejections,
+  plus the not-aligned fixes after a realign);
+- the aligner's `T_e_w` at the first and the last GNSS factor against the truth. This is the
+  centre of the `E` prior, or, with `gnss_frame_variable` false, the frame the factors use;
+- `E` at the end against its prior centre and against the true `T_e_w`, both as the x
+  translation and yaw of `A^-1 E` in w ("n/a" without a frame variable). This x is the
+  along-axis offset that `E` puts on the trajectory: the published along-axis error is about
+  minus this x;
+- the along-axis marginal sigma and NEES (1 DoF) of each optimised keyframe after the first
+  GNSS factor;
+- the NEES of each GNSS factor against the truth at its keyframe (expected 3);
+- the error, along w x, of the shift of each fix to its keyframe (`pipeline.md` section 5):
+  the factor residual against the truth minus the raw fix noise;
+- scan-match failures (`Stats::n_match_failures`).
+
+Paired statistics: median, wins / losses, and the 95 % bootstrap CI of the median per-seed
+difference. The bootstrap uses 20000 resamples with `std::mt19937` seeded 7, and index
+`rng() % n`, so the CI does not depend on the standard library. With n = 15, a CI bound within
+about 0.1 m of 0 is not robust: the resampling RNG alone moved such bounds by up to 1 m in
+review. Read those bounds as "about 0".
+
+### 13.1 Reference, per seed
+
+| seed | fused ATE | along x / lateral y / vertical z | raw GNSS 3D / x | LiDAR-only | GNSS factors (not accepted) | aligner yaw err at first factor (deg) | E - truth: x (m), yaw (deg) | end kf sigma x | kf NEES x (> 3 sigma) | GNSS factor NEES vs truth | shift error RMS / max along x |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 42 | 0.51 | 0.39 / 0.003 / 0.32 | 0.83 / 0.49 | 35.1 | 273 (0) | +0.2 | +0.02, -0.1 | 0.45 | 0.4 (0 %) | 2.9 | 0.14 / 0.49 |
+| 43 | 0.59 | 0.58 / 0.004 / 0.11 | 0.83 / 0.49 | 18.7 | 268 (2) | -5.8 | +0.49, -0.2 | 0.32 | 3.2 (0 %) | 2.8 | 0.09 / 0.36 |
+| 44 | 1.70 | 1.68 / 0.054 / 0.26 | 0.88 / 0.49 | 19.4 | 260 (11) | -2.2 | -1.42, -0.5 | 0.52 | 6.6 (30 %) | 8.9 | 1.21 / 4.33 |
+| 45 | 1.99 | 1.80 / 0.036 / 0.86 | 0.86 / 0.52 | 58.4 | 253 (19) | +1.3 | +0.11, -0.5 | 0.35 | 10.0 (15 %) | 8.4 | 1.20 / 3.76 |
+| 46 | 1.24 | 1.21 / 0.005 / 0.27 | 0.87 / 0.47 | 18.1 | 265 (2) | +4.9 | +1.25, +0.4 | 0.46 | 7.2 (29 %) | 3.0 | 0.14 / 0.47 |
+| 47 | 0.65 | 0.64 / 0.003 / 0.10 | 0.87 / 0.50 | 8.5 | 254 (5) | +2.9 | +0.43, -0.1 | 0.41 | 1.8 (0 %) | 3.0 | 0.19 / 0.94 |
+| 48 | 3.76 | 3.75 / 0.010 / 0.32 | 0.87 / 0.49 | 24.1 | 254 (10) | -1.8 | +0.82, -0.5 | 0.34 | 44.9 (68 %) | 39.9 | 3.04 / 6.92 |
+| 49 | 0.77 | 0.67 / 0.005 / 0.39 | 0.84 / 0.50 | 23.3 | 270 (1) | -3.5 | +0.52, +0.1 | 0.34 | 3.1 (4 %) | 3.0 | 0.21 / 0.71 |
+| 50 | 3.20 | 2.95 / 0.052 / 1.24 | 0.88 / 0.53 | 40.1 | 224 (45) | +0.2 | +1.93, -0.3 | 0.39 | 19.3 (29 %) | 17.9 | 1.93 / 4.68 |
+| 51 | 35.63 | 35.63 / 0.040 / 0.57 | 0.91 / 0.54 | 279.7 | 228 (21) | -178.9 | -2.83, -177.7 | 0.67 | 2621.7 (100 %) | 41.4 | 3.14 / 6.92 |
+| 52 | 37.02 | 37.02 / 0.060 / 0.37 | 0.84 / 0.49 | 128.7 | 112 (128) | +131.8 | -1.82, -176.2 | 0.63 | 1690.1 (100 %) | 6.9 | 1.09 / 2.74 |
+| 53 | 14.53 | 14.53 / 0.029 / 0.22 | 0.87 / 0.50 | 45.7 | 104 (86) | +4.2 | +6.34, +49.3 | 0.29 | 626.3 (100 %) | 50.7 | 3.52 / 7.19 |
+| 54 | 27.70 | 27.69 / 0.234 / 0.66 | 0.86 / 0.49 | 12.3 | 160 (116) | -1.4 | +1.01, -176.9 | 0.88 | 4626.0 (86 %) | 21.6 | 2.14 / 4.86 |
+| 55 | 3.91 | 2.79 / 0.085 / 2.74 | 0.84 / 0.45 | 54.2 | 231 (29) | -0.3 | +0.21, -0.7 | 0.57 | 6.5 (20 %) | 17.4 | 1.88 / 4.46 |
+| 56 | 0.42 | 0.30 / 0.004 / 0.29 | 0.86 / 0.52 | 4.7 | 267 (1) | +3.3 | +0.04, +0.1 | 0.47 | 0.2 (0 %) | 2.9 | 0.12 / 0.57 |
+| median | 1.99 | 1.80 / 0.029 / 0.32 | 0.86 / 0.49 | 24.1 | 254 (11) | | | 0.45 | 7.2 | 8.4 | 1.20 / 3.76 |
+
+Along-axis RMS per 10 s window (median over seeds, m, windows from t0): 0.10 / 1.45 / 3.80 /
+0.97 / 1.58 / 1.40 / 1.02. The error is along the axis (median lateral 3 cm, vertical 0.3 m).
+The runs fall into two groups:
+
+- Seeds 42, 43, 47, 49 and 56: shift errors of 0.1 to 0.2 m, GNSS factor NEES about 3, fused
+  ATE 0.4 to 0.8 m, at or below raw GNSS.
+- The other ten: shift errors of 1 to 3.5 m RMS (up to 7 m), GNSS factor NEES 7 to 51, and
+  keyframe NEES along the axis 6 to 4600, so the estimate is over-confident along the axis. On
+  seeds 51 to 54, `E` ends with its yaw 49 deg or about 180 deg from the truth, and the fused
+  trajectory runs backwards along the corridor (15 to 37 m ATE). Section 13.3 (H2) gives the
+  two origins of these flips.
+
+The along-axis marginal sigma at the end is 0.3 to 0.9 m.
+
+### 13.2 Ablations (15 paired seeds)
+
+Cells: fused ATE in m, median (max) | wins / losses against `ref` | 95 % CI of the median paired
+difference (variant - ref). The last column compares the same runs with the raw GNSS 3-D RMS of
+each seed (variant - raw; negative means better than raw GNSS).
+
+| variant | fused ATE vs ref | vs raw GNSS 3-D |
+| --- | --- | --- |
+| `ref` | 1.99 (37.0) | 5/10 \| [-0.22, +13.66] |
+| H1 `gate_off`: `gnss.chi2_gate` 1e12 | 3.31 (36.2) \| 6/8 \| [-0.09, +0.52] | 5/10 \| [-0.20, +23.06] |
+| H2 `frame_fixed`: `backend.gnss_frame_variable` false | 2.94 (52.8) \| 8/7 \| [-1.43, +1.85] | 5/10 \| [-0.29, +3.33] |
+| H2 `frame_tight_pos`: `gnss_frame_pos_sigma_m` 0.01 | 1.73 (34.8) \| 12/3 \| [-2.26, -0.05] | 6/9 \| [-0.38, +2.12] |
+| H2 `frame_truth_init`: aligner-frame oracle, `E` free (loose prior) | 0.56 (3.53) \| 12/3 \| [-11.25, -0.09] | 10/5 \| [-0.53, +2.01] |
+| H2 `frame_truth_fixed`: aligner-frame oracle + `gnss_frame_variable` false | 0.30 (4.09) \| 15/0 \| [-14.35, -0.24] | 13/2 \| [-0.60, -0.20] |
+| H3 `deg_off`: degeneracy off (shipped) | 17.35 (17.39) \| 3/12 \| [+2.82, +16.65] | 0/15 |
+| H3 `deg_huge`: 1e6 m^2 along flagged directions | 2.45 (35.1) \| 7/8 \| [-1.94, +0.98] | 4/11 \| [+0.90, +2.81] |
+| H3 `deg_var_shipped`: shipped 0.001 m^2 | 16.53 (21.4) \| 3/12 \| [+3.80, +14.85] | 0/15 |
+| H5 `oracle_shift`: shift-displacement oracle | 1.44 (39.1) \| 8/7 \| [-0.97, +0.20] | 4/11 \| [-0.20, +1.77] |
+| H5 + H2 `oracle_shift_truth_init` | 0.47 (1.88) \| 13/2 \| [-14.26, -0.18] | 12/3 \| [-0.56, -0.34] |
+| H5 + H2 `oracle_shift_truth_fixed` | 0.21 (0.35) \| 15/0 \| [-14.39, -0.45] | 15/0 \| [-0.67, -0.62] |
+
+The shift oracle paired directly against the same frame without it (fused ATE; emitted by the
+driver):
+
+| with the shift oracle | against | median (max) \| wins / losses \| CI |
+| --- | --- | --- |
+| `oracle_shift` | `ref` | 1.44 (39.1) \| 8/7 \| [-0.97, +0.20] |
+| `oracle_shift_truth_init` | `frame_truth_init` | 0.47 (1.88) \| 11/4 \| [-1.48, +0.02]: not significant |
+| `oracle_shift_truth_fixed` | `frame_truth_fixed` | 0.21 (0.35) \| 13/2 \| [-0.42, -0.05] |
+
+Mechanism indicators per variant (medians over the 15 seeds unless counted; "n/a" means not
+measured; `deg_off` adds no GNSS factor):
+
+| variant | median shift error RMS (m) | seeds with GNSS NEES > 6 | median abs(E - truth x) (m) | seeds with abs(E yaw err) > 10 deg | seeds with abs(aligner yaw err) > 10 deg at the first / last factor | median not accepted |
+| --- | --- | --- | --- | --- | --- | --- |
+| ref | 1.20 | 9 | 0.82 | 4 | 2 / 2 | 11 |
+| deg_huge | 1.52 | 11 | 0.64 | 1 | 1 / 1 | 12 |
+| deg_var_shipped | 0.46 | 5 | 7.08 | 11 | 0 / 13 | 226 |
+| gate_off | 0.30 | 7 | 0.80 | 4 | 2 / 4 | 0 |
+| frame_fixed | 1.55 | 10 | n/a | n/a | 2 / 2 | 8 |
+| frame_tight_pos | 1.20 | 8 | 0.13 | 2 | 2 / 1 | 12 |
+| frame_truth_init | 0.14 | 5 | 0.26 | 0 | n/a (aligner off) | 4 |
+| frame_truth_fixed | 0.10 | 2 | n/a | n/a | n/a (aligner off) | 7 |
+| oracle_shift | 0.00 | 1 | 1.18 | 2 | 2 / 2 | 4 |
+| oracle_shift_truth_fixed | 0.00 | 0 | n/a | n/a | n/a (aligner off) | 7 |
+| oracle_shift_truth_init | 0.00 | 0 | 0.15 | 0 | n/a (aligner off) | 5 |
+
+A prototype that is not kept, and that the driver cannot regenerate, dropped fixes older than
+`s` before their keyframe instead of shifting them (`gnss.max_shift_s`). CIs from the earlier
+bootstrap (2000 resamples):
+
+| `s` | fused ATE vs ref |
+| --- | --- |
+| 0.25 s | 3.16 (48.2) \| 3/12 \| [+0.33, +2.45] (worse) |
+| 0.5 s | 2.05 \| 5/10 \| [-1.00, +0.98] |
+| 1.0 s | 2.20 \| 7/8 \| [-1.08, +1.48] |
+
+Fewer but better fixes do not help while the frame is wrong.
+
+### 13.3 Hypotheses
+
+- **H1, chi-square rejections (lessons 1.2, 1.4): not the cause.** With the gate off the CI
+  is [-0.09, +0.52]. Rejections (median 11 fixes; 128 on seed 52, with a realign) are a
+  symptom of the bad runs: they follow the shift error and the wrong frame.
+
+- **H2, the frame: the dominant cause.** The aligner-frame oracle alone closes the median gap.
+  With the true frame frozen (`frame_truth_fixed`) the median is 0.30 m, better than raw GNSS
+  on 13 of 15 seeds (CI [-0.60, -0.20]), which meets the acceptance rule of 13.6. With `E`
+  free but started at the truth (`frame_truth_init`) the median is 0.56 m (CI against `ref`
+  excludes 0). What the frame oracle does not remove is the tail (max 4.09 m), which comes from
+  H5.
+  - **Offset along the axis.** In `ref`, `E` ends 0.8 m (median, up to 6.3 m) from the truth
+    along the axis, and the trajectory follows it. For example, on seed 55 with `oracle_shift`,
+    `E` is off by +6.19 m and the last keyframe by -6.40 m. Along a straight corridor `E`
+    absorbs any constant along-axis offset of the trajectory. The only absolute anchor is
+    keyframe 0 plus the IMU-only chain up to the first GNSS factor (ADR-019, "Hệ quả").
+  - **Initial yaw.** The aligner fits `T_e_w` to front-end positions, whose along-axis part is
+    IMU dead reckoning. At the first GNSS factor its yaw is 0.2 to 5.8 deg off on 13 seeds.
+  - **The 180 deg flips have two origins.** The "aligner yaw err at first factor" column of
+    13.1, with `oracle_shift`, separates them:
+    - *Initialisation flips (seeds 51, 52).* The aligner is already wrong at the first factor:
+      -178.9 deg on seed 51, and +131.8 deg on seed 52, which also realigns once. The graph
+      stays near this start. The flips remain under `oracle_shift`.
+    - *Graph flips from a good start (seeds 53, 54).* The aligner starts within 4.2 deg (seed
+      53) and 1.4 deg (seed 54). The graph then moves `E` by 49 deg (seed 53) and by about
+      180 deg (seed 54). Both flips disappear under `oracle_shift` (final yaw error 0.2 and
+      0.8 deg), so the shift error drives them.
+    - A flipped solution costs only the IMU factors of the 2 s acceleration ramp: at constant
+      speed, nothing else fixes the sign of the along-axis velocity.
+  - **`frame_fixed` freezes the same aligner error.** The aligner frame frozen in each factor
+    is -178.9 deg off from the first factor on seed 51 (27.7 m ATE), and -178.7 deg at the last
+    factor on seed 52 (52.8 m).
+  - **The shippable frame switches do not close the gap.** Freezing the aligner's frame
+    (`frame_fixed`) changes nothing (CI contains 0). A tight translation prior centred on the
+    aligner's first estimate helps a little (CI [-2.26, -0.05], median 1.73 m, still 2x raw
+    GNSS), because that centre carries the same front-end drift.
+
+- **H3, LiDAR information along the axis: not the cause at 1000 m^2.**
+  - 1e6 m^2 gives the same result (CI [-1.94, +0.98]).
+  - The shipped 0.001 m^2 holds the axis at the drifted map (16.5 m), and GNSS cannot correct
+    it (section 11 and `CorridorDefaultDegeneracyGnssDoesNotDegrade`).
+  - With degeneracy off (the shipped default), every seed gives the same picture. Scan
+    matching succeeds on every scan (0 match failures), but the estimate stays at the start:
+    one keyframe, no GNSS factor, ATE 17.30 to 17.39 m, about 30 m / sqrt(3).
+    - A plausible mechanism, not measured here: the small along-axis information of the edge
+      neighbourhoods (lessons 1.6) pins the match to the first map, so the 1 m keyframe rule
+      never fires. Measuring the Hessian eigenvalue along x would test it.
+    - The brief's premise, "main defaults (degeneracy off), 15-seed median 3.47 m", therefore
+      does not hold. That number is the ADR-021 `RelativeFactorSeeds` row, measured at
+      db84bf9 with the then overlay: degeneracy on, `relax_factor` 1e8.
+
+- **H4, the GNSS noise model: not the cause.** With both oracles but `E` free
+  (`oracle_shift_truth_init`), the GNSS factor NEES against the truth is 2.6 to 3.0 (expected
+  3) on every seed. So the factor's `sigma^2 I`, which equals the simulator's, is right.
+  - `oracle_shift` alone is not a clean test: on seed 51 its NEES is 17.6, because `collect()`
+    still rotates the exact displacement with the aligner's 179 deg-off `R_e_w`.
+  - The lever arm `p_b_g` matches the simulator by construction (the overlay writes the
+    dataset's value), so this NEES does not test it.
+
+- **H5 (found in the data), the shift of each fix to its keyframe: secondary, independent of
+  H2, and the source of the tail.**
+  - Fixes wait for the next keyframe and are shifted to it with the front-end displacement
+    (`pipeline.md` section 5, "cov unchanged"). Along an axis that only the IMU observes, that
+    displacement carries the front-end velocity error times the gap.
+  - The gap itself grows when the front end underestimates the speed, because the 1 m keyframe
+    rule then fires late. Seed 44 has gaps of 6.6 s, with 33 fixes shifted by up to 4.3 m
+    (`keyframes.csv`, `gnss_factors.csv`).
+  - The factor still claims 0.5 m, so the corrupted fixes pull the keyframe velocity, which
+    makes the next shifts worse. They also drive the graph flips of H2.
+  - Paired against the same frame without it, the exact shift is significant with the true
+    frame frozen: 0.30 to 0.21 m, max 4.09 to 0.35 m, 13/2, CI [-0.42, -0.05]. It is not
+    significant with `E` free (11/4, CI [-1.48, +0.02]) or with the aligner's frame (CI
+    [-0.97, +0.20]).
+  - Even under `frame_truth_init`, seeds 44, 46, 51, 52 and 53 keep shift errors of 1.5 to
+    3.2 m RMS and GNSS NEES 12 to 43.
+
+### 13.4 Cause
+
+There is one root, the along-axis dead reckoning of the front end, and it is used in two
+places:
+
+1. **Dominant.** The frame (`E` and its aligner prior) is initialised from it, and along the
+   axis it is anchored only by it. This gives a wrong offset, and on 2 of 15 seeds an
+   initialisation flip of the yaw. A frame oracle alone gives 0.30 m, 13/2 better than raw
+   GNSS.
+2. **Secondary.** Each fix is shifted to its keyframe with it, and the factor's covariance does
+   not include that displacement's error. This produces the tail and the graph flips. Given
+   the true frame, an exact shift brings the worst seed from 4.09 to 0.35 m (CI excludes 0),
+   and every seed ends better than raw GNSS (0.21 m median).
+
+### 13.5 No fix in this PR
+
+The brief allows a fix only when a hypothesis that could be shipped explains the gap with a CI
+that excludes 0. Only the oracles do. Of the switches that could be shipped, four do nothing
+(gate off, frame fixed, 1e6 m^2, dropping old fixes) and one helps only a little (tight
+translation prior, still 2x raw GNSS). `CorridorDriftCorrectedByGnss` keeps its bounds.
+
+Production behaviour is unchanged. The only core change is the study seam
+`CoreTestHooks::gnss_shift_oracle`. It adds one null-pointer test per collected fix in
+`GnssFusion::collect`, which runs per keyframe; this is the same pattern as `force_T_e_w`.
+Against main 9c7da91:
+
+- E-01..E-03 `est.tum` md5 are equal (`tools/run_integration.py`, all gates pass);
+- E-01 bench, median of 5 interleaved runs: scan p50 / p95 4.36 / 5.86 ms vs 4.35 / 5.92 ms;
+  replay wall 3.87 s vs 3.92 s; CPU 2.74 s vs 2.75 s.
+
+### 13.6 What to build and measure next (smallest first)
+
+Each item is a design change behind a YAML flag that defaults to the previous behaviour, with
+an ADR. Measure it with this driver on the 15 seeds, against `ref` and the oracle rows. With
+the flag off, the box world must be unchanged, E-01..E-03 `est.tum` byte-identical, and the
+bench within noise.
+
+1. **Frame offset: anchor `E` along the axis at start-up.** Local to `pipeline`.
+   - Today the fixes received before the aligner returns a transform are dropped, including
+     those from the static phase at keyframe 0. Once aligned, attach them as factors, each to
+     its nearest keyframe in time and the static ones to keyframe 0. That ties the translation
+     of `E` directly to keyframe 0.
+   - Target: bring the median |`E` - truth| along x from 0.82 m (`ref`) to the
+     `frame_truth_init` level (0.26 m).
+2. **Frame yaw: an initialisation without the dead-reckoned axis.** Local to `pipeline` /
+   `gnss`.
+   - Use the direction of the GNSS track against the body heading (LiDAR + gyro) instead of
+     front-end positions, and resolve the 180 deg ambiguity with the sign of the GNSS
+     displacement.
+   - Target: no seed with an aligner yaw error above 10 deg at the first factor (`ref`: 2 of
+     15, seeds 51 and 52).
+   - It cannot remove the graph flips of seeds 53 and 54, which start from a good prior: those
+     need item 3. If item 3 leaves any, tie the yaw prior sigma of `E` to the alignment's
+     predicted yaw sigma.
+3. **Shift, smallest form: inflate the fix covariance by the shift uncertainty in
+   `GnssFusion::collect`.** Behind a YAML flag in the `gnss` section; no `graph.hpp` change.
+   - Add `J P_shift J^T`: the front-end velocity covariance times dt^2, plus the attitude
+     term, as the chi-square gate already does with `P_w_b`.
+   - Target: GNSS factor NEES above 6 on no seed (`ref`: 9 seeds); no graph flip from a good
+     start (seeds 53, 54); combined with items 1 and 2, fused ATE at or below raw GNSS with a CI
+     that excludes 0.
+   - It needs a velocity covariance in the front end. If none is available without a backend
+     API change, use a configured velocity sigma per unit time and state that in the ADR.
+4. **Shift, full form, if item 3 is not enough.** Either a GNSS factor on (`X_k`, `V_k`, `E`)
+   that uses the graph's keyframe velocity for the time offset, or attaching each fix to its
+   nearest keyframe and re-expressing pending fixes after a keyframe correction. The factor
+   changes `graph.hpp` (`add_gnss_factor`), which needs the owner's agreement. Target: shift
+   error RMS below 0.2 m on every seed (`ref`: median 1.2 m).
+5. **Acceptance for the set.** Fused ATE at or below raw GNSS with a CI that excludes 0, and a
+   max below 1 m. For reference, `frame_truth_fixed` reaches 13/2 [-0.60, -0.20], max 4.09 m;
+   `oracle_shift_truth_fixed` reaches 15/0, max 0.35 m.
