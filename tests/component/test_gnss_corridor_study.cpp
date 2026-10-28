@@ -4,9 +4,10 @@
 // the corridor axis (w x) / lateral (w y) / vertical (w z), raw GNSS RMS, LiDAR-only ATE, GNSS
 // factor / rejection / realign counts, the GNSS frame variable E against its prior and the
 // truth, the along-axis marginal sigma and NEES of the optimised keyframes, and the along-axis
-// RMS per 10 s window; then single-switch ablations (and two combined oracles, test seams
-// force_T_e_w and gnss_shift_oracle), paired against the reference variant
-// (bootstrap 95 % CI of the median per-seed difference). Writes
+// RMS per 10 s window; then ablations (single switches, plus the oracles of the test seams
+// force_T_e_w and gnss_shift_oracle and their combinations), paired against the reference
+// variant and the shift oracles against the same frame without them (bootstrap 95 % CI of the
+// median per-seed difference, fixed seed). Writes
 // results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-corridor-study">/gnss_corridor_study.md.
 // MSS_GCS_VARIANTS: comma-separated variant names to run (default all; the reference first is
 // always run); MSS_GCS_FIRST_SEED / MSS_GCS_LAST_SEED: seed range (default 42..56).
@@ -53,9 +54,16 @@ constexpr double kWindowS = 10.0;     // s
 constexpr double kNees3SigmaX = 9.0;  // along-axis NEES (1 DoF) above 3 sigma
 constexpr double kShiftBigM = 0.1;    // m, a keyframe-shift error counted as large
 
-double median_of(std::vector<double> v) {
+// Median of the finite values (NaN marks "not measured"; sorting a mix with NaN is undefined).
+double median_of(const std::vector<double>& in) {
+  std::vector<double> v;
+  for (const double x : in) {
+    if (std::isfinite(x)) {
+      v.push_back(x);
+    }
+  }
   std::sort(v.begin(), v.end());
-  return v.empty() ? 0.0 : v[v.size() / 2];
+  return v.empty() ? std::nan("") : v[v.size() / 2];
 }
 
 // Records the optimised keyframes, the frame variable E and the GNSS factors.
@@ -90,6 +98,7 @@ class CorridorObserver : public detail::CoreObserver {
     if (n_gnss_ == 0) {
       E_prior_ = T_e_w;
     }
+    aligner_last_ = T_e_w;
     ++n_gnss_;
     const common::Pose T_e_w_true = test::box_T_e_w(p_);
     const Vec3 r = m.p_e_g - T_e_w_true * (test::box_truth(p_, t_k).T_w_b * p_.p_b_g);
@@ -126,7 +135,8 @@ class CorridorObserver : public detail::CoreObserver {
   bool have_e_ = false;
   common::Pose E_first_;  // E after the first optimize with it
   common::Pose E_last_;
-  common::Pose E_prior_;  // the aligner T_e_w given with the first GNSS factor (prior centre)
+  common::Pose E_prior_;       // the aligner T_e_w given with the first GNSS factor (prior centre)
+  common::Pose aligner_last_;  // the aligner T_e_w given with the last GNSS factor
   std::uint64_t n_gnss_ = 0;
   std::uint64_t n_accepted_ = 0;
   std::map<std::int64_t, Vec3> raw_fix_;  // dataset fixes by t (ns)
@@ -157,11 +167,17 @@ struct SeedResult {
   std::uint64_t factors = 0, rejected = 0, realign = 0, keyframes = 0, degenerate = 0;
   double end_ex = 0.0, end_sigma_x = 0.0, nees_x_mean = 0.0, frac_nees_x_3s = 0.0;
   double kf_rms_x = 0.0;  // RMS along-axis error of the optimised keyframes after GNSS starts
-  double E_prior_dx = 0.0, E_prior_dyaw_deg = 0.0;  // E_last vs its prior centre, in w
-  double E_true_dx = 0.0, E_true_dyaw_deg = 0.0;    // E_last vs the true T_e_w, in w
-  double nees_gnss = 0.0;                           // mean GNSS factor NEES vs truth (exp. 3)
-  double shift_rms_x = 0.0, shift_max_x = 0.0;      // m, keyframe-shift error along w x
-  std::uint64_t n_shift_big = 0;                    // factors with |shift error| > kShiftBigM
+  // NaN = not measured (no frame variable E, or no GNSS factor).
+  double E_prior_dx = std::nan(""), E_prior_dyaw_deg = std::nan("");  // E_last vs prior centre
+  double E_true_dx = std::nan(""), E_true_dyaw_deg = std::nan("");    // E_last vs true T_e_w
+  // The aligner T_e_w given with the first / last GNSS factor vs the true T_e_w, in w: the E
+  // prior centre, or with gnss_frame_variable false the frame the factors use.
+  double align_first_dx = std::nan(""), align_first_dyaw_deg = std::nan("");
+  double align_last_dx = std::nan(""), align_last_dyaw_deg = std::nan("");
+  std::uint64_t match_failures = 0;             // Stats::n_match_failures
+  double nees_gnss = 0.0;                       // mean GNSS factor NEES vs truth (exp. 3)
+  double shift_rms_x = 0.0, shift_max_x = 0.0;  // m, keyframe-shift error along w x
+  std::uint64_t n_shift_big = 0;                // factors with |shift error| > kShiftBigM
 };
 
 // Errors of published estimates (estimate - truth) in w: RMS per axis and per 10 s window.
@@ -265,6 +281,7 @@ void fused_run(const BoxWorldParams& p,
   r.realign = rr.stats.n_gnss_realign;
   r.keyframes = rr.stats.n_keyframes;
   r.degenerate = rr.stats.n_degenerate_keyframes;
+  r.match_failures = rr.stats.n_match_failures;
   // Fixes not accepted after the first accepted one (chi-square rejections and the
   // not-aligned fixes after a realign); the box world writes one fix per 1 / gnss_rate_hz.
   if (obs.n_accepted_ > 0) {
@@ -313,15 +330,20 @@ void fused_run(const BoxWorldParams& p,
     r.end_ex = obs.kf_.back().ex;
     r.end_sigma_x = obs.kf_.back().sigma_x;
   }
+  // D = A^-1 B maps the w of B to the w of A; its x translation and yaw.
+  const auto in_w = [](const common::Pose& A, const common::Pose& B, double& dx, double& dyaw) {
+    const common::Pose D = A.inverse() * B;
+    dx = D.p.x();
+    dyaw = wrap_deg(yaw_of(D.R));
+  };
+  const common::Pose T_true = test::box_T_e_w(p);
   if (obs.have_e_) {
-    // D = A^-1 E_last maps the estimated w to the w of A; its x translation and yaw.
-    const auto in_w = [&](const common::Pose& A, double& dx, double& dyaw_deg) {
-      const common::Pose D = A.inverse() * obs.E_last_;
-      dx = D.p.x();
-      dyaw_deg = wrap_deg(yaw_of(D.R));
-    };
-    in_w(obs.E_prior_, r.E_prior_dx, r.E_prior_dyaw_deg);
-    in_w(test::box_T_e_w(p), r.E_true_dx, r.E_true_dyaw_deg);
+    in_w(obs.E_prior_, obs.E_last_, r.E_prior_dx, r.E_prior_dyaw_deg);
+    in_w(T_true, obs.E_last_, r.E_true_dx, r.E_true_dyaw_deg);
+  }
+  if (obs.n_gnss_ > 0) {
+    in_w(T_true, obs.E_prior_, r.align_first_dx, r.align_first_dyaw_deg);
+    in_w(T_true, obs.aligner_last_, r.align_last_dx, r.align_last_dyaw_deg);
   }
 }
 
@@ -340,26 +362,43 @@ LidarRun lidar_run(const BoxWorldParams& p,
   return {r.ate, r.ate_x};
 }
 
-// 95 % bootstrap CI of median(a_i - b_i) over paired seeds (2000 resamples, seed 7), as
-// RelativeFactorSeeds.
+constexpr int kBootstrapResamples = 20000;
+constexpr std::uint32_t kBootstrapSeed = 7U;
+
+// 95 % bootstrap CI of median(a_i - b_i) over paired seeds (kBootstrapResamples resamples,
+// std::mt19937 seeded kBootstrapSeed, index = rng() % n so the CI does not depend on the
+// standard library's distribution implementation). Pairs with a non-finite value are dropped.
 std::pair<double, double> bootstrap_median_diff(const std::vector<double>& a,
                                                 const std::vector<double>& b) {
-  std::mt19937 rng(7U);
-  std::uniform_int_distribution<std::size_t> pick(0, a.size() - 1);
+  std::mt19937 rng(kBootstrapSeed);
+  const std::size_t n = a.size();
   std::vector<double> medians;
-  std::vector<double> d(a.size());
-  for (int k = 0; k < 2000; ++k) {
-    for (std::size_t i = 0; i < a.size(); ++i) {
-      const std::size_t j = pick(rng);
+  medians.reserve(kBootstrapResamples);
+  std::vector<double> d(n);
+  for (int k = 0; k < kBootstrapResamples; ++k) {
+    for (std::size_t i = 0; i < n; ++i) {
+      const std::size_t j = static_cast<std::size_t>(rng()) % n;
       d[i] = a[j] - b[j];
     }
     medians.push_back(median_of(d));
   }
   std::sort(medians.begin(), medians.end());
-  return {medians[50], medians[1949]};
+  const auto lo = static_cast<std::size_t>(kBootstrapResamples / 40);  // 2.5 %
+  return {medians[lo], medians[medians.size() - 1 - lo]};
 }
 
-std::string paired(const std::vector<double>& a, const std::vector<double>& b) {
+std::string paired(const std::vector<double>& a_in, const std::vector<double>& b_in) {
+  std::vector<double> a;
+  std::vector<double> b;
+  for (std::size_t i = 0; i < a_in.size(); ++i) {
+    if (std::isfinite(a_in[i]) && std::isfinite(b_in[i])) {
+      a.push_back(a_in[i]);
+      b.push_back(b_in[i]);
+    }
+  }
+  if (a.empty()) {
+    return "n/a | n/a | n/a";
+  }
   int wins = 0;
   int losses = 0;
   for (std::size_t i = 0; i < a.size(); ++i) {
@@ -380,7 +419,11 @@ std::string paired(const std::vector<double>& a, const std::vector<double>& b) {
   return buf;
 }
 
+// "n/a" for a value that was not measured (NaN).
 std::string fmt(const char* f, double x) {
+  if (!std::isfinite(x)) {
+    return "n/a";
+  }
   char b[48];
   std::snprintf(b, sizeof(b), f, x);
   return b;
@@ -410,15 +453,17 @@ TEST(GnssCorridorStudy, Diagnosis) {
        "    backend:\n      gnss_frame_variable: false\n", "", false, "on"},
       {"frame_tight_pos", "E translation prior 0.01 m (centred on the aligner's first T_e_w)", deg_on,
        "    backend:\n      gnss_frame_pos_sigma_m: 0.01\n", "", false, "on"},
-      {"frame_truth_init", "E initialised at the true T_e_w (force_T_e_w), loose prior", deg_on, "", "",
-       true, "on"},
-      {"frame_truth_fixed", "true T_e_w frozen (force_T_e_w, gnss_frame_variable false)", deg_on,
+      {"frame_truth_init", "aligner-frame oracle (force_T_e_w: E prior centre, gate and shift rotation "
+       "at the true T_e_w, aligner off), loose E prior", deg_on, "", "", true, "on"},
+      {"frame_truth_fixed", "aligner-frame oracle + gnss_frame_variable false (two switches: the true "
+       "T_e_w frozen in every factor)", deg_on,
        "    backend:\n      gnss_frame_variable: false\n", "", true, "on"},
-      {"oracle_shift", "fix shifted to its keyframe with the true displacement (test seam)", deg_on,
+      {"oracle_shift", "true displacement in w for the shift to the keyframe (gnss_shift_oracle; still "
+       "rotated into e with the aligner's R_e_w)", deg_on,
        "", "", false, "on", true},
-      {"oracle_shift_truth_fixed", "oracle shift and true T_e_w frozen (both test seams)", deg_on,
+      {"oracle_shift_truth_fixed", "oracle shift + frame_truth_fixed", deg_on,
        "    backend:\n      gnss_frame_variable: false\n", "", true, "on", true},
-      {"oracle_shift_truth_init", "oracle shift and E initialised at the true T_e_w (loose prior)",
+      {"oracle_shift_truth_init", "oracle shift + frame_truth_init",
        deg_on, "", "", true, "on", true},
   };
   // clang-format on
@@ -470,7 +515,9 @@ TEST(GnssCorridorStudy, Diagnosis) {
           "raw_x %.6f factors %llu rejected %llu realign %llu kf %llu deg %llu end_ex %.4f end_sx "
           "%.4f "
           "nees_x %.3f frac3s %.3f kf_rms_x %.4f Eprior_dx %.4f Eprior_dyaw %.4f Etrue_dx %.4f "
-          "Etrue_dyaw %.4f nees_gnss %.3f shift_rms %.4f shift_max %.4f shift_big %llu win",
+          "Etrue_dyaw %.4f align_first_dx %.4f align_first_dyaw %.4f align_last_dx %.4f "
+          "align_last_dyaw %.4f match_fail %llu nees_gnss %.3f shift_rms %.4f shift_max %.4f "
+          "shift_big %llu win",
           v.name.c_str(),
           seed,
           r.ate,
@@ -495,6 +542,11 @@ TEST(GnssCorridorStudy, Diagnosis) {
           r.E_prior_dyaw_deg,
           r.E_true_dx,
           r.E_true_dyaw_deg,
+          r.align_first_dx,
+          r.align_first_dyaw_deg,
+          r.align_last_dx,
+          r.align_last_dyaw_deg,
+          static_cast<unsigned long long>(r.match_failures),
           r.nees_gnss,
           r.shift_rms_x,
           r.shift_max_x,
@@ -517,11 +569,11 @@ TEST(GnssCorridorStudy, Diagnosis) {
         "| seed | ATE | along x | lateral y | vertical z | raw GNSS 3D / x | LiDAR-only ATE / x | "
         "GNSS factors | not accepted | realign | keyframes (flagged) | kf along-x RMS | end kf x "
         "err / sigma "
-        "| kf NEES x mean (> 3 sigma) | E - prior: x, yaw deg | E - truth: x, yaw deg | GNSS "
-        "NEES vs truth |");
+        "| kf NEES x mean (> 3 sigma) | E - prior: x, yaw deg | E - truth: x, yaw deg | aligner "
+        "T_e_w - truth, first / last factor: yaw deg | match failures | GNSS NEES vs truth |");
     rep.line(
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
-        "--- | --- | --- |");
+        "--- | --- | --- | --- | --- |");
     for (std::size_t si = 0; si < seeds.size(); ++si) {
       const SeedResult& r = res[vi][si];
       char b[640];
@@ -529,8 +581,8 @@ TEST(GnssCorridorStudy, Diagnosis) {
           b,
           sizeof(b),
           "| %u | %.3f | %.3f | %.4f | %.4f | %.3f / %.3f | %.2f / %.2f | %llu | %llu | %llu | "
-          "%llu (%llu) | %.3f | %+.3f / %.3f | %.1f (%.0f %%) | %+.2f, %+.2f | %+.2f, "
-          "%+.2f | %.2f |",
+          "%llu (%llu) | %.3f | %+.3f / %.3f | %.1f (%.0f %%) | %s, %s | %s, %s | %s / %s | "
+          "%llu | %.2f |",
           seeds[si],
           r.ate,
           r.ate_x,
@@ -550,10 +602,13 @@ TEST(GnssCorridorStudy, Diagnosis) {
           r.end_sigma_x,
           r.nees_x_mean,
           100.0 * r.frac_nees_x_3s,
-          r.E_prior_dx,
-          r.E_prior_dyaw_deg,
-          r.E_true_dx,
-          r.E_true_dyaw_deg,
+          fmt("%+.2f", r.E_prior_dx).c_str(),
+          fmt("%+.2f", r.E_prior_dyaw_deg).c_str(),
+          fmt("%+.2f", r.E_true_dx).c_str(),
+          fmt("%+.2f", r.E_true_dyaw_deg).c_str(),
+          fmt("%+.1f", r.align_first_dyaw_deg).c_str(),
+          fmt("%+.1f", r.align_last_dyaw_deg).c_str(),
+          static_cast<unsigned long long>(r.match_failures),
           r.nees_gnss);
       rep.line(b);
     }
@@ -604,6 +659,34 @@ TEST(GnssCorridorStudy, Diagnosis) {
              " | " +
              paired(col(vi, [](const SeedResult& r) { return r.ate_x; }),
                     col(vi, [](const SeedResult& r) { return r.raw_x; })) +
+             " |");
+  }
+  // Interaction: the shift oracle against the same frame without it (section 13.3, H5).
+  rep.line("");
+  rep.line("## Shift oracle paired against the same frame without it (fused ATE, m)");
+  rep.line("");
+  rep.line("| variant | against | fused ATE |");
+  rep.line("| --- | --- | --- |");
+  const auto index_of = [&](const std::string& name) -> int {
+    for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+      if (variants[vi].name == name) {
+        return static_cast<int>(vi);
+      }
+    }
+    return -1;
+  };
+  for (const auto& [with, without] :
+       {std::pair<const char*, const char*>{"oracle_shift", "ref"},
+        std::pair<const char*, const char*>{"oracle_shift_truth_init", "frame_truth_init"},
+        std::pair<const char*, const char*>{"oracle_shift_truth_fixed", "frame_truth_fixed"}}) {
+    const int a = index_of(with);
+    const int b = index_of(without);
+    if (a < 0 || b < 0) {
+      continue;
+    }
+    const auto ate = [](const SeedResult& r) { return r.ate; };
+    rep.line(std::string("| ") + with + " | " + without + " | " +
+             paired(col(static_cast<std::size_t>(a), ate), col(static_cast<std::size_t>(b), ate)) +
              " |");
   }
 }
