@@ -97,6 +97,9 @@ Format of an entry: **symptom** → cause → fix → rule.
   leak (information along the axis as a fraction of the dominant axis) before designing the
   detector. Prefer absolute sigma thresholds over ratios, and expect the map's edge
   neighbourhoods to supply false information.
+- **Status (PR #29).** The sigma detector is held on a branch (PR 4b-2), not merged: it flags
+  nothing in the corridor until the map edge leak is fixed. Only the absolute detector and the
+  "unobserved" covariance (PR 4b-1) are on main, with the detector off by default.
 
 ### 1.7 Map storage policy creates registration bias (PR #20, ADR-007 amendment, `derivations/map.md`)
 
@@ -183,6 +186,13 @@ Format of an entry: **symptom** → cause → fix → rule.
 - **Rule.** Decide defaults on 15 or more paired seeds with wins/losses and a bootstrap CI of
   the median difference. A bound taken from the worst seed is a regression guard, not evidence
   for a feature; say which in the test comment.
+- **Rounding-level change moves a pinned seed (PR 4b-1, #29).** The #19 corridor test pinned
+  one chaotic outcome: a rounding-only change in the unobserved block (`U = P_F D P_F`,
+  basis-invariant) moved seed 42 at 1000 m^2 from 1.78 to 0.51 m, while the variance sweep
+  itself is chaotic in the variance, the seed and the rounding
+  (`derivations/degeneracy.md` section 7). Rule: a test over a chaotic scene asserts ratios to
+  a reference run (fused / LiDAR-only) and the median over several seeds, never the value of
+  one seed; see also 1.14.
 
 ### 1.13 Tilt wanders once the map window forgets the early keyframes (PR 4d, open)
 
@@ -192,6 +202,25 @@ Format of an entry: **symptom** → cause → fix → rule.
   current test corridors never stop, so it cannot yet be evaluated.
 - **Rule.** Decide how every absolute quantity (gravity direction, heading, scale) is
   re-anchored over time, not only at start.
+
+### 1.14 A floor can make a new feature equal to the old one, and one chaotic run cannot rank two options (PR 4b-1, #29, `derivations/degeneracy.md` section 7)
+
+- **Symptom.** On the recorded Gazebo corridor (E-04) the "unobserved" covariance at the default
+  0.001 m^2, at 1e-4 m^2 and at 1e-12 m^2 gave the pre-4b relaxed covariance. Separately, main
+  and the old semantics were bit-identical up to t = 5.7 s on the same bag, differed at the
+  1e-13 level, and ended at 1.69 m against 2.20 m ATE after the difference grew through GNSS
+  chi-square rejections; runs with the same semantics spread from 1.8 to 3.4 m.
+- **Cause.** The variance is floored at `relax_factor * c / eig_threshold`, about 1.2e-3 m^2
+  with the Gazebo residuals, so below that value the floor binds and the setting does nothing.
+  With degeneracy on, the gate that rejects GNSS fixes turns tiny differences into different
+  histories.
+- **Fix.** Report the floor next to the configured value; sweep above it (0.01 m^2: 0.41 m,
+  0.1 m^2: 0.34 m, 1 m^2: 1.26 m on that one bag); keep the default (owner decision) and retune
+  over several recordings in S2 (candidate 0.01 m^2).
+- **Rule.** Before comparing a new feature with the old one, check whether a floor, clamp or
+  gate makes them identical at the tested setting. Rank options on several runs (seeds or
+  recordings), never on one chaotic run; a difference that grows from 1e-13 to metres is the
+  signature.
 
 ## 2. Simulation and evaluation
 
@@ -219,6 +248,40 @@ Format of an entry: **symptom** → cause → fix → rule.
   versus pose at the latest keyframe) were found in review, not by tests.
 - **Rule.** Allocation tests per message path, and a test that the measurement is paired with
   the state at the measurement's time.
+
+### 2.4 A wheel collision shape sets the effective track (PR #26, `sim/README.md` "Wheel contact calibration")
+
+- **Symptom.** Wheel odometry from the first Gazebo recording, computed with the true
+  kinematics, showed a straight 10 m at -0.04 % but a spin in place of -36.25 deg/rev, so the
+  odometry yaw drifted by a large amount.
+- **Cause.** The wheels collided as cylinders 0.04 m wide, which touch the floor at a rim: an
+  effective track of about 0.36 m instead of 0.40 m. The error scales with the width (0.01 m
+  wide: -9.25 deg/rev).
+- **Fix.** Wheel collision as a sphere of the wheel radius (`wheel.collision_shape: sphere`;
+  the visual stays a cylinder): -0.01 % straight, -0.08 deg/rev spin (+0.00 deg/rev on the E-01
+  lap). The footprint widens to y = +-0.30 m, so every route keeps 0.5 m from the world boxes
+  (tested).
+- **Rule.** Check the contact geometry of every wheel in a simulator against the odometry model
+  with a straight-line test and a spin test, using the true kinematics, before trusting any
+  odometry number.
+
+### 2.5 The renderer error of a simulated LiDAR is not the configured noise (PR #26, `sim/README.md` "LiDAR render error")
+
+- **Symptom.** The noise report's LiDAR range sigma per cell differed from the declared
+  0.02 m, and no formula fitted: a constant, `k r`, `k (1/|n.u| - 1)` and `k tan(theta)` all
+  left residuals of about 0.01 m against bin errors of 1e-3 m or less.
+- **Cause.** gpu_lidar adds its own error on top of the configured noise (depth-texture
+  interpolation), and it depends on range, incidence and the geometry of the world.
+- **Fix.** A measured table per world (range bin x incidence bin; 6 cells for the warehouse,
+  14 for the corridor), calibrated along the scenario's own trajectory with the Gazebo noise at
+  0, silhouette points excluded (a grid neighbour more than `lidar.edge_jump_m` off the plane,
+  no return, or dropped), and binned on the noise-free range to the plane. Expected sigma per
+  cell is `sqrt(sigma_declared^2 + sigma_render(cell)^2)`, gated at +-15 %.
+- **Why the noise-free range.** Binning on the measured range selects points on their own
+  error at a crowded bin edge: the corridor cell 0.5-2 m x 0.3-0.5 read -14 % binned on the
+  measured range and +4.7 % on the noise-free one.
+- **Rule.** Calibrate a simulator's sensor error where it is used (world and trajectory) with
+  its noise set to 0, exclude silhouette points, and bin on the noise-free quantity.
 
 ## 3. Process
 
