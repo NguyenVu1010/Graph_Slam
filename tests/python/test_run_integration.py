@@ -93,8 +93,13 @@ def e2e(tmp_path_factory: pytest.TempPathFactory) -> tuple[int, Path, str | None
     tmp = tmp_path_factory.mktemp("integration")
     before = _git_status()
     out = tmp / "results"
+    # Own null baselines: the test pins the "no baseline" path independently of the repo's
+    # eval/baselines.json, which holds real values since the first baseline-update.
+    baselines = tmp / "baselines.json"
+    null = {"ate_rmse_m": None, "p95_latency_ms": None}
+    baselines.write_text(json.dumps({t: null for t in ("E-01", "E-02", "E-03")}), "utf-8")
     argv = ["--bench-cmd", _fake_bench_cmd(tmp), "--out", str(out), "--duration-s", "8"]
-    code = main([*argv, "--scenario", str(_scenario(tmp))])
+    code = main([*argv, "--scenario", str(_scenario(tmp)), "--baselines", str(baselines)])
     return code, out, before, _git_status()
 
 
