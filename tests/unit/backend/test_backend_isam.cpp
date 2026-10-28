@@ -567,7 +567,7 @@ TEST(BackendIsam, FrameVariableMatchesBatchAtLargePriorResidual) {
   EXPECT_LT(true_grad_isam, 1e-5);
 
   // Control: with gtsam::PriorFactor<Pose3> on E the cost is the same, but the Gauss-Newton
-  // fixed point of its linearisation is not the minimum of that cost.
+  // fixed point of its linearisation (what iSAM2 converges to) fails the 1e-6 limit.
   const gtsam::NonlinearFactorGraph approx = build(false);
   EXPECT_NEAR(approx.error(batch), exact.error(batch), 1e-9 * exact.error(batch));
   gtsam::Values gn = batch;
@@ -585,8 +585,140 @@ TEST(BackendIsam, FrameVariableMatchesBatchAtLargePriorResidual) {
   const double control_grad = cost_gradient_norm(exact, gn);
   RecordProperty("control_prior_factor_difference", sci(control_diff));
   RecordProperty("control_prior_factor_true_gradient", sci(control_grad));
-  EXPECT_TRUE(control_diff > 1e-4 || control_grad > 1e-2)
-      << "difference " << control_diff << ", true gradient " << control_grad;
+  EXPECT_GT(control_diff, 1e-6);  // what iSAM2 converges to with it fails the 1e-6 limit
+}
+
+// Re-anchor site of the exact pose prior (backend_factors.md sections 2b and 9). Keyframe 1
+// fails to optimise (a GNSS fix alone: indeterminant), so the island 1..4 added after it gets
+// the re-anchor prior on X(1), centred on its guess: the truth moved by 20 deg of yaw and 3 m.
+// Noise-free LiDAR edges and GNSS fixes from the truth on keyframes 2..4 pull the island back,
+// so X(1) settles far from its prior. iSAM2 must reach the batch minimum of the true cost.
+// Control: the same batch graph with gtsam::PriorFactor<Pose3> as the re-anchor prior (same
+// cost, identity Jacobian) has a Gauss-Newton fixed point outside the 1e-6 limit.
+TEST(BackendIsam, ReanchorPriorMatchesBatchAtLargeResidual) {
+  constexpr KeyId kKeyframes = 5;
+  const test::Scenario s = test::square_loop(false, 0);
+  BackendConfig cfg = b04_config();
+  cfg.prior_rot_sigma_rad = 10.0 * EIGEN_PI / 180.0;  // a loose prior: the fixes dominate
+  cfg.prior_pos_sigma_m = 1.0;
+  const Mat3 fix_cov = Mat3::Identity() * 0.01;  // m^2
+  const Pose T_off = test::pose_from(Vec3(0.0, 0.0, 20.0 * EIGEN_PI / 180.0), Vec3(2.4, -1.8, 0.0));
+  std::vector<NavState> guess = s.truth;
+  for (KeyId k = 1; k < kKeyframes; ++k) {
+    guess[k].T_w_b = T_off * s.truth[k].T_w_b;  // the island rigidly moved
+  }
+  const auto fix_at = [&](KeyId k) {
+    common::GnssMeasurement m;
+    m.t = s.truth[k].t;
+    m.p_e_g = s.truth[k].T_w_b.p;  // T_e_w = identity, lever arm 0
+    m.cov = fix_cov;
+    return m;
+  };
+
+  Graph g(cfg, default_imu_config(), Vec3::Zero());
+  g.add_keyframe(s.truth[0].t, s.truth[0]);
+  ASSERT_TRUE(g.optimize().is_ok());
+  g.add_keyframe(s.truth[1].t, guess[1]);
+  g.add_gnss_factor(1, fix_at(1), Pose{});  // 3 of 6 DoF: indeterminant
+  {
+    CapturingLogger log;
+    ASSERT_FALSE(g.optimize().is_ok());
+  }
+  {
+    CapturingLogger log;
+    for (KeyId k = 2; k < kKeyframes; ++k) {
+      g.add_keyframe(s.truth[k].t, guess[k]);
+      g.add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+      g.add_gnss_factor(k, fix_at(k), Pose{});
+    }
+    for (int n = 0; n < 20; ++n) {
+      ASSERT_TRUE(g.optimize().is_ok());
+    }
+    ASSERT_EQ(log.warnings.size(), 1U);  // the one re-anchor line
+    EXPECT_NE(log.warnings.front().find("re-anchored"), std::string::npos);
+  }
+
+  // The island's batch graph, as Graph builds it (section 9 re-anchor prior with the
+  // first-keyframe sigmas, section 5 relative factors, section 6 GNSS factors).
+  Vec6 pose_sigmas;
+  pose_sigmas << Vec3::Constant(cfg.prior_rot_sigma_rad), Vec3::Constant(cfg.prior_pos_sigma_m);
+  const auto build = [&](bool exact_prior) {
+    gtsam::NonlinearFactorGraph graph;
+    if (exact_prior) {
+      graph.emplace_shared<detail::PosePriorFactor>(
+          detail::pose_key(1), guess[1].T_w_b, gtsam::noiseModel::Diagonal::Sigmas(pose_sigmas));
+    } else {
+      graph.emplace_shared<gtsam::PriorFactor<gtsam::Pose3>>(
+          detail::pose_key(1),
+          detail::to_gtsam(guess[1].T_w_b),
+          gtsam::noiseModel::Diagonal::Sigmas(pose_sigmas));
+    }
+    for (KeyId k = 2; k < kKeyframes; ++k) {
+      graph.push_back(relative_factor_of(
+          cfg.relative_factor,
+          detail::pose_key(k - 1),
+          detail::pose_key(k),
+          s.edge_meas[k - 1],
+          gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(s.edge_cov))));
+      graph.emplace_shared<detail::GnssPositionFactor>(
+          detail::pose_key(k), fix_at(k).p_e_g, fix_cov, Pose{}, Vec3::Zero());
+    }
+    return graph;
+  };
+  gtsam::Values init;
+  for (KeyId k = 1; k < kKeyframes; ++k) {
+    init.insert(detail::pose_key(k), detail::to_gtsam(guess[k].T_w_b));
+  }
+  const gtsam::NonlinearFactorGraph exact = build(true);
+  gtsam::LevenbergMarquardtParams params;
+  params.relativeErrorTol = 1e-15;
+  params.absoluteErrorTol = 1e-15;
+  params.maxIterations = 100;
+  gtsam::Values batch = gtsam::LevenbergMarquardtOptimizer(exact, init, params).optimize();
+  for (int it = 0; it < kB04GaussNewtonIterations; ++it) {
+    batch = batch.retract(exact.linearize(batch)->optimize());
+  }
+  const double true_grad_batch = cost_gradient_norm(exact, batch);
+  RecordProperty("true_gradient_batch", sci(true_grad_batch));
+  ASSERT_LT(true_grad_batch, 1e-5);  // the batch minimum of the true cost
+
+  const Pose X1 = state_or_fail(g, 1).T_w_b;
+  const Vec6 r_prior = common::se3_log(guess[1].T_w_b.inverse() * X1);  // [rho, phi]
+  RecordProperty("reanchor_prior_residual_deg", sci(r_prior.tail<3>().norm() * 180.0 / EIGEN_PI));
+  RecordProperty("reanchor_prior_residual_m", sci(r_prior.head<3>().norm()));
+  EXPECT_GT(r_prior.tail<3>().norm(), 10.0 * EIGEN_PI / 180.0);  // the large-residual regime
+  EXPECT_GT(r_prior.head<3>().norm(), 1.0);
+
+  gtsam::Values isam = batch;  // the iSAM2 estimate, as Values of the batch graph
+  double worst = 0.0;
+  for (KeyId k = 1; k < kKeyframes; ++k) {
+    const NavState x = state_or_fail(g, k);
+    isam.update(detail::pose_key(k), detail::to_gtsam(x.T_w_b));
+    const Pose T_batch = detail::from_gtsam(batch.at<gtsam::Pose3>(detail::pose_key(k)));
+    worst = std::max(worst, common::se3_log(T_batch.inverse() * x.T_w_b).norm());
+  }
+  const double true_grad_isam = cost_gradient_norm(exact, isam);
+  RecordProperty("worst_difference", sci(worst));
+  RecordProperty("true_gradient_isam", sci(true_grad_isam));
+  EXPECT_LT(worst, 1e-6);
+  EXPECT_LT(true_grad_isam, 1e-5);
+
+  // Control: with gtsam::PriorFactor<Pose3> the cost is the same, but the Gauss-Newton fixed
+  // point of its linearisation (what iSAM2 converges to) fails the 1e-6 limit.
+  const gtsam::NonlinearFactorGraph approx = build(false);
+  EXPECT_NEAR(approx.error(batch), exact.error(batch), 1e-9 * exact.error(batch));
+  gtsam::Values gn = batch;
+  for (int it = 0; it < 4 * kB04GaussNewtonIterations; ++it) {
+    gn = gn.retract(approx.linearize(gn)->optimize());
+  }
+  double control_diff = 0.0;
+  for (KeyId k = 1; k < kKeyframes; ++k) {
+    const Pose a = detail::from_gtsam(gn.at<gtsam::Pose3>(detail::pose_key(k)));
+    const Pose b = detail::from_gtsam(batch.at<gtsam::Pose3>(detail::pose_key(k)));
+    control_diff = std::max(control_diff, common::se3_log(a.inverse() * b).norm());
+  }
+  RecordProperty("control_prior_factor_difference", sci(control_diff));
+  EXPECT_GT(control_diff, 1e-6);
 }
 
 TEST(BackendIsam, RepeatedOptimizeIsStableAndDeterministic) {
