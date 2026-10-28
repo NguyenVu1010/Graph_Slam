@@ -800,7 +800,7 @@ Driver: `GnssCorridorStudy.Diagnosis` with
 - `prealign_trackyaw_oracle_shift` adds the shift-displacement oracle.
 
 The `ref` and `prealign` per-seed lines are identical to sections 13 and 14, so with the flag
-off the corridor is unchanged. Measured after fix round 1 of the review (section 15.5); the
+off the corridor is unchanged. Measured after fix rounds 1 and 2 of the review (section 15.5); the
 corridor lines are identical before and after the wheel and turn-gate changes of that round
 (straight corridor, no wheel).
 
@@ -818,7 +818,7 @@ corridor lines are identical before and after the wheel and turn-gate changes of
 | seeds with GNSS factor NEES > 6 | 9 | 8 | 11 | 7 |
 | fused ATE median (max) | 1.99 (37.0) m | 1.88 (35.3) m | 4.66 (15.4) m | **1.66 (3.17) m** |
 
-Predicted sigma: at the first alignment it is 2.2 to 2.5 deg. The normalised squared yaw error
+Predicted sigma: at the first alignment it is 2.2 to 2.6 deg. The normalised squared yaw error
 over the 15 seeds has mean 0.68, and the largest error is 1.8 sigma. The unit test over 200
 seeded straight tracks gives 0.97.
 
@@ -881,48 +881,65 @@ per-seed values, 20000 resamples, Python `random.Random(7)`.
 
 | case | ATE median off / on | wins / losses (on vs off) | 95 % CI of the median difference |
 | --- | --- | --- | --- |
-| GNSS (fallback direction) | 0.01019 / 0.01016 m | 7/8 | [-0.00003, +0.00001] m |
-| GNSS + wheel (wheel sign) | 0.00645 / 0.00641 m | 8/3 (4 ties) | [-0.00005, +0.00000] m |
+| GNSS (fallback direction) | 0.01019 / 0.01017 m | 8/7 | [-0.00003, +0.00001] m |
+| GNSS + wheel (wheel sign) | 0.00645 / 0.00641 m | 9/3 (3 ties) | [-0.00004, +0.00000] m |
 
-The ATE is unchanged. The alignment comes later on this short circle: 7 to 19 GNSS factors per
+The ATE is unchanged. The alignment comes later on this short circle: 6 to 17 GNSS factors per
 run, against 38 to 45 with the flag off. The circle (29 deg per chunk) passes the 45 deg turn
 gate, and the lever-arm correction is active.
 
-Yaw at the first alignment, GNSS + wheel, seeds 42..56 (component-test scene): errors 0.2 to
-7.4 deg at sigmas of 2.5 to 3.0 deg, normalised squared error mean 1.66. So the sigma is about
-1.3 times optimistic on this circle; the cause is not measured. Every seed is within 3 sigma
-(largest 2.5 sigma). The corridor (0.68) does not show this.
+Yaw at the first alignment, GNSS + wheel, seeds 42..56 (the scene of the component test):
+
+- Errors are 0.2 to 6.6 deg, at sigmas of 2.6 to 2.9 deg.
+- The normalised squared error has mean **1.16**. The 95 % interval of a chi-square mean with
+  15 degrees of freedom is [0.42, 1.83], so this is consistent.
+- Before fix round 2 the sigma divided by `r` instead of `|Z| = |r + L|`, and one run of the
+  same scene gave 1.66.
+  - The re-review's Monte Carlo of the aligner alone on this trajectory (4000 seeds) gives 1.10
+    with `/ r` and 1.01 with `/ |Z|`.
+  - Without the lever arm, on the same ramp, it gives 0.995.
+  - So the denominator was the cause. The earlier hypothesis, a chord bias during the
+    acceleration ramp, is refuted.
+- The front-end heading error at the fixes before the alignment, logged for these runs, is at
+  most 0.044 deg (RMS 0.010 to 0.017 deg per seed). This is far below what would matter, so no
+  heading-noise term is added.
+
+The corridor (straight, `|Z| = r`) is unchanged by the denominator; its normalised squared error
+is 0.68.
 
 ### 15.3 Integration and bench
 
-- **Flag off:** E-01..E-03 through `tools/run_integration.py`, all gates pass, ATE 0.002183 m.
-  The `est.tum` md5 values equal those of main 65a04e5 run on the same datasets (E-01 / E-02
+- **Flag off.** E-01..E-03 through `tools/run_integration.py`: all gates pass, ATE 0.002183 m. The
+  `est.tum` md5 values equal those of main 65a04e5 run on the same datasets (E-01 / E-02
   `d1b1e4ba9c87f38d39f4a27fb521081e`, E-03 `ca02a49fde59a5a99fbe73129c630226`).
 - **Flag on** (`config/sim/warehouse.yaml` plus the flag; GNSS sigma_h 1.5 m on a 1.67 m circle,
-  wheel sign): E-01 0.002196 m (+0.013 mm, limit 0.002621 m), E-03 0.002169 m. There are 65
-  GNSS factors against 223 with the flag off: at 1.5 m per fix the 3 deg sigma takes most of
-  the run.
-- **Both flags:** E-01 0.002199 m, E-03 0.002176 m.
+  wheel sign): E-01 0.002210 m (+0.027 mm, limit 0.002621 m), E-03 0.002172 m. There are 35
+  GNSS factors, against 223 with the flag off: at 1.5 m per fix the 3 deg sigma takes most of
+  the run. With the correct `/ |Z|` sigma the alignment on this tight circle comes later than
+  with `/ r`, which gave 65 factors.
+- **Both flags:** E-01 0.002199 m, E-03 0.002174 m. 264 fixes arrive before the alignment.
 
-  | buffer (`gnss.prealign_max_fixes`) | pre-alignment fixes attached | dropped | GNSS factors |
-  | --- | --- | --- | --- |
-  | 128 | 123 | 102 | 188 |
-  | 256 (new default) | 221 | 0 | 286 |
-  | 512 | 221 | 0 | 286 |
+| buffer (`gnss.prealign_max_fixes`) | pre-alignment fixes attached | dropped | GNSS factors |
+| --- | --- | --- | --- |
+| 128 (measured in fix round 1) | 123 | 102 | 188 |
+| 256 | 247 | 4 | 282 |
+| 320 (new default) | 251 | 0 | 286 |
+| 512 | 251 | 0 | 286 |
 
-  The default is raised to 256 (ADR-023 decision 8). Flag-off output is unchanged: the buffer
-  is reserved only when `attach_prealign_fixes` is true.
+The default is raised to 320 (ADR-023 decision 8). Flag-off output is unchanged, because the
+buffer is reserved only when `attach_prealign_fixes` is true.
 
 E-01 bench, median of 5 interleaved runs:
 
 | build | scan p50 / p95 | replay wall | CPU |
 | --- | --- | --- | --- |
-| main 65a04e5 | 4.44 / 6.10 ms | 3.85 s | 2.82 s |
-| branch, flag off | 4.43 / 5.94 ms | 3.74 s | 2.81 s |
-| branch, flag on | 4.38 / 5.77 ms | 3.56 s | 2.71 s |
-| branch, both flags | 4.39 / 6.06 ms | 3.73 s | 2.76 s |
+| main 65a04e5 | 4.78 / 6.46 ms | 4.39 s | 3.05 s |
+| branch, flag off | 4.60 / 6.10 ms | 4.02 s | 2.92 s |
+| branch, flag on | 4.62 / 6.24 ms | 4.12 s | 2.90 s |
+| branch, both flags | 4.54 / 6.09 ms | 3.92 s | 2.86 s |
 
-Within noise.
+Within noise. This machine was slower overall than in section 15.3 of fix round 1 (main 4.44 ms
+then).
 
 ### 15.4 Recommendation on the default
 
@@ -931,12 +948,12 @@ The brief's two conditions for flipping hold: the corridor target is met (0 of 1
 design 1:
 
 - alone it is worse than raw GNSS in the corridor (CI excludes 0), and it delays the alignment
-  where the fixes are noisy relative to the path (E-01: 65 of 223 factors);
+  where the fixes are noisy relative to the path (E-01: 35 of 223 factors);
 - its benefit appears together with design 1 (CI against `ref` excludes 0), and design 1 is off
   until design 3.
 
 Turn both on together with design 3, with `prealign_max_fixes` sized to the expected alignment
-delay (256 covers E-01), after the full set is re-measured. Design 3 should be measured against
+delay (320 covers E-01), after the full set is re-measured. Design 3 should be measured against
 `prealign_trackyaw` as its baseline.
 
 ### 15.5 Fix round 1 of the review
@@ -950,9 +967,24 @@ None is reachable with the flag off. All four are fixed and pinned by unit tests
 | tight arc with lever arm (R = 0.2 m) | -3.96 deg, sigma about 1 deg | closed-form lever correction | `TightArcWithLeverArmExact` |
 | net backward motion before confidence | 180 deg flip | wheel-speed sign per segment; fallback without wheel data, documented | `WheelSignResolvesBackwardMotion`, `NetBackwardMotionBeforeConfidenceFlips` |
 | zero declared covariance | aligned at once, 45 of 100 runs > 10 deg off | rejected; variance floor 0.25 m^2 | `ZeroCovarianceNeverAligns`, `VarianceFloor` (48 -> 0 of 100) |
-| parked robot, drifting GNSS | 13 of 100 aligned | 5 m minimum track (6 of 100) plus coherence 0.5 (0 of 100) | `ParkedDriftingGnssNeverAligns` |
+| parked robot, drifting GNSS (0.05 m per fix) | 13 of 100 aligned | 5 m minimum track (6 of 100) plus coherence 0.5 (0 of 100) | `ParkedDriftingGnssEnvelope` |
 
 One more defect was found while measuring this round: wheel noise at rest has a random sign.
 Used as a direction, it alternated `a_k` over the static segments, and E-01 got only 8 GNSS
 factors. Segments with less than 0.2 m of wheel travel are now skipped as stationary
 (`StationaryWheelNoiseDoesNotDelay`).
+
+Fix round 2 (re-review of the fix round 1 commit):
+
+| finding | defect | fix | test |
+| --- | --- | --- | --- |
+| N1 | one NaN wheel speed made the odometer NaN for the rest of the run (silent fallback) | non-finite wheel speeds skipped and counted (`n_wheel_nonfinite`) | `PipelineComponent.WheelOdometerSkipsNonFiniteSpeed`, `GnssTrackYaw.OneMissingWheelReadingDoesNotFlip` |
+| N2 | the yaw sigma divided by `r`, not `\|Z\| = \|r + L\|` (optimistic on turns with a lever arm) | `sigma = sqrt(var / \|Z\|^2)`; box-world NEES 1.66 -> 1.16 | `GnssTrackYaw.CircleWithLeverArmSigmaConsistent` (1 m circle, 2000 runs: 1.03) |
+| N3 | wheel travel of a fix rejected before the aligner was lost | the aligner differences absolute odometer readings of the fixes it adds | `GnssFusionTrackYaw.WheelTravelOfRejectedFixesCarried` |
+| N4 | the covariance check used the mean of the two axes | each horizontal axis must be > 0 | `GnssTrackYaw.ErrorSequence` (diag (-0.5, 1)) |
+| N5 | the parked-robot protection and the low-speed limit were overstated or missing | the envelope and the limits are stated in ADR-023, `gnss.md` section 5, the YAML and lessons 1.16 | `GnssTrackYaw.ParkedDriftingGnssEnvelope`, `GnssTrackYaw.LowSpeedWithWheelNeverAligns` |
+
+The IMU rest detector of keyframe 0 was considered as a guard for a parked robot without wheel
+data. It is not used: at rest and at constant velocity the accelerometer and gyro spread is the
+same sensor noise (0.08 m/s^2 per sample in the simulator), so it would also block the straight
+cruise that the corridor depends on.

@@ -128,7 +128,10 @@ void GnssTrackYawAligner::close_chunk() {
   const double var_cross_m2 = noise_q_m2_ + prev_.var * prev_a_.squaredNorm();
   yaw_rad_ = std::atan2(std::sin(yaw), std::cos(yaw));
   track_m_ = r_m;
-  yaw_sigma_rad_ = std::sqrt(var_cross_m2) / r_m;
+  // To first order delta_yaw = Im(conj(Z) delta_Z) / |Z|^2 (r and arg(r + L) depend only on
+  // |Z|), so the sigma divides by |Z| = |r + L|, not by r (they differ when the lever arm
+  // turns).
+  yaw_sigma_rad_ = std::sqrt(var_cross_m2 / z2_m2);
   have_yaw_ = true;
 }
 
@@ -136,16 +139,16 @@ common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e
                                                          const common::Mat3& cov_e,
                                                          const common::Pose& T_w_b,
                                                          const common::Vec3& p_b_g,
-                                                         double wheel_travel_m) {
+                                                         double wheel_odometer_m) {
   using ResultPose = common::Result<common::Pose>;
   if (!p_e_g.allFinite() || !cov_e.allFinite() || !T_w_b.R.allFinite() || !T_w_b.p.allFinite() ||
-      !p_b_g.allFinite() || std::isinf(wheel_travel_m)) {
+      !p_b_g.allFinite() || std::isinf(wheel_odometer_m)) {
     return ResultPose::error("non-finite input");
   }
-  const double declared_m2 = 0.5 * (cov_e(0, 0) + cov_e(1, 1));
-  if (!(declared_m2 > 0.0)) {
+  if (!(cov_e(0, 0) > 0.0) || !(cov_e(1, 1) > 0.0)) {
     return ResultPose::error("non-positive covariance");
   }
+  const double declared_m2 = 0.5 * (cov_e(0, 0) + cov_e(1, 1));
   const Eigen::Vector2d fwd = T_w_b.R.col(0).head<2>();  // body x axis, horizontal part, in w
   const double fwd_norm = fwd.norm();
   if (!(fwd_norm > kMinHeadingNorm)) {
@@ -167,13 +170,16 @@ common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e
   sum_e_ += p_e_g - ref_e_;
   ++n_fixes_;
 
-  // First or second half of the chunk, for the wheel travel between the chunk centroids.
+  // First or second half of the chunk, for the wheel travel between the chunk centroids. The
+  // travel of this fix is the odometer difference since the last fix added here, so travel
+  // during fixes rejected before the aligner is carried, not lost.
   const std::size_t half = 2 * n_chunk_ < chunk_fixes_ ? 0U : 1U;
-  if (std::isnan(wheel_travel_m)) {
+  if (std::isnan(wheel_odometer_m) || std::isnan(last_odometer_m_)) {
     chunk_wheel_ok_[half] = false;
   } else {
-    chunk_wheel_m_[half] += wheel_travel_m;
+    chunk_wheel_m_[half] += wheel_odometer_m - last_odometer_m_;
   }
+  last_odometer_m_ = wheel_odometer_m;
   chunk_sum_e_ += (p_e_g - ref_e_).head<2>();
   chunk_sum_psi_rad_ += psi_rad_;
   chunk_min_psi_rad_ = n_chunk_ == 0 ? psi_rad_ : std::min(chunk_min_psi_rad_, psi_rad_);

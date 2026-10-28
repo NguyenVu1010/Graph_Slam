@@ -868,6 +868,28 @@ TEST(PipelineComponent, NonKeyframeScanDoesNotAllocate) {
 // ADR-022: with gnss.attach_prealign_fixes the static body never aligns (no spread), so every
 // fix goes to the pre-alignment buffer, which fills (4 fixes) and then drops and counts; the
 // non-keyframe scans still do not allocate.
+// Re-review N1: one NaN or Inf wheel speed must not poison the ADR-023 wheel odometer (it used
+// to stay NaN for the rest of the run, silently switching the track-yaw aligner to its
+// forward-driving fallback). Non-finite samples are skipped and counted; the odometer integrates
+// the finite ones (trapezoid over the gap).
+TEST(PipelineComponent, WheelOdometerSkipsNonFiniteSpeed) {
+  detail::EstimatorCore core(StaticCore::make_cfg(true));
+  for (int k = 0; k <= 50; ++k) {  // 1 s at 50 Hz, 1 m/s forward
+    common::WheelSample w;
+    w.t = Timestamp{1'000'000'000 + k * 20'000'000LL};
+    w.v_mps = 1.0;
+    if (k == 10) {
+      w.v_mps = std::numeric_limits<double>::quiet_NaN();
+    } else if (k == 30) {
+      w.v_mps = std::numeric_limits<double>::infinity();
+    }
+    core.on_wheel(w);
+  }
+  EXPECT_EQ(core.counters().n_wheel_nonfinite, 2U);
+  EXPECT_TRUE(std::isfinite(core.wheel_odometer_m()));
+  EXPECT_NEAR(core.wheel_odometer_m(), 1.0, 1e-9);
+}
+
 TEST(PipelineComponent, PrealignBufferBoundedNoAllocation) {
   StaticCore s(true, 4);
   s.scan_at(s.t_scan(0));  // initialisation + keyframe 0

@@ -67,13 +67,13 @@ class GnssFusion {
   /// Other errors: "non-finite pose" (T_w_b_fix not finite).
   /// `outcome` (optional) receives the same decision as an enum. All reasons are
   /// literals: no allocation unless the caller calls Status::reason().
-  /// `wheel_travel_m`: signed forward wheel travel since the previous fix (m), NaN without
+  /// `wheel_odometer_m`: absolute signed wheel odometer reading at the fix (m), NaN without
   /// wheel data; used only by the track-yaw aligner (ADR-023) for the direction of travel.
   common::Status on_fix(const common::GnssMeasurement& m,
                         const common::Pose& T_w_b_fix,
                         const common::PoseCovariance& P_w_b,
                         FixOutcome* outcome = nullptr,
-                        double wheel_travel_m = std::numeric_limits<double>::quiet_NaN());
+                        double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN());
 
   /// Moves every queued fix with `t <= t_k` into `out[0, n)`, shifted to the keyframe
   /// pose `T_w_bk` (pipeline.md section 5), and returns n. Later fixes stay queued.

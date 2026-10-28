@@ -149,10 +149,11 @@ Assumptions, each a stated limit:
   longer move backwards; test `GnssTrackYaw.NetBackwardMotionBeforeConfidenceFlips`), the
   estimate converges to `yaw + 180 deg`, and later forward segments are then read as reversals.
 - **White, honestly declared fix noise.** `sigma_yaw` uses the declared horizontal variance of
-  each fix, floored at `gnss.align_yaw_min_var_m2`, and treats fixes as independent. A declared
-  variance `<= 0` is rejected ("non-positive covariance"). Coloured error (multipath, the slow
-  wander of a parked receiver) is not in `sigma_yaw`; the minimum track and the coherence test
-  bound its effect.
+  each fix, floored at `gnss.align_yaw_min_var_m2`, and treats fixes as independent. A fix with
+  a declared horizontal variance `<= 0` on either axis is rejected ("non-positive
+  covariance"). Coloured error (multipath, the slow wander of a parked receiver) is not in
+  `sigma_yaw`; the minimum track, the coherence test and, with wheel data, the stationary skip
+  bound its effect (envelope below).
 - **Heading turn below pi between consecutive fixes** (15.7 rad/s at 5 Hz), so the heading can
   be unwrapped.
 
@@ -176,6 +177,10 @@ Segments. Segment `k` joins chunks `k` and `k + 1`:
     b_k = c_{k+1} - c_k   (e)      l_k = m_{k+1} - m_k   (w)
     a_k = s_k (cos, sin)((psi_k + psi_{k+1}) / 2)   (w),  s_k = +-1
 
+The wheel travel of a fix is the difference between the absolute odometer reading at that fix
+and at the last fix the aligner added, so the travel during fixes rejected before the aligner
+(gate, chi-square, a non-positive covariance) is carried to the next one, not lost.
+
 On an arc of constant curvature and speed, the centroids of two chunks lie at the same radius,
 so the chord between them is along the tangent at the mean angle, which is `a_k`. It changes
 sign only when the turn reaches `2 pi`. Even so, the chord bends with speed changes along the
@@ -192,6 +197,9 @@ arc, and course over ground is a poor heading reference in turns. So a segment i
   `s_k` is the sign of that wheel travel. A travel below `gnss.align_yaw_min_wheel_travel_m`
   (0.2 m) is a stationary segment and is skipped (`a_k = 0`, `n_stationary_segments()`): it
   carries no direction, and the random sign of wheel noise at rest would alternate `a_k`.
+  Consequence: with 2 s between chunk centres, a robot slower than about 0.1 m/s never aligns
+  with wheel data at the defaults (test `GnssTrackYaw.LowSpeedWithWheelNeverAligns`; without
+  wheel data the same track aligns).
   Before this rule, E-01 with the flag aligned so late that it got 8 GNSS factors instead of 65
   (test `GnssTrackYaw.StationaryWheelNoiseDoesNotDelay`).
 - **No wheel data (fallback).** `s_k = +1` (forward driving), counted in
@@ -233,12 +241,20 @@ checks R = 0.2, 0.3 and 2 m with the box-world lever arm to 1e-9 rad.)
 
 Noise. `c_k` enters segment `k - 1` with `+a_{k-1}` and segment `k` with `-a_k`, so the noise
 of `sum a x b` is `sum_k (a_{k-1} - a_k) x n_k`. Here `a_{-1} = a_K = 0`, and a skipped
-segment counts as `a = 0`. For isotropic horizontal noise (variance `v_k` per axis):
+segment counts as `a = 0`. Since `r` and `arg(r + L)` depend on `Z` only through `|Z|`, to
+first order `delta_yaw = Im(conj(Z) delta_Z) / |Z|^2`. For isotropic horizontal noise
+(variance `v_k` per axis):
 
-    sigma_yaw = sqrt(sum_k v_k |a_{k-1} - a_k|^2) / r
+    sigma_yaw = sqrt(sum_k v_k |a_{k-1} - a_k|^2) / |Z|,      |Z| = |r + L|
+
+(The first versions divided by `r`. The two differ when the lever arm turns: on the box
+circle `|r + L| / r` is about 0.95, on a 1 m circle about 0.92, so the sigma was optimistic.
+Test `GnssTrackYaw.CircleWithLeverArmSigmaConsistent`: 2000 runs on a 1 m circle with the
+box lever arm give a normalised squared yaw error of 1.03; re-review N2.)
 
 On a straight line `a` is constant, the sum telescopes to the first and the last chunk, and
-`sigma_yaw = sqrt(v_0 + v_K) / L`, with `L` the distance between them. At 0.5 m per axis and
+`sigma_yaw = sqrt(v_0 + v_K) / L` (no lever-arm turn, so `|Z| = r`), with `L` the distance
+between them. At 0.5 m per axis and
 `m = 10`, `v = 0.025 m^2`, so `L = 4.3 m` gives 3 deg. Heading noise is neglected (below
 0.2 deg in the corridor), and `l_k` carries no noise term. The running sums give
 `sum v_k |a_{k-1} - a_k|^2` in O(1): chunk `k`'s term is added when segment `k` is formed, and
@@ -257,14 +273,30 @@ Acceptance ("confident"). A transform is returned once all of these hold:
 Together these replace `align_min_pairs` and `align_min_spread_m`. No motion, or a frozen
 receiver, gives `r ~ 0` and no transform.
 
-Test `GnssTrackYaw.ParkedDriftingGnssNeverAligns`: a parked robot with a random walk of 0.05 m
-per fix plus 0.3 m white noise, declared 0.5 m, for 5 minutes, over 100 seeds.
+Parked robot with drifting GNSS: a random walk of `step` per fix plus 0.3 m white noise,
+declared 0.5 m, 5 minutes, 100 seeds. At 0.05 m per fix, by gate:
 
 | gate | seeds aligned |
 | --- | --- |
 | sigma only (first version) | 13, up to 180 deg off (review probe) |
 | plus the 5 m minimum track | 6 |
 | plus the coherence 0.5 (shipped) | 0 |
+
+The envelope of what ships (test `GnssTrackYaw.ParkedDriftingGnssEnvelope`; the re-review
+probe used other seeds):
+
+| random walk per fix | without wheel data | with wheel data |
+| --- | --- | --- |
+| 0.05 m | 0 of 100 | 0 of 100 |
+| 0.10 m | 0 of 100 (probe: 3 of 100, up to 154 deg off) | 0 of 100 |
+| 0.20 m | 16 of 100, up to 176 deg off (probe: 27 of 100, up to 178 deg) | 0 of 100 |
+
+So without wheel data a parked robot whose GNSS wanders by 0.1 m per fix or more can align
+on noise. No cheap stationary signal exists for that case: the IMU rest detector used at
+keyframe 0 tests the spread of acceleration and rate, which is the same at rest and at
+constant velocity (in the simulator both are pure sensor noise, 0.08 m/s^2 per sample), so it
+would also block the straight cruise that the corridor needs. This is a documented limit
+(ADR-023).
 
 Variance floor (test `GnssTrackYaw.VarianceFloor`): fixes declared at 1 cm with 0.5 m true noise,
 100 seeds. Without the floor, 48 seeds are more than 10 deg off at the first transform (95

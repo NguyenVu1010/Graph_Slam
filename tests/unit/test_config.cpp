@@ -267,7 +267,7 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
       << bad.reason();
   // ADR-022: off by default (previous behaviour), buffer bound >= 1.
   EXPECT_FALSE(cfg.value().gnss.attach_prealign_fixes);
-  EXPECT_EQ(cfg.value().gnss.prealign_max_fixes, 256);
+  EXPECT_EQ(cfg.value().gnss.prealign_max_fixes, 320);
   const auto bad_buf =
       parse_config(read_file(kDefault), overlay("    gnss:\n      prealign_max_fixes: 0\n"));
   ASSERT_FALSE(bad_buf.is_ok());

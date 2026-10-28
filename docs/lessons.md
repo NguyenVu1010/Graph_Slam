@@ -256,11 +256,19 @@ Format of an entry: **symptom** → cause → fix → rule.
   - The lever-arm term depends only on rotation, and is solved in closed form.
   - The declared fix variance is floored at 0.25 m², and non-positive covariance is rejected.
   - Alignment requires a minimum track length of 5 m and a track coherence of 0.5. Coherence is
-    the track along the heading divided by the GNSS path length. Together they stop a parked
-    robot with drifting GNSS from aligning: 13 of 100 seeds aligned before, 0 after.
+    the track along the heading divided by the GNSS path length. With a GNSS random walk of
+    0.05 m per fix, a parked robot aligned on 13 of 100 seeds before and on 0 after.
+  - That protection has an envelope. Without wheel data the parked robot aligns on 0 of 100
+    seeds at 0.10 m per fix (3 of 100 in a review probe with other seeds, up to 154° off) and
+    on 16 of 100 at 0.20 m per fix (up to 176° off). With wheel data it aligns on 0 of 100 at
+    every level. The IMU rest detector cannot help, because rest and constant-velocity driving
+    look the same to an IMU.
+  - With wheel data, a robot slower than about 0.1 m/s never aligns at the defaults: every
+    segment counts as stationary.
 
-  The remaining case, no wheel data and net backward motion before the yaw is confident, is
-  documented as a limitation in ADR-023 and pinned by a test.
+  Two cases remain without wheel data: net backward motion before the yaw is confident, and
+  a parked robot whose GNSS drifts by 0.1 m per fix or more. Both are documented as
+  limitations in ADR-023 and pinned by tests.
 - **Rule.** Before designing an estimator step, list the sensors the target platform has and
   what each one observes. Then compare with how established systems solve the same step and
   which sensors they assume. Pick the method whose preconditions your hardware can check. Never
@@ -288,8 +296,7 @@ Format of an entry: **symptom** → cause → fix → rule.
     - segments that turn more than 45° are not used;
     - segments without wheel motion are not used.
   - Fixes received before alignment are buffered and attached once it succeeds (design 1), not
-    dropped. The buffer is sized to the expected alignment delay (256 fixes; E-01 needs about
-    220).
+    dropped. The buffer is sized to the expected alignment delay (320 fixes; E-01 needs 264).
   - The global (ENU) output is to carry an "aligned" flag. It is valid only after alignment, and
     consumers use the local pose until then (planned for S2).
 - **Rule.** When a quantity needs excitation to become observable, gate on a measure of that

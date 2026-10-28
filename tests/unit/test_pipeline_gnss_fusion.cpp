@@ -482,9 +482,8 @@ TEST(GnssFusionTrackYaw, WheelTravelGivesDirection) {
       m.p_e_g = truth_T_e_w() * (truth * kPbg);
       m.cov = Vec3(0.01, 0.01, 0.04).asDiagonal();
       m.status = 0;
-      const double travel =
-          wheel ? (k == 0 ? 0.0 : -0.1) : std::numeric_limits<double>::quiet_NaN();
-      (void)f.on_fix(m, truth, kZeroP, nullptr, travel);
+      const double odometer = wheel ? -0.1 * k : std::numeric_limits<double>::quiet_NaN();
+      (void)f.on_fix(m, truth, kZeroP, nullptr, odometer);
     }
     ASSERT_TRUE(f.aligned()) << wheel;
     const double err = std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z());
@@ -496,6 +495,31 @@ TEST(GnssFusionTrackYaw, WheelTravelGivesDirection) {
       EXPECT_GT(f.track_aligner().n_no_wheel_segments(), 0);
     }
   }
+}
+
+// Re-review N3: the wheel travel of a fix rejected before the aligner (here by gate_fix, status
+// < 0) is carried to the next fix, not lost. Every second fix is rejected while the body moves
+// 0.015 m per fix: between two chunk centres (10 accepted fixes = 20 fixes) it travels 0.3 m,
+// above the 0.2 m stationary threshold; counting only the accepted fixes' own steps would give
+// 0.15 m and skip every segment as stationary.
+TEST(GnssFusionTrackYaw, WheelTravelOfRejectedFixesCarried) {
+  gnss::GnssConfig c = fusion_cfg();
+  c.align_yaw_from_track = true;
+  c.align_yaw_min_track_m = 1.0;
+  GnssFusion f(c, kPbg);
+  for (int k = 0; k < 600 && !f.aligned(); ++k) {
+    Pose truth;
+    truth.p = Vec3(0.015 * k, 0.0, 0.0);
+    GnssMeasurement m;
+    m.t = Timestamp{k * kSec / 5};
+    m.p_e_g = truth_T_e_w() * (truth * kPbg);
+    m.cov = Vec3(0.01, 0.01, 0.04).asDiagonal();
+    m.status = k % 2 == 1 ? -1 : 0;  // odd fixes: "no fix", rejected by gate_fix
+    (void)f.on_fix(m, truth, kZeroP, nullptr, 0.015 * k);
+  }
+  ASSERT_TRUE(f.aligned());
+  EXPECT_EQ(f.track_aligner().n_stationary_segments(), 0);
+  EXPECT_LT(std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z()), 1e-6);
 }
 
 }  // namespace

@@ -128,6 +128,8 @@ struct CoreCounters {
   std::uint64_t n_gnss_ring_overflow = 0;        ///< deferred fixes overwritten (ring full)
   std::uint64_t n_gnss_unfused_eof = 0;  ///< deferred fixes left at end of data (no IMU after)
   std::uint64_t n_gnss_realign = 0;      ///< aligner restarts (gnss.max_consecutive_rejects)
+  std::uint64_t n_wheel_nonfinite =
+      0;  ///< wheel samples with a non-finite speed (ADR-023 odometer)
   // ADR-022, see Estimator::Stats.
   std::uint64_t n_gnss_prealign_attached = 0;
   std::uint64_t n_gnss_prealign_static = 0;
@@ -180,6 +182,8 @@ class EstimatorCore {
   /// Latest estimate (Estimator::latest_state() semantics). Default until has_estimate().
   [[nodiscard]] const common::Estimate& latest() const { return latest_; }
   [[nodiscard]] const CoreCounters& counters() const { return counters_; }
+  /// ADR-023: signed wheel odometer (m) over the finite wheel samples received so far.
+  [[nodiscard]] double wheel_odometer_m() const { return wheel_odometer_m_; }
   /// The VoxelMap cache (read-only, for diagnostics such as Estimator::stats()).
   [[nodiscard]] const map::VoxelMap& voxel_map() const { return map_; }
 
@@ -262,12 +266,13 @@ class EstimatorCore {
   common::Timestamp last_prune_t_{};
   bool have_wheel_ = false;
   common::Timestamp last_wheel_t_{};
-  // ADR-023: signed wheel odometer (m, trapezoid of WheelSample::v_mps) and its value at the
-  // last GNSS fix, for the track-yaw direction of travel.
-  double last_wheel_v_mps_ = 0.0;
+  // ADR-023: signed wheel odometer (m, trapezoid of the finite WheelSample::v_mps) for the
+  // track-yaw direction of travel, and the time of the last GNSS fix it was read at.
+  bool have_odometer_ = false;
+  double last_odometer_v_mps_ = 0.0;
+  common::Timestamp last_odometer_t_{};
   double wheel_odometer_m_ = 0.0;
-  double fix_odometer_m_ = 0.0;
-  bool have_gnss_odometer_ = false;
+  bool have_fix_odometer_t_ = false;
   common::Timestamp last_fix_odometer_t_{};
   std::int64_t wheel_period_ns_ = 0;
   std::size_t map_dropped_ = 0;

@@ -139,6 +139,15 @@ double wheel_travel(const Track& track, int k) {
   return (b.p - track.body(k - 1).p).dot(b.R.col(0));
 }
 
+// Absolute signed wheel odometer reading at fix k (m): the sum of the travels up to k.
+double wheel_odometer(const Track& track, int k) {
+  double sum = 0.0;
+  for (int i = 1; i <= k; ++i) {
+    sum += wheel_travel(track, i);
+  }
+  return sum;
+}
+
 TEST(GnssTrackYaw, NoiseFreeStraightLineIsExact) {
   for (const double heading_deg : {0.0, 20.0, -135.0, 179.0}) {
     GnssTrackYawAligner a(track_cfg());
@@ -317,6 +326,11 @@ TEST(GnssTrackYaw, ErrorSequence) {
   EXPECT_EQ(a.update(Vec3::Zero(), bad_cov, line.body(0), kPbg).reason(), "non-finite input");
   EXPECT_EQ(a.update(Vec3::Zero(), Mat3::Zero(), line.body(0), kPbg).reason(),
             "non-positive covariance");
+  // Re-review N4: each horizontal axis must be positive, not only their mean.
+  EXPECT_EQ(a.update(Vec3::Zero(), Vec3(-0.5, 1.0, 1.0).asDiagonal(), line.body(0), kPbg).reason(),
+            "non-positive covariance");
+  EXPECT_EQ(a.update(Vec3::Zero(), Vec3(1.0, -0.5, 1.0).asDiagonal(), line.body(0), kPbg).reason(),
+            "non-positive covariance");
   Pose up = line.body(0);
   up.R = Eigen::AngleAxisd(-0.5 * kPi, Vec3::UnitY()).toRotationMatrix();  // x_b straight up
   EXPECT_EQ(a.update(Vec3::Zero(), fix_cov(1e-3), up, kPbg).reason(), "heading undefined");
@@ -489,7 +503,7 @@ TEST(GnssTrackYaw, WheelSignResolvesBackwardMotion) {
                    fix_cov(kSigmaM),
                    line.body(k),
                    kPbg,
-                   wheel_travel(line, k));
+                   wheel_odometer(line, k));
       if (r.is_ok() && first < 0) {
         first = k;
         err_first = wrap_pi(yaw_of(r.value().R) - yaw_of(kTew.R));
@@ -502,15 +516,18 @@ TEST(GnssTrackYaw, WheelSignResolvesBackwardMotion) {
     EXPECT_EQ(a.n_no_wheel_segments(), 0);
     EXPECT_GT(a.n_reversals(), 0);
   }
-  // A wheel-data gap (NaN) inside the window falls back for the segments it touches only.
+  // A wheel-data gap (NaN readings) inside the window falls back for the segments it touches
+  // only.
   GnssTrackYawAligner b(track_cfg());
   Line line;
   for (int k = 0; k < 100; ++k) {
     const double w =
-        (k >= 40 && k < 45) ? std::numeric_limits<double>::quiet_NaN() : wheel_travel(line, k);
+        (k >= 40 && k < 45) ? std::numeric_limits<double>::quiet_NaN() : wheel_odometer(line, k);
     (void)b.update(fix_at(line, k, 0.0, nullptr), fix_cov(1e-3), line.body(k), kPbg, w);
   }
-  EXPECT_EQ(b.n_no_wheel_segments(), 1);
+  // Readings 40..44 are NaN, and fix 45 has no baseline: both halves of chunk 4 lack wheel
+  // data, so the two segments touching chunk 4 fall back, and only those.
+  EXPECT_EQ(b.n_no_wheel_segments(), 2);
 }
 
 // E-01 finding of the fix round: wheel noise at rest has a random sign. Taken as a direction it
@@ -527,13 +544,13 @@ TEST(GnssTrackYaw, StationaryWheelNoiseDoesNotDelay) {
     GnssTrackYawAligner a(track_cfg());
     Line line;
     line.static_fixes = 30;  // 6 s at rest
+    double odometer_m = 0.0;
     for (int k = 0; k < 400 && first[mode] < 0; ++k) {
-      double w = wheel_travel(line, k);
+      odometer_m += wheel_travel(line, k);
       if (mode == 1) {
-        w += 0.005 * n01(wheel_rng);  // 5 mm of wheel noise per fix interval
-      } else if (mode == 2) {
-        w = std::numeric_limits<double>::quiet_NaN();
+        odometer_m += 0.005 * n01(wheel_rng);  // 5 mm of wheel noise per fix interval
       }
+      const double w = mode == 2 ? std::numeric_limits<double>::quiet_NaN() : odometer_m;
       if (a.update(fix_at(line, k, kSigmaM, &rng), fix_cov(kSigmaM), line.body(k), kPbg, w)
               .is_ok()) {
         first[mode] = k;
@@ -588,36 +605,84 @@ TEST(GnssTrackYaw, VarianceFloor) {
   }
 }
 
-// Review I3: a parked robot whose GNSS error wanders (random walk 0.05 m per fix plus 0.3 m
-// white, declared 0.5 m) for 5 minutes. The sigma gate alone assumes white noise and aligned on
-// 13 of 100 seeds (up to 180 deg off); with the 5 m minimum track no seed aligns here.
-TEST(GnssTrackYaw, ParkedDriftingGnssNeverAligns) {
+// Review I3 and re-review N5: a parked robot whose GNSS error wanders (random walk of `step` m
+// per fix plus 0.3 m white, declared 0.5 m) for 5 minutes, 100 seeds per case. The sigma gate
+// alone assumed white noise and aligned on 13 of 100 seeds at 0.05 m per fix. The envelope of
+// what ships, measured here and pinned:
+// - without wheel data: 0.05 m per fix 0 of 100; 0.10 m per fix 0 of 100 here (3 of 100 in the
+//   re-review probe with its own seeds, up to 154 deg off); 0.20 m per fix 16 of 100 here, up to
+//   176 deg off (27 of 100 in the probe). A parked robot without wheel odometry is a documented
+//   limit (ADR-023): an IMU cannot tell rest from constant-velocity driving.
+// - with wheel data (odometer constant at rest): 0 of 100 at every level, every segment is
+//   stationary.
+TEST(GnssTrackYaw, ParkedDriftingGnssEnvelope) {
   GnssConfig cfg = track_cfg();
   cfg.align_yaw_min_track_m = 5.0;  // the default
-  int n_aligned = 0;
-  for (std::uint32_t seed = 1; seed <= 100; ++seed) {
-    std::mt19937 rng(seed);
-    std::normal_distribution<double> n01(0.0, 1.0);
-    GnssTrackYawAligner a(cfg);
-    Line still;
-    still.heading_rad = 0.1 * seed;
-    still.static_fixes = 100000;
-    Vec3 walk = Vec3::Zero();
-    bool aligned = false;
-    for (int k = 0; k < 1500 && !aligned; ++k) {
-      Vec3 p = kTew * (still.body(k) * kPbg);
-      for (int i = 0; i < 2; ++i) {
-        walk(i) += 0.05 * n01(rng);
-        p(i) += walk(i) + 0.3 * n01(rng);
+  for (const bool wheel : {false, true}) {
+    for (const double step_m : {0.05, 0.10, 0.20}) {
+      int n_aligned = 0;
+      double worst_deg = 0.0;
+      for (std::uint32_t seed = 1; seed <= 100; ++seed) {
+        std::mt19937 rng(seed);
+        std::normal_distribution<double> n01(0.0, 1.0);
+        GnssTrackYawAligner a(cfg);
+        Line still;
+        still.heading_rad = 0.1 * seed;
+        still.static_fixes = 100000;
+        Vec3 walk = Vec3::Zero();
+        for (int k = 0; k < 1500; ++k) {
+          Vec3 p = kTew * (still.body(k) * kPbg);
+          for (int i = 0; i < 2; ++i) {
+            walk(i) += step_m * n01(rng);
+            p(i) += walk(i) + 0.3 * n01(rng);
+          }
+          const double odometer = wheel ? 0.0 : std::numeric_limits<double>::quiet_NaN();
+          const auto r = a.update(p, fix_cov(kSigmaM), still.body(k), kPbg, odometer);
+          if (r.is_ok()) {
+            ++n_aligned;
+            worst_deg =
+                std::max(worst_deg, std::abs(wrap_pi(yaw_of(r.value().R) - yaw_of(kTew.R))) / kDeg);
+            break;
+          }
+        }
       }
-      aligned = a.update(p, fix_cov(kSigmaM), still.body(k), kPbg).is_ok();
+      std::printf(
+          "[ track yaw ] parked, GNSS random walk %.2f m per fix, wheel %d: %d of 100 "
+          "aligned (worst %.0f deg)\n",
+          step_m,
+          wheel ? 1 : 0,
+          n_aligned,
+          worst_deg);
+      if (wheel || step_m <= 0.05) {
+        EXPECT_EQ(n_aligned, 0) << step_m << " " << wheel;
+      } else {
+        EXPECT_LE(n_aligned, step_m <= 0.10 ? 5 : 40) << step_m;  // the documented limit
+      }
     }
-    n_aligned += aligned ? 1 : 0;
   }
-  std::printf("[ track yaw ] parked, drifting GNSS: %d of 100 seeds aligned (coherence %.2f)\n",
-              n_aligned,
-              cfg.align_yaw_min_coherence);
-  EXPECT_EQ(n_aligned, 0);
+}
+
+// Re-review N5: with wheel data, every segment whose wheel travel is below
+// align_yaw_min_wheel_travel_m (0.2 m) counts as stationary. With 10 fixes per chunk at 5 Hz the
+// centres are 2 s apart, so a robot slower than about 0.1 m/s never aligns at the defaults
+// (documented in ADR-023). Without wheel data the same slow track aligns.
+TEST(GnssTrackYaw, LowSpeedWithWheelNeverAligns) {
+  for (const bool wheel : {true, false}) {
+    GnssTrackYawAligner a(track_cfg());
+    int n_ok = 0;
+    for (int k = 0; k < 3000; ++k) {
+      const double s_m = 0.018 * k;  // 0.09 m/s at 5 Hz
+      const Pose b = yaw_pose(0.0, Vec3(s_m, 0.0, 0.0));
+      const double odometer = wheel ? s_m : std::numeric_limits<double>::quiet_NaN();
+      n_ok += a.update(kTew * (b * kPbg), fix_cov(0.01), b, kPbg, odometer).is_ok() ? 1 : 0;
+    }
+    if (wheel) {
+      EXPECT_EQ(n_ok, 0);
+      EXPECT_GT(a.n_stationary_segments(), 250);
+    } else {
+      EXPECT_GT(n_ok, 0);
+    }
+  }
 }
 
 // Review I3: a declared covariance of zero made sigma_yaw zero (aligned at the second chunk,
@@ -652,6 +717,64 @@ TEST(GnssTrackYaw, MinTrackLength) {
   // Chunk means 5 m apart need chunks 0 and 5: the transform comes at fix 59.
   EXPECT_EQ(first, 59);
   EXPECT_GE(a.track_m(), 5.0 - 1e-9);
+}
+
+// Re-review N2: the yaw sigma divides by |Z| = |r + L|, not by r. They differ when the lever arm
+// turns: on a 1 m circle with the box-world lever arm |r + L| / r is about 0.92, and dividing by r
+// made the sigma optimistic. Monte Carlo at the first transform: 2000 runs, 0.5 m noise, wheel
+// sign, 0.07 rad per fix (35 deg per chunk, inside the turn gate), one fixed seed.
+TEST(GnssTrackYaw, CircleWithLeverArmSigmaConsistent) {
+  constexpr int kRuns = 2000;
+  std::mt19937 rng(2024U);
+  std::normal_distribution<double> n01(0.0, 1.0);
+  double nees_sum = 0.0;
+  int n = 0;
+  for (int run = 0; run < kRuns; ++run) {
+    GnssTrackYawAligner a(track_cfg());
+    for (int k = 0; k < 600; ++k) {
+      const double psi = 0.07 * k;
+      const Pose b = yaw_pose(psi, Vec3(std::sin(psi), 1.0 - std::cos(psi), 0.0));
+      Vec3 p = kTew * (b * kPbg);
+      for (int i = 0; i < 3; ++i) {
+        p(i) += kSigmaM * n01(rng);
+      }
+      const auto r = a.update(p, fix_cov(kSigmaM), b, kPbg, 0.07 * k);  // odometer: arc length
+      if (r.is_ok()) {
+        const double err = wrap_pi(yaw_of(r.value().R) - yaw_of(kTew.R));
+        nees_sum += err * err / (a.yaw_sigma_rad() * a.yaw_sigma_rad());
+        ++n;
+        break;
+      }
+    }
+  }
+  ASSERT_EQ(n, kRuns);
+  const double nees = nees_sum / n;
+  std::printf(
+      "[ track yaw ] 1 m circle with lever arm: mean normalised squared yaw error %.3f "
+      "over %d runs\n",
+      nees,
+      n);
+  EXPECT_GT(nees, 0.9);
+  EXPECT_LT(nees, 1.1);
+}
+
+// Re-review N1: a single NaN odometer reading (no wheel data for that fix) inside a run that
+// drives backwards from the start: only the segments it touches fall back, and the yaw is right.
+TEST(GnssTrackYaw, OneMissingWheelReadingDoesNotFlip) {
+  std::mt19937 rng(3U);
+  GnssConfig cfg = track_cfg();
+  cfg.align_yaw_min_track_m = 5.0;
+  GnssTrackYawAligner a(cfg);
+  Line back;
+  back.reverse_from = 0;  // backwards from the start
+  mss::common::Result<Pose> r = mss::common::Result<Pose>::error("none");
+  for (int k = 0; k < 300; ++k) {
+    const double w = k == 40 ? std::numeric_limits<double>::quiet_NaN() : wheel_odometer(back, k);
+    r = a.update(fix_at(back, k, kSigmaM, &rng), fix_cov(kSigmaM), back.body(k), kPbg, w);
+  }
+  ASSERT_TRUE(r.is_ok()) << r.reason();
+  EXPECT_LT(std::abs(wrap_pi(yaw_of(r.value().R) - yaw_of(kTew.R))), 3.0 * a.yaw_sigma_rad());
+  EXPECT_LE(a.n_no_wheel_segments(), 2);
 }
 
 TEST(GnssTrackYaw, NoAllocation) {

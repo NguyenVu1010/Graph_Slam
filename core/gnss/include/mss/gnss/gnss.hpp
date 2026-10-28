@@ -173,16 +173,18 @@ class GnssAligner {
 ///   yaw = arg(sum conj(a_k) b'_k)      (complex notation, 2-D Procrustes)
 /// in closed form: with Z = sum conj(a) b and L = sum conj(a) l,
 ///   r = -Re(L) + sqrt(|Z|^2 - Im(L)^2),  e^{i yaw} = Z / (r + L),  r = |sum conj(a) b'| > 0.
-/// Noise: sigma_yaw = sqrt(sum_k var_k |a_{k-1} - a_k|^2) / r, with var_k the per-axis
+/// Noise: sigma_yaw = sqrt(sum_k var_k |a_{k-1} - a_k|^2) / |Z| (|Z| = |r + L|), var_k the per-axis
 /// variance of chunk mean k from the declared fix variances floored at align_yaw_min_var_m2
 /// (fixes assumed white and independent), a_{-1} = a_K = 0.
 /// A transform is returned once confident: r >= align_yaw_min_track_m,
 /// r >= align_yaw_min_coherence * sum |b_k| (segments used) and sigma_yaw <=
 /// align_yaw_max_sigma_rad.
 /// Not handled: without wheel data, net backward motion along the heading before the estimate
-/// is confident gives yaw + 180 deg. Coloured GNSS error is not in sigma_yaw; the minimum track
-/// and the coherence test bound its effect.
-/// Translation: p_e_w = mean(p_e_g) - R_e_w mean(p_w_g) over all fixes, as GnssAligner.
+/// is confident gives yaw + 180 deg; a parked robot whose GNSS wanders by 0.1 m per fix or
+/// more can align on noise (gnss.md section 5). With wheel data, a robot travelling less than
+/// align_yaw_min_wheel_travel_m per chunk interval (about 0.1 m/s at the defaults) never aligns.
+/// Coloured GNSS error is not in sigma_yaw; the minimum track and the coherence test bound its
+/// effect. Translation: p_e_w = mean(p_e_g) - R_e_w mean(p_w_g) over all fixes, as GnssAligner.
 ///
 /// O(1) memory, no allocation. Ownership/threading: single-threaded; owned by
 /// pipeline::Estimator (backend thread) when gnss.align_yaw_from_track is true.
@@ -198,11 +200,13 @@ class GnssTrackYawAligner {
   /// Frames: `p_e_g` antenna in e, `cov_e` its covariance in e (m^2; only the mean of its two
   ///   horizontal diagonal terms is used, floored at align_yaw_min_var_m2); `T_w_b` body pose
   ///   in w at the fix time; `p_b_g` lever arm in b. Result: T_e_w maps w to e.
-  /// `wheel_travel_m`: signed forward wheel travel since the previous fix (m, positive forward),
-  ///   or NaN when no wheel data covers that interval.
+  /// `wheel_odometer_m`: absolute signed wheel odometer reading at the fix (m, increasing when
+  ///   driving forward), or NaN when no wheel data covers the interval since the previous fix.
+  ///   The travel of a fix is the difference to the reading of the last fix added here, so the
+  ///   travel during fixes rejected before the aligner is carried to the next one.
   /// Errors (Result::error), first failure returned:
-  ///   1. "non-finite input" (wheel_travel_m may be NaN, not infinite; fix NOT added);
-  ///   2. "non-positive covariance" when (cov_e(0,0) + cov_e(1,1)) / 2 <= 0 (fix NOT added);
+  ///   1. "non-finite input" (wheel_odometer_m may be NaN, not infinite; fix NOT added);
+  ///   2. "non-positive covariance" when cov_e(0,0) <= 0 or cov_e(1,1) <= 0 (fix NOT added);
   ///   3. "heading undefined" when the body x axis is within about 1e-6 rad of vertical
   ///      (fix NOT added);
   ///   4. "not enough track" until two chunks are complete and the closed form has a solution
@@ -218,7 +222,7 @@ class GnssTrackYawAligner {
       const common::Mat3& cov_e,
       const common::Pose& T_w_b,
       const common::Vec3& p_b_g,
-      double wheel_travel_m = std::numeric_limits<double>::quiet_NaN());
+      double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN());
 
   /// Predicted 1-sigma of the yaw (rad) at the last chunk boundary; +inf before it is defined.
   [[nodiscard]] double yaw_sigma_rad() const { return yaw_sigma_rad_; }
@@ -272,7 +276,8 @@ class GnssTrackYawAligner {
   Eigen::Vector2d chunk_sum_l_ = Eigen::Vector2d::Zero();  // m, horizontal R_w_b p_b_g, w
   double chunk_sum_var_m2_ = 0.0;                          // m^2, floored per-fix variances
   std::array<double, 2> chunk_wheel_m_{0.0, 0.0};          // m, signed wheel travel per half
-  std::array<bool, 2> chunk_wheel_ok_{true, true};         // every fix of the half had wheel
+  double last_odometer_m_ = std::numeric_limits<double>::quiet_NaN();  // m, at the last fix added
+  std::array<bool, 2> chunk_wheel_ok_{true, true};  // every fix of the half had wheel
   // Previous complete chunk and the last segment direction.
   bool have_prev_ = false;
   Chunk prev_;
