@@ -631,7 +631,7 @@ bench within noise.
 ## 14. Design 1: pre-alignment fixes as factors (ADR-022)
 
 Section 13.6, item 1. `gnss.attach_prealign_fixes` (default off) keeps the fixes received before
-the first alignment in a bounded buffer (`gnss.prealign_max_fixes`, 128 at the time, 256 since
+the first alignment in a bounded buffer (`gnss.prealign_max_fixes`, 128 at the time, 320 since
 ADR-023) and adds them as
 factors once the aligner has a transform:
 

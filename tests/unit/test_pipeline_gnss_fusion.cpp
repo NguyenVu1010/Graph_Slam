@@ -522,5 +522,50 @@ TEST(GnssFusionTrackYaw, WheelTravelOfRejectedFixesCarried) {
   EXPECT_LT(std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z()), 1e-6);
 }
 
+// Re-review 2 coverage: a realign (gnss.max_consecutive_rejects) rebuilds the track-yaw aligner,
+// whose odometer baseline restarts at NaN. Only the first fix after the realign loses its wheel
+// travel, and it sits in the first half of the new first chunk, which no segment uses; every
+// later travel is differenced from the absolute readings. The body drives backwards, so a lost
+// travel would put a segment on the forward fallback and the yaw would flip.
+TEST(GnssFusionTrackYaw, RealignKeepsWheelDifferencing) {
+  gnss::GnssConfig c = fusion_cfg();
+  c.align_yaw_from_track = true;
+  c.align_yaw_min_track_m = 1.0;
+  c.max_consecutive_rejects = 3;
+  GnssFusion f(c, kPbg);
+  const Vec3 jump(5.0, 0.0, 0.0);  // m, a frame offset the chi-square gate rejects
+  int k = 0;
+  const auto feed = [&](const Vec3& offset_e) {
+    Pose truth;
+    truth.p = Vec3(-0.1 * k, 0.0, 0.0);  // heading 0, moving backwards
+    GnssMeasurement m;
+    m.t = Timestamp{k * kSec / 5};
+    m.p_e_g = truth_T_e_w() * (truth * kPbg) + offset_e;
+    m.cov = Vec3(0.01, 0.01, 0.04).asDiagonal();
+    m.status = 0;
+    (void)f.on_fix(m, truth, kZeroP, nullptr, -0.1 * k);
+    ++k;
+  };
+  while (!f.aligned() && k < 300) {
+    feed(Vec3::Zero());
+  }
+  ASSERT_TRUE(f.aligned());
+  EXPECT_EQ(f.n_alignments(), 1U);
+  for (int i = 0; i < 3; ++i) {  // the third rejection restarts the aligner
+    feed(jump);
+  }
+  ASSERT_EQ(f.n_realign(), 1U);
+  EXPECT_FALSE(f.aligned());
+  while (!f.aligned() && k < 600) {
+    feed(jump);
+  }
+  ASSERT_TRUE(f.aligned());
+  EXPECT_EQ(f.n_alignments(), 2U);
+  EXPECT_EQ(f.track_aligner().n_no_wheel_segments(), 0);  // no travel lost after fix 1
+  EXPECT_EQ(f.track_aligner().n_stationary_segments(), 0);
+  EXPECT_GT(f.track_aligner().n_reversals(), 0);  // backward segments from the wheel sign
+  EXPECT_LT(std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z()), 1e-6);
+}
+
 }  // namespace
 }  // namespace mss::pipeline::detail

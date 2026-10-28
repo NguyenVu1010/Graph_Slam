@@ -865,9 +865,6 @@ TEST(PipelineComponent, NonKeyframeScanDoesNotAllocate) {
   EXPECT_LT(s.core().latest().state.T_w_b.p.norm(), 0.02);  // static: matched near origin
 }
 
-// ADR-022: with gnss.attach_prealign_fixes the static body never aligns (no spread), so every
-// fix goes to the pre-alignment buffer, which fills (4 fixes) and then drops and counts; the
-// non-keyframe scans still do not allocate.
 // Re-review N1: one NaN or Inf wheel speed must not poison the ADR-023 wheel odometer (it used
 // to stay NaN for the rest of the run, silently switching the track-yaw aligner to its
 // forward-driving fallback). Non-finite samples are skipped and counted; the odometer integrates
@@ -890,6 +887,9 @@ TEST(PipelineComponent, WheelOdometerSkipsNonFiniteSpeed) {
   EXPECT_NEAR(core.wheel_odometer_m(), 1.0, 1e-9);
 }
 
+// ADR-022: with gnss.attach_prealign_fixes the static body never aligns (no spread), so every
+// fix goes to the pre-alignment buffer, which fills (4 fixes) and then drops and counts; the
+// non-keyframe scans still do not allocate.
 TEST(PipelineComponent, PrealignBufferBoundedNoAllocation) {
   StaticCore s(true, 4);
   s.scan_at(s.t_scan(0));  // initialisation + keyframe 0

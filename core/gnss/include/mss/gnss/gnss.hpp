@@ -197,9 +197,9 @@ class GnssTrackYawAligner {
   explicit GnssTrackYawAligner(const GnssConfig& cfg);
 
   /// Adds one fix and returns the current `T_e_w` estimate when available.
-  /// Frames: `p_e_g` antenna in e, `cov_e` its covariance in e (m^2; only the mean of its two
-  ///   horizontal diagonal terms is used, floored at align_yaw_min_var_m2); `T_w_b` body pose
-  ///   in w at the fix time; `p_b_g` lever arm in b. Result: T_e_w maps w to e.
+  /// Frames: `p_e_g` antenna in e, `cov_e` its covariance in e (m^2; each of its two horizontal
+  ///   diagonal entries must be > 0, and their mean, floored at align_yaw_min_var_m2, is used);
+  ///   `T_w_b` body pose in w at the fix time; `p_b_g` lever arm in b. Result: T_e_w maps w to e.
   /// `wheel_odometer_m`: absolute signed wheel odometer reading at the fix (m, increasing when
   ///   driving forward), or NaN when no wheel data covers the interval since the previous fix.
   ///   The travel of a fix is the difference to the reading of the last fix added here, so the
