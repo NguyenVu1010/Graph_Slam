@@ -484,8 +484,19 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
     observer()->on_lidar_factor(last_kf_t_, t, T_bi_bj, cov_f);
   }
   if (cfg_.degeneracy.enabled) {
-    const common::DegeneracyReport report_b =
-        degeneracy_in_body(degeneracy::analyze(match.H, cfg_.degeneracy), T_b_l_);
+    const common::DegeneracyReport report_l = degeneracy::analyze(match.H, cfg_.degeneracy);
+    const common::DegeneracyReport report_b = degeneracy_in_body(report_l, T_b_l_);
+    bool any_flagged = false;
+    bool rot_flagged = false;
+    for (int k = 0; k < 6; ++k) {
+      if (report_l.degenerate[static_cast<std::size_t>(k)]) {
+        any_flagged = true;
+        const common::Vec6 v = report_l.eigvecs.col(k);
+        rot_flagged = rot_flagged || v.tail<3>().squaredNorm() > v.head<3>().squaredNorm();
+      }
+    }
+    counters_.n_degenerate_keyframes += any_flagged ? 1U : 0U;
+    counters_.n_degenerate_rot_keyframes += rot_flagged ? 1U : 0U;
     graph_.add_lidar_factor(i, j, T_bi_bj, cov_f, &report_b);
   } else {
     graph_.add_lidar_factor(i, j, T_bi_bj, cov_f, nullptr);

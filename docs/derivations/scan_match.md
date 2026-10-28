@@ -3,8 +3,8 @@
 Implemented in `core/scan_match/src/` (contract:
 `core/scan_match/include/mss/scan_match/scan_matcher.hpp`). Tested by
 `tests/unit/test_scan_match.cpp` and `tests/component/test_scan_match_component.cpp`.
-Design background: ADR-004 (LiDAR factor covariance from the inverse Hessian, inflated along
-degenerate directions), ADR-007 (voxel hash map, k-NN plane, RMS rejection). Degeneracy
+Design background: ADR-004 (LiDAR factor covariance from the inverse Hessian, "unobserved"
+along degenerate directions), ADR-007 (voxel hash map, k-NN plane, RMS rejection). Degeneracy
 analysis: `degeneracy.md`.
 
 Conventions: tangent `xi = [rho, phi]` (translation first), right perturbation
@@ -232,9 +232,10 @@ as the reported H. Then
     C   = cov_scale * s2 * A^-1,   A = H (disabled) or H_reg (enabled),
     C  <- 0.5 (C + C^T)
     cov = C                                        (degeneracy disabled)
-    cov = relax_covariance(C, report, deg_cfg)     (enabled; report of the final iteration)
+    cov = unobserved_covariance(C, report, cfg, var_m2, var_rad2, cov_scale * s2)
+                                                   (enabled; report of the final iteration)
 
-with `cov_scale` a dimensionless multiplier (`scan_match.cov_scale`, default 1.0) and
+with `cov_scale` a dimensionless multiplier (`scan_match.cov_scale`, default 4.7, calibrated by the LiDAR NEES test, `gnss_fusion_study.md` section 3) and
 `min_residual_sigma_m` a floor on the residual sigma (`scan_match.min_residual_sigma_m`,
 default 0.005 m, validated > 0). The variance scales with the noise level: for scan noise
 `sigma`, `sigma_r^2 ~ sigma^2` and H barely changes, so 3x the noise gives about 9x the
@@ -246,24 +247,75 @@ Floor: a noise-free synthetic scan (Gazebo with noise disabled) fits to float ro
 model cannot use (singular, or an ill-conditioned information of ~1e14). The floor makes
 `C >= cov_scale * min_residual_sigma_m^2 * A^-1` (test `NoiseFreeCovarianceAtFloor`).
 
-Degenerate directions: `C` alone would be wrong along a flagged direction `v_k`. There
-`H_reg` has eigenvalue `tau` instead of `lambda_k < tau`, so `v_k^T C v_k =
-cov_scale * s2 / tau`, SMALLER than the unregularised `cov_scale * s2 / lambda_k` (infinite for
-an exact corridor) and not a valid uncertainty. The matcher therefore applies the degeneracy
-module's `relax_covariance` itself, so `MatchResult::cov` is final (the pipeline must not relax
-it again): along `v_k` the variance becomes `relax_factor * cov_scale * s2 / tau`, at least
-`relax_factor` times the regularised value and, with the defaults, larger than every unflagged
-variance `cov_scale * s2 / lambda_j` (`lambda_j >= tau`) since `relax_factor > 1` (test
-`D03_CorridorProjectedNotSingular`). This is still a finite number, not "no information".
-The relaxed covariance is the only degeneracy mitigation in the factor; the pipeline passes
-the DegeneracyReport to backend for diagnostics only (see graph.hpp) and must not call
-relax_covariance again. With
-nothing flagged `relax_covariance` is the exact identity, so enabling the flag in a
-well-constrained scene changes nothing.
+Degenerate directions (rewritten in PR 4b): `C` alone would be wrong along a flagged
+direction `v_k`. There `H_reg` has eigenvalue `tau` instead of `lambda_k < tau`, so
+`v_k^T C v_k = cov_scale * s2 / tau`, SMALLER than the unregularised `cov_scale * s2 /
+lambda_k` (infinite for an exact corridor). Until PR 4b the matcher multiplied it by
+`relax_factor` (`relax_covariance`), which still gave `relax_factor * cov_scale * s2 / tau`:
+about 2.1 cm std with the defaults (`sqrt(10 * 4.7 * 0.03^2 / 100)`) and a 3 cm residual, a confident value for a direction the
+scan does not observe. The backend uses the covariance as given, so that number pinned the
+estimate along the corridor to the front-end prediction.
+
+Now a flagged direction means "unobserved". With `F` the flagged set, `v_k` the eigenvectors of
+the final H, `P = I - sum_{k in F} v_k v_k^T` (projector onto the observed directions)
+and `D = diag(var_m2 I3, var_rad2 I3)` (`scan_match.unobserved_var_m2`, default 0.001 m^2, and
+`scan_match.unobserved_var_rad2`, default 1e-4 rad^2, both validated > 0):
+
+    cov = P C P + U',   then symmetrised,
+    U   = P_F D P_F,   P_F = sum_{k in F} v_k v_k^T,
+    U'  = U with each eigenvalue u on F (eigenvector w) replaced by
+          max(u, relax_factor * cov_scale * s2 / eig_threshold)
+
+(`degeneracy::unobserved_covariance`; with one flagged vector `U' = max(v^T D v, floor) v v^T`).
+`U` is the projection of `D` onto the flagged subspace: it does not depend on the basis the
+eigen-solver picks inside a repeated flagged eigenvalue (the noise-free floor scene flags
+`rho_x`, `rho_y`, `phi_z` with one repeated zero eigenvalue; review M3, test
+`UnobservedCovariance.RepeatedFlaggedEigenvalueBasisInvariant`). Properties, using `P v_k = 0`
+for `k in F` and `P v_j = v_j` otherwise:
+
+- observed block unchanged: `v_i^T cov v_j = v_i^T C v_j` for `i, j not in F`; `C` shares the
+  eigenvectors of `H_reg`, so `v_j^T cov v_j = cov_scale * s2 / lambda_j` as without degeneracy,
+  and `P cov H P = cov_scale * s2 * P`;
+- flagged: no correlation between the flagged and the observed subspace. Without the floor,
+  `v_j^T cov v_k = v_j^T D v_k` for flagged `j, k`; for one flagged direction that is
+  `|v_k.rho|^2 var_m2 + |v_k.phi|^2 var_rad2`, along a pure translation axis (a corridor)
+  `var_m2` exactly, and the [rho, phi] mix of a coupled direction gets the matching mix of the
+  two variances;
+- floor (`degeneracy.relax_factor`, review I2): `var_m2` is an absolute number, while an
+  observed direction of the regularised system has eigenvalue `>= eig_threshold` and so
+  variance `<= cov_scale * s2 / eig_threshold`. A sparse, noisy scan can make that reach 1e-3
+  m^2. The floor `relax_factor * cov_scale * s2 / eig_threshold` (the pre-PR-4b relaxed value,
+  `relax_factor` >= 1) keeps every unobserved direction at least that uncertain; if the
+  configured variances are below it, the result is the pre-PR-4b relaxed covariance (the case
+  of the default 0.001 m^2 on the Gazebo E-04 bag, `degeneracy.md` section 7; test
+  `UnobservedCovariance.FloorAppliesWhenConfiguredVarianceIsSmaller`);
+- `cov` stays positive definite (both parts are PSD and together span R^6).
+
+`var_m2 = 0.001 m^2` (3.2 cm std per 1 m keyframe step, `keyframe_dist_m`) lets wheel odometry
+decide the estimate along the axis (test `PipelineComponent.CorridorFollowsWheelAlongAxis`,
+absolute detector). It is not larger because without wheel odometry nothing else observes the
+axis and a looser value lets the IMU-only estimate wander further (`degeneracy.md` section 7,
+absolute detector, on main 3f90e34 with the ADR-020 gravity-direction factor and the ADR-021
+decoupled relative factor: 0.001 m^2 gives 0.021 m along a corridor, 0.01 gives 0.14 m, 0.1
+gives 2.2 m, 1 m^2 gives 0.82 m, degeneracy off 6.1 m; test
+`PipelineComponent.CorridorImuOnlyAlongAxisBounded`, bound 0.1 m). It is not infinite: a backend
+noise model needs a finite, invertible covariance. The covariance is read in the chart it was
+computed in (translation and rotation separately) only by the `decoupled` relative factor,
+the default since ADR-021; with `between` a large residual along the unobserved axis leaks
+rotation information into translation through the SE(3) Log (`docs/lessons.md` section 1.9).
+`MatchResult::cov` is final; the pipeline passes the DegeneracyReport to backend for
+diagnostics only (see graph.hpp) and must not change the covariance. With nothing flagged
+`unobserved_covariance` is the exact identity, so enabling the flag in a well-constrained
+scene changes nothing. Tests: `D03_CorridorProjectedNotSingular` (axis variance equals
+`v0^T D v0` to 1e-9 and `var_m2` to 1e-6; observed block `P cov H P = c P` to 1e-9; no
+coupling to the axis), D-03 in `test_degeneracy_scenes.cpp`, unit tests
+`UnobservedCovariance.*`. `relax_covariance` remains for other callers; scan_match no longer
+uses it.
 
 Tuning note: `eig_threshold` is absolute, so it depends on the point count. A sparse but
 well-constrained scan (the 720-point synthetic room) has a smallest eigenvalue of 77 in the
-first iteration and 141 at convergence, so `tau = 100` flags a healthy direction there.
+first iteration and 141 at convergence, so `tau = 100` flags a healthy direction there
+(`degeneracy.md` section 7: absolute 100 also flags healthy box keyframes and costs E-01).
 
 Note: `sum(w)` rather than `n - 6` in the denominator: with hundreds of inliers the
 difference is negligible, and the weighted mean is consistent with the IRLS weights.
@@ -279,7 +331,7 @@ difference is negligible, and the weighted mean is consistent with the IRLS weig
       A = H or H_reg (section 5); LLT(A) fails or xi non-finite -> "singular Hessian"
       xi = -A^-1 g, projected if enabled; T <- T * Exp(xi)
       stop when |xi_rho| < trans_tol_m and |xi_phi| < rot_tol_rad   (converged)
-    cov from the last factorisation, floored and relaxed (section 6); non-finite -> "singular Hessian"
+    cov from the last factorisation, floored, unobserved along flagged directions (section 6); non-finite -> "singular Hessian"
 
 The reported H, inliers and covariance belong to the last iteration, i.e. linearised at the
 estimate before the last update; `T_w_l` is the estimate after it. Not converging within

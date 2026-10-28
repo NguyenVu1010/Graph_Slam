@@ -66,6 +66,12 @@ ScanMatcher::ScanMatcher(const ScanMatchConfig& cfg,
   if (!(cfg.min_residual_sigma_m > 0.0)) {
     throw std::invalid_argument("scan_match.min_residual_sigma_m must be > 0");
   }
+  if (!(cfg.unobserved_var_m2 > 0.0)) {
+    throw std::invalid_argument("scan_match.unobserved_var_m2 must be > 0");
+  }
+  if (!(cfg.unobserved_var_rad2 > 0.0)) {
+    throw std::invalid_argument("scan_match.unobserved_var_rad2 must be > 0");
+  }
   if (max_points == 0) {
     throw std::invalid_argument("scan_match: max_points must be > 0");
   }
@@ -187,13 +193,20 @@ common::Result<common::MatchResult> ScanMatcher::align(const common::ScanFrame& 
     }
   }
   // cov = cov_scale * max(sigma_r^2, min_residual_sigma_m^2) * A^-1 (A = H or H_reg) from the
-  // last factorisation, then inflated along flagged directions (derivation section 6).
+  // last factorisation; along flagged directions replaced by the unobserved variance
+  // (derivation section 6).
   const double sigma_floor_m2 = cfg_.min_residual_sigma_m * cfg_.min_residual_sigma_m;
   const double sigma_r2_m2 = std::max(sum_w_r2_m2 / sum_w, sigma_floor_m2);
   const common::Mat6 a_inv = llt.solve(common::Mat6::Identity());
   const common::Mat6 cov = (cfg_.cov_scale * sigma_r2_m2) * a_inv;
   const common::Mat6 cov_sym = 0.5 * (cov + cov.transpose());
-  result.cov = deg_cfg_.enabled ? degeneracy::relax_covariance(cov_sym, report, deg_cfg_) : cov_sym;
+  result.cov = deg_cfg_.enabled ? degeneracy::unobserved_covariance(cov_sym,
+                                                                    report,
+                                                                    deg_cfg_,
+                                                                    cfg_.unobserved_var_m2,
+                                                                    cfg_.unobserved_var_rad2,
+                                                                    cfg_.cov_scale * sigma_r2_m2)
+                                : cov_sym;
   result.T_w_l = T_w_l;
   if (!pose_finite(T_w_l) || !result.cov.allFinite()) {
     return R::error("singular Hessian");

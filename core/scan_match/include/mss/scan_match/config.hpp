@@ -20,6 +20,9 @@ struct ScanMatchConfig {
   int min_inliers = 0;                // fewer inliers -> match fails
   double cov_scale = 0.0;             // multiplier on the inverse-Hessian covariance
   double min_residual_sigma_m = 0.0;  // m, floor on the residual sigma used for the covariance
+  // Covariance along directions flagged degenerate (degeneracy.enabled): "unobserved".
+  double unobserved_var_m2 = 0.0;    // m^2, variance of a flagged translation direction (> 0)
+  double unobserved_var_rad2 = 0.0;  // rad^2, variance of a flagged rotation direction (> 0)
 };
 
 }  // namespace mss::scan_match

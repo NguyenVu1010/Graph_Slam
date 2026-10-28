@@ -227,6 +227,111 @@ TEST(RelaxCovariance, AllFlaggedIdentityScalesCov) {
   EXPECT_TRUE(out.allFinite());
 }
 
+constexpr double kVarM2 = 1.0;    // m^2, unobserved translation variance in these tests
+constexpr double kVarRad2 = 0.1;  // rad^2, unobserved rotation variance in these tests
+
+TEST(UnobservedCovariance, NoFlagsIsExactIdentity) {
+  const common::PoseCovariance cov = random_spd(11);
+  const common::DegeneracyReport r = analyze(random_spd(13), DegeneracyConfig{false, 0.0, 10.0});
+  const common::PoseCovariance out = unobserved_covariance(cov, r, kCfg, kVarM2, kVarRad2, 0.0);
+  EXPECT_TRUE((out.array() == cov.array()).all());
+}
+
+// cov' = P cov P + P_F D P_F (no floor at c = 0): observed block unchanged, flagged block
+// v_j^T D v_k (the projection of D onto the flagged subspace, basis-invariant), no coupling
+// between the two, D = diag(var_m2 I3, var_rad2 I3).
+TEST(UnobservedCovariance, ReplacesFlaggedKeepsObserved) {
+  const common::PoseCovariance cov = random_spd(11);
+  const common::DegeneracyReport r = report_flags02();
+  const common::PoseCovariance out = unobserved_covariance(cov, r, kCfg, kVarM2, kVarRad2, 0.0);
+  EXPECT_TRUE(out == out.transpose());
+  for (int j = 0; j < 6; ++j) {
+    const common::Vec6 v_j = r.eigvecs.col(j);
+    for (int k = 0; k < 6; ++k) {
+      const common::Vec6 v_k = r.eigvecs.col(k);
+      const double got = v_j.dot(out * v_k);
+      double want = 0.0;
+      if (!is_flagged_index(j) && !is_flagged_index(k)) {
+        want = v_j.dot(cov * v_k);
+      } else if (is_flagged_index(j) && is_flagged_index(k)) {
+        want =
+            kVarM2 * v_j.head<3>().dot(v_k.head<3>()) + kVarRad2 * v_j.tail<3>().dot(v_k.tail<3>());
+      }
+      EXPECT_NEAR(got, want, 1e-9 * cov.norm()) << j << "," << k;
+    }
+  }
+}
+
+TEST(UnobservedCovariance, AxisDirectionsGetConfiguredVariance) {
+  const common::Mat6 c = random_spd(11);
+  const common::PoseCovariance cov = 0.5 * (c + c.transpose());  // exactly symmetric
+  common::DegeneracyReport r;                                    // eigvecs = I
+  r.degenerate[0] = true;                                        // rho_x
+  r.degenerate[5] = true;                                        // phi_z
+  const common::PoseCovariance out = unobserved_covariance(cov, r, kCfg, kVarM2, kVarRad2, 0.0);
+  // Two flagged directions: U = P_F D P_F goes through a 6x6 eigen-solve, so rounding only.
+  constexpr double kTol = 1e-15;
+  EXPECT_NEAR(out(0, 0), kVarM2, kTol);
+  EXPECT_NEAR(out(5, 5), kVarRad2, kTol);
+  for (int i = 1; i < 5; ++i) {
+    EXPECT_NEAR(out(0, i), 0.0, kTol);
+    EXPECT_NEAR(out(5, i), 0.0, kTol);
+    for (int j = 1; j < 5; ++j) {
+      EXPECT_EQ(out(i, j), cov(i, j));
+    }
+  }
+  const common::PoseCovariance all =
+      unobserved_covariance(cov, all_flagged(), kCfg, kVarM2, kVarRad2, 0.0);
+  common::Vec6 d;
+  d << kVarM2, kVarM2, kVarM2, kVarRad2, kVarRad2, kVarRad2;
+  const common::PoseCovariance expected = d.asDiagonal();
+  EXPECT_LT((all - expected).norm(), 1e-15);
+}
+
+// Floor (review I2): var_k = max(v_k^T D v_k, relax_factor * c / tau_k). Absolute tau = 100,
+// relax_factor 10, c = 1: floor 0.1. rho_x has var_m2 = 0.001 < 0.1 -> 0.1; phi_z has 1.0 rad^2
+// > 0.1 -> 1.0. c = 0 (or tau <= 0) applies no floor.
+TEST(UnobservedCovariance, FloorAppliesWhenConfiguredVarianceIsSmaller) {
+  const common::Mat6 c6 = random_spd(11);
+  const common::PoseCovariance cov = 0.5 * (c6 + c6.transpose());
+  common::DegeneracyReport r;  // eigvecs = I
+  r.degenerate[0] = true;
+  r.degenerate[5] = true;
+  const common::PoseCovariance out = unobserved_covariance(cov, r, kCfg, 0.001, 1.0, 1.0);
+  EXPECT_NEAR(out(0, 0), 0.1, 1e-15);
+  EXPECT_NEAR(out(5, 5), 1.0, 1e-15);
+  const common::PoseCovariance no_floor = unobserved_covariance(cov, r, kCfg, 0.001, 1.0, 0.0);
+  EXPECT_NEAR(no_floor(0, 0), 0.001, 1e-15);
+  DegeneracyConfig no_tau = kCfg;  // eig_threshold 0: no floor
+  no_tau.eig_threshold = 0.0;
+  EXPECT_NEAR(unobserved_covariance(cov, r, no_tau, 0.001, 1.0, 1.0)(0, 0), 0.001, 1e-15);
+}
+
+// Review M3: with a repeated flagged eigenvalue the eigen-solver's basis inside the eigenspace
+// is arbitrary. U = P_F D P_F does not depend on it: two bases of span{rho_x, phi_x} (axes and
+// axes rotated by 45 deg) give the same covariance, D restricted to the subspace.
+TEST(UnobservedCovariance, RepeatedFlaggedEigenvalueBasisInvariant) {
+  const common::Mat6 c6 = random_spd(11);
+  const common::PoseCovariance cov = 0.5 * (c6 + c6.transpose());
+  common::DegeneracyReport a;  // eigvecs = I
+  a.degenerate[0] = true;
+  a.degenerate[3] = true;
+  common::DegeneracyReport b = a;
+  const double h = std::sqrt(0.5);
+  b.eigvecs.col(0) = common::Vec6::Zero();
+  b.eigvecs.col(3) = common::Vec6::Zero();
+  b.eigvecs(0, 0) = h;
+  b.eigvecs(3, 0) = h;
+  b.eigvecs(0, 3) = -h;
+  b.eigvecs(3, 3) = h;
+  const common::PoseCovariance out_a = unobserved_covariance(cov, a, kCfg, kVarM2, kVarRad2, 0.0);
+  const common::PoseCovariance out_b = unobserved_covariance(cov, b, kCfg, kVarM2, kVarRad2, 0.0);
+  EXPECT_LT((out_a - out_b).norm(), 1e-14);
+  EXPECT_NEAR(out_b(0, 0), kVarM2, 1e-15);
+  EXPECT_NEAR(out_b(3, 3), kVarRad2, 1e-15);
+  EXPECT_NEAR(out_b(0, 3), 0.0, 1e-15);
+}
+
 TEST(DegeneracyHotPath, NoAllocation) {
   const common::Mat6 H = random_spd(17);
   const DegeneracyConfig cfg{true, 1e9, 10.0};  // everything flagged: every branch runs
@@ -240,7 +345,8 @@ TEST(DegeneracyHotPath, NoAllocation) {
       const common::DegeneracyReport r = analyze(H, cfg);
       const common::Vec6 d = project_update(delta, r);
       const common::PoseCovariance c = relax_covariance(cov, r, cfg);
-      sink += d.sum() + c.trace();
+      const common::PoseCovariance u = unobserved_covariance(cov, r, cfg, kVarM2, kVarRad2, 1e-3);
+      sink += d.sum() + c.trace() + u.trace();
     }
   }
   EXPECT_EQ(AllocCounter::count(), 0U);

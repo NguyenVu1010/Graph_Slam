@@ -1,5 +1,6 @@
 #include "mss/degeneracy/degeneracy.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 
@@ -32,6 +33,12 @@ bool any_flagged(const common::DegeneracyReport& report) {
     }
   }
   return false;
+}
+
+// max(var, relax_factor * c / eig_threshold): the pre-PR-4b relaxed variance as a floor.
+// No floor when eig_threshold <= 0.
+double floored_variance(double var, const DegeneracyConfig& cfg, double c) {
+  return cfg.eig_threshold > 0.0 ? std::max(var, cfg.relax_factor * c / cfg.eig_threshold) : var;
 }
 
 }  // namespace
@@ -94,6 +101,62 @@ common::PoseCovariance relax_covariance(const common::PoseCovariance& cov,
   // Exact symmetry: (i, j) and (j, i) are the same floating-point sum.
   const common::PoseCovariance out = 0.5 * (inflated + inflated.transpose());
   return out;
+}
+
+common::PoseCovariance unobserved_covariance(const common::PoseCovariance& cov,
+                                             const common::DegeneracyReport& report,
+                                             const DegeneracyConfig& cfg,
+                                             double var_trans_m2,
+                                             double var_rot_rad2,
+                                             double c) {
+  if (!any_flagged(report)) {
+    return cov;  // exact identity (feature disabled or well-constrained)
+  }
+  // P_F = sum_{k flagged} v_k v_k^T, P = I - P_F; U = P_F D P_F with
+  // D = diag(var_trans_m2 I3, var_rot_rad2 I3), each eigenvalue of U on F floored at
+  // relax_factor * c / eig_threshold (docs/derivations/scan_match.md section 6). U does not depend
+  // on the basis the solver picked inside a repeated flagged eigenvalue.
+  common::Mat6 p_flagged = common::Mat6::Zero();
+  int n_flagged = 0;
+  for (std::size_t k = 0; k < report.degenerate.size(); ++k) {
+    if (report.degenerate[k]) {
+      const common::Vec6 v = report.eigvecs.col(static_cast<int>(k));
+      p_flagged.noalias() += v * v.transpose();
+      ++n_flagged;
+    }
+  }
+  common::Vec6 d_diag;
+  d_diag << var_trans_m2, var_trans_m2, var_trans_m2, var_rot_rad2, var_rot_rad2, var_rot_rad2;
+  const common::Mat6 d = d_diag.asDiagonal();
+  common::Mat6 unobserved = common::Mat6::Zero();
+  if (n_flagged == 1) {
+    // One flagged vector: U = (v^T D v) v v^T directly (no eigen-solve).
+    for (std::size_t k = 0; k < report.degenerate.size(); ++k) {
+      if (report.degenerate[k]) {
+        const common::Vec6 v = report.eigvecs.col(static_cast<int>(k));
+        const double var = floored_variance(v.dot(d * v), cfg, c);
+        unobserved.noalias() += var * (v * v.transpose());
+      }
+    }
+  } else {
+    const common::Mat6 u_raw = p_flagged * d * p_flagged;
+    const common::Mat6 u_sym = 0.5 * (u_raw + u_raw.transpose());
+    const Eigen::SelfAdjointEigenSolver<common::Mat6> es(u_sym, Eigen::ComputeEigenvectors);
+    for (int i = 0; i < kDim; ++i) {
+      const common::Vec6 w = es.eigenvectors().col(i);
+      const common::Vec6 w_f = p_flagged * w;
+      if (w_f.squaredNorm() > 0.5) {  // w lies in the flagged subspace (unit vector)
+        const double var = floored_variance(es.eigenvalues()(i), cfg, c);
+        unobserved.noalias() += var * (w * w.transpose());
+      }
+    }
+  }
+  const common::Mat6 projector = common::Mat6::Identity() - p_flagged;
+  const common::Mat6 observed = projector * cov * projector;
+  const common::Mat6 out = observed + unobserved;
+  // Exact symmetry: (i, j) and (j, i) are the same floating-point sum.
+  const common::PoseCovariance sym = 0.5 * (out + out.transpose());
+  return sym;
 }
 
 }  // namespace mss::degeneracy
