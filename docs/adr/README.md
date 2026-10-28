@@ -29,5 +29,6 @@ Bắt buộc có ADR trước khi: thêm phụ thuộc, đổi build system, đ�
 | [019](019-gnss-frame-variable.md) | `T_e_w` là một biến của graph dùng chung cho mọi factor GNSS (`backend.gnss_frame_variable`, prior nghiêng chặt), thay cho `T_e_w` cố định trong từng factor | Đề xuất |
 | [020](020-static-gravity-direction-factor.md) | Hướng trọng lực của cửa sổ tĩnh vào keyframe 0: factor chỉ hướng (`backend.static_gravity_factor`, nhiễu x2), cổng đứng yên (bật); kiểm tra nhất quán innovation đã đánh giá và tắt, `InitState` thêm thống kê cửa sổ | Đề xuất |
 | [021](021-relative-factor-decoupled.md) | Factor tương đối LiDAR và loop mặc định `decoupled` (`backend.relative_factor`): phần dư tịnh tiến và quay tách riêng, đúng chart của hiệp phương sai scan matching; `between`, `se3_exact` giữ để so sánh | Đề xuất |
+| [022](022-gnss-prealign-fixes.md) | Fix GNSS nhận trước khi căn chỉnh (cả fix tĩnh của cửa sổ khởi tạo IMU, vào keyframe 0) thành factor trên keyframe gần nhất sau khi căn chỉnh (`gnss.attach_prealign_fixes`, mặc định tắt) | Đề xuất |
 
 Trạng thái: Đề xuất → Chấp nhận → Thay thế. ADR-013 ghi lại bố cục đã scaffold và đang chạy trong CI, nên ở trạng thái chấp nhận; ADR-001 đến 004 cần duyệt lại để chuyển sang chấp nhận (việc còn mở trong `docs/spec.md`).

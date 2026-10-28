@@ -311,6 +311,9 @@ outage (larger `P`), so the test uses the shipped relax.
     0).
   - No switch that could be shipped closes the gap, so nothing is fixed yet. Section 13.6
     lists the designs to build next, smallest first.
+  - Design 1 (section 14, ADR-022, `gnss.attach_prealign_fixes`, off): the frame offset is
+    fixed (median 0.08 m along the axis), the fused ATE is not yet (1.88 m median, CI includes
+    0). Designs 2 and 3 are open.
 - **With the shipped defaults (degeneracy off), this corridor never moves.** Scan matching
   succeeds on every scan, but the estimate stays at the start: one keyframe, no GNSS factor,
   17.35 m ATE (section 13.3, H3). The "3.47 m on main" quoted here before came from the ADR-021
@@ -575,7 +578,8 @@ an ADR. Measure it with this driver on the 15 seeds, against `ref` and the oracl
 the flag off, the box world must be unchanged, E-01..E-03 `est.tum` byte-identical, and the
 bench within noise.
 
-1. **Frame offset: anchor `E` along the axis at start-up.** Local to `pipeline`.
+1. **Frame offset: anchor `E` along the axis at start-up.** Local to `pipeline`. Done behind
+   `gnss.attach_prealign_fixes` (ADR-022, section 14): target met (0.08 m), flag off.
    - Today the fixes received before the aligner returns a transform are dropped, including
      those from the static phase at keyframe 0. Once aligned, attach them as factors, each to
      its nearest keyframe in time and the static ones to keyframe 0. That ties the translation
@@ -609,3 +613,89 @@ bench within noise.
 5. **Acceptance for the set.** Fused ATE at or below raw GNSS with a CI that excludes 0, and a
    max below 1 m. For reference, `frame_truth_fixed` reaches 13/2 [-0.60, -0.20], max 4.09 m;
    `oracle_shift_truth_fixed` reaches 15/0, max 0.35 m.
+
+## 14. Design 1: pre-alignment fixes as factors (ADR-022)
+
+Section 13.6, item 1. `gnss.attach_prealign_fixes` (default off) keeps the fixes received before
+the first alignment in a bounded buffer (`gnss.prealign_max_fixes`, 128) and adds them as
+factors once the aligner has a transform:
+
+- the fixes of the IMU initialisation window go to keyframe 0 unshifted (only when keyframe 0
+  is the initialisation scan);
+- the others go to the nearer keyframe in time, shifted with the front-end poses (the cause-2
+  shift of section 13.4 still applies to them);
+- the chi-square gate runs at release, with the current `T_e_w`;
+- the aligner and the `E` prior are unchanged, and a realign does not reopen the buffer.
+
+Details and alternatives: ADR-022.
+
+Driver: `GnssCorridorStudy.Diagnosis` with `MSS_GCS_VARIANTS=prealign` (variant `prealign` =
+`ref` + the flag), seeds 42..56, same scene and statistics as section 13. The `ref` per-seed
+lines are identical to section 13.1, so with the flag off the corridor is unchanged.
+
+### 14.1 Corridor, 15 paired seeds
+
+| | `ref` | `prealign` | target / reference |
+| --- | --- | --- | --- |
+| median abs(`E` - truth x) at the end | 0.82 m | **0.08 m** | 0.26 m (`frame_truth_init`) |
+| fused ATE median (max) | 1.99 (37.0) m | 1.88 (35.3) m | |
+| paired vs `ref`: wins / losses, 95 % CI of the median difference | | 10/5, [-2.78, +0.61] m | |
+| vs raw GNSS 3-D: better on, CI | 5/15, [-0.22, +13.66] m | 6/15, [-0.34, +2.19] m | `frame_truth_init`: 10/15 |
+| seeds with abs(`E` yaw err) > 10 deg at the end | 4 (51, 52, 53, 54) | 2 (51, 52) | |
+| seeds with abs(aligner yaw err) > 10 deg at the first factor | 2 (51, 52) | 2 (51, 52) | design 2 |
+| GNSS factors, median | 254 | 301 | |
+| median shift error RMS along x | 1.20 m | 1.19 m | |
+| seeds with GNSS factor NEES > 6 | 9 | 8 | |
+| along-x RMS per 10 s window, median | 0.10 / 1.45 / 3.80 / 0.97 / 1.58 / 1.40 / 1.02 | 0.10 / 0.66 / 0.68 / 0.86 / 0.93 / 0.95 / 0.72 | |
+
+Per seed, fused ATE `ref` -> `prealign` (m): 42 0.51 -> 0.50, 43 0.59 -> 0.32, 44 1.70 -> 3.07,
+45 1.99 -> 2.61, 46 1.24 -> 1.93, 47 0.65 -> 0.30, 48 3.76 -> 0.63, 49 0.77 -> 4.12, 50 3.20 ->
+0.42, 51 35.6 -> 34.8, 52 37.0 -> 35.3, 53 14.5 -> 4.59, 54 27.7 -> 1.88, 55 3.91 -> 1.68, 56
+0.42 -> 0.53.
+
+Reading:
+
+- **The frame target is met.** `E` ends within 0.08 m of the truth along the axis (median; max
+  0.60 m on seed 51), better than the frame oracle with a loose prior (0.26 m). The static fixes
+  and the early fixes of the ramp tie `E` to keyframe 0 by measurements.
+- **The graph flips from a good start are gone.** Seeds 53 and 54 (section 13.3, H2) end within
+  0.5 deg of the true yaw, and their ATE drops from 14.5 / 27.7 m to 4.6 / 1.9 m. The two
+  initialisation flips (51, 52) remain: the aligner is unchanged, so they are design 2's.
+- **Fused ATE does not improve significantly** (CI includes 0). The seeds that get worse (44,
+  45, 46, 49; 49 from 0.77 to 4.12 m) are those whose shift error grows (1.4 to 3.2 m RMS, GNSS
+  NEES 10 to 43): with `E` now anchored, the factors corrupted by the front-end shift (cause 2)
+  pull the keyframes instead of the frame. That is design 3's target.
+- Not better than raw GNSS (6/15). Acceptance of the set (13.6, item 5) needs designs 2 and 3.
+
+### 14.2 Box world, 15 paired seeds
+
+`GnssCorridorStudy.BoxWorldPrealignPairs` (`MSS_GNSS_BOX_PAIRS=1`): the default box world
+(2 m circle, GNSS 0.5 m), seeds 42..56, flag off against on. About 52 pre-alignment fixes are
+attached per run, none dropped.
+
+| case | ATE median off / on | wins / losses (on vs off) | 95 % CI of the median difference |
+| --- | --- | --- | --- |
+| GNSS | 0.01019 / 0.01019 m | 9/6 | [-0.00005, +0.00002] m |
+| GNSS + wheel | 0.00645 / 0.00640 m | 9/6 | [-0.00004, +0.00001] m |
+
+Unchanged (CI within 0.05 mm of 0, both sides). The CI is from the 5-decimal per-seed values,
+20000 resamples (Python `random.Random(7)`).
+
+### 14.3 Integration and bench
+
+- Flag off: E-01..E-03 `est.tum` md5 equal to main d09cbd3 (E-01 / E-02
+  `d1b1e4ba9c87f38d39f4a27fb521081e`, E-03 `ca02a49fde59a5a99fbe73129c630226`); all gates pass.
+- Flag on (E-01 has GNSS: `config/sim/warehouse.yaml` enables it): E-01 ATE 0.002198 m against
+  0.002183 m off (limit 0.002621 m), 62 pre-alignment factors, 3 rejected by the chi-square gate
+  at release, none dropped; E-03 0.002187 m against 0.002183 m.
+- E-01 bench, median of 5 interleaved runs, scan p50 / p95, replay wall, CPU: main 4.49 / 6.08
+  ms, 3.86 s, 2.82 s; branch off 4.45 / 5.93 ms, 3.74 s, 2.78 s; branch on 4.40 / 6.12 ms,
+  3.79 s, 2.80 s. Within noise.
+
+### 14.4 Ruling on the default
+
+Both conditions of the brief for flipping hold: the box world is unchanged and the corridor
+frame target is met. The flag still ships off: the corridor fused ATE is not significantly
+better (CI [-2.78, +0.61] m), four seeds get worse by 0.6 to 3.3 m through the shift error, and
+E-01 is 0.7 % worse. Recommendation: turn it on together with design 3 (shift covariance), which
+targets exactly the seeds that lose here, and re-measure the set.

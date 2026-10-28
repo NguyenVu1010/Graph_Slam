@@ -7,7 +7,8 @@
 // RMS per 10 s window; then ablations (single switches, plus the oracles of the test seams
 // force_T_e_w and gnss_shift_oracle and their combinations), paired against the reference
 // variant and the shift oracles against the same frame without them (bootstrap 95 % CI of the
-// median per-seed difference, fixed seed). Writes
+// median per-seed difference, fixed seed). The `prealign` variant is `ref` with
+// gnss.attach_prealign_fixes (ADR-022, section 14). Writes
 // results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-corridor-study">/gnss_corridor_study.md.
 // MSS_GCS_VARIANTS: comma-separated variant names to run (default all; the reference first is
 // always run); MSS_GCS_FIRST_SEED / MSS_GCS_LAST_SEED: seed range (default 42..56).
@@ -465,6 +466,9 @@ TEST(GnssCorridorStudy, Diagnosis) {
        "    backend:\n      gnss_frame_variable: false\n", "", true, "on", true},
       {"oracle_shift_truth_init", "oracle shift + frame_truth_init",
        deg_on, "", "", true, "on", true},
+      {"prealign", "gnss.attach_prealign_fixes (ADR-022): fixes before the first alignment, the "
+       "static ones on keyframe 0, added as factors once aligned", deg_on, "",
+       "      attach_prealign_fixes: true\n", false, "on"},
   };
   // clang-format on
   if (const char* sel = std::getenv("MSS_GCS_VARIANTS"); sel != nullptr) {
@@ -688,6 +692,57 @@ TEST(GnssCorridorStudy, Diagnosis) {
     rep.line(std::string("| ") + with + " | " + without + " | " +
              paired(col(static_cast<std::size_t>(a), ate), col(static_cast<std::size_t>(b), ate)) +
              " |");
+  }
+}
+
+// Box world with GNSS (gnss_fusion_study.md sections 9 and 11, default box world: 2 m circle,
+// GNSS 0.5 m at 5 Hz), seeds 42..56, gnss.attach_prealign_fixes off against on, paired
+// (section 14). Skipped unless MSS_GNSS_BOX_PAIRS=1 (GTSAM build); about 4 min. Writes
+// results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-box-pairs">/gnss_box_pairs.md.
+TEST(GnssCorridorStudy, BoxWorldPrealignPairs) {
+  const char* on = std::getenv("MSS_GNSS_BOX_PAIRS");
+  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_GNSS_BOX_PAIRS=1 (GTSAM build)";
+  }
+  StudyReport rep("gnss_box_pairs.md", "MSS_GNSS_CORRIDOR_RUN_ID", "gnss-box-pairs");
+  rep.line("# Box world with GNSS, gnss.attach_prealign_fixes off / on (GnssCorridorStudy)");
+  rep.line("");
+  rep.line(
+      "| case | seed | ATE off (m) | ATE on (m) | GNSS factors off / on | attached | dropped |");
+  rep.line("| --- | --- | --- | --- | --- | --- | --- |");
+  struct Case {
+    const char* name;
+    bool wheel;
+  };
+  for (const Case c : {Case{"gnss", false}, Case{"gnss_wheel", true}}) {
+    std::vector<double> off;
+    std::vector<double> with;
+    for (std::uint32_t seed = 42; seed <= 56; ++seed) {
+      BoxWorldParams p;
+      p.seed = seed;
+      const fs::path dir = rep.dir() / c.name / ("seed" + std::to_string(seed));
+      ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+      const ReplayResult a = replay(dir / "data", box_config(p, true, c.wheel, dir / "off"));
+      const ReplayResult b = replay(
+          dir / "data",
+          box_config(p, true, c.wheel, dir / "on", "", "      attach_prealign_fixes: true\n"));
+      off.push_back(trajectory_errors(p, a.estimates).ate_m);
+      with.push_back(trajectory_errors(p, b.estimates).ate_m);
+      char buf[256];
+      std::snprintf(buf,
+                    sizeof(buf),
+                    "| %s | %u | %.5f | %.5f | %llu / %llu | %llu | %llu |",
+                    c.name,
+                    seed,
+                    off.back(),
+                    with.back(),
+                    static_cast<unsigned long long>(a.stats.n_gnss_factors),
+                    static_cast<unsigned long long>(b.stats.n_gnss_factors),
+                    static_cast<unsigned long long>(b.stats.n_gnss_prealign_attached),
+                    static_cast<unsigned long long>(b.stats.n_gnss_prealign_dropped));
+      rep.line(buf);
+    }
+    rep.line(std::string("| ") + c.name + " on vs off | " + paired(with, off) + " | | | |");
   }
 }
 

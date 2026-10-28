@@ -346,6 +346,9 @@ Estimator::Stats Estimator::stats() const {
   out.n_gnss_ring_overflow = c.n_gnss_ring_overflow;
   out.n_gnss_unfused_eof = c.n_gnss_unfused_eof;
   out.n_gnss_realign = c.n_gnss_realign;
+  out.n_gnss_prealign_attached = c.n_gnss_prealign_attached;
+  out.n_gnss_prealign_dropped = c.n_gnss_prealign_dropped;
+  out.n_gnss_prealign_rejected = c.n_gnss_prealign_rejected;
   out.n_nonfinite_imu = c.n_nonfinite_imu;
   out.n_gravity_factor_gated = c.n_gravity_factor_gated;
   out.n_gravity_factor_removed = c.n_gravity_factor_removed;

@@ -92,6 +92,9 @@ EstimatorCore::EstimatorCore(const Config& cfg)
       init_window_(std::make_unique<std::array<common::ImuSample, kMaxImuQueue>>()),
       traj_(std::make_unique<imu::ImuTrajectory>()),
       gnss_out_(std::make_unique<std::array<common::GnssMeasurement, kMaxAuxQueue>>()),
+      early_out_(cfg.gnss.enabled && cfg.gnss.attach_prealign_fixes
+                     ? std::make_unique<std::array<EarlyFactor, kMaxAuxQueue>>()
+                     : nullptr),
       pre_out_(cfg.realtime.max_points_per_scan),
       kf_cloud_(cfg.realtime.max_points_per_scan) {
   hooks_ = g_test_hooks;
@@ -194,7 +197,14 @@ void EstimatorCore::log_backend_failure(const std::string& reason) {
 }
 
 void EstimatorCore::on_gnss(const common::GnssMeasurement& m) {
-  if (!cfg_.gnss.enabled || !has_estimate_) {
+  if (!cfg_.gnss.enabled) {
+    return;
+  }
+  if (!has_estimate_) {
+    if (early_out_ != nullptr) {  // ADR-022: kept for keyframe 0 (static window)
+      fusion_.on_preinit_fix(m);
+      sync_prealign_counters();
+    }
     return;
   }
   if (m.t < front_.t) {
@@ -238,6 +248,9 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
       predict_state_at(imu_, pred_, pred_last_t_, front_, m.t, g_w_, scratch_);
   FixOutcome outcome = FixOutcome::kAccepted;
   (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome);
+  if (early_out_ != nullptr) {
+    sync_prealign_counters();
+  }
   if (fusion_.n_realign() != counters_.n_gnss_realign) {
     counters_.n_gnss_realign = fusion_.n_realign();
     common::log_warn(
@@ -267,6 +280,31 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
     }
   }
   gnss_reject_streak_ = true;
+}
+
+void EstimatorCore::sync_prealign_counters() {
+  counters_.n_gnss_prealign_attached = fusion_.n_prealign_attached();
+  counters_.n_gnss_prealign_dropped = fusion_.n_prealign_dropped();
+  counters_.n_gnss_prealign_rejected = fusion_.n_prealign_rejected();
+}
+
+void EstimatorCore::attach_prealign_fixes(common::KeyId j, common::Timestamp t) {
+  fusion_.on_keyframe(j, t, front_.T_w_b);
+  for (;;) {
+    const std::size_t n = fusion_.take_prealign(*early_out_);
+    if (n == 0) {
+      break;
+    }
+    for (std::size_t k = 0; k < n; ++k) {
+      const EarlyFactor& e = (*early_out_)[k];
+      graph_.add_gnss_factor(e.kf, e.m, fusion_.T_e_w());
+      if (observer() != nullptr) {
+        observer()->on_gnss_factor(e.t_k, e.m, fusion_.T_e_w());
+      }
+    }
+    counters_.n_gnss_factors += n;
+  }
+  sync_prealign_counters();
 }
 
 void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
@@ -458,6 +496,14 @@ void EstimatorCore::first_keyframe(common::Timestamp t, const common::NavState& 
   (void)kf_.integrate(boundary_);
   (void)wheel_.take_delta();  // the odometry chain starts at keyframe 0
   ref_ = front_.T_w_b;
+  if (early_out_ != nullptr) {
+    // ADR-022: fixes of the IMU initialisation window are at rest at keyframe 0's pose; only
+    // when keyframe 0 is that scan and the wheels did not move in it (as ADR-020's gate).
+    const bool static_ok = t == init_t_ && !(cfg_.wheel_odom.enabled && init_wheel_moved_);
+    fusion_.on_first_keyframe(
+        id, t, ref_, cov, common::Timestamp{init_t_.ns - init_window_ns_}, static_ok);
+    sync_prealign_counters();
+  }
   last_kf_id_ = id;
   last_kf_t_ = t;
   ++counters_.n_keyframes;
@@ -517,6 +563,9 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   }
   // GNSS fixes waiting for this keyframe (pipeline.md section 5).
   if (cfg_.gnss.enabled) {
+    if (early_out_ != nullptr) {
+      attach_prealign_fixes(j, t);  // ADR-022, before the queued ones (same T_e_w)
+    }
     const std::size_t n = fusion_.collect(t, front_.T_w_b, *gnss_out_);
     for (std::size_t k = 0; k < n; ++k) {
       graph_.add_gnss_factor(j, (*gnss_out_)[k], fusion_.T_e_w());
@@ -549,6 +598,9 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   kf_.reset(front_.bias);
   (void)kf_.integrate(boundary_);
   ref_ = front_.T_w_b;
+  if (early_out_ != nullptr) {
+    fusion_.set_keyframe_reference(j, t, ref_);  // ADR-022: target of backward shifts
+  }
   last_kf_id_ = j;
   last_kf_t_ = t;
   ++counters_.n_keyframes;

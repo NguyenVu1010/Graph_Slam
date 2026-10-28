@@ -1,6 +1,6 @@
 // Unit tests of the pipeline's GNSS fusion front (core/pipeline/src/gnss_fusion.hpp):
 // pre-gate, chi-square gate, alignment and the fixes shifted to keyframe time
-// (docs/derivations/pipeline.md section 5).
+// (docs/derivations/pipeline.md section 5), and the pre-alignment buffer (ADR-022).
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -16,6 +16,7 @@
 #include "mss/gnss/gnss.hpp"
 #include "mss/pipeline/bounded_queue.hpp"
 
+#include "alloc_counter.hpp"
 #include "gnss_fusion.hpp"
 
 namespace mss::pipeline::detail {
@@ -207,6 +208,181 @@ TEST(GnssFusion, PendingBoundedDropsOldest) {
   EXPECT_EQ(n, kMaxAuxQueue);
   EXPECT_EQ(out[0].t, Timestamp{15 * kSec});  // fixes 10..14 dropped
   EXPECT_EQ(out[n - 1].t, (Timestamp{static_cast<std::int64_t>(10 + extra) * kSec}));
+}
+
+// ---------------------------------------------------------------- ADR-022 pre-alignment fixes
+
+gnss::GnssConfig prealign_cfg(int max_fixes = 64) {
+  gnss::GnssConfig c = fusion_cfg();
+  c.attach_prealign_fixes = true;
+  c.prealign_max_fixes = max_fixes;
+  return c;
+}
+
+Timestamp at_s(int k) {
+  return Timestamp{k * kSec};
+}
+
+// Residual of a released factor at its keyframe pose against the true T_e_w.
+Vec3 residual_at(const EarlyFactor& e, const Pose& T_w_bk) {
+  return e.m.p_e_g - truth_T_e_w() * (T_w_bk * kPbg);
+}
+
+// Flag off: the not-aligned fixes are dropped as before, nothing is buffered or released.
+TEST(GnssFusionPrealign, OffKeepsNothing) {
+  GnssFusion f(fusion_cfg(), kPbg);
+  f.on_preinit_fix(fix_for(0, body_at(0)));
+  f.on_first_keyframe(0, at_s(0), body_at(0), kZeroP, at_s(-2), true);
+  ASSERT_EQ(align(f, 10), 1);
+  f.on_keyframe(1, at_s(10), body_at(10));
+  std::array<EarlyFactor, kMaxAuxQueue> out{};
+  EXPECT_EQ(f.take_prealign(out), 0U);
+  EXPECT_EQ(f.n_prealign_buffered(), 0U);
+  EXPECT_EQ(f.n_prealign_attached(), 0U);
+  EXPECT_EQ(f.n_prealign_dropped(), 0U);
+}
+
+// Fixes 1..9 arrive before the alignment (fix 10). Keyframes 0 (t = 0), 1 (t = 5 s) and
+// 2 (t = 10 s): each fix goes to the nearer one in time (a tie to the earlier one), shifted
+// with the front-end poses, here exact, so each released factor has zero residual at its
+// keyframe pose against the true T_e_w.
+TEST(GnssFusionPrealign, AttachedToNearestKeyframeOnceAligned) {
+  GnssFusion f(prealign_cfg(), kPbg);
+  f.on_first_keyframe(0, at_s(0), body_at(0), kZeroP, at_s(-2), true);
+  for (int k = 1; k <= 5; ++k) {
+    ASSERT_FALSE(f.on_fix(fix_for(k, body_at(k)), body_at(k), kZeroP).is_ok());
+  }
+  f.on_keyframe(1, at_s(5), body_at(5));
+  f.set_keyframe_reference(1, at_s(5), body_at(5));
+  std::array<EarlyFactor, kMaxAuxQueue> out{};
+  EXPECT_EQ(f.take_prealign(out), 0U);  // not aligned yet
+  for (int k = 6; k <= 9; ++k) {
+    ASSERT_FALSE(f.on_fix(fix_for(k, body_at(k)), body_at(k), kZeroP).is_ok());
+  }
+  ASSERT_TRUE(f.on_fix(fix_for(10, body_at(10)), body_at(10), kZeroP).is_ok());  // aligned
+  EXPECT_EQ(f.n_prealign_buffered(), 9U);
+  // Fixes 1..5 are assigned: 1, 2 to keyframe 0; 3, 4, 5 to keyframe 1. 6..9 wait.
+  const std::array<common::KeyId, 5> kf_first = {0, 0, 1, 1, 1};
+  ASSERT_EQ(f.take_prealign(out), 5U);
+  for (std::size_t i = 0; i < 5; ++i) {
+    EXPECT_EQ(out[i].m.t, at_s(static_cast<int>(i) + 1));
+    EXPECT_EQ(out[i].kf, kf_first[i]) << i;
+    const int kf_time = kf_first[i] == 0 ? 0 : 5;
+    EXPECT_EQ(out[i].t_k, at_s(kf_time));
+    EXPECT_LT(residual_at(out[i], body_at(kf_time)).norm(), 1e-9) << i;
+    EXPECT_TRUE(out[i].m.cov == fix_for(1, body_at(1)).cov);  // cov unchanged
+  }
+  EXPECT_EQ(f.take_prealign(out), 0U);
+  // Keyframe 2 at 10 s: 6, 7 to keyframe 1, 8, 9 to keyframe 2.
+  f.on_keyframe(2, at_s(10), body_at(10));
+  const std::array<common::KeyId, 4> kf_second = {1, 1, 2, 2};
+  ASSERT_EQ(f.take_prealign(out), 4U);
+  for (std::size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(out[i].kf, kf_second[i]) << i;
+    EXPECT_LT(residual_at(out[i], body_at(kf_second[i] == 1 ? 5 : 10)).norm(), 1e-9) << i;
+  }
+  EXPECT_EQ(f.take_prealign(out), 0U);
+  EXPECT_EQ(f.n_prealign_attached(), 9U);
+  EXPECT_EQ(f.n_prealign_buffered(), 0U);
+  // The aligning fix itself still waits in the regular queue.
+  std::array<GnssMeasurement, kMaxAuxQueue> queued{};
+  EXPECT_EQ(f.collect(at_s(10), body_at(10), queued), 1U);
+}
+
+// Fixes received before keyframe 0: those of the static window [static_from, t_k] are
+// attached to keyframe 0 unshifted; an older one and every one when the window is not known
+// to be static are dropped and counted. The chi-square gate runs at release: a 5 m jump is
+// rejected and counted.
+TEST(GnssFusionPrealign, StaticWindowFixesGoToKeyframeZero) {
+  const Pose T0 = body_at(0);
+  {
+    GnssFusion f(prealign_cfg(), kPbg);
+    for (int k = -3; k <= 0; ++k) {
+      GnssMeasurement m = fix_for(0, T0);
+      m.t = at_s(k);
+      if (k == -1) {
+        m.p_e_g += Vec3(5.0, 0.0, 0.0);
+      }
+      f.on_preinit_fix(m);
+    }
+    GnssMeasurement late = fix_for(0, T0);
+    late.t = Timestamp{kSec / 10};  // after keyframe 0's time
+    f.on_preinit_fix(late);
+    EXPECT_EQ(f.n_prealign_buffered(), 5U);
+    f.on_first_keyframe(0, at_s(0), T0, kZeroP, at_s(-2), true);
+    EXPECT_EQ(f.n_prealign_dropped(), 2U);  // t = -3 s and t = 0.1 s
+    EXPECT_EQ(f.n_prealign_buffered(), 3U);
+    ASSERT_EQ(align(f, 10), 1);
+    std::array<EarlyFactor, kMaxAuxQueue> out{};
+    ASSERT_EQ(f.take_prealign(out), 2U);  // t = -2 s and t = 0; the -1 s jump rejected
+    EXPECT_EQ(f.n_prealign_rejected(), 1U);
+    for (std::size_t i = 0; i < 2; ++i) {
+      EXPECT_EQ(out[i].kf, 0U);
+      EXPECT_EQ(out[i].t_k, at_s(0));
+      EXPECT_LT(residual_at(out[i], T0).norm(), 1e-9);
+    }
+  }
+  {
+    GnssFusion f(prealign_cfg(), kPbg);
+    f.on_preinit_fix(fix_for(0, T0));
+    f.on_first_keyframe(0, at_s(0), T0, kZeroP, at_s(-2), false);  // not the init scan
+    EXPECT_EQ(f.n_prealign_dropped(), 1U);
+    EXPECT_EQ(f.n_prealign_buffered(), 0U);
+  }
+}
+
+// The buffer is bounded and reserved once: before keyframe 0 the oldest fix is dropped,
+// after it the newest (the static ones stay); no allocation on any of these paths.
+TEST(GnssFusionPrealign, BufferBoundedNoAllocation) {
+  GnssFusion f(prealign_cfg(4), kPbg);
+  std::array<EarlyFactor, kMaxAuxQueue> out{};
+  GnssMeasurement m = fix_for(0, body_at(0));
+  AllocCounter::reset();
+  {
+    const EigenMallocGuard guard;
+    for (int k = -9; k <= 0; ++k) {
+      m.t = at_s(k);
+      f.on_preinit_fix(m);
+    }
+    f.on_first_keyframe(0, at_s(0), body_at(0), kZeroP, at_s(-3), true);
+    for (int k = 1; k <= 6; ++k) {
+      (void)f.on_fix(fix_for(k, body_at(k)), body_at(k), kZeroP);
+    }
+    f.on_keyframe(1, at_s(6), body_at(6));
+    (void)f.take_prealign(out);
+  }
+  EXPECT_EQ(AllocCounter::count(), 0U);
+  // Pre-init: 10 fixes into 4 slots (6 oldest dropped), kept t = -3..0 all static.
+  // After keyframe 0: buffer full, fixes 1..6 dropped.
+  EXPECT_EQ(f.n_prealign_dropped(), 12U);
+  EXPECT_EQ(f.n_prealign_buffered(), 4U);  // not aligned yet: nothing released
+}
+
+// A realign (gnss.max_consecutive_rejects) neither refills the buffer nor releases the early
+// fixes a second time.
+TEST(GnssFusionPrealign, RealignDoesNotAttachTwice) {
+  gnss::GnssConfig c = prealign_cfg();
+  c.max_consecutive_rejects = 3;
+  GnssFusion f(c, kPbg);
+  f.on_first_keyframe(0, at_s(0), body_at(0), kZeroP, at_s(-2), true);
+  ASSERT_EQ(align(f, 10), 1);
+  f.on_keyframe(1, at_s(10), body_at(10));
+  std::array<EarlyFactor, kMaxAuxQueue> out{};
+  ASSERT_EQ(f.take_prealign(out), 9U);
+  EXPECT_EQ(f.take_prealign(out), 0U);
+  const Vec3 jump(5.0, 0.0, 0.0);
+  for (int k = 11; k <= 13; ++k) {  // the third rejection restarts the aligner
+    (void)f.on_fix(fix_for(k, body_at(k), jump), body_at(k), kZeroP);
+  }
+  ASSERT_EQ(f.n_realign(), 1U);
+  for (int k = 14; k <= 30; ++k) {  // realigned at k = 22
+    (void)f.on_fix(fix_for(k, body_at(k), jump), body_at(k), kZeroP);
+  }
+  ASSERT_TRUE(f.aligned());
+  EXPECT_EQ(f.n_prealign_buffered(), 0U);
+  f.on_keyframe(2, at_s(30), body_at(30));
+  EXPECT_EQ(f.take_prealign(out), 0U);
+  EXPECT_EQ(f.n_prealign_attached(), 9U);
 }
 
 }  // namespace

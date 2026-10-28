@@ -71,6 +71,12 @@ class Estimator {
     std::uint64_t n_gnss_ring_overflow = 0;  ///< GNSS fixes dropped: waiting-for-IMU ring full
     std::uint64_t n_gnss_unfused_eof = 0;    ///< GNSS fixes after the last IMU sample at flush()
     std::uint64_t n_gnss_realign = 0;  ///< GNSS aligner restarts after gnss.max_consecutive_rejects
+    /// gnss.attach_prealign_fixes (ADR-022): fixes received before the first alignment added
+    /// as factors, dropped (buffer full, or before keyframe 0 outside its static window) and
+    /// rejected by the chi-square gate when released
+    std::uint64_t n_gnss_prealign_attached = 0;
+    std::uint64_t n_gnss_prealign_dropped = 0;
+    std::uint64_t n_gnss_prealign_rejected = 0;
     std::uint64_t n_nonfinite_imu = 0;  ///< IMU samples dropped (non-finite acc or gyro)
     /// keyframe-0 gravity factor not added: the init window failed the rest gate (ADR-020)
     std::uint64_t n_gravity_factor_gated = 0;

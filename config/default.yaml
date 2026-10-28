@@ -69,6 +69,17 @@ mss_node:
       # exceed the longest expected multipath hold (ADR-011: steps held 2 to 10 s), or the
       # restart re-admits the multipath it rejected; 60 = 12 s at 5 Hz. E-06 evaluates it.
       max_consecutive_rejects: 60
+      # ADR-022: keep the fixes received before the first alignment (the static ones of the IMU
+      # initialisation window included) and add them as factors once aligned, each on its
+      # nearest keyframe in time. false: they are dropped (previous behaviour). Evaluation
+      # (gnss_fusion_study.md section 14, 15 paired seeds): corridor median abs(E - truth) along
+      # the axis 0.82 -> 0.08 m, fused ATE median 1.99 -> 1.88 m (CI includes 0); box world
+      # unchanged (0.01019 m both); E-01 0.002183 -> 0.002198 m. Off until design 3 (shift
+      # covariance) is in.
+      attach_prealign_fixes: false
+      # Bound of that buffer, fixes (>= 1); 128 = 25.6 s at 5 Hz. When full, later fixes are
+      # dropped and counted (Stats::n_gnss_prealign_dropped), so the static ones stay.
+      prealign_max_fixes: 128
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

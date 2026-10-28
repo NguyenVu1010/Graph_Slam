@@ -109,6 +109,24 @@ outage. Counted in `Stats::n_gnss_realign` (bench.json `n_gnss_realign`), one wa
 restart. Test: `GnssFusion.RealignsAfterMaxConsecutiveRejects`,
 `PipelineComponent.CorridorOutageRealignsAfterRejects`.
 
+Fixes before the first alignment (ADR-022). With `gnss.attach_prealign_fixes` false (default)
+a fix received before keyframe 0 (no estimate yet) or before the aligner has a transform is
+dropped. With it true such fixes are kept in a buffer of `gnss.prealign_max_fixes` (reserved
+once; full before keyframe 0: the oldest is dropped, after it: the new one; counted in
+`Stats::n_gnss_prealign_dropped`):
+
+- a fix before keyframe 0 with `t_k0 - imu.init_window_s <= m.t <= t_k0` is at rest at
+  keyframe 0 (only when keyframe 0 is the IMU initialisation scan and the wheels did not move):
+  it is attached to keyframe 0 with no shift; any other fix before keyframe 0 is dropped;
+- a fix after keyframe 0 (the aligner still sees it) is assigned, when the keyframe after it
+  is added, to the nearer in time of that keyframe and the previous one, and shifted as below,
+  using the previous keyframe's optimised reference pose for a backward shift;
+- at the first keyframe where the aligner has `T_e_w` (and later ones for fixes still waiting
+  for a keyframe), each assigned fix passes the chi-square gate at its fix time with the
+  current `T_e_w` and becomes a factor on its keyframe (`Stats::n_gnss_prealign_attached`,
+  rejections `n_gnss_prealign_rejected`). The buffer closes at the first alignment; a realign
+  does not reopen it.
+
 Accepted fixes wait for the next keyframe k (`t_k >= m.t`) and are shifted to its time with
 the front-end poses:
 
