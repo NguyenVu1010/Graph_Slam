@@ -99,6 +99,9 @@ EstimatorCore::EstimatorCore(const Config& cfg)
     if (g_test_hooks->force_T_e_w) {
       fusion_.force_T_e_w(g_test_hooks->T_e_w);
     }
+    if (g_test_hooks->gnss_shift_oracle) {
+      fusion_.set_shift_oracle(&g_test_hooks->gnss_shift_oracle);
+    }
   }
 }
 

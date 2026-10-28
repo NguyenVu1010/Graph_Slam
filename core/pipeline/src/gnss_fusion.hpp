@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 #include "mss/common/result.hpp"
 #include "mss/common/timestamp.hpp"
@@ -62,6 +63,13 @@ class GnssFusion {
     aligned_ = true;
     forced_ = true;
   }
+  /// Test-only (CoreTestHooks::gnss_shift_oracle): collect() takes the antenna displacement
+  /// in w from the fix time to the keyframe time from `oracle(t_fix, t_k)` instead of the
+  /// front-end poses. `oracle` must outlive this object; nullptr restores the default.
+  void set_shift_oracle(
+      const std::function<common::Vec3(common::Timestamp, common::Timestamp)>* oracle) {
+    shift_oracle_ = oracle;
+  }
   /// Latest aligner estimate (identity until aligned()). Maps w to e.
   [[nodiscard]] const common::Pose& T_e_w() const { return T_e_w_; }
   /// Accepted fixes dropped from the full pending queue so far.
@@ -89,6 +97,8 @@ class GnssFusion {
   common::Pose T_e_w_;
   BoundedQueue<PendingFix, kMaxAuxQueue> pending_;
   std::uint64_t n_pending_dropped_ = 0;
+  const std::function<common::Vec3(common::Timestamp, common::Timestamp)>* shift_oracle_ =
+      nullptr;  // test-only
 };
 
 }  // namespace mss::pipeline::detail

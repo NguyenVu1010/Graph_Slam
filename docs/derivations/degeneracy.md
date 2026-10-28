@@ -225,8 +225,10 @@ seed 42 at 1000 m^2 from 1.78 to 0.51 m.
 **Open item: in this corridor fusion is not reliably better than raw GNSS alone.** Raw GNSS at
 0.5 m per axis is about 0.87 m 3D RMS. On this branch the fused ATE is 0.51 / 0.59 / 1.70 m over
 seeds 42, 43, 44: better than raw GNSS on seeds 42 and 43, 1.95x worse on seed 44. On main the
-15-seed median is 3.47 m (4x worse, ADR-021 table). It needs a diagnosis PR
-(`gnss_fusion_study.md` section 12).
+15-seed median is 3.47 m (4x worse, ADR-021 table). Diagnosed in `gnss_fusion_study.md` section
+13: over seeds 42..56 at 1000 m^2 the median is 1.99 m. The causes are how the GNSS frame
+variable is initialised and anchored, and how each fix is shifted to its keyframe, not the
+unobserved variance (1e6 m^2 gives the same result).
 
 ### Gazebo E-04 (measurement only)
 
