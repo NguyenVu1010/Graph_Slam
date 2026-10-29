@@ -259,6 +259,22 @@ TEST(Conversions, OriginNeedsAValidFix) {
   m = fix_at(lla);
   m.altitude = std::numeric_limits<double>::quiet_NaN();
   EXPECT_FALSE(mss_ros2::origin_from_fix(m, out));
+  // R1: finite but impossible coordinates are not an origin (lla_to_enu precondition).
+  for (const double bad_lat : {1000.0, -90.0001, 91.0}) {
+    m = fix_at(lla);
+    m.latitude = bad_lat;
+    EXPECT_FALSE(mss_ros2::origin_from_fix(m, out)) << bad_lat;
+  }
+  for (const double bad_lon : {181.0, -180.5, 1.0e6}) {
+    m = fix_at(lla);
+    m.longitude = bad_lon;
+    EXPECT_FALSE(mss_ros2::origin_from_fix(m, out)) << bad_lon;
+  }
+  // The limits themselves are valid.
+  m = fix_at(lla);
+  m.latitude = -90.0;
+  m.longitude = 180.0;
+  EXPECT_TRUE(mss_ros2::origin_from_fix(m, out));
 }
 
 mss::common::Pose yaw90_pose() {

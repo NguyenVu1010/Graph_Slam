@@ -14,6 +14,9 @@ namespace {
 
 using sensor_msgs::msg::PointField;
 
+constexpr double kMaxAbsLatitudeDeg = 90.0;    // WGS-84 domain of gnss::lla_to_enu
+constexpr double kMaxAbsLongitudeDeg = 180.0;  // WGS-84 domain of gnss::lla_to_enu
+
 // Offset of a scalar (count 1) field named `name` with datatype `type`. kMissing: no such
 // field; kWrongType: present with another datatype or count.
 enum class FieldLookup { kOk, kMissing, kWrongType };
@@ -159,7 +162,8 @@ mss::common::WheelSample wheel_from_odometry(const nav_msgs::msg::Odometry& msg)
 bool origin_from_fix(const sensor_msgs::msg::NavSatFix& msg, mss::gnss::Lla& out) {
   if (msg.status.status < sensor_msgs::msg::NavSatStatus::STATUS_FIX ||
       !std::isfinite(msg.latitude) || !std::isfinite(msg.longitude) ||
-      !std::isfinite(msg.altitude)) {
+      !std::isfinite(msg.altitude) || std::abs(msg.latitude) > kMaxAbsLatitudeDeg ||
+      std::abs(msg.longitude) > kMaxAbsLongitudeDeg) {
     return false;
   }
   out.lat_deg = msg.latitude;

@@ -54,8 +54,10 @@ mss::common::ImuSample imu_from_msg(const sensor_msgs::msg::Imu& msg);
 mss::common::WheelSample wheel_from_odometry(const nav_msgs::msg::Odometry& msg);
 
 /// Geodetic position of a fix. Returns false when the fix cannot serve as the ENU origin:
-/// status.status < 0 (NO_FIX) or a non-finite latitude, longitude or altitude (same rule as
-/// bag_to_mssdata._gnss_records).
+/// status.status < 0 (NO_FIX), a non-finite latitude, longitude or altitude, or a latitude
+/// outside [-90, 90] or a longitude outside [-180, 180] deg (the lla_to_enu precondition; the
+/// node skips and counts such a fix instead of taking it as the origin). Status and finiteness: as
+/// bag_to_mssdata._gnss_records.
 bool origin_from_fix(const sensor_msgs::msg::NavSatFix& msg, mss::gnss::Lla& out);
 
 /// Sigmas used when a fix declares COVARIANCE_TYPE_UNKNOWN (config gnss.sigma_h_m, sigma_v_m).

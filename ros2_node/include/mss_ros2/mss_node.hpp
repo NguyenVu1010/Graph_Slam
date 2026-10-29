@@ -23,6 +23,7 @@
 
 #include "mss_ros2/conversions.hpp"
 #include "mss_ros2/rclcpp_logger.hpp"
+#include "mss_ros2/stamp_gate.hpp"
 #include <tf2_ros/transform_broadcaster.h>
 
 namespace mss_ros2 {
@@ -78,11 +79,17 @@ class MssNode : public rclcpp::Node {
     std::uint64_t push_errors = 0;     ///< push_* returned an error (see the Estimator counters)
     std::uint64_t pending_report = 0;  ///< problems since the last throttled warning
     std::chrono::steady_clock::time_point last_report{};
-    bool has_last_stamp = false;
-    mss::common::Timestamp last_stamp{};
+    StampGate stamp_gate;  ///< last accepted stamp (strictly increasing per topic)
   };
 
   NodeParams read_params();
+  /// Stamp must be later than the last committed one; counts and reports a skip. Does not
+  /// advance the gate: call commit_stamp() once the message is going to be used.
+  bool check_stamp(Topic topic, mss::common::Timestamp t);
+  void commit_stamp(Topic topic, mss::common::Timestamp t) {
+    counters_[topic].stamp_gate.commit(t);
+  }
+  /// check_stamp() then commit_stamp(), for topics with no conversion step that can fail.
   bool accept_stamp(Topic topic, mss::common::Timestamp t);
   /// Counts one problem on `topic` and logs one throttled warning (error_log_period_s) with
   /// `reason()`; the reason string is only built when the warning is actually logged, so the
