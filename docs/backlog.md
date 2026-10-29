@@ -44,3 +44,15 @@ Each item names where its numbers live.
 | S2 | E-04 vertical drift; the E-01 vertical offset |
 | S3 | Bench dump of the degeneracy state |
 | S4 | `run_integration` variants |
+
+## Map export (PR #38)
+
+| # | Item | Severity |
+|---|------|----------|
+| M1 | A tiny `map_export.voxel_m` (e.g. 1e-20) passes validation (`>= 0`), and the int64 cast in `voxel_centroids` then overflows. Fix: set a minimum, e.g. 0 or at least 1 mm. | Important |
+| M2 | A bad `--map-out` directory is only found after the full replay. Fix: check the path at start-up. | Important |
+| M3 | `FollowsBackendCorrection` has no independent truth for the moved map, so it passes even with stale poses. | Important |
+| M4 | Map export takes no lock. A 1 Hz export from the ROS node during `optimize()` becomes a data race once the ADR-005 threads exist. | Important |
+| M5 | No-GTSAM builds cannot export, because the stub backend has no keyframe poses (needs an ADR-016 amendment). | Minor |
+| M6 | Keyframes beyond `map.max_keyframes` are missing from the map; export cost at 1000 keyframes on the Pi 5 is not measured; export stats are not in `bench.json`. | Minor |
+| M7 | A partial write leaves a truncated PCD (write to a temp file, then rename); `fopen(path.c_str())` is not portable to Windows; the counter types in `MapExportInfo` are mixed; doc comments name the wrong test file. | Minor |
