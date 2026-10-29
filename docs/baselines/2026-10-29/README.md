@@ -10,16 +10,16 @@ this branch (flag on). The previous baseline is `docs/baselines/2026-10-28/`.
 
 | test | ATE before (m) | ATE after (m) | limit before (1.2 x) | limit after (1.2 x) | p95 latency baseline (ms) |
 | --- | --- | --- | --- | --- | --- |
-| E-01 | 0.002184 | 0.002160 | 0.002621 | 0.002592 | 8.040 (unchanged) |
-| E-02 | 0.002184 | 0.002160 | 0.002621 | 0.002592 | 8.079 (unchanged) |
-| E-03 | 0.002181 | 0.002172 | 0.002621 (gated on E-01) | 0.002592 (gated on E-01) | 8.253 (unchanged) |
+| E-01 | 0.002184 | 0.002161 | 0.002621 | 0.002593 | 8.040 (unchanged) |
+| E-02 | 0.002184 | 0.002161 | 0.002621 | 0.002593 | 8.079 (unchanged) |
+| E-03 | 0.002181 | 0.002173 | 0.002621 (gated on E-01) | 0.002593 (gated on E-01) | 8.253 (unchanged) |
 
 E-02 is the second run on the E-01 dataset (byte-identical `est.tum`), so it shares E-01's ATE.
 E-03 is gated against the E-01 baseline; its own value is reported.
 
-The "after" values are this machine's (WSL, GTSAM 4.2). The runner's toolchain differs in the last
-digit, so the values in `eval/baselines.json` are replaced by the CI run of this PR when it differs
-(as in the first baseline PR). Latency baselines are unchanged: local p95 stays at 6.1 to 6.5 ms
+The "after" values are the CI runner's (`docker-full` run of this PR: E-01 0.002161, E-03
+0.002173 m), as in the first baseline PR; this machine (WSL, GTSAM 4.2) gives 0.002160 /
+0.002172 m, one unit lower in the last digit. Latency baselines are unchanged: local p95 stays at 6.1 to 6.5 ms
 before and after, no measurable change (the check adds three running sums per fix, off the scan path).
 
 ## Same data, same seeds

@@ -313,8 +313,8 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   // Backlog G1 / G13: GnssAligner's yaw-sigma check, on by default (ADR-025); the overlay turns
   // it off (the previous behaviour).
   EXPECT_TRUE(cfg.value().gnss.align_check_yaw_sigma);
-  const auto check_off = parse_config(read_file(kDefault),
-                                      overlay("    gnss:\n      align_check_yaw_sigma: false\n"));
+  const auto check_off =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_check_yaw_sigma: false\n"));
   ASSERT_TRUE(check_off.is_ok()) << check_off.reason();
   EXPECT_FALSE(check_off.value().gnss.align_check_yaw_sigma);
   // ADR-023: off by default (previous behaviour); chunk >= 2, sigma (deg -> rad) and n > 0.
