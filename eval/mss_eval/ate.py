@@ -105,10 +105,26 @@ def _require_finite(path: Path, poses: np.ndarray) -> None:
     raise ValueError(f"{path}: line {data_lines[bad[0]]}: non-finite pose ({len(bad)} rows)")
 
 
-def _aligned_pairs(
-    est_path: Path, gt_path: Path, max_dt_ns: int, min_pairs: int
-) -> tuple[np.ndarray, np.ndarray, int]:
-    """Aligned estimate positions, matching GT positions and the number of unmatched estimates."""
+@dataclass(frozen=True)
+class Alignment:
+    """Rigid fit ``gt ~= rot @ est + t`` and the paired positions it was computed from."""
+
+    rot: np.ndarray  # (3, 3), det +1
+    t: np.ndarray  # (3,) metres
+    est_aligned: np.ndarray  # (n_pairs, 3) estimate positions mapped into the gt frame
+    gt: np.ndarray  # (n_pairs, 3) matching ground-truth positions
+    n_unmatched: int
+
+
+def align(
+    est_path: Path,
+    gt_path: Path,
+    *,
+    max_dt_ns: int = DEFAULT_MAX_DT_NS,
+    min_pairs: int = DEFAULT_MIN_PAIRS,
+) -> Alignment:
+    """Associate the two TUM files and fit the SE(3) alignment (``ValueError`` below
+    ``min_pairs``)."""
     est, gt = read_tum(Path(est_path)), read_tum(Path(gt_path))
     _require_finite(Path(est_path), np.column_stack([est.p, est.q_xyzw]))
     _require_finite(Path(gt_path), np.column_stack([gt.p, gt.q_xyzw]))
@@ -123,7 +139,7 @@ def _aligned_pairs(
         )
     src, dst = est.p[i_est], gt.p[order][i_gt]
     rot, t = umeyama_se3(src, dst)
-    return src @ rot.T + t, dst, len(est) - n_pairs
+    return Alignment(rot, t, src @ rot.T + t, dst, len(est) - n_pairs)
 
 
 def ate(
@@ -134,10 +150,10 @@ def ate(
     min_pairs: int = DEFAULT_MIN_PAIRS,
 ) -> AteResult:
     """ATE RMSE [m] of ``est_path`` against ``gt_path``; ``ValueError`` below ``min_pairs``."""
-    aligned, dst, n_unmatched = _aligned_pairs(est_path, gt_path, max_dt_ns, min_pairs)
-    err = np.linalg.norm(dst - aligned, axis=1)
+    al = align(est_path, gt_path, max_dt_ns=max_dt_ns, min_pairs=min_pairs)
+    err = np.linalg.norm(al.gt - al.est_aligned, axis=1)
     rmse = float(np.sqrt(np.mean(err * err)))
-    return AteResult(rmse_m=rmse, n_pairs=len(dst), n_unmatched=n_unmatched)
+    return AteResult(rmse_m=rmse, n_pairs=len(al.gt), n_unmatched=al.n_unmatched)
 
 
 def plot_xy(est_path: Path, gt_path: Path, out_png: Path) -> None:
@@ -147,7 +163,7 @@ def plot_xy(est_path: Path, gt_path: Path, out_png: Path) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    aligned, _, _ = _aligned_pairs(est_path, gt_path, DEFAULT_MAX_DT_NS, DEFAULT_MIN_PAIRS)
+    aligned = align(est_path, gt_path).est_aligned
     gt = read_tum(Path(gt_path))
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.plot(gt.p[:, 0], gt.p[:, 1], label="ground truth", color="0.4", linewidth=2)

@@ -335,6 +335,42 @@ decreases later. E-04 with degeneracy on drifts vertically by metres while the h
 stays near 0.2-0.5 m. The bench exports no degeneracy counters; its log flags 47 of 53 keyframes
 degenerate (`add_lidar_factor ... degenerate`), without the directions.
 
+## Map demo
+
+One command from a scenario to a top-down picture of the global map with the estimated and
+true trajectories (WSL or Ubuntu with Gazebo, see "Máy bàn"):
+
+```
+tools/run_map_demo.sh sim/scenarios/E-01.yaml results/<run-id>/     --bench-cmd "env LD_LIBRARY_PATH=$HOME/opt/gtsam/lib <build>/bench/mss_bench"     [--bag results/<earlier run>/] [--z-min-m 0.3] [--z-max-m 2.0] [--res-m 0.05]
+```
+
+It chains the existing tools: `record_scenario.sh` (Gazebo, then the noise bridge) into
+`<run-id>/record/`, then `run_integration.py --bridged ... --tests E-01 --map-out`
+(`bag_to_mssdata.py`, then `mss_bench ... --map-out run/E-01/map.pcd`, then ATE) into
+`<run-id>/run/`, then `python -m mss_eval map-png` (eval/README.md "Map picture") into
+`<run-id>/map.png`. `--bag <dir>` takes an earlier `record_scenario.sh` output of the same
+scenario (`bag/` + `gt.tum`) and skips the recording. `map_demo.json` holds the wall time per
+step, the E-01 ATE and bench counters, the bench's `map:` line and the map-png result. The
+bench output sits in `run/E-01/` for every scenario: that is the harness's test slot, not the
+scenario.
+The picture uses the scenario's `pipeline_config` (for E-04 the degeneracy-off one). The E-01
+gate inside `run_integration.py` compares against the synthetic baselines, so a Gazebo bag
+"fails" it; the demo reports that and still draws the map. Exit 0 = picture written, 2 = a
+step failed (the message names its log). Wrap it in `flock ~/.mss-build.lock` when another
+heavy job may run.
+
+Numbers (2026-10-29 UTC, desktop WSL, Release build of `feat/map-demo`, seed 42, fresh
+recordings, so they differ from the tables above; Gazebo is not deterministic):
+
+| Scenario | wall s: record / convert + bench / picture | map points (in the z cut) | keyframes | ATE RMSE [m] (pairs) |
+| --- | --- | --- | --- | --- |
+| E-01 warehouse | 68.3 / 13.7 / 0.7 | 48 000 (15 618) | 42 | 0.092 (609) |
+| E-04 corridor | 93.9 / 16.3 / 0.6 | 30 815 (15 912) | 48 | 0.249 (737) |
+
+The record time includes the noise report. In the E-04 picture the corridor floor climbs
+through the 0.3-2.0 m cut along the corridor: the map's vertical drift (median z of the
+in-corridor points 0.36 m at x 8-16 m, 1.30 m at x 40-48 m).
+
 ## Mutating a bag (E-03)
 
 `tools/mutate_bag.py` derives the robustness bag from a bridged one (packet loss and reordering
