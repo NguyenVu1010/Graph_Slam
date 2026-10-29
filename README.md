@@ -44,7 +44,7 @@ Latency benchmark and dataset replay (no ROS). Convert a bag once, then replay i
 
 ```sh
 python tools/bag_to_mssdata.py <bag> <out> --pipeline-config config/sim/warehouse.yaml
-mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR
+mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR [--map-out FILE.pcd]
 ```
 
 `--out` is required; `DIR` receives `est.tum` and `bench.json`, and a summary table goes to
@@ -59,6 +59,15 @@ place by `map.min_point_dist_m`, summed over rebuilds; every rebuild re-inserts 
 window, so it grows with `n_map_rebuilds` and is not a map-quality figure). Exit codes: 0 success; 2 usage, config, dataset or output error; 3 the replay finished
 but some records were not processed (dropped or rejected, see `bench.json`). Format:
 `docs/mssdata_format.md`, decision: `docs/adr/014-bench-dataset-format.md`.
+
+`--map-out FILE.pcd` also writes the global map after the replay. The map is every keyframe
+cloud in the keyframe store, placed at the backend's optimised pose at the end of the run, in
+frame `w` and in metres. The file is binary PCD with `x y z` float32, which CloudCompare and
+`pcl_viewer` open. `map_export.voxel_m` sets an optional centroid downsampling; the default 0
+keeps every stored point, which the store already holds at `map.keyframe_voxel_m`. The point
+count, export time and file size are printed. `est.tum` and `bench.json` do not change. Design
+notes: ADR-016, amendment of 2026-10-29. Keyframes evicted by `map.max_keyframes` are not in the
+map. The no-GTSAM build cannot export a map (exit 2).
 
 Desktop with ROS 2 Jazzy (workspace contains this repo under `src/multi-sensor-slam`). colcon
 stops at the root `CMakeLists.txt`, so name the three packages' paths (ADR-013):

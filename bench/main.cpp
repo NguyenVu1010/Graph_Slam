@@ -1,6 +1,6 @@
 // Latency benchmark and dataset replay. Runs on Pi5 without ROS.
 //
-// Usage: mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR
+// Usage: mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR [--map-out FILE]
 //
 // Replays an mssdata dataset (ADR-014) in time order into pipeline::Estimator: IMU, GNSS
 // and wheel records go to push_imu/push_gnss/push_odom, scans to push_scan; ground-truth
@@ -12,11 +12,15 @@
 //   DIR/bench.json  Estimator::Stats, replay wall time, record counts per stream and the
 //                   per-scan processing latency (scan_process_ms_p50/p95, PF-01, from
 //                   n_latency_samples samples; n_latency_dropped did not fit the buffer)
-// and prints a summary table on stdout.
+// and prints a summary table on stdout. With --map-out FILE, after the replay it also writes
+// the global map (Estimator::export_map: every stored keyframe cloud at its optimised pose,
+// frame w, m, downsampled by map_export.voxel_m) to FILE as binary PCD, and prints the point
+// count, export time and file size; est.tum and bench.json are the same with or without it.
 // Exit codes: 0 success; 2 usage, config, dataset, estimator-init or output error (reason
 // on stderr); 3 the replay finished but some records were not processed (dropped or
 // rejected: records.* != n_*): one warning line on stderr, outputs still written.
-// --out is required so the tool never writes into the source tree by default.
+// --out is required so the tool never writes into the source tree by default. A map export
+// or PCD write failure exits 2 after est.tum and bench.json are written.
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
@@ -39,6 +43,7 @@
 #include "mss/common/types.hpp"
 #include "mss/io/dataset_format.hpp"
 #include "mss/io/dataset_reader.hpp"
+#include "mss/io/pcd_writer.hpp"
 #include "mss/pipeline/config.hpp"
 #include "mss/pipeline/estimator.hpp"
 
@@ -54,11 +59,14 @@ struct Args {
   fs::path dataset;
   std::optional<fs::path> overlay;
   fs::path out;
+  std::optional<fs::path> map_out;
 };
 
 void usage(const char* argv0) {
   std::fprintf(
-      stderr, "usage: %s <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR\n", argv0);
+      stderr,
+      "usage: %s <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR [--map-out FILE]\n",
+      argv0);
 }
 
 std::optional<Args> parse_args(int argc, char** argv) {
@@ -67,13 +75,16 @@ std::optional<Args> parse_args(int argc, char** argv) {
   bool have_out = false;
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
-    if (std::strcmp(arg, "--overlay") == 0 || std::strcmp(arg, "--out") == 0) {
+    if (std::strcmp(arg, "--overlay") == 0 || std::strcmp(arg, "--out") == 0 ||
+        std::strcmp(arg, "--map-out") == 0) {
       if (i + 1 >= argc) {
         std::fprintf(stderr, "mss_bench: %s needs a value\n", arg);
         return std::nullopt;
       }
       if (std::strcmp(arg, "--overlay") == 0) {
         a.overlay = fs::path(argv[++i]);
+      } else if (std::strcmp(arg, "--map-out") == 0) {
+        a.map_out = fs::path(argv[++i]);
       } else {
         a.out = fs::path(argv[++i]);
         have_out = true;
@@ -486,6 +497,38 @@ class Replayer {
   std::uint64_t n_scans_seen_ = 0;       // Stats::n_scans at the last read
 };
 
+// --map-out: exports the global map and writes it as PCD. Returns false (reason on stderr)
+// on an export or write error.
+bool write_map(const mss::pipeline::Estimator& est, const fs::path& path) {
+  std::vector<Eigen::Vector3f> points;
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto info = est.export_map(points);
+  const std::chrono::duration<double, std::milli> export_ms = std::chrono::steady_clock::now() - t0;
+  if (!info) {
+    std::fprintf(stderr, "mss_bench: map export error: %s\n", info.reason().c_str());
+    return false;
+  }
+  const mss::common::Status written = mss::io::write_pcd(path, points);
+  if (!written) {
+    std::fprintf(stderr, "mss_bench: %s\n", written.reason().c_str());
+    return false;
+  }
+  std::error_code ec;
+  const std::uintmax_t bytes = fs::file_size(path, ec);
+  std::printf(
+      "map: %zu points (%zu before map_export.voxel_m) from %zu keyframes (%zu without a "
+      "backend pose, %" PRIu64 " evicted), export %.3f ms, %s %ju bytes\n",
+      info.value().n_points_out,
+      info.value().n_points_in,
+      info.value().n_keyframes,
+      info.value().n_no_pose,
+      info.value().n_evicted,
+      export_ms.count(),
+      path.c_str(),
+      ec ? static_cast<std::uintmax_t>(0) : bytes);
+  return true;
+}
+
 bool all_processed(const Counts& c, const mss::pipeline::Estimator::Stats& st) {
   return c.imu == st.n_imu && c.gnss == st.n_gnss && c.odom == st.n_odom && c.lidar == st.n_scans;
 }
@@ -572,6 +615,9 @@ int main(int argc, char** argv) {
     return kExitError;
   }
   print_table(args->dataset, st, wall.count(), counts, lat);
+  if (args->map_out && !write_map(*est, *args->map_out)) {
+    return kExitError;
+  }
   if (!all_processed(counts, st)) {
     std::fprintf(stderr,
                  "mss_bench: WARNING not every record was processed (records != n_*; see the "

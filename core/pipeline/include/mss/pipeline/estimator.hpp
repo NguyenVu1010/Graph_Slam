@@ -2,11 +2,15 @@
 
 #include <cstdint>
 #include <memory>
+#include <vector>
+
+#include <Eigen/Core>
 
 #include "mss/common/result.hpp"
 #include "mss/common/scan_frame.hpp"
 #include "mss/common/types.hpp"
 #include "mss/pipeline/config.hpp"
+#include "mss/pipeline/map_export.hpp"
 
 namespace mss::pipeline {
 
@@ -229,6 +233,35 @@ class Estimator {
   /// `p_q = sorted[ceil(q * n) - 1]` (q = 0.50, 0.95).
   /// 0.0 before the first push_scan(). Tests: Task 8 test_estimator.
   Stats stats() const;
+
+  /// Global map, keyframe by keyframe (ADR-016 decision 6, amendment 2026-10-29): calls
+  /// `visit` once per keyframe still in the keyframe store, oldest first, with its stored cloud
+  /// in l and T_w_l = T_w_b(k) * T_b_l, where T_w_b(k) is the backend's optimised pose at the
+  /// time of this call. So a later backend correction (GNSS, loop closure) moves the points
+  /// of every keyframe on the next call. Not the VoxelMap cache (the scan-matching window).
+  /// Keyframes the backend has no estimate for (no-GTSAM stub build, failed optimize) are
+  /// skipped and counted in n_no_pose; keyframes evicted by map.max_keyframes are not in the
+  /// map (n_evicted). Before the first keyframe: ok with n_keyframes 0.
+  /// Errors: Status error "map export: no stored keyframe has a backend pose" when the store
+  ///   holds keyframes but none has an estimate.
+  /// Thread contract: reads the estimator state without a lock. In this single-threaded phase
+  ///   call it from the thread that calls run_once() / flush(), between those calls (as mss_bench
+  ///   does at the end of a run). Once ADR-005 threads exist the ROS node will call it on demand
+  ///   (about 1 Hz); it must then take the estimator's map/backend lock, which this method does
+  ///   not take yet.
+  /// Allocation: none itself (the visitor may). Hot path: no (on demand, O(stored points)).
+  /// Tests: test_pipeline_component (MapExport*).
+  common::Result<MapExportInfo> visit_map(const MapKeyframeVisitor& visit) const;
+
+  /// The global map as points in w: visit_map() with every point transformed by its T_w_l
+  /// (computed in double, stored as float), then voxel-grid centroids of edge
+  /// map_export.voxel_m (0, the default: no extra downsampling, so the points are the store's,
+  /// at map.keyframe_voxel_m). `out` is cleared first; its order is deterministic (keyframe id,
+  /// then point order; with downsampling, first-met voxel order).
+  /// Errors, frames, thread contract: as visit_map(); on error `out` is empty.
+  /// Allocation: yes (`out`, the voxel hash); off the hot path.
+  /// Tests: test_pipeline_component (MapExport*), E-01 with mss_bench --map-out.
+  common::Result<MapExportInfo> export_map(std::vector<Eigen::Vector3f>& out) const;
 
  private:
   // Queues (~0.3 MB at the compile-time maxima of bounded_queue.hpp), the ScanFrame pool
