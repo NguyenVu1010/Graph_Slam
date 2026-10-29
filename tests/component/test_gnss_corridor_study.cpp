@@ -11,7 +11,8 @@
 // gnss.attach_prealign_fixes (ADR-022, section 14); `trackyaw` is `ref` with
 // gnss.align_yaw_from_track (ADR-023, section 15), `prealign_trackyaw` has both; the `_s45` /
 // `_s60` suffixes set gnss.align_yaw_max_sigma_deg, `_wheel` runs with wheel odometry and `_2b`
-// adds the design-2b keys (section 16). Writes
+// adds the design-2b keys (section 16); `aligncheck` is `ref` with gnss.align_check_yaw_sigma
+// (section 17). Writes
 // results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-corridor-study">/gnss_corridor_study.md.
 // MSS_GCS_VARIANTS: comma-separated variant names to run (default all; the reference first is
 // always run); MSS_GCS_FIRST_SEED / MSS_GCS_LAST_SEED: seed range (default 42..56).
@@ -542,6 +543,9 @@ TEST(GnssCorridorStudy, Diagnosis) {
   }
   variants.push_back({"ref_wheel", "ref + wheel odometry", deg_on, "", "", false, "on_wheel",
                       false, true});
+  // Section 17 (backlog G1): GnssAligner waits for its predicted yaw sigma.
+  variants.push_back({"aligncheck", "gnss.align_check_yaw_sigma (GnssAligner yaw sigma <= 6 deg)",
+                      deg_on, "", "      align_check_yaw_sigma: true\n", false, "on"});
   variants.push_back({"prealign_wheel", "prealign + wheel odometry", deg_on, "", pre, false,
                       "on_wheel", false, true});
   variants.push_back({"trackyaw_wheel", "wheel + trackyaw (design-2 keys)", deg_on, "", d2 + sig("3.0"), false,
@@ -944,6 +948,20 @@ TEST(GnssCorridorStudy, BoxWorldTrackYawPairs) {
                   "      align_yaw_from_track: true\n",
                   "gnss_box_trackyaw.md",
                   "gnss-box-trackyaw");
+}
+
+// gnss.align_check_yaw_sigma (section 17, backlog G1). Skipped unless MSS_GNSS_BOX_ALIGNCHECK=1
+// (GTSAM build). Writes results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-box-aligncheck">/
+// gnss_box_aligncheck.md.
+TEST(GnssCorridorStudy, BoxWorldAlignCheckPairs) {
+  const char* on = std::getenv("MSS_GNSS_BOX_ALIGNCHECK");
+  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_GNSS_BOX_ALIGNCHECK=1 (GTSAM build)";
+  }
+  box_world_pairs("gnss.align_check_yaw_sigma",
+                  "      align_check_yaw_sigma: true\n",
+                  "gnss_box_aligncheck.md",
+                  "gnss-box-aligncheck");
 }
 
 // Section 16 (design 2b): the first alignment of a replay (time, predicted yaw sigma, aligner
