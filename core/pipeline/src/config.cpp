@@ -482,6 +482,7 @@ Config read_config(Reader& r) {
   r.field("map.window_keyframes", c.map.window_keyframes, Range::kPositive);
   r.field("map.rebuild_trans_m", c.map.rebuild_trans_m, Range::kPositive);
   r.angle_deg("map.rebuild_rot_deg", c.map.rebuild_rot_rad, Range::kPositive);
+  r.field("map_export.voxel_m", c.map_export.voxel_m, Range::kNonNegative);  // 0 = off
 
   r.field("scan_match.max_iterations", c.scan_match.max_iterations, Range::kPositive);
   r.field("scan_match.rot_tol_rad", c.scan_match.rot_tol_rad);

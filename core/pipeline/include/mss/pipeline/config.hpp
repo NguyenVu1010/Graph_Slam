@@ -46,6 +46,13 @@ struct LidarConfig {
   double range_sigma_m = 0.0;  // m, range noise sigma
 };
 
+// YAML: map_export.*  Global map export (Estimator::export_map, ADR-016 amendment 2026-10-29).
+struct MapExportConfig {
+  // m, edge of the centroid voxel grid applied to the exported points (>= 0); 0 = no extra
+  // downsampling: every stored keyframe point (already at map.keyframe_voxel_m).
+  double voxel_m = 0.0;
+};
+
 // Validated contents of mss_node.ros__parameters (config/default.yaml + optional overlay).
 struct Config {
   bool deterministic = false;
@@ -57,6 +64,7 @@ struct Config {
   odom::WheelOdomConfig wheel_odom;
   preprocess::PreprocessConfig preprocess;
   map::MapConfig map;
+  MapExportConfig map_export;
   scan_match::ScanMatchConfig scan_match;
   degeneracy::DegeneracyConfig degeneracy;
   loop::LoopConfig loop_closure;

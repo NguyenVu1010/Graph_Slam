@@ -11,7 +11,8 @@ add_library(mss_pipeline STATIC
   src/imu_buffer.cpp
   src/imu_trajectory_builder.cpp
   src/keyframe_policy.cpp
-  src/keyframe_store.cpp)
+  src/keyframe_store.cpp
+  src/map_downsample.cpp)
 add_library(mss::pipeline ALIAS mss_pipeline)
 mss_set_target_defaults(mss_pipeline)
 target_include_directories(mss_pipeline PUBLIC

@@ -61,6 +61,7 @@ TEST(Config, LoadsDefaultFile) {
   EXPECT_EQ(c.map.window_keyframes, 50);
   EXPECT_DOUBLE_EQ(c.map.rebuild_trans_m, 0.05);
   EXPECT_NEAR(c.map.rebuild_rot_rad, 0.5 * std::acos(-1.0) / 180.0, 1e-12);
+  EXPECT_DOUBLE_EQ(c.map_export.voxel_m, 0.0);  // map export: no extra downsampling
   EXPECT_TRUE(c.frames.T_b_l.R.isApprox(Mat3::Identity(), 1e-12));
   EXPECT_TRUE(c.frames.T_b_l.p.isZero(0.0));
   EXPECT_TRUE(c.frames.T_b_o.R.isApprox(Mat3::Identity(), 1e-12));
@@ -72,6 +73,16 @@ TEST(Config, LoadsDefaultFile) {
   EXPECT_EQ(c.realtime.max_points_per_scan, 65536U);
   EXPECT_EQ(c.random_seed, 42U);
   EXPECT_EQ(c.frames.body, "imu_link");
+}
+
+TEST(Config, MapExportVoxelValidated) {
+  const std::string base = read_file(kDefault);
+  const auto ok = parse_config(base, overlay("    map_export:\n      voxel_m: 0.2\n"));
+  ASSERT_TRUE(ok.is_ok()) << ok.reason();
+  EXPECT_DOUBLE_EQ(ok.value().map_export.voxel_m, 0.2);
+  const auto negative = parse_config(base, overlay("    map_export:\n      voxel_m: -0.1\n"));
+  ASSERT_FALSE(negative.is_ok());
+  EXPECT_TRUE(mentions(negative.reason(), "map_export.voxel_m")) << negative.reason();
 }
 
 TEST(Config, OverlayWarehouse) {
