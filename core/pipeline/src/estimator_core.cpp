@@ -86,7 +86,7 @@ EstimatorCore::EstimatorCore(const Config& cfg)
       matcher_(cfg.scan_match, cfg.degeneracy, cfg.realtime.max_points_per_scan),
       graph_(cfg.backend, cfg.imu, cfg.frames.p_b_g),
       wheel_(cfg.wheel_odom, cfg.frames.T_b_o),
-      fusion_(cfg.gnss, cfg.frames.p_b_g),
+      fusion_(cfg.gnss, cfg.frames.p_b_g, cfg.frames.T_b_o),
       store_(cfg.map.max_keyframes),
       window_(static_cast<std::size_t>(cfg.map.window_keyframes)),
       init_window_(std::make_unique<std::array<common::ImuSample, kMaxImuQueue>>()),
@@ -105,6 +105,7 @@ EstimatorCore::EstimatorCore(const Config& cfg)
     if (g_test_hooks->gnss_shift_oracle) {
       fusion_.set_shift_oracle(&g_test_hooks->gnss_shift_oracle);
     }
+    fusion_.set_first_alignment_yaw_offset(g_test_hooks->gnss_first_align_yaw_offset_rad);
   }
 }
 

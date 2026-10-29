@@ -291,7 +291,7 @@ Format of an entry: **symptom** → cause → fix → rule.
   - The only fixed wait is the static phase at keyframe 0, for IMU bias and gravity.
   - The GNSS alignment waits on conditions, all of which must pass:
     - predicted yaw sigma at most 3° (6° since design 2b, section 1.18);
-    - at least 5 m of track along the heading (none when every segment has wheel data, 1.18);
+    - at least 5 m of track along the heading (3 m when every segment has wheel data, 1.18);
     - track coherence at least 0.5;
     - segments that turn more than 45° are not used (with wheel data they take their direction
       from the wheel path since design 2b);
@@ -314,35 +314,47 @@ Format of an entry: **symptom** → cause → fix → rule.
   on the robot.
 - **What the numbers say.**
   - **Rotating in place.** The antenna circles the body origin at 0.22 m, so the yaw sigma is
-    `sigma / (|l| sqrt(N))`: one rotation in 10 s at 0.5 m gives 12.9 deg at 10 Hz (Monte Carlo;
-    12.8 predicted) and 19.5 deg at 5 Hz. With RTK at 2 cm the same rotation gives 0.5 deg. With
+    `sigma / (|l| sqrt(N))`: one rotation in 10 s at 0.5 m gives 19.5 deg at the simulator's
+    5 Hz (Monte Carlo; 18.1 predicted) and 12.9 deg at 10 Hz (12.8). With RTK at 2 cm the same
+    rotation gives 0.5 deg at 10 Hz. With
     GNSS error correlated over a few seconds it is several times worse (46 deg). Useless
     on this hardware, good with RTK.
   - **Straight driving.** On a straight track `sigma_yaw = sqrt(2 v) / L` with `v = sigma^2 / 10`
     per 2 s chunk: `L = 0.224 m / sigma_yaw`, so 4.3 m for 3 deg, 2.8 m for 4.5 deg, 2.1 m for
-    6 deg between the first and last chunk centres (probe, 200 seeds at 0.5 m/s: first
-    alignment at 4.9, 3.9 and 2.9 m driven). The 5 m minimum track, not the sigma, set the
-    distance at 3 deg.
+    6 deg between the first and last chunk centres (probe with no minimum track, 200 seeds at
+    0.5 m/s: first alignment at 4.9, 3.9 and 2.9 m driven; study section 16.1). The 5 m minimum
+    track, not the sigma, set the distance at 3 deg.
   - **Turns.** The chord between two chunk means on a turn bends with the speed inside the turn,
     by up to half the turn angle, so course over ground along the mean heading is skipped above
-    45 deg. With wheel data the path shape in w is known (wheel travel along the gyro/LiDAR
-    heading) and the chord direction comes from it, with a stated slip model. On aisles with
+    45 deg. With wheel data the path shape in w is known (the odometry frame's travel along the
+    gyro/LiDAR heading, with `T_b_o`: ignoring a 0.2 m IMU-to-axle offset cost 12 deg on a 1 m
+    circle) and the chord direction comes from it, with a stated slip model. On aisles with
     90 deg corners at 3 deg: 2 of 200 runs aligned before, all now (median 7.9 m); a 1 m circle
-    (57 deg per chunk) went from never to 15 m at 3 deg, 5 m at 6 deg.
+    (57 deg per chunk) went from never to 12 s at 6 deg.
+  - **Minimum track with wheel data.** Wheels can turn while the body stands still (stuck,
+    lifted), so "the odometer detects a parked robot" is only true when the wheels stop too. A
+    zero minimum aligned such a robot on GNSS drift (64 of 100 at 0.2 m per fix, about 90 deg
+    off); comparing the GNSS track with the wheel-predicted displacement and a 3 m minimum bring
+    it to 16 of 100, the level of design 2 without wheel data. The 3 m was chosen from the
+    absolute-error tails at 6 deg, not from NEES, which a larger sigma lowers while the tails
+    grow.
   - **The front-end displacement.** Its covariance does not say where the LiDAR is blind in the
     shipped configuration: 1.5 to 4.6 cm along the corridor axis while the front end was 1 m off
     over 2 s. Not used.
-- **Chosen.** Sigma 6 deg (the graph refines the yaw; the first yaw stayed within its sigma, no
-  flip, no more rejections), turns from the wheel path, no minimum track when every segment has
-  wheel data. With wheel data: corridor 6 -> 3 m, box 7 -> 4 m, E-01 23 -> 9 m to the alignment.
-  Without wheel data the corridor is unchanged (the 5 m guard for a parked robot stays).
+- **Chosen (proposed; the change of the first-factor target is the owner's call).** Sigma 6 deg
+  (the graph refines the yaw; the first yaw stayed within its sigma, no flip, no more rejections,
+  and a forced 18 deg start converged), turns from the wheel path, wheel/GNSS consistency, 3 m
+  minimum track when every segment has wheel data. With wheel data: corridor 6 -> 4 m, box 7 ->
+  4 m, E-01 23 -> 9 m to the alignment. Without wheel data the corridor is unchanged (the 5 m
+  guard for a parked robot stays).
 - **Waiting is cheap.** The local LiDAR-inertial pose is valid from frame 0; only the ENU output
   waits for the alignment. A later alignment costs nothing for local navigation.
 - **Rule.** Before proposing a manoeuvre or a source for an observability problem, compute its
   information from the sensor noise and the geometry (here `sigma / (|l| sqrt(N))` against
   `sigma sqrt(2 / n) / L`), and check that the signal you would trust is calibrated in the
   configuration that ships (the scan-match covariance was not). Measure the remaining levers in
-  that order: threshold, minimum guards, then the data the gates discard.
+  that order: threshold, minimum guards, then the data the gates discard. Judge a guard by the
+  absolute-error tails and the failure cases it exists for (stuck wheels, drift), not by NEES.
 
 ## 2. Simulation and evaluation
 

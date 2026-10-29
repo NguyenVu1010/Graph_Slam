@@ -29,6 +29,9 @@ Eigen::Vector2d rot2(double c, double s, const Eigen::Vector2d& v) {
 }  // namespace
 
 GnssTrackYawAligner::GnssTrackYawAligner(const GnssConfig& cfg)
+    : GnssTrackYawAligner(cfg, common::Pose{}) {}
+
+GnssTrackYawAligner::GnssTrackYawAligner(const GnssConfig& cfg, const common::Pose& T_b_o)
     : chunk_fixes_(cfg.align_yaw_chunk_fixes),
       max_sigma_rad_(cfg.align_yaw_max_sigma_rad),
       min_track_m_(cfg.align_yaw_min_track_m),
@@ -40,7 +43,24 @@ GnssTrackYawAligner::GnssTrackYawAligner(const GnssConfig& cfg)
       wheel_turns_(cfg.align_yaw_wheel_turns),
       slip_frac_(cfg.align_yaw_wheel_slip_frac),
       min_track_wheel_m_(cfg.align_yaw_min_track_wheel_m),
+      p_b_o_(T_b_o.p),
+      yaw_b_o_rad_(std::atan2(T_b_o.R(1, 0), T_b_o.R(0, 0))),
       yaw_sigma_rad_(std::numeric_limits<double>::infinity()) {}
+
+// gnss.md section 5.1: the wheel-path direction error that the steps into chunk `ch` add to Z,
+// across the motion, given the coefficients of the segment before the chunk (`c_before`, the
+// chunk is its later one, weights (n - i) / n) and after it (`c_after`, weights i / n); zero
+// for a segment whose direction is not from the wheel path. Slip: fully correlated inside the
+// chunk, bounded by the triangle inequality across the two segments. Speed profile:
+// independent per step, sum var |w_f c_before + w_r c_after|^2.
+double GnssTrackYawAligner::chunk_dir_var_m2(const Chunk& ch,
+                                             const Eigen::Vector2d& c_before,
+                                             const Eigen::Vector2d& c_after) const {
+  const double slip_m =
+      slip_frac_ * (ch.path_fall_m * c_before.norm() + ch.path_rise_m * c_after.norm());
+  return slip_m * slip_m + ch.prof_fall_m2 * c_before.squaredNorm() +
+         ch.prof_rise_m2 * c_after.squaredNorm() + 2.0 * ch.prof_cross_m2 * c_before.dot(c_after);
+}
 
 // docs/derivations/gnss.md section 5.
 void GnssTrackYawAligner::close_chunk() {
@@ -56,6 +76,8 @@ void GnssTrackYawAligner::close_chunk() {
   k.wheel_first_ok = chunk_wheel_ok_[0];
   k.wheel_second_ok = chunk_wheel_ok_[1];
   k.q = chunk_sum_q_ / n;
+  k.mo = chunk_sum_lo_ / n;
+  k.prof_cross_m2 = chunk_prof_cross_m2_;
   k.path_rise_m = chunk_path_rise_m_;
   k.path_fall_m = chunk_path_fall_m_;
   k.prof_rise_m2 = chunk_prof_rise_m2_;
@@ -63,6 +85,8 @@ void GnssTrackYawAligner::close_chunk() {
   k.path_rise_ok = chunk_path_rise_ok_;
   k.path_fall_ok = chunk_path_fall_ok_;
   chunk_sum_q_.setZero();
+  chunk_sum_lo_.setZero();
+  chunk_prof_cross_m2_ = 0.0;
   chunk_path_rise_m_ = 0.0;
   chunk_path_fall_m_ = 0.0;
   chunk_prof_rise_m2_ = 0.0;
@@ -87,12 +111,14 @@ void GnssTrackYawAligner::close_chunk() {
   Eigen::Vector2d l = k.m - prev_.m;
   const double psi_mid = 0.5 * (prev_.psi + k.psi);
   Eigen::Vector2d a(std::cos(psi_mid), std::sin(psi_mid));
+  Eigen::Vector2d a_wheel_path = Eigen::Vector2d::Zero();  // a when it comes from the wheel path
   if (std::abs(k.psi - prev_.psi) > max_turn_rad_ || prev_.span > max_turn_rad_ ||
       k.span > max_turn_rad_) {
     // Turn gate: course over ground along the mean heading is only used on near-straight
     // segments. With the wheel path the direction is the antenna displacement in w instead
     // (gnss.md section 5.1).
-    const Eigen::Vector2d g = k.q - prev_.q + l;  // antenna displacement in w, lever included
+    // Antenna displacement in w: the odometry-frame path plus R_w_b (p_b_g - p_b_o).
+    const Eigen::Vector2d g = k.q - prev_.q + (k.mo - prev_.mo);
     const double path_m = prev_.path_rise_m + k.path_fall_m;
     if (!(wheel_turns_ && prev_.path_rise_ok && k.path_fall_ok)) {
       a.setZero();  // skipped: contributes nothing; both chunks keep only their other coefficient
@@ -102,9 +128,9 @@ void GnssTrackYawAligner::close_chunk() {
       ++n_stationary_;
     } else {
       a = g / g.norm();
+      a_wheel_path = a;
       l.setZero();  // the lever arm is inside g: nothing for L
-      const double slip_m = slip_frac_ * path_m;
-      wheel_dir_var_m2_ += slip_m * slip_m + prev_.prof_rise_m2 + k.prof_fall_m2;
+      sum_wheel_disp_m_ += g.norm();
       ++n_wheel_turns_;
       if (prev_.wheel_second_m + k.wheel_first_m < 0.0) {
         ++n_reversals_;
@@ -118,9 +144,12 @@ void GnssTrackYawAligner::close_chunk() {
       // and break the telescoping of the chunk noise.
       a.setZero();
       ++n_stationary_;
-    } else if (travel_m < 0.0) {
-      a = -a;
-      ++n_reversals_;
+    } else {
+      sum_wheel_disp_m_ += std::abs(travel_m);
+      if (travel_m < 0.0) {
+        a = -a;
+        ++n_reversals_;
+      }
     }
   } else {
     // No wheel data: forward-driving assumption. Once confident, a segment clearly against the
@@ -139,6 +168,8 @@ void GnssTrackYawAligner::close_chunk() {
   }
   // Chunk prev_ now has both its coefficients: prev_a_ (segment before) and -a (this one).
   noise_q_m2_ += prev_.var * (prev_a_ - a).squaredNorm();
+  wheel_dir_var_m2_ += chunk_dir_var_m2(prev_, prev_a_wheel_path_, a_wheel_path);
+  prev_a_wheel_path_ = a_wheel_path;
   sum_abs_b_m_ += a.squaredNorm() > 0.0 ? b.norm() : 0.0;
   sum_dot_m_ += a.dot(b);
   sum_cross_m_ += cross2(a, b);
@@ -163,7 +194,8 @@ void GnssTrackYawAligner::close_chunk() {
       std::atan2(sum_cross_m_, sum_dot_m_) - std::atan2(sum_al_cross_m_, r_m + sum_al_dot_m_);
   // The last chunk's coefficient is a_K = 0, so it adds var_K |a_{K-1}|^2. The wheel-path
   // segments add their direction error across the motion (gnss.md section 5.1).
-  const double var_cross_m2 = noise_q_m2_ + prev_.var * prev_a_.squaredNorm() + wheel_dir_var_m2_;
+  const double var_cross_m2 = noise_q_m2_ + prev_.var * prev_a_.squaredNorm() + wheel_dir_var_m2_ +
+                              chunk_dir_var_m2(prev_, prev_a_wheel_path_, Eigen::Vector2d::Zero());
   yaw_rad_ = std::atan2(std::sin(yaw), std::cos(yaw));
   track_m_ = r_m;
   // To first order delta_yaw = Im(conj(Z) delta_Z) / |Z|^2 (r and arg(r + L) depend only on
@@ -223,16 +255,19 @@ common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e
   }
   last_odometer_m_ = wheel_odometer_m;
   if (wheel_turns_) {
-    // Wheel path (gnss.md section 5.1): the step travel along the chord of the heading arc,
-    // exact for constant speed and yaw rate between the two fixes. The step into fix i of a
-    // chunk enters Q_{k+1} - Q_k with weight i / n when the chunk is the earlier one (rise) and
-    // (n - i) / n when it is the later one (fall).
+    // Wheel path (gnss.md section 5.1): the odometry frame o (the odometer measures its forward
+    // speed) moves along the chord of its heading arc, exact for constant speed and yaw rate
+    // between the two fixes. The step into fix i of a chunk enters Q_{k+1} - Q_k with weight
+    // i / n when the chunk is the earlier one (rise) and (n - i) / n when it is the later one
+    // (fall). A step turning more than the turn gate (a GNSS outage in a turn) has no known
+    // shape: its chunks are not used through the wheel path.
     const double w_rise = static_cast<double>(n_chunk_) / static_cast<double>(chunk_fixes_);
     const double w_fall = 1.0 - w_rise;
-    if (step_ok && had_psi) {
-      const double h_rad = 0.5 * (psi_rad_ - psi_prev_rad);
+    const double dpsi_rad = psi_rad_ - psi_prev_rad;
+    if (step_ok && had_psi && std::abs(dpsi_rad) <= max_turn_rad_) {
+      const double h_rad = 0.5 * dpsi_rad;
       const double sinc = std::abs(h_rad) > kSincSmallRad ? std::sin(h_rad) / h_rad : 1.0;
-      const double mid_rad = psi_prev_rad + h_rad;
+      const double mid_rad = psi_prev_rad + yaw_b_o_rad_ + h_rad;
       path_q_ += step_m * sinc * Eigen::Vector2d(std::cos(mid_rad), std::sin(mid_rad));
       // Unknown speed profile between the fixes: the step direction is within +-h of the mid
       // heading, uniform: variance (s 2h)^2 / 12 across.
@@ -241,11 +276,13 @@ common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e
       chunk_path_fall_m_ += w_fall * std::abs(step_m);
       chunk_prof_rise_m2_ += w_rise * w_rise * prof_m2;
       chunk_prof_fall_m2_ += w_fall * w_fall * prof_m2;
+      chunk_prof_cross_m2_ += w_rise * w_fall * prof_m2;
     } else {
       chunk_path_fall_ok_ = false;
       chunk_path_rise_ok_ = chunk_path_rise_ok_ && n_chunk_ == 0;
     }
     chunk_sum_q_ += path_q_;
+    chunk_sum_lo_ += (T_w_b.R * (p_b_g - p_b_o_)).head<2>();
   }
   chunk_sum_e_ += (p_e_g - ref_e_).head<2>();
   chunk_sum_psi_rad_ += psi_rad_;
@@ -264,7 +301,7 @@ common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e
   if (!(track_m_ >= min_track())) {
     return ResultPose::error("track too short");
   }
-  if (!(track_m_ >= min_coherence_ * sum_abs_b_m_)) {
+  if (!(track_m_ >= min_coherence_ * std::max(sum_abs_b_m_, sum_wheel_disp_m_))) {
     return ResultPose::error("track not coherent");
   }
   if (!(yaw_sigma_rad_ <= max_sigma_rad_)) {

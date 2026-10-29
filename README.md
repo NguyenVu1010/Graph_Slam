@@ -202,9 +202,12 @@ direction of the GNSS track against the body heading instead of fitting front-en
 - `gnss.align_yaw_reverse_nsigma`: detects reverse motion when no wheel data exists. With
   wheel odometry the direction of travel comes from the sign of the wheel speed.
 - Design 2b (ADR-023 amendment, `docs/derivations/gnss.md` section 5.1):
-  `gnss.align_yaw_wheel_turns` gives turn-gated segments their direction from the wheel path,
-  with `gnss.align_yaw_wheel_slip_frac` as its error; `gnss.align_yaw_min_track_wheel_m`
-  replaces the minimum track when every segment has wheel data. The default yaw sigma is 6 deg.
+  `gnss.align_yaw_wheel_turns` gives turn-gated segments their direction from the wheel path
+  (of the odometry frame `frames.T_b_o`), with `gnss.align_yaw_wheel_slip_frac` as its error;
+  `gnss.align_yaw_min_track_wheel_m` (3 m) replaces the minimum track when every segment has
+  wheel data, and the coherence test also compares the GNSS track with the wheel travel. The
+  default yaw sigma is 6 deg (proposed; it drops the 10 deg first-factor target, pending the
+  owner).
   Waiting for the alignment does not affect the local pose, only the ENU output.
 `gnss.enabled` is off in `config/default.yaml` until multipath and outage are evaluated; the
 sim scenarios turn it on by overlay. `backend.gnss_frame_variable` (ADR-019, default on)

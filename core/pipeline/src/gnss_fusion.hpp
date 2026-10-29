@@ -50,8 +50,11 @@ class GnssFusion {
 
   /// `cfg`: max_cov_m2, chi2_gate, the aligner thresholds and the pre-alignment buffer
   /// (attach_prealign_fixes; prealign_max_fixes entries reserved here when on); `p_b_g`
-  /// lever arm in b (m). Throws std::bad_alloc.
-  GnssFusion(const gnss::GnssConfig& cfg, const common::Vec3& p_b_g);
+  /// lever arm in b (m); `T_b_o` the odometry frame (frames.T_b_o), whose forward speed the
+  /// wheel odometer measures (track-yaw wheel path, ADR-023 design 2b). Throws std::bad_alloc.
+  GnssFusion(const gnss::GnssConfig& cfg,
+             const common::Vec3& p_b_g,
+             const common::Pose& T_b_o = common::Pose{});
 
   /// Handles one fix. `T_w_b_fix`: front-end body pose at `m.t`; `P_w_b`: its 6x6
   /// [rho, phi] covariance (treated as zero when any entry is non-finite).
@@ -134,6 +137,11 @@ class GnssFusion {
   /// in w from the fix time to the keyframe time from `oracle(t_fix, t_k)` instead of the
   /// front-end poses; so does on_keyframe() for the pre-alignment fixes. `oracle` must outlive this
   /// object; nullptr restores the default.
+  /// Test-only (CoreTestHooks::gnss_first_align_yaw_offset_rad): for the first
+  /// gnss.align_yaw_chunk_fixes fixes from the first alignment on (until the aligner re-estimates
+  /// its yaw), the published T_e_w (the centre of E's prior, the gate, the shift) is turned by
+  /// `rad` about the antenna position of each fix; later fixes use the aligner's estimate.
+  void set_first_alignment_yaw_offset(double rad) { first_align_yaw_offset_rad_ = rad; }
   void set_shift_oracle(
       const std::function<common::Vec3(common::Timestamp, common::Timestamp)>* oracle) {
     shift_oracle_ = oracle;
@@ -200,6 +208,9 @@ class GnssFusion {
   bool forced_ = false;  // force_T_e_w: the aligner is never run
   std::uint64_t n_realign_ = 0;
   common::Vec3 p_b_g_;
+  common::Pose T_b_o_;                       // odometry frame in b, for the track-yaw aligner
+  double first_align_yaw_offset_rad_ = 0.0;  // test-only, see set_first_alignment_yaw_offset
+  int offset_fixes_left_ = 0;                // test-only
   gnss::GnssAligner aligner_;
   gnss::GnssTrackYawAligner track_aligner_;  // ADR-023, used when cfg_.align_yaw_from_track
   std::uint64_t n_alignments_ = 0;

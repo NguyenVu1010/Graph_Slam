@@ -338,7 +338,7 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   // track with wheel data >= 0.
   EXPECT_TRUE(cfg.value().gnss.align_yaw_wheel_turns);
   EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_wheel_slip_frac, 0.05);
-  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_min_track_wheel_m, 0.0);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_min_track_wheel_m, 3.0);
   for (const char* v : {"0", "1"}) {
     const auto bad_slip = parse_config(
         read_file(kDefault),

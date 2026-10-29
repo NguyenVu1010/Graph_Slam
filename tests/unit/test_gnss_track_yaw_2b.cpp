@@ -3,6 +3,7 @@
 // path, the minimum track with wheel data, and the observability of yaw from an in-place
 // rotation (a Monte Carlo of the manoeuvre, no production code). Fixed seeds.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -395,18 +396,100 @@ TEST(GnssTrackYaw2b, MinTrackWheel) {
   EXPECT_EQ(fallback, five);
 }
 
-// Item 3 envelope: a parked robot with wheel data (odometer constant) and GNSS drifting by
-// 0.05 / 0.10 / 0.20 m per fix never aligns even without a minimum track; a slow robot (0.12 m/s,
-// just above the stationary travel) with 0.02 m per fix of drift stays within its sigma about as
-// often with no minimum track as with 5 m (gnss_fusion_study.md section 16.3).
-TEST(GnssTrackYaw2b, MinTrackWheelEnvelope) {
+// The design-2b keys as shipped in config/default.yaml (6 deg, turns from the wheel path, 3 m
+// minimum track with wheel data).
+GnssConfig cfg_shipped() {
   GnssConfig c = cfg_2b(true);
+  c.align_yaw_max_sigma_rad = 6.0 * kDeg;
+  c.align_yaw_min_track_wheel_m = 3.0;
+  return c;
+}
+
+// Summary of the first alignments of a Monte Carlo.
+struct Envelope {
+  int runs = 0;
+  int aligned = 0;
+  int beyond_15deg = 0;
+  int beyond_30deg = 0;
+  int beyond_3s = 0;
+  double max_deg = 0.0;
+  void add(double err_rad, double sigma_rad) {
+    ++aligned;
+    const double deg = std::abs(err_rad) / kDeg;
+    max_deg = std::max(max_deg, deg);
+    beyond_15deg += deg > 15.0 ? 1 : 0;
+    beyond_30deg += deg > 30.0 ? 1 : 0;
+    beyond_3s += std::abs(err_rad) > 3.0 * sigma_rad ? 1 : 0;
+  }
+  void print(const char* what) const {
+    std::printf(
+        "[ track yaw 2b ] %s: %d of %d aligned, max %.1f deg, > 15 deg %d, > 30 deg %d, "
+        "beyond 3 sigma %d\n",
+        what,
+        aligned,
+        runs,
+        max_deg,
+        beyond_15deg,
+        beyond_30deg,
+        beyond_3s);
+  }
+};
+
+// Review I1 of design 2b: a robot whose wheels turn (0.5 m/s on the odometer) while the body
+// does not move (stuck against an obstacle, or lifted on a stand), GNSS 0.3 m white plus a random
+// walk, declared 0.5 m, 5 min, 100 seeds, shipped keys. Without the wheel/GNSS consistency test
+// (r >= align_yaw_min_coherence x the wheel-predicted displacement) and with no minimum track this
+// aligned on 21 / 64 of 100 runs at 0.10 / 0.20 m per fix, about 90 deg off. Now:
+// 0.05 and 0.10 m per fix never align; 0.20 m per fix aligns on 19 of 100 here (16 with the probe
+// seeds, the level of design 2 without wheel data for a parked robot, 16 of 100), all far off:
+// a documented limit.
+TEST(GnssTrackYaw2b, StuckWheelsDriftingGnssEnvelope) {
+  for (const double step_m : {0.05, 0.10, 0.20}) {
+    Envelope env;
+    for (std::uint32_t seed = 0; seed < 100; ++seed) {
+      ++env.runs;
+      std::mt19937 rng(5000U + seed);
+      std::normal_distribution<double> n01(0.0, 1.0);
+      GnssTrackYawAligner a(cfg_shipped());
+      const Pose b = yaw_pose(0.1 * seed, Vec3(3.0, -2.0, 0.0));
+      Vec3 walk = Vec3::Zero();
+      for (int k = 0; k < 1500; ++k) {
+        Vec3 p = kTew * (b * kPbg);
+        for (int i = 0; i < 2; ++i) {
+          walk(i) += step_m * n01(rng);
+          p(i) += walk(i) + 0.3 * n01(rng);
+        }
+        const auto r = a.update(p, fix_cov(kSigmaM), b, kPbg, 0.1 * k);  // wheels at 0.5 m/s
+        if (r.is_ok()) {
+          env.add(wrap_pi(yaw_of(r.value().R) - yaw_of(kTew.R)), a.yaw_sigma_rad());
+          break;
+        }
+      }
+    }
+    char what[96];
+    std::snprintf(what, sizeof(what), "stuck wheels, GNSS drift %.2f m per fix", step_m);
+    env.print(what);
+    if (step_m <= 0.10) {
+      EXPECT_EQ(env.aligned, 0) << step_m;
+    } else {
+      EXPECT_LE(env.aligned, 25) << step_m;  // documented limit (measured 16)
+    }
+  }
+}
+
+// Review I2 of design 2b: the minimum track with wheel data, chosen from the absolute-error
+// envelope at the shipped 6 deg (gnss_fusion_study.md section 16.3). A parked robot with wheel
+// data (odometer constant) never aligns. A straight run at 0.12 / 0.20 / 0.50 m/s with 0.3 m white
+// plus a random walk, 200 seeds per case: at 0.02 m per fix no run is beyond 30 deg with or
+// without the minimum; at 0.05 m per fix the 3 m minimum cuts the runs beyond 15 deg (summed
+// over the three speeds, measured 65 -> 40 here; 52 -> 30 with the study probe seeds).
+TEST(GnssTrackYaw2b, MinTrackWheelEnvelope) {
   for (const double step_m : {0.05, 0.10, 0.20}) {
     int n_aligned = 0;
     for (std::uint32_t seed = 1; seed <= 100; ++seed) {
       std::mt19937 rng(seed);
       std::normal_distribution<double> n01(0.0, 1.0);
-      GnssTrackYawAligner a(c);
+      GnssTrackYawAligner a(cfg_shipped());
       const Pose b = yaw_pose(0.1 * seed, Vec3(3.0, -2.0, 0.0));
       Vec3 walk = Vec3::Zero();
       for (int k = 0; k < 1500; ++k) {
@@ -423,45 +506,219 @@ TEST(GnssTrackYaw2b, MinTrackWheelEnvelope) {
     }
     EXPECT_EQ(n_aligned, 0) << step_m;
   }
-  std::vector<Step> steps(10, Step{0.0, 0.0});
-  for (int i = 0; i < 1500; ++i) {
-    steps.push_back({0.024, 0.0});  // 0.12 m/s
-  }
-  const std::vector<PathFix> path = integrate(steps);
-  for (const double min_track_m : {0.0, 5.0}) {
-    GnssConfig cm = c;
-    cm.align_yaw_min_track_wheel_m = min_track_m;
-    int beyond_3s = 0;
-    int aligned = 0;
-    for (std::uint32_t seed = 1; seed <= 200; ++seed) {
-      std::mt19937 rng(seed);
-      std::normal_distribution<double> n01(0.0, 1.0);
-      GnssTrackYawAligner a(cm);
-      Vec3 walk = Vec3::Zero();
-      for (const PathFix& f : path) {
-        Vec3 p = kTew * (f.body * kPbg);
-        for (int i = 0; i < 2; ++i) {
-          walk(i) += 0.02 * n01(rng);
-          p(i) += walk(i) + 0.3 * n01(rng);
+  for (const double drift_m : {0.02, 0.05}) {
+    std::array<int, 2> beyond_15deg{0, 0};  // summed over the speeds, min track 0 / 3 m
+    for (const double speed_mps : {0.12, 0.20, 0.50}) {
+      std::vector<Step> steps(10, Step{0.0, 0.0});
+      for (int i = 0; i < 1500; ++i) {
+        steps.push_back({speed_mps / 5.0, 0.0});
+      }
+      const std::vector<PathFix> path = integrate(steps);
+      for (const double min_track_m : {0.0, 3.0}) {
+        GnssConfig c = cfg_shipped();
+        c.align_yaw_min_track_wheel_m = min_track_m;
+        Envelope env;
+        for (std::uint32_t seed = 1; seed <= 200; ++seed) {
+          ++env.runs;
+          std::mt19937 rng(seed);
+          std::normal_distribution<double> n01(0.0, 1.0);
+          GnssTrackYawAligner a(c);
+          Vec3 walk = Vec3::Zero();
+          for (const PathFix& f : path) {
+            Vec3 p = kTew * (f.body * kPbg);
+            for (int i = 0; i < 2; ++i) {
+              walk(i) += drift_m * n01(rng);
+              p(i) += walk(i) + 0.3 * n01(rng);
+            }
+            const auto r = a.update(p, fix_cov(kSigmaM), f.body, kPbg, f.odo_m);
+            if (r.is_ok()) {
+              env.add(wrap_pi(yaw_of(r.value().R) - yaw_of(kTew.R)), a.yaw_sigma_rad());
+              break;
+            }
+          }
         }
-        const auto r = a.update(p, fix_cov(kSigmaM), f.body, kPbg, f.odo_m);
-        if (r.is_ok()) {
-          ++aligned;
-          const double err = wrap_pi(yaw_of(r.value().R) - yaw_of(kTew.R));
-          beyond_3s += std::abs(err) > 3.0 * a.yaw_sigma_rad() ? 1 : 0;
-          break;
+        char what[96];
+        std::snprintf(what,
+                      sizeof(what),
+                      "%.2f m/s, drift %.2f m per fix, min track with wheel %.0f m",
+                      speed_mps,
+                      drift_m,
+                      min_track_m);
+        env.print(what);
+        EXPECT_EQ(env.aligned, 200);
+        beyond_15deg[min_track_m > 0.0 ? 1 : 0] += env.beyond_15deg;
+        if (drift_m < 0.03) {
+          EXPECT_EQ(env.beyond_30deg, 0) << speed_mps << " " << min_track_m;
         }
       }
     }
-    std::printf(
-        "[ track yaw 2b ] 0.12 m/s, drift 0.02 m per fix, min track with wheel %.0f m: "
-        "%d of 200 aligned, %d beyond 3 sigma\n",
-        min_track_m,
-        aligned,
-        beyond_3s);
-    EXPECT_EQ(aligned, 200);
-    EXPECT_LE(beyond_3s, 10);
+    if (drift_m > 0.03) {
+      EXPECT_LT(beyond_15deg[1], beyond_15deg[0]);
+    }
   }
+}
+
+// A 1 m circle at 0.5 m/s simulated at 1 kHz: the odometry frame o (axle centre) moves along its
+// heading plus `skid_rad` (persistent sideslip, the same in every segment of the turn); the body
+// (IMU) origin sits `x_ahead_m` ahead of o; 0.5 m fixes at 5 Hz; returns the first alignment.
+FirstAlignment circle_run(const GnssConfig& c,
+                          const Pose& T_b_o_given,
+                          double x_ahead_m,
+                          double skid_rad,
+                          std::uint32_t seed) {
+  std::mt19937 rng(seed);
+  std::normal_distribution<double> n01(0.0, 1.0);
+  GnssTrackYawAligner a(c, T_b_o_given);
+  double ox = 0.0;
+  double oy = 0.0;
+  double psi = 0.0;
+  double odo = 0.0;
+  constexpr double kDt = 1e-3;
+  for (int k = 0; k < 240000; ++k) {
+    const double t = k * kDt;
+    const double v = t < 2.0 ? 0.0 : 0.5;
+    const double w = t < 2.0 ? 0.0 : 0.5;
+    if (k % 200 == 0) {
+      const Pose b =
+          yaw_pose(psi, Vec3(ox + x_ahead_m * std::cos(psi), oy + x_ahead_m * std::sin(psi), 0.0));
+      Vec3 p = kTew * (b * kPbg);
+      p.x() += kSigmaM * n01(rng);
+      p.y() += kSigmaM * n01(rng);
+      const auto r = a.update(p, fix_cov(kSigmaM), b, kPbg, odo);
+      if (r.is_ok()) {
+        return {k / 200, wrap_pi(yaw_of(r.value().R) - yaw_of(kTew.R)), a.yaw_sigma_rad(), odo};
+      }
+    }
+    const double off = w != 0.0 ? skid_rad : 0.0;
+    ox += v * std::cos(psi + off) * kDt;
+    oy += v * std::sin(psi + off) * kDt;
+    psi += w * kDt;
+    odo += v * kDt;
+  }
+  return {};
+}
+
+// Review I3 of design 2b: the odometer measures the axle centre (frames.T_b_o), not the IMU.
+// IMU 0.2 m ahead of the axle on a 1 m circle (every segment through the wheel path), 200 seeds,
+// 6 deg: with T_b_o the yaw NEES is about 1 (measured 0.87); integrating the odometer as the
+// body path (negative control) gave a median error of 12 deg, NEES 5.5.
+TEST(GnssTrackYaw2b, WheelPathUsesOdometryFrame) {
+  Pose T_b_o;
+  T_b_o.p = Vec3(-0.2, 0.0, 0.0);  // axle centre 0.2 m behind the IMU
+  for (const bool given : {true, false}) {
+    double nees = 0.0;
+    int beyond_3s = 0;
+    for (std::uint32_t seed = 1; seed <= 200; ++seed) {
+      const FirstAlignment f = circle_run(cfg_shipped(), given ? T_b_o : Pose{}, 0.2, 0.0, seed);
+      ASSERT_GE(f.fix, 0) << seed;
+      const double z = f.err_rad / f.sigma_rad;
+      nees += z * z;
+      beyond_3s += std::abs(z) > 3.0 ? 1 : 0;
+    }
+    std::printf(
+        "[ track yaw 2b ] IMU 0.2 m ahead of the axle, 1 m circle, T_b_o given %d: yaw "
+        "NEES %.2f, %d of 200 beyond 3 sigma\n",
+        given ? 1 : 0,
+        nees / 200.0,
+        beyond_3s);
+    if (given) {
+      EXPECT_GT(nees / 200.0, 0.7);
+      EXPECT_LT(nees / 200.0, 1.3);
+      EXPECT_LE(beyond_3s, 3);
+    } else {
+      EXPECT_GT(nees / 200.0, 3.0);  // negative control
+    }
+  }
+}
+
+// Review M1 of design 2b, pinned limit: a skid that persists through a whole turn (here a
+// constant sideslip in every segment of a 1 m circle, as a skid-steer robot's offset centre of
+// rotation produces) is correlated between segments, outside the error model (gnss.md 5.1).
+// Measured at 6 deg, 200 seeds: 5 deg of skid, NEES 1.6 and 1 run beyond 3 sigma; 10 deg, NEES
+// 4.3, 24 runs beyond 3 sigma, up to 24 deg off. Alternating turns (aisles) cancel it.
+TEST(GnssTrackYaw2b, PersistentSkidPinned) {
+  for (const double skid_deg : {5.0, 10.0}) {
+    Envelope env;
+    double nees = 0.0;
+    for (std::uint32_t seed = 1; seed <= 200; ++seed) {
+      ++env.runs;
+      const FirstAlignment f = circle_run(cfg_shipped(), Pose{}, 0.0, skid_deg * kDeg, seed);
+      ASSERT_GE(f.fix, 0) << seed;
+      env.add(f.err_rad, f.sigma_rad);
+      nees += (f.err_rad / f.sigma_rad) * (f.err_rad / f.sigma_rad);
+    }
+    char what[96];
+    std::snprintf(what,
+                  sizeof(what),
+                  "1 m circle, persistent skid %.0f deg, NEES %.2f",
+                  skid_deg,
+                  nees / 200.0);
+    env.print(what);
+    if (skid_deg <= 5.0) {
+      EXPECT_LE(env.beyond_3s, 5);
+    } else {
+      EXPECT_LE(env.beyond_3s, 40);  // the documented limit
+      EXPECT_EQ(env.beyond_30deg, 0);
+    }
+  }
+}
+
+// Review M3 of design 2b: fixes that do not reach the aligner during a turn make one long step.
+// Its arc shape is unknown, so a step turning more than the turn gate is not used through the
+// wheel path (before: (s dpsi)^2 / 12 of that step stayed in the sigma for good, and a 9 s outage
+// in a 1 rad/s turn delayed the alignment from 36 s to 137 s). 1 rad/s, R 0.5 m, 6 deg, 100 seeds.
+TEST(GnssTrackYaw2b, OutageInTurnDoesNotStall) {
+  std::vector<double> t_free;
+  std::vector<double> t_gap;
+  for (std::uint32_t seed = 1; seed <= 100; ++seed) {
+    for (const bool gap : {false, true}) {
+      std::mt19937 rng(seed);
+      std::normal_distribution<double> n01(0.0, 1.0);
+      GnssTrackYawAligner a(cfg_shipped());
+      double x = 0.0;
+      double y = 0.0;
+      double psi = 0.0;
+      double odo = 0.0;
+      constexpr double kDt = 1e-3;
+      for (int k = 0; k < 240000; ++k) {
+        const double t = k * kDt;
+        const double v = t < 2.0 ? 0.0 : 0.5;
+        const double w = t < 2.0 ? 0.0 : 1.0;
+        const bool in_gap = gap && t > 4.0 && t < 13.0;
+        if (k % 200 == 0 && !in_gap) {
+          const Pose b = yaw_pose(psi, Vec3(x, y, 0.0));
+          Vec3 p = kTew * (b * kPbg);
+          p.x() += kSigmaM * n01(rng);
+          p.y() += kSigmaM * n01(rng);
+          const auto r = a.update(p, fix_cov(kSigmaM), b, kPbg, odo);
+          if (r.is_ok()) {
+            EXPECT_LT(std::abs(wrap_pi(yaw_of(r.value().R) - yaw_of(kTew.R))),
+                      4.0 * a.yaw_sigma_rad())
+                << seed;
+            (gap ? t_gap : t_free).push_back(t);
+            break;
+          }
+        }
+        const double h = 0.5 * w * kDt;
+        x += v * kDt * std::cos(psi + h);
+        y += v * kDt * std::sin(psi + h);
+        psi += w * kDt;
+        odo += v * kDt;
+      }
+    }
+  }
+  ASSERT_EQ(t_free.size(), 100U);
+  ASSERT_EQ(t_gap.size(), 100U);
+  std::sort(t_free.begin(), t_free.end());
+  std::sort(t_gap.begin(), t_gap.end());
+  const double med_free = t_free[50];
+  const double med_gap = t_gap[50];
+  std::printf(
+      "[ track yaw 2b ] 1 rad/s turn, 9 s outage: median time to align %.1f s (no outage "
+      "%.1f s)\n",
+      med_gap,
+      med_free);
+  EXPECT_LT(med_gap, med_free + 9.0 + 10.0);  // the outage itself, plus at most 5 chunks
 }
 
 // Item 5 of the design-2b brief: yaw from rotating in place, a Monte Carlo of the manoeuvre (no

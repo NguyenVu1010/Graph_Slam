@@ -1708,5 +1708,78 @@ TEST(PipelineComponent, GravityFactorCheckRemovesMovingStarts) {
   }
 }
 
+// Records the GNSS frame variable E after each optimize, and the T_e_w of the first GNSS factor
+// (the centre of E's prior).
+class LastFrameObserver : public detail::CoreObserver {
+ public:
+  void on_frame_estimate(Timestamp /*t*/, const common::Pose& T_e_w) override { last_ = T_e_w; }
+  void on_gnss_factor(Timestamp /*t_k*/,
+                      const common::GnssMeasurement& /*m*/,
+                      const common::Pose& T_e_w) override {
+    if (!have_first_) {
+      first_ = T_e_w;
+      have_first_ = true;
+    }
+  }
+  common::Pose last_;
+  common::Pose first_;
+  bool have_first_ = false;
+};
+
+// ADR-023 amendment (design 2b), review M6: at the shipped 6 deg the first alignment can be up to
+// 3 sigma (about 18 deg) off. The first published T_e_w is turned by +-18 deg about its fix (test
+// seam gnss_first_align_yaw_offset_rad); E's prior is centred there, later fixes use the
+// aligner's re-estimated T_e_w. Corridor with wheel odometry (60 s), seed 42: E converges to
+// within 2 deg of the truth, no aligner restart (no lock-out), and at least 90 % of the GNSS
+// factors of the run without the offset.
+TEST(PipelineComponent, TrackYawConvergesFromEighteenDegrees) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "the front end follows the backend; measured with GTSAM";
+  }
+  BoxWorldParams p = corridor_params();
+  p.seed = 42;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const common::Pose T_true = test::box_T_e_w(p);
+  std::uint64_t factors_ref = 0;
+  for (const double offset_deg : {0.0, 18.0, -18.0}) {
+    const Config cfg =
+        box_config(p,
+                   true,
+                   true,
+                   dir / ("off" + std::to_string(static_cast<int>(offset_deg))),
+                   std::string("    preprocess:\n      max_range_m: 10.0\n") + kCorridorRelaxYaml,
+                   "      align_yaw_from_track: true\n");
+    LastFrameObserver obs;
+    detail::CoreTestHooks hooks;
+    hooks.observer = &obs;
+    hooks.gnss_first_align_yaw_offset_rad = offset_deg / kRadToDeg;
+    ReplayResult rr;
+    {
+      const HooksScope scope(&hooks);
+      rr = replay(dir / "data", cfg);
+    }
+    const double e_deg = std::abs(wrap_deg(yaw_of(T_true.R.transpose() * obs.last_.R)));
+    ASSERT_TRUE(obs.have_first_);
+    const double prior_deg = wrap_deg(yaw_of(T_true.R.transpose() * obs.first_.R));
+    std::printf(
+        "[ track yaw 2b ] first alignment turned by %+.0f deg: E prior %+.1f deg off, E "
+        "yaw error at the end %.2f deg, GNSS factors %llu, realigns %llu\n",
+        offset_deg,
+        prior_deg,
+        e_deg,
+        static_cast<unsigned long long>(rr.stats.n_gnss_factors),
+        static_cast<unsigned long long>(rr.stats.n_gnss_realign));
+    EXPECT_NEAR(prior_deg, offset_deg, 10.0) << offset_deg;  // the seam took effect
+    EXPECT_LT(e_deg, 2.0) << offset_deg;
+    EXPECT_EQ(rr.stats.n_gnss_realign, 0U) << offset_deg;
+    if (offset_deg == 0.0) {
+      factors_ref = rr.stats.n_gnss_factors;
+    } else {
+      EXPECT_GE(10 * rr.stats.n_gnss_factors, 9 * factors_ref) << offset_deg;
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mss::pipeline

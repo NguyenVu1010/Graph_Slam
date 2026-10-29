@@ -1,16 +1,21 @@
 #include "gnss_fusion.hpp"
 
+#include <cmath>
+
 #include <Eigen/Core>
 
 namespace mss::pipeline::detail {
 
-GnssFusion::GnssFusion(const gnss::GnssConfig& cfg, const common::Vec3& p_b_g)
+GnssFusion::GnssFusion(const gnss::GnssConfig& cfg,
+                       const common::Vec3& p_b_g,
+                       const common::Pose& T_b_o)
     : cfg_(cfg),
       max_cov_m2_(cfg.max_cov_m2),
       chi2_gate_(cfg.chi2_gate),
       p_b_g_(p_b_g),
+      T_b_o_(T_b_o),
       aligner_(cfg),
-      track_aligner_(cfg),
+      track_aligner_(cfg, T_b_o),
       early_open_(cfg.attach_prealign_fixes) {
   if (cfg.attach_prealign_fixes) {
     early_.reserve(static_cast<std::size_t>(cfg.prealign_max_fixes));
@@ -57,7 +62,7 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
       // fix can pull it back. Restart the alignment on the current front end; the new
       // factors share the graph's T_e_w with the old ones (ADR-019) and pull the chain back.
       aligner_ = gnss::GnssAligner(cfg_);
-      track_aligner_ = gnss::GnssTrackYawAligner(cfg_);
+      track_aligner_ = gnss::GnssTrackYawAligner(cfg_, T_b_o_);
       aligned_ = false;
       consecutive_rejects_ = 0;
       ++n_realign_;
@@ -75,6 +80,22 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
     T_e_w_ = T.value();
     if (!aligned_) {
       ++n_alignments_;
+      if (n_alignments_ == 1 && first_align_yaw_offset_rad_ != 0.0) {
+        offset_fixes_left_ = cfg_.align_yaw_chunk_fixes;
+      }
+    }
+    if (offset_fixes_left_ > 0) {
+      // Test-only: turn the published T_e_w about this fix's antenna position, for the first
+      // chunk of fixes after the first alignment (until the aligner's yaw is re-estimated).
+      --offset_fixes_left_;
+      const common::Vec3 p_w_g = T_w_b_fix * p_b_g_;
+      const common::Vec3 p_e_g = T_e_w_ * p_w_g;
+      const double c = std::cos(first_align_yaw_offset_rad_);
+      const double s = std::sin(first_align_yaw_offset_rad_);
+      common::Mat3 rot_z;
+      rot_z << c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0;
+      T_e_w_.R = rot_z * T_e_w_.R;
+      T_e_w_.p = p_e_g - T_e_w_.R * p_w_g;
     }
     aligned_ = true;
   }

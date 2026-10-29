@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <limits>
 
@@ -177,25 +178,31 @@ class GnssAligner {
 /// variance of chunk mean k from the declared fix variances floored at align_yaw_min_var_m2
 /// (fixes assumed white and independent), a_{-1} = a_K = 0.
 /// Turns with wheel data (align_yaw_wheel_turns, gnss.md section 5.1): a segment the turn gate
-/// rejects, when every fix of both chunks came with wheel data, is used with the direction
-/// a_k = unit(g_k) of the antenna displacement in w between the two chunk means, g_k = Q_{k+1}
-/// - Q_k + l_k, where Q is the body path integrated from the wheel travel along the unwrapped
-/// heading (exact for constant speed and yaw rate between fixes). The lever arm is inside g_k,
-/// so the segment adds nothing to L. Its direction error (wheel slip and skid,
-/// align_yaw_wheel_slip_frac of the weighted path S_k along and across, fully correlated within
-/// the segment, plus the unknown speed profile between fixes, (s dpsi)^2 / 12 per step) adds
-/// sigma_perp_k^2 = (slip S_k)^2 + sum w^2 (s dpsi)^2 / 12 to the numerator of sigma_yaw
-/// (n_wheel_turn_segments()). A weighted path below align_yaw_min_wheel_travel_m is stationary.
+/// rejects, when every step into the fixes of both chunks came with wheel data and turned at most
+/// align_yaw_max_turn_rad, is used with the direction a_k = unit(g_k) of the antenna displacement
+/// in w between the two chunk means, g_k = Q_{k+1} - Q_k + mo_{k+1} - mo_k: Q is the path of the
+/// odometry frame o (T_b_o) integrated from the wheel travel along o's unwrapped heading (exact
+/// for constant speed and yaw rate between fixes), mo the mean horizontal R_w_b (p_b_g - p_b_o).
+/// The lever arm is inside g_k, so the segment adds nothing to L. Its direction error adds to the
+/// numerator of sigma_yaw per chunk: wheel slip and skid (align_yaw_wheel_slip_frac of the
+/// weighted path along and across, fully correlated inside the chunk, triangle bound over the two
+/// segments sharing it) and the unknown speed profile between fixes ((s dpsi)^2 / 12 per step,
+/// with the exact weights of both segments) (n_wheel_turn_segments()). A weighted path below
+/// align_yaw_min_wheel_travel_m is stationary.
 /// A transform is returned once confident: r >= the minimum track (align_yaw_min_track_wheel_m
 /// when every segment used has its direction from wheel data, else align_yaw_min_track_m),
-/// r >= align_yaw_min_coherence * sum |b_k| (segments used) and sigma_yaw <=
+/// r >= align_yaw_min_coherence * max(sum |b_k|, sum |d_k|) over the segments used, with d_k the
+/// wheel-predicted displacement of the segments with wheel data, and sigma_yaw <=
 /// align_yaw_max_sigma_rad.
-/// Not handled: without wheel data, net backward motion along the heading before the estimate
-/// is confident gives yaw + 180 deg; a parked robot whose GNSS wanders by 0.1 m per fix or
-/// more can align on noise (gnss.md section 5). With wheel data, a robot travelling less than
-/// align_yaw_min_wheel_travel_m per chunk interval (about 0.1 m/s at the defaults) never aligns.
-/// Coloured GNSS error is not in sigma_yaw; the minimum track and the coherence test bound its
-/// effect. Translation: p_e_w = mean(p_e_g) - R_e_w mean(p_w_g) over all fixes, as GnssAligner.
+/// Not handled (gnss.md sections 5 and 5.1): without wheel data, net backward motion along the
+/// heading before the estimate is confident gives yaw + 180 deg, and a parked robot whose GNSS
+/// wanders by 0.1 m per fix or more can align on noise. With wheel data: a robot travelling less
+/// than align_yaw_min_wheel_travel_m per chunk interval (about 0.1 m/s) never aligns; wheels
+/// turning on a still body (stuck, lifted) with GNSS wandering by 0.2 m per fix can align on noise
+/// (about 1 in 5 runs); a skid that persists through a long one-way turn is not in the sigma; an
+/// IMU off the axle biases the gate-passing (heading) segments in turns. Coloured GNSS error is
+/// not in sigma_yaw; the minimum tracks and the coherence tests only bound its tails.
+/// Translation: p_e_w = mean(p_e_g) - R_e_w mean(p_w_g) over all fixes, as GnssAligner.
 ///
 /// O(1) memory, no allocation. Ownership/threading: single-threaded; owned by
 /// pipeline::Estimator (backend thread) when gnss.align_yaw_from_track is true.
@@ -206,6 +213,11 @@ class GnssTrackYawAligner {
   /// Stores the align_yaw_* thresholds (validated by load_config). Errors: none. Hot path: no.
   /// Tests: test_gnss_track_yaw.
   explicit GnssTrackYawAligner(const GnssConfig& cfg);
+  /// As above, with the odometry frame `T_b_o` (frames.T_b_o): the wheel odometer is the forward
+  /// speed of frame o, so the wheel path (align_yaw_wheel_turns) is integrated for o along its
+  /// heading and the antenna lever arm from o is `p_b_g - p_b_o`. The one-argument form uses
+  /// identity (o = b). Errors: none. Hot path: no.
+  GnssTrackYawAligner(const GnssConfig& cfg, const common::Pose& T_b_o);
 
   /// Adds one fix and returns the current `T_e_w` estimate when available.
   /// Frames: `p_e_g` antenna in e, `cov_e` its covariance in e (m^2; each of its two horizontal
@@ -225,7 +237,8 @@ class GnssTrackYawAligner {
   ///   5. "track too short" while r < the minimum track (align_yaw_min_track_wheel_m when every
   ///      segment used has its direction from wheel data, else align_yaw_min_track_m; fix IS
   ///      added);
-  ///   6. "track not coherent" while r < align_yaw_min_coherence * sum |b_k| (fix IS added);
+  ///   6. "track not coherent" while r < align_yaw_min_coherence * max(sum |b_k|, sum |d_k|) (fix
+  ///      IS added);
   ///   7. "yaw sigma too large" while sigma_yaw > align_yaw_max_sigma_rad (fix IS added).
   /// The yaw is re-estimated when a chunk completes; between chunks the last yaw is returned with
   /// the translation updated by the new fix.
@@ -267,6 +280,8 @@ class GnssTrackYawAligner {
     // path weighted as it enters Q_{k+1} - Q_k as the later chunk (fall) or the earlier one
     // (rise), m; the same for the per-step speed-profile variance, m^2.
     Eigen::Vector2d q = Eigen::Vector2d::Zero();
+    Eigen::Vector2d mo = Eigen::Vector2d::Zero();  // m, mean horizontal R_w_b (p_b_g - p_b_o), w
+    double prof_cross_m2 = 0.0;                    // m^2, sum w_rise w_fall of the profile variance
     double path_rise_m = 0.0;
     double path_fall_m = 0.0;
     double prof_rise_m2 = 0.0;
@@ -280,9 +295,13 @@ class GnssTrackYawAligner {
     return n_no_wheel_segments_ == 0 ? min_track_wheel_m_ : min_track_m_;
   }
   [[nodiscard]] bool confident() const {
-    return have_yaw_ && track_m_ >= min_track() && track_m_ >= min_coherence_ * sum_abs_b_m_ &&
+    return have_yaw_ && track_m_ >= min_track() &&
+           track_m_ >= min_coherence_ * std::max(sum_abs_b_m_, sum_wheel_disp_m_) &&
            yaw_sigma_rad_ <= max_sigma_rad_;
   }
+  [[nodiscard]] double chunk_dir_var_m2(const Chunk& ch,
+                                        const Eigen::Vector2d& c_before,
+                                        const Eigen::Vector2d& c_after) const;
 
   int chunk_fixes_;            // fixes per chunk, from GnssConfig
   double max_sigma_rad_;       // rad, from GnssConfig
@@ -295,6 +314,8 @@ class GnssTrackYawAligner {
   bool wheel_turns_;           // from GnssConfig
   double slip_frac_;           // fraction of the path, from GnssConfig
   double min_track_wheel_m_;   // m, from GnssConfig
+  common::Vec3 p_b_o_;         // m, odometry frame origin in b (frames.T_b_o)
+  double yaw_b_o_rad_;         // rad, yaw of the odometry frame x axis in b
   // Unwrapped heading of the last fix.
   bool have_psi_ = false;
   double psi_rad_ = 0.0;                                // rad, unwrapped
@@ -312,12 +333,14 @@ class GnssTrackYawAligner {
   std::array<bool, 2> chunk_wheel_ok_{true, true};  // every fix of the half had wheel
   // Wheel path of the body in w (align_yaw_wheel_turns), relative to its start, and the
   // current chunk's sums (see Chunk).
-  Eigen::Vector2d path_q_ = Eigen::Vector2d::Zero();       // m
-  Eigen::Vector2d chunk_sum_q_ = Eigen::Vector2d::Zero();  // m
-  double chunk_path_rise_m_ = 0.0;                         // m
-  double chunk_path_fall_m_ = 0.0;                         // m
-  double chunk_prof_rise_m2_ = 0.0;                        // m^2
-  double chunk_prof_fall_m2_ = 0.0;                        // m^2
+  Eigen::Vector2d path_q_ = Eigen::Vector2d::Zero();        // m
+  Eigen::Vector2d chunk_sum_q_ = Eigen::Vector2d::Zero();   // m
+  Eigen::Vector2d chunk_sum_lo_ = Eigen::Vector2d::Zero();  // m, R_w_b (p_b_g - p_b_o)
+  double chunk_prof_cross_m2_ = 0.0;                        // m^2
+  double chunk_path_rise_m_ = 0.0;                          // m
+  double chunk_path_fall_m_ = 0.0;                          // m
+  double chunk_prof_rise_m2_ = 0.0;                         // m^2
+  double chunk_prof_fall_m2_ = 0.0;                         // m^2
   bool chunk_path_rise_ok_ = true;
   bool chunk_path_fall_ok_ = true;
   // Previous complete chunk and the last segment direction.
@@ -331,7 +354,9 @@ class GnssTrackYawAligner {
   double sum_al_cross_m_ = 0.0;    // m, sum a x l
   double sum_abs_b_m_ = 0.0;       // m, sum |b| over the segments used
   double noise_q_m2_ = 0.0;        // m^2, sum var_k |a_{k-1} - a_k|^2 over closed coefficients
-  double wheel_dir_var_m2_ = 0.0;  // m^2, sum sigma_perp_k^2 of the wheel-path segments
+  double wheel_dir_var_m2_ = 0.0;  // m^2, wheel-path direction error of the closed chunks
+  Eigen::Vector2d prev_a_wheel_path_ = Eigen::Vector2d::Zero();  // last a if from the wheel path
+  double sum_wheel_disp_m_ = 0.0;  // m, wheel-predicted displacement of the wheel segments used
   int n_reversals_ = 0;
   int n_skipped_turns_ = 0;
   int n_no_wheel_segments_ = 0;

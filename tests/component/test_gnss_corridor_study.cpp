@@ -522,7 +522,7 @@ TEST(GnssCorridorStudy, Diagnosis) {
   };
   const std::string b2 = "      align_yaw_from_track: true\n"
                          "      align_yaw_wheel_turns: true\n"
-                         "      align_yaw_min_track_wheel_m: 0.0\n";
+                         "      align_yaw_min_track_wheel_m: 3.0\n";
   for (const auto& [suffix, deg] : {std::pair<const char*, const char*>{"", "3.0"},
                                     std::pair<const char*, const char*>{"_s45", "4.5"},
                                     std::pair<const char*, const char*>{"_s60", "6.0"}}) {
@@ -971,7 +971,7 @@ class AlignObserver : public detail::CoreObserver {
 
 // Box world (2 m circle, 20 s, GNSS 0.5 m at 5 Hz), seeds 42..56, without and with wheel
 // odometry: GnssAligner, design 2 (track yaw, 3 deg, 5 m) and design 2b at 3 / 4.5 / 6 deg
-// (turns from the wheel path, no minimum track with wheel data): fused ATE paired, GNSS
+// (turns from the wheel path, 3 m minimum track with wheel data): fused ATE paired, GNSS
 // factors, and the first alignment (time since the motion started, distance driven, yaw error
 // against the predicted sigma). Skipped unless MSS_GNSS_BOX_2B=1 (GTSAM build). Writes
 // results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-box-2b">/gnss_box_2b.md. About 8 min.
@@ -986,7 +986,7 @@ TEST(GnssCorridorStudy, BoxWorldAlignment2b) {
       "      align_yaw_min_track_wheel_m: 5.0\n";
   const std::string b2 =
       "      align_yaw_from_track: true\n      align_yaw_wheel_turns: true\n"
-      "      align_yaw_min_track_wheel_m: 0.0\n";
+      "      align_yaw_min_track_wheel_m: 3.0\n";
   const auto sig = [](const char* deg) {
     return std::string("      align_yaw_max_sigma_deg: ") + deg + "\n";
   };

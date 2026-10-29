@@ -993,23 +993,25 @@ cruise that the corridor depends on.
 
 The owner's concern: design 2 needs too much straight driving (5 m minimum track, 3 deg
 sigma); E-01 gets 35 of 223 GNSS factors, the box world 6 to 17 against 38 to 45. Hardware:
-standard GNSS (0.5 m per axis in the simulator), antenna lever arm 0.22 m horizontal, wheel
-odometry on the robot. Waiting for the alignment does not affect local navigation: the
+standard GNSS (0.5 m per axis in the simulator, 5 Hz), antenna lever arm 0.22 m horizontal,
+wheel odometry on the robot. Waiting for the alignment does not affect local navigation: the
 LiDAR-inertial pose is valid from frame 0, only the ENU output waits.
 
 Method and error model: `gnss.md` section 5.1. Headline metric: time since the motion started
 and distance driven at the first alignment, with the yaw error against its predicted sigma.
+The numbers below are after fix round 1 of the review (section 16.9) unless marked.
 
 ### 16.1 Measured first: what binds
 
 Aligner-level probe (not in the repo), 200 seeds, 5 Hz, 0.5 m white fixes, the scenes' speed
-profiles (1 s rest, 2 s ramp, 0.5 m/s), first alignment:
+profiles (1 s rest, 2 s ramp, 0.5 m/s), first alignment (before fix round 1; the wheel/GNSS
+consistency test does not change these white-noise rows):
 
-| scene | 3 deg, 5 m (design 2) | 3 deg, no minimum | 6 deg, no minimum | known-shape bound, 3 / 6 deg |
-| --- | --- | --- | --- | --- |
-| straight (corridor) | 12.8 s, 5.9 m | 10.8 s, 4.9 m | 6.8 s, 2.9 m | 9.2 s, 4.1 m / 6.0 s, 2.5 m |
-| 2 m circle (box) | 14.8 s, 6.9 m | 14.8 s, 6.9 m | 8.8 s, 3.9 m | 10.2 s, 4.6 m / 6.2 s, 2.6 m |
-| 1.67 m circle, declared 1.5 m (E-01-like) | never in 60 s | never | 26.8 s, 12.9 m | never / 16.2 s, 7.6 m |
+| scene | 3 deg, 5 m (design 2) | 3 deg, no minimum | 4.5 deg, no minimum | 6 deg, no minimum | known-shape bound, 3 / 6 deg |
+| --- | --- | --- | --- | --- | --- |
+| straight (corridor) | 12.8 s, 5.9 m | 10.8 s, 4.9 m | 8.8 s, 3.9 m | 6.8 s, 2.9 m | 9.2 s, 4.1 m / 6.0 s, 2.5 m |
+| 2 m circle (box) | 14.8 s, 6.9 m | 14.8 s, 6.9 m | 10.8 s, 4.9 m | 8.8 s, 3.9 m | 10.2 s, 4.6 m / 6.2 s, 2.6 m |
+| 1.67 m circle, declared 1.5 m (E-01-like) | never in 60 s | never | 40.8 s, 19.9 m | 26.8 s, 12.9 m | never / 16.2 s, 7.6 m |
 
 - On a straight track the 5 m minimum binds before the 3 deg sigma; the sigma itself needs
   `0.224 m / sigma_yaw` between the first and last chunk centres.
@@ -1023,35 +1025,47 @@ So the threshold is the main lever, then the minimum track, then the discarded t
 
 ### 16.2 Turns from the wheel path (unit level)
 
-`test_gnss_track_yaw_2b.cpp` and the probe, 200 seeds, wheel data with 1 % scale error:
+`test_gnss_track_yaw_2b.cpp` (exact odometer) and the probes, 200 seeds:
 
 | path | design 2 (turns skipped) | design 2b (turns from the wheel path) |
 | --- | --- | --- |
-| aisles, 2 m straights, 90 deg corners at 1 rad/s, 3 deg | 2 of 200 aligned, median 33.7 m | 200 of 200, median 7.9 m, NEES 0.83 |
-| same, 6 deg | median 8.9 m | median 2.6 m, NEES 1.02 |
-| same, 5 % slip and skid drawn per turn | | NEES 0.93, 0 beyond 3 sigma |
-| 1 m circle at 0.5 m/s (57 deg per chunk), 3 / 6 deg | never | 30.8 / 10.8 s (probe), NEES 0.91 / 0.82 |
+| aisles, 2 m straights, 90 deg corners at 1 rad/s, 3 deg | 2 of 200 aligned, median 33.7 m | 200 of 200, median 7.9 m, NEES 0.85 |
+| same, 6 deg | median 8.9 m | median 2.6 m, NEES 1.03 |
+| same, 5 % slip and skid drawn per turn | | NEES 0.99, 0 beyond 3 sigma |
+| 1 m circle at 0.5 m/s (57 deg per chunk), 6 deg | never | 11.8 s, NEES 0.89 (probe) |
+| same, IMU 0.2 m ahead of the axle, `T_b_o` used | never | NEES 0.87 (0.2 m behind: 0.94) |
+| same, `T_b_o` ignored (the first version) | | median 12.2 deg off, NEES 5.5 |
+| same, persistent skid 5 / 10 deg | | NEES 1.6 / 4.3, beyond 3 sigma 1 / 24 of 200 (pinned limit) |
+| 1 rad/s turn with a 9 s GNSS outage, 6 deg | | median 50.6 s against 35.8 s without (137 s before fix round 1) |
 | 2 m circle (29 deg per chunk) | unchanged | unchanged (no segment is gated) |
 | spin in place | never | never (stationary) |
 
-With one 5 % slip and skid held over a whole 1 m circle (correlated between segments, outside
-the model) the NEES is 1.63 at 3 deg (5 of 200 beyond 3 sigma) and 1.00 at 6 deg.
+### 16.3 Minimum track with wheel data, and the stuck-wheel case
 
-### 16.3 Minimum track with wheel data
+Probe (`d2b/probe_fix1.cpp`, the review probe's seeds): straight track with wheel data, 0.3 m
+white plus a random walk, declared 0.5 m, 200 seeds, shipped 6 deg, first alignment:
 
-Probe: straight track with wheel data, 0.3 m white plus a random walk per fix, declared 0.5 m,
-200 seeds; yaw NEES at the first alignment, minimum track 5 m / none:
+| minimum track with wheel data | 0.02 m per fix: max abs error at 0.12 / 0.20 / 0.50 m/s | runs > 15 deg | 0.05 m per fix: p95 / max at 0.12 m/s | runs > 15 / > 30 deg, 3 speeds | time to align at 0.5 m/s |
+| --- | --- | --- | --- | --- | --- |
+| 0 m (first version) | 17.1 / 13.7 / 11.1 deg | 2 | 21.4 / 36.2 deg | 52 / 3 | 7.8 s |
+| 1 m, 2 m | the same as 0 m | 2 | the same | 52 / 3 | 7.8 s |
+| **3 m (shipped)** | 14.9 / 8.9 / 9.3 deg | 0 | 17.3 / 31.9 deg | 30 / 1 | 9.8 s |
+| 5 m | 8.3 / 9.0 / 8.5 deg | 0 | 15.7 / 21.9 deg | 15 / 0 | 13.8 s |
 
-| speed | random walk 0.02 m per fix, 3 deg | 0.05 m per fix, 3 deg | 0.05 m per fix, 6 deg |
-| --- | --- | --- | --- |
-| 0.12 m/s | 1.86 / 1.70 | 10.5 / 8.4 | 10.5 / 4.5 |
-| 0.20 m/s | 1.32 / 1.18 | 6.1 / 5.9 | 6.1 / 2.9 |
-| 0.50 m/s | 0.78 / 0.73 | 3.2 / 2.9 | 3.2 / 2.1 |
+Wheels turning at 0.5 m/s on a still body (stuck, lifted), 0.3 m white plus a random walk, 5 min,
+100 seeds, aligned runs (all far off):
 
-The minimum track does not protect a moving robot against coloured error; the longer wait adds
-drift as well as track. Parked with wheel data: 0 of 100 aligned at 0.05, 0.10 and 0.20 m per
-fix with no minimum (every segment stationary). So with wheel data the minimum is 0
-(`align_yaw_min_track_wheel_m`); without, 5 m stays for the parked case.
+| GNSS drift per fix | first version (0 m, no wheel/GNSS consistency) | consistency test, 0 m | consistency test, 3 m (shipped) | 5 m |
+| --- | --- | --- | --- | --- |
+| 0.05 m | 0 | 0 | 0 | 0 |
+| 0.10 m | 21 (median 78 deg off) | 0 | 0 | 0 |
+| 0.20 m | 64 (median 91 deg off) | 37 | 16 (unit-test seeds: 19) | 7 |
+
+Design 2 without wheel data aligns a parked robot at 0.20 m per fix on 16 of 100. A parked robot
+whose wheels stop never aligns at any minimum (every segment stationary). NEES is not the
+criterion here: a larger sigma lowers it while the absolute tails grow (review I2). 3 m is the
+smallest minimum that removes the runs beyond 15 deg at 0.02 m per fix and brings the stuck case
+to the design-2 no-wheel level, for 2 s more at 0.5 m/s.
 
 ### 16.4 Front-end displacement where the LiDAR is not degenerate: rejected
 
@@ -1071,98 +1085,112 @@ not built; without wheel data the direction of travel stays the forward assumpti
 
 ### 16.5 Corridor, 15 paired seeds
 
-Driver `GnssCorridorStudy.Diagnosis`. New variants: `trackyaw2[_s45|_s60]` (design-2 keys at 3,
-4.5, 6 deg), `prealign_trackyaw2[...]`, `ref_wheel`, `prealign_wheel`, `trackyaw_wheel`,
-`prealign_trackyaw_wheel` (design 2 with wheel odometry on), `trackyaw_wheel_2b[...]` and
-`prealign_trackyaw_wheel_2b[...]` (2b keys: turns from the wheel path, no minimum track with
-wheel data). The `ref` and `prealign` lines are identical to sections 13 and 14.
+Driver `GnssCorridorStudy.Diagnosis`. Variants: `trackyaw2[_s60]` (design-2 keys at 3 and 6 deg),
+`prealign_trackyaw2[_s60]`, `ref_wheel`, `prealign_wheel`, `trackyaw_wheel`,
+`prealign_trackyaw_wheel` (design 2 with wheel odometry on), `trackyaw_wheel_2b_s60` and
+`prealign_trackyaw_wheel_2b_s60` (the shipped 2b keys: 6 deg, turns from the wheel path, 3 m
+minimum track with wheel data). The `ref` and `prealign` lines are identical to sections 13 and
+14.
 
 First alignment (time since the motion started, distance driven; all 15 seeds aligned):
 
-| variant | time median (max) | distance median (max) | abs yaw err median (max) | sigma median | yaw NEES | > 3 sigma | > 10 deg at first factor | `E` > 10 deg at end | not accepted after, median (max) |
+| variant | time median (max) | distance | abs yaw err median (max) | sigma median | yaw NEES | > 3 sigma | > 10 deg at first factor | `E` > 10 deg at end | not accepted after, median (max) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `ref` (GnssAligner) | 7.8 (12.0) s | 3.4 (5.5) m | 3.3 (172) deg | | | | 2 | 4 | 11 (128) |
-| `trackyaw2`, 3 / 4.5 / 6 deg | 13.0 (13.0) s | 6.0 (6.0) m | 1.7 (4.2) deg | 2.3 deg | 0.68 | 0 | 0 | 0 | 18 (37) |
-| `ref_wheel` | 7.2 (7.8) s | 3.1 (3.4) m | 3.4 (8.4) deg | | | | 0 | 0 | 3 (21) |
-| `trackyaw_wheel` (design 2) | 13.0 (13.0) s | 6.0 (6.0) m | 1.7 (4.2) deg | 2.3 deg | 0.68 | 0 | 0 | 0 | 2 (8) |
-| `trackyaw_wheel_2b`, 3 deg | 11.0 (13.0) s | 5.0 (6.0) m | 1.4 (5.6) deg | 2.8 deg | 0.99 | 0 | 0 | 0 | 2 (14) |
-| `trackyaw_wheel_2b_s45` | 9.0 (9.0) s | 4.0 (4.0) m | 2.3 (7.4) deg | 3.7 deg | 0.91 | 0 | 0 | 0 | 3 (44) |
-| `trackyaw_wheel_2b_s60` | 7.0 (7.0) s | 3.0 (3.0) m | 3.6 (8.7) deg | 5.2 deg | 1.01 | 0 | 0 | 0 | 3 (24) |
-| `prealign_trackyaw_wheel_2b_s60` | 7.0 (7.0) s | 3.0 (3.0) m | 3.6 (8.7) deg | 5.2 deg | 1.01 | 0 | 0 | 0 | 4 (23) |
+| `ref` (GnssAligner) | 7.8 (12.0) s | 3.4 m | 3.3 (172) deg | | | | 2 | 4 | 11 (128) |
+| `trackyaw2`, 3 and 6 deg (no wheel) | 13.0 (13.0) s | 6.0 m | 1.7 (4.2) deg | 2.3 deg | 0.68 | 0 | 0 | 0 | 18 (37) |
+| `ref_wheel` | 7.2 (7.8) s | 3.1 m | 3.4 (8.4) deg | | | | 0 | 0 | 3 (21) |
+| `trackyaw_wheel` (design 2) | 13.0 (13.0) s | 6.0 m | 1.7 (4.2) deg | 2.3 deg | 0.68 | 0 | 0 | 0 | 2 (8) |
+| `trackyaw_wheel_2b_s60` (shipped) | 9.0 (9.0) s | 4.0 m | 2.3 (7.4) deg | 3.7 deg | 0.88 | 0 | 0 | 0 | 3 (44) |
+| `prealign_trackyaw_wheel_2b_s60` | 9.0 (9.0) s | 4.0 m | 2.3 (7.4) deg | 3.7 deg | 0.88 | 0 | 0 | 0 | 4 (9) |
 
 - Without wheel data the threshold changes nothing: the 5 m minimum binds on the straight
-  corridor (the 4.5 and 6 deg lines are identical to 3 deg).
-- With wheel data, 2b at 6 deg aligns after 3 m instead of 6 m (7 s instead of 13 s), as early as
-  GnssAligner, and with the yaw within its sigma.
-- The maxima of "not accepted after" (44 at 4.5 deg, 24 at 6 deg, 21 for `ref_wheel`) all come from
-  seed 50, which rejects with every configuration; the medians do not move.
+  corridor (the 6 deg lines are identical to 3 deg).
+- With wheel data the shipped 2b aligns after 4 m instead of 6 m (9 s instead of 13 s), with the
+  yaw within its sigma. Before fix round 1 (no minimum) it was 3 m and 7 s.
+- The maximum of 44 not-accepted fixes comes from seed 50, which rejects with every
+  configuration (`ref`: 45, `ref_wheel`: 21); the medians do not move.
 
 Fused ATE, median (max), paired (bootstrap seed 7, 20000 resamples):
 
 | variant | against | fused ATE | wins / losses | CI of the median difference |
 | --- | --- | --- | --- | --- |
-| `prealign_trackyaw_wheel_2b` (3 deg) | `prealign_trackyaw_wheel` | 0.155 (1.15) m | 9/5 | [-0.019, +0.006] |
-| `prealign_trackyaw_wheel_2b_s45` | `prealign_trackyaw_wheel` | 0.180 (0.93) m | 10/5 | [-0.080, +0.011] |
-| `prealign_trackyaw_wheel_2b_s60` | `prealign_trackyaw_wheel` | 0.112 (0.95) m | 12/3 | [-0.048, -0.005] |
-| `trackyaw_wheel_2b_s60` | `trackyaw_wheel` | 0.324 (1.93) m | 10/5 | [-0.163, +0.015] |
+| `prealign_trackyaw_wheel_2b_s60` | `prealign_trackyaw_wheel` | 0.180 (0.93) m | 10/5 | [-0.080, +0.011] |
+| `trackyaw_wheel_2b_s60` | `trackyaw_wheel` | 0.313 (2.23) m | 9/6 | [-0.108, +0.007] |
 | `prealign_trackyaw_wheel` | `prealign_wheel` | 0.160 (1.25) m | 2/13 | [+0.004, +0.043] |
 | `prealign_wheel` | `ref_wheel` | 0.114 (0.89) m | 13/2 | [-0.261, -0.028] |
 
 With wheel odometry on, the corridor axis is observed by the wheel and every variant is far below
 raw GNSS; the ATE is chaotic in the alignment settings (lessons 1.15), so the threshold was
-chosen from the yaw and the rejections, not from these lines. 2b at 6 deg is not worse on any
-measure.
+chosen from the yaw and the rejections, not from these lines. 2b is not worse on any measure.
 
 ### 16.6 Box world, 15 paired seeds
 
-`GnssCorridorStudy.BoxWorldAlignment2b` (`MSS_GNSS_BOX_2B=1`). 2 m circle, 20 s:
+`GnssCorridorStudy.BoxWorldAlignment2b` (`MSS_GNSS_BOX_2B=1`). 2 m circle, 20 s; `2b_s*` use the
+shipped 2b keys at 3 / 4.5 / 6 deg:
 
 | case | config | time to align median (max) | distance | abs yaw err median (max) | sigma | yaw NEES | GNSS factors median (min) | fused ATE |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | GNSS | GnssAligner | 7.8 s | 3.4 m | 2.8 (7.6) deg | | | 42 (38) | 0.010 m |
-| GNSS | design 2 | 15.0 s | 7.0 m | 1.8 (6.6) deg | 2.8 deg | 1.16 | 8 (6) | same, 8/7 |
-| GNSS | 2b, 3 deg | 15.0 s | 7.0 m | 1.8 (6.6) deg | 2.8 deg | 1.16 | 8 (6) | same |
-| GNSS | 2b, 4.5 / 6 deg | 13.0 s | 6.0 m | 2.5 (7.4) deg | 3.1 deg | 1.54 | 17 (15) | same, 7/5 against design 2 |
-| GNSS + wheel | GnssAligner | 7.8 s | 3.4 m | 2.8 (7.6) deg | | | 42 (38) | 0.006 m |
-| GNSS + wheel | design 2 | 15.0 s | 7.0 m | 1.8 (6.6) deg | 2.8 deg | 1.16 | 8 (6) | same, 11/4 |
-| GNSS + wheel | 2b, 4.5 deg | 11.0 s | 5.0 m | 2.2 (7.6) deg | 4.0 deg | 0.66 | 29 (26) | same, 5/10 against design 2 |
-| GNSS + wheel | 2b, 6 deg | 9.0 s | 4.0 m | 3.3 (10.8) deg | 5.0 deg | 0.85 | 38 (32) | same, 7/8 against design 2 |
+| GNSS | design 2 = 2b 3 deg | 15.0 s | 7.0 m | 1.8 (6.6) deg | 2.8 deg | 1.16 | 8 (6) | unchanged |
+| GNSS | 2b, 4.5 and 6 deg | 13.0 s | 6.0 m | 2.5 (7.4) deg | 3.1 deg | 1.54 | 17 (15) | unchanged |
+| GNSS + wheel | design 2 | 15.0 s | 7.0 m | 1.8 (6.6) deg | 2.8 deg | 1.16 | 8 (6) | 0.006 m |
+| GNSS + wheel | 2b, 4.5 deg | 11.0 s | 5.0 m | 2.2 (7.6) deg | 4.0 deg | 0.66 | 29 (26) | unchanged |
+| GNSS + wheel | 2b, 6 deg (shipped) | 9.0 s | 4.0 m | 1.5 (7.6) deg | 4.5 deg | 0.69 | 37 (32) | unchanged |
 
-All CIs of the fused ATE are within +-0.00005 m of 0: unchanged. No seed beyond 3 sigma. The
-largest error at the first alignment, 10.8 deg at 6 deg (1.9 sigma), did not change the ATE.
-Without wheel data the 5 m minimum binds at 4.5 and 6 deg. The 1.54 NEES is within the
-chi-square(15) 95 % interval of the mean, [0.42, 1.83].
+All CIs of the fused ATE are within +-0.00005 m of 0, no seed beyond 3 sigma. Without wheel data
+the 5 m minimum binds at 4.5 and 6 deg. The 1.54 NEES is within the chi-square(15) 95 % interval
+of the mean, [0.42, 1.83]. Before fix round 1 (no minimum) the shipped line was 9.0 s, 4.0 m, max
+10.8 deg (1.9 sigma), 38 factors.
 
 ### 16.7 E-01..E-03
 
-Flag off: `est.tum` md5 equal to main (65a04e5 binary, identical to 99bd5fd for the flag-off path
-as shown in PR #34): E-01/E-02 `d1b1e4ba...`, E-03 `ca02a49f...`; ATE 0.002183 m.
+Flag off: `est.tum` md5 equal to main 99bd5fd (built from `git archive 99bd5fd`): E-01 and E-02
+`d1b1e4ba...`, E-03 `ca02a49f...`; ATE 0.002183 m.
 
-Flag on (`config/sim/warehouse.yaml` + `align_yaw_from_track`), `GnssCorridorStudy.ReplayAlignment`
-for the first alignment (time since the first record; the motion starts at 5 s; yaw error against a
-2-D fit of the published trajectory to the ground truth):
+Flag on (`config/sim/warehouse.yaml` + `align_yaw_from_track`, shipped keys),
+`GnssCorridorStudy.ReplayAlignment` for the first alignment (time since the first record; the
+motion starts at 5 s; yaw error against a 2-D fit of the published trajectory to the ground
+truth):
 
 | config | first alignment | distance | yaw err / sigma | GNSS factors E-01 / E-03 | ATE E-01 / E-03 |
 | --- | --- | --- | --- | --- | --- |
 | off (GnssAligner) | 13 s | 3.5 m | 21.0 deg / none | 223 / 225 | 0.002183 / 0.002183 m |
 | design 2 (3 deg) | 52 s | 23.0 m | -1.2 / 2.8 deg | 35 / 36 | 0.002210 / 0.002172 m |
-| 2b, 3 deg | 52 s | 23.0 m | -1.2 / 2.8 deg | 35 / 36 | 0.002210 / 0.002172 m |
 | 2b, 4.5 deg | 30 s | 12.0 m | -4.5 / 4.4 deg | 143 / 144 | 0.002194 / 0.002182 m |
-| 2b, 6 deg (new defaults) | 24 s | 9.0 m | 0.8 / 5.6 deg | 170 / 171 | 0.002196 / 0.002177 m |
-| with `attach_prealign_fixes`, 2b 6 deg | 24 s | 9.0 m | 0.8 / 5.6 deg | 285 / 286 (115 attached, 0 dropped) | 0.002199 / 0.002173 m |
+| 2b, 6 deg (shipped) | 24 s | 9.0 m | 0.8 / 5.6 deg | 170 / 171 | 0.002196 / 0.002177 m |
+| with `attach_prealign_fixes`, shipped | 24 s | 9.0 m | 0.8 / 5.6 deg | 285 / 286 (115 attached, 0 dropped) | 0.002199 / 0.002173 m |
 
 GnssAligner aligns after 3.5 m but 21 deg off, with no sigma to say so (1.5 m declared fixes on
 a 1.67 m circle). No segment of E-01 is turn-gated (34 deg per chunk), so the wheel path is not
-used there. Bench: no per-scan code changed (the aligner runs per fix), so it was not re-run.
+used there; the 3 m minimum of fix round 1 does not bind on E-01. Bench: no per-scan code
+changed (the aligner runs per fix), so it was not re-run.
 
 ### 16.8 Decisions
 
-- Threshold 6 deg (from 3). Chosen from the yaw at the first alignment (within its predicted
-  sigma in every scene, NEES 0.85 to 1.54, none beyond 3 sigma), no `E` flip, and no more
-  rejections after the alignment; the ATE was not used to choose (chaotic). This drops the
-  "10 deg at the first factor" proxy of section 13.6 in favour of what it stood for (no flip,
-  no lock-out); one box seed starts at 10.8 deg (1.9 sigma) and converges.
-- Turns from the wheel path on, slip 0.05.
-- Minimum track with wheel data 0; without wheel data 5 m stays.
-- Front-end displacement and in-place rotation: not built (sections 16.4 and `gnss.md` 5.1).
+- Threshold 6 deg (from 3), proposed: chosen from the yaw at the first alignment (within its
+  predicted sigma in every scene, NEES 0.66 to 1.54 over 15 seeds, none beyond 3 sigma), no `E`
+  flip, no more rejections after the alignment, and a forced 18 deg start that converges
+  (`PipelineComponent.TrackYawConvergesFromEighteenDegrees`). It replaces the "below 10 deg at the
+  first factor" target of section 13.6 by what it stood for, "no flip, no lock-out"; the owner is
+  to confirm that change. The evidence is for white noise; coloured error widens the tails
+  (16.3).
+- Turns from the wheel path on, slip 0.05, with `frames.T_b_o`.
+- Wheel/GNSS consistency in the coherence test.
+- Minimum track with wheel data 3 m (its own default); without wheel data 5 m stays.
+- Front-end displacement and in-place rotation: not built (16.4 and `gnss.md` 5.1).
 - `gnss.align_yaw_from_track` stays off by default, as recommended in section 15.4.
+
+### 16.9 Fix round 1 of the review
+
+| finding | defect | fix | test |
+| --- | --- | --- | --- |
+| I1 | wheels turning on a still body aligned on GNSS drift (21 / 64 of 100 at 0.10 / 0.20 m per fix, about 90 deg off); the docs said the odometer catches a parked robot | coherence also against the wheel-predicted displacement; docs state the stuck case | `GnssTrackYaw2b.StuckWheelsDriftingGnssEnvelope` (0 / 0 / 19 of 100) |
+| I2 | the zero minimum was argued on NEES while the absolute tails grew; the envelope test ran at 3 deg | minimum 3 m from the absolute-error envelope at 6 deg (16.3); the class comment on coloured error corrected | `GnssTrackYaw2b.MinTrackWheelEnvelope` (6 deg, 0.02 and 0.05 m per fix) |
+| I3 | the wheel path ignored `frames.T_b_o` (12 deg median error with the IMU 0.2 m off the axle on a 1 m circle) | the path of frame o and the lever arm `p_b_g - p_b_o` | `GnssTrackYaw2b.WheelPathUsesOdometryFrame` (NEES 0.87; ignored: 5.5) |
+| M1 | persistent skid only in a probe | pinned | `GnssTrackYaw2b.PersistentSkidPinned` |
+| M2 | adjacent wheel-path segments sharing a chunk treated as independent | per-chunk terms: exact weights for the speed profile, triangle bound for the slip | (all wheel-path tests; NEES 0.85 to 0.99) |
+| M3 | a GNSS outage in a turn inflated the sigma for good (36 -> 137 s) | a step turning more than the turn gate is not used through the wheel path | `GnssTrackYaw2b.OutageInTurnDoesNotStall` (51 s) |
+| M4 | the struct default of the wheel minimum copied the other minimum | its own default, 3 m | Config tests |
+| M5 | numbers out of step; in-place figure at 10 Hz only | all doc numbers re-checked; 19.5 deg at 5 Hz and 12.9 deg at 10 Hz | |
+| M6 | convergence from a 3-sigma start rested on one sample | test seam `gnss_first_align_yaw_offset_rad`: E prior 20.8 / -15.2 deg off converges to 0.06 deg, no realign | `PipelineComponent.TrackYawConvergesFromEighteenDegrees` |
+| M7 | size | no split (ruling); production code stated in the PR body | |

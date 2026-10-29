@@ -108,9 +108,9 @@ mss_node:
       align_yaw_chunk_fixes: 10
       # Predicted yaw 1-sigma needed before the track-yaw aligner returns T_e_w, deg (> 0).
       # Replaces align_min_pairs / align_min_spread_m when align_yaw_from_track is true.
-      # Design 2b (gnss_fusion_study.md section 16): 3 -> 6. The graph refines E's yaw after the
-      # alignment; at 3 / 4.5 / 6 deg the first yaw stayed within its sigma (no seed beyond 3
-      # sigma), no flip, no more rejections after it. With wheel data 6 deg aligns after 3 m
+      # Design 2b (gnss_fusion_study.md section 16, proposed): 3 -> 6. The graph refines E's
+      # yaw after the alignment; at 3 / 4.5 / 6 deg the first yaw stayed within its sigma (none
+      # beyond 3 sigma), no flip, no more rejections after it. With wheel data 2b aligns after 4 m
       # instead of 6 m (corridor), 4 m instead of 7 m (box), 9 m instead of 23 m (E-01).
       # Straight-track rule at 0.5 m fixes: 0.224 m / sigma between the first and last chunk.
       align_yaw_max_sigma_deg: 6.0
@@ -123,6 +123,8 @@ mss_node:
       align_yaw_min_track_m: 5.0
       # Along-heading track over the GNSS path length of the segments used, in (0, 1]: about 1
       # for steady motion, about 1 / sqrt(segments) for a parked receiver whose error wanders.
+      # With wheel data also over the wheel-predicted displacement (design 2b): catches wheels
+      # turning on a still body (stuck, lifted).
       align_yaw_min_coherence: 0.5
       # Turn gate: a segment whose heading change, or the heading span of either of its
       # chunks, exceeds this is not used (course over ground is unreliable in turns), deg,
@@ -141,18 +143,21 @@ mss_node:
       # the threshold above, is taken as reverse motion (> 0, sigmas).
       align_yaw_reverse_nsigma: 3.0
       # ADR-023 amendment (design 2b): with wheel data, a segment the turn gate rejects takes its
-      # direction from the wheel travel integrated along the body heading (gnss.md section 5.1)
-      # instead of being skipped. false: skipped (design 2). Aisles with 90 deg corners: at 3 deg
-      # 2 of 200 runs aligned without it, all with it (7.9 m); never used without wheel data.
+      # direction from the path of the odometry frame (frames.T_b_o) integrated from the wheel
+      # travel along its heading (gnss.md section 5.1) instead of being skipped. false: skipped
+      # (design 2). Aisles with 90 deg corners: at 3 deg 2 of 200 runs aligned without it, all
+      # with it (7.9 m); never used without wheel data.
       align_yaw_wheel_turns: true
-      # 1-sigma wheel travel error of such a segment, fraction of its path along and across the
-      # motion (slip, skid), fully correlated within the segment, in (0, 1).
+      # 1-sigma wheel travel error, fraction of the path along and across the motion (slip,
+      # skid), fully correlated within a chunk, in (0, 1). A skid held through a long one-way
+      # turn is outside this model (gnss.md section 5.1).
       align_yaw_wheel_slip_frac: 0.05
       # Along-heading track needed to align when every segment used has its direction from
-      # wheel data, m (>= 0); else align_yaw_min_track_m applies. 0: the odometer detects a
-      # parked robot (0 of 100 aligned at 0.2 m per fix of GNSS drift), and a minimum track does
-      # not help a moving robot against coloured error (study section 16.3).
-      align_yaw_min_track_wheel_m: 0.0
+      # wheel data, m (>= 0); else align_yaw_min_track_m applies. 3 m from the absolute-error
+      # envelope at 6 deg (gnss.md section 5.1): against 0 m it halves the runs beyond 15 deg
+      # with 0.05 m per fix of GNSS drift (52 -> 30 of 600) and the stuck-wheel alignments at
+      # 0.2 m per fix (37 -> 16 of 100), for 2 s more at 0.5 m/s.
+      align_yaw_min_track_wheel_m: 3.0
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

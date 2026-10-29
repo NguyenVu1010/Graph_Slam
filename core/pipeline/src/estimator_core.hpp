@@ -106,6 +106,10 @@ struct CoreTestHooks {
   /// by gnss_shift_oracle(t_fix, t_k), the antenna displacement in w, instead of the front-end
   /// poses (GnssFusion::collect).
   std::function<common::Vec3(common::Timestamp, common::Timestamp)> gnss_shift_oracle;
+  /// Study (gnss.md section 5.1, design 2b): the T_e_w published for the first chunk of fixes from
+  /// the first GNSS alignment on is turned by this yaw (rad) about each fix
+  /// (GnssFusion::set_first_alignment_yaw_offset).
+  double gnss_first_align_yaw_offset_rad = 0.0;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).
