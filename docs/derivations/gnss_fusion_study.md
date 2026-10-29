@@ -1604,7 +1604,7 @@ This rules out the candidate causes one by one:
   - At 13 s the w-side spread is 1.01 m, just past `align_min_spread_m`. The predicted yaw sigma
     is `sigma_h / sqrt(sum |a_c|^2)` = 7.65 deg.
   - The linear term of the recorded noise, `sum (J a_c,i) . n_i / sum |a_c,i|^2`, is 19.8 deg,
-    so the error is about 2.7 sigma.
+    so the error is about 2.6 sigma (19.8° / 7.65°).
   - The noise is white over those 55 fixes: lag-1 autocorrelation 0.02, lag 5 0.11, -0.02 over
     the run, residual standard deviation 1.05 / 1.01 m against 1.0 m declared. The drift bias
     (1.3, -1.5) m is common to all fixes and cancels in the centring.
