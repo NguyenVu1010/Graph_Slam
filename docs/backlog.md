@@ -56,3 +56,14 @@ Each item names where its numbers live.
 | M5 | No-GTSAM builds cannot export, because the stub backend has no keyframe poses (needs an ADR-016 amendment). | Minor |
 | M6 | Keyframes beyond `map.max_keyframes` are missing from the map; export cost at 1000 keyframes on the Pi 5 is not measured; export stats are not in `bench.json`. | Minor |
 | M7 | A partial write leaves a truncated PCD (write to a temp file, then rename); `fopen(path.c_str())` is not portable to Windows; the counter types in `MapExportInfo` are mixed; doc comments name the wrong test file. | Minor |
+
+## Map demo (A2)
+
+| # | Item | Severity |
+|---|------|----------|
+| A1 | `run_map_demo.sh` treats `run_integration` exit 1 as success, so after a bench timeout it draws a partial `map.pcd` and prints OK | Important |
+| A2 | `map_demo.json` has no scenario field and no gate verdict; E-04 output sits under the `run/E-01/` slot; the E-01 gate always "fails" on Gazebo bags (baselines are synthetic); the degeneracy-on config of E-04 cannot be selected | Important |
+| A3 | One in four Gazebo recordings failed in the bridge step (cause unknown, log lost); 8513 ground-truth queries were clamped to the end pose in the next run | Important |
+| A4 | E-04 map climbs about 1.4 m over 45 m (vertical drift, see S2); no side view in `map-png` | Important |
+| A5 | Shell robustness: empty arrays under `set -u` on bash < 4.4, `--bag` not checked against the scenario, `out=/` becomes empty, GNU-only `date +%s.%N`, unnamed missing option value | Minor |
+| A6 | `map-png`: the ascii PCD path is a per-row loop, fields with COUNT > 1 are not rejected, and the E-04 picture is mostly white space; README command block lost its line breaks | Minor |

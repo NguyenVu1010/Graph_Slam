@@ -46,6 +46,26 @@ fewer than `--min-pairs` pairs is an error. The estimate is aligned to the groun
 a rigid SE(3) Umeyama fit (no scale) before the RMSE of the position error is taken.
 `--plot` writes the aligned top view. No evo is needed at run time.
 
+## Map picture
+
+Top-down picture of the global map that `mss_bench --map-out` writes, with the trajectories:
+
+```
+PYTHONPATH=eval python -m mss_eval map-png <map.pcd> [--est est.tum] [--gt gt.tum] --out map.png
+    [--z-min-m 0.3] [--z-max-m 2.0] [--res-m 0.05] [--width-px 1600] [--title E-01]
+```
+
+It reads PCD v0.7 (`DATA binary` or `ascii`, fields `x y z`) and TUM files only. Points with
+`z` between `--z-min-m` and `--z-max-m` (frame `w`, m; the defaults drop the floor and the
+ceiling of the sim worlds) are counted per `--res-m` cell and drawn as log(1 + count), dark =
+many points. The estimate is drawn as written, in `w`. The ground truth is brought into `w`
+with the inverse of the SE(3) fit that `mss_eval.ate` uses, so the map is never moved; with both
+files the title carries the ATE RMSE. The PNG is `--width-px` wide and as tall as the map's
+aspect needs (480 to 4000 px). It prints one JSON line (`n_points`, `n_in_cut`, grid size, image
+size, `ate_rmse_m`, `n_pairs`); a missing, truncated or non-PCD file, a bad TUM file or
+`--z-min-m >= --z-max-m` exits 2 with `map-png: error: ...` on stderr. `tools/run_map_demo.sh`
+(sim/README.md "Map demo") runs it after a recording.
+
 ## Baselines
 
 `baselines.json` holds, per integration test (E-01, E-02, E-03), the reference `ate_rmse_m`
