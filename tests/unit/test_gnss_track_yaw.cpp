@@ -55,8 +55,10 @@ GnssConfig track_cfg() {
   GnssConfig c;
   c.enabled = true;
   c.align_yaw_from_track = true;  // defaults: 10 fixes per chunk, 3 deg, 3 sigmas
-  // Short tracks for the geometry tests; the 5 m default is tested in MinTrackLength.
+  // Short tracks for the geometry tests, with and without wheel data; the 5 m default is tested
+  // in MinTrackLength, the minimum with wheel data in test_gnss_track_yaw_2b.cpp.
   c.align_yaw_min_track_m = 0.5;
+  c.align_yaw_min_track_wheel_m = 0.5;
   // No variance floor for the geometry tests (declared 1 mm fixes); the 0.25 m^2 default is
   // tested in VarianceFloor.
   c.align_yaw_min_var_m2 = 1e-9;
@@ -466,7 +468,8 @@ TEST(GnssTrackYaw, TightArcWithLeverArmExact) {
 TEST(GnssTrackYaw, NetBackwardMotionBeforeConfidenceFlips) {
   std::mt19937 rng(1U);
   GnssConfig cfg = track_cfg();
-  cfg.align_yaw_min_track_m = 5.0;  // the default
+  cfg.align_yaw_min_track_m = 5.0;        // the default
+  cfg.align_yaw_min_track_wheel_m = 5.0;  // design 2 (one minimum)
   GnssTrackYawAligner a(cfg);
   Line line;
   line.reverse_from = 30;  // 3 m forward, then backwards
@@ -492,6 +495,7 @@ TEST(GnssTrackYaw, WheelSignResolvesBackwardMotion) {
     std::mt19937 rng(1U);
     GnssConfig cfg = track_cfg();
     cfg.align_yaw_min_track_m = 5.0;
+    cfg.align_yaw_min_track_wheel_m = 5.0;  // design 2 (one minimum)
     GnssTrackYawAligner a(cfg);
     Line line;
     line.reverse_from = reverse_from;
@@ -617,7 +621,8 @@ TEST(GnssTrackYaw, VarianceFloor) {
 //   stationary.
 TEST(GnssTrackYaw, ParkedDriftingGnssEnvelope) {
   GnssConfig cfg = track_cfg();
-  cfg.align_yaw_min_track_m = 5.0;  // the default
+  cfg.align_yaw_min_track_m = 5.0;        // the default
+  cfg.align_yaw_min_track_wheel_m = 5.0;  // design 2 (one minimum)
   for (const bool wheel : {false, true}) {
     for (const double step_m : {0.05, 0.10, 0.20}) {
       int n_aligned = 0;
@@ -703,6 +708,7 @@ TEST(GnssTrackYaw, ZeroCovarianceNeverAligns) {
 TEST(GnssTrackYaw, MinTrackLength) {
   GnssConfig cfg = track_cfg();
   cfg.align_yaw_min_track_m = 5.0;
+  cfg.align_yaw_min_track_wheel_m = 5.0;  // design 2 (one minimum)
   GnssTrackYawAligner a(cfg);
   Line line;  // 0.1 m per fix
   int first = -1;
@@ -764,6 +770,7 @@ TEST(GnssTrackYaw, OneMissingWheelReadingDoesNotFlip) {
   std::mt19937 rng(3U);
   GnssConfig cfg = track_cfg();
   cfg.align_yaw_min_track_m = 5.0;
+  cfg.align_yaw_min_track_wheel_m = 5.0;  // design 2 (one minimum)
   GnssTrackYawAligner a(cfg);
   Line back;
   back.reverse_from = 0;  // backwards from the start

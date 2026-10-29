@@ -71,6 +71,11 @@ class Estimator {
     std::uint64_t n_gnss_ring_overflow = 0;  ///< GNSS fixes dropped: waiting-for-IMU ring full
     std::uint64_t n_gnss_unfused_eof = 0;    ///< GNSS fixes after the last IMU sample at flush()
     std::uint64_t n_gnss_realign = 0;  ///< GNSS aligner restarts after gnss.max_consecutive_rejects
+    /// Design 2b (gnss.align_yaw_from_track with wheel data): chunks at which the track-yaw
+    /// aligner found the GNSS track and the wheel travel in disagreement (wheels turning on a
+    /// still robot, slipping wheels, or an odometer with a wrong scale). It grows all the time
+    /// with an odometer that over-reads by 2x or more, which then never aligns.
+    std::uint64_t n_gnss_wheel_mismatch = 0;
     /// gnss.attach_prealign_fixes (ADR-022), fixes received before the first alignment:
     /// added as factors; of those, static-window fixes on keyframe 0; dropped because the
     /// buffer (gnss.prealign_max_fixes) was full; received before keyframe 0 but outside its

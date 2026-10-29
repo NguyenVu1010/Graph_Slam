@@ -197,9 +197,10 @@ arc, and course over ground is a poor heading reference in turns. So a segment i
   `s_k` is the sign of that wheel travel. A travel below `gnss.align_yaw_min_wheel_travel_m`
   (0.2 m) is a stationary segment and is skipped (`a_k = 0`, `n_stationary_segments()`): it
   carries no direction, and the random sign of wheel noise at rest would alternate `a_k`.
-  Consequence: with 2 s between chunk centres, a robot slower than about 0.1 m/s never aligns
-  with wheel data at the defaults (test `GnssTrackYaw.LowSpeedWithWheelNeverAligns`; without
-  wheel data the same track aligns).
+  Consequence: with 2 s between chunk centres, a robot slower than about 0.1 m/s never aligned
+  with wheel data (test `GnssTrackYaw.LowSpeedWithWheelNeverAligns`, struct defaults; without
+  wheel data the same track aligns). Since the root-cause study a stationary segment is extended
+  over up to `gnss.align_yaw_merge_max_chunks` more chunks instead (section 5.2).
   Before this rule, E-01 with the flag aligned so late that it got 8 GNSS factors instead of 65
   (test `GnssTrackYaw.StationaryWheelNoiseDoesNotDelay`).
 - **No wheel data (fallback).** `s_k = +1` (forward driving), counted in
@@ -263,12 +264,15 @@ the last chunk's term at evaluation.
 Acceptance ("confident"). A transform is returned once all of these hold:
 
 1. `r >= gnss.align_yaw_min_track_m` (5 m). A minimum length of track supporting the yaw: a
-   0.3 m common error over 5 m of track is 3.4 deg.
-2. `r >= gnss.align_yaw_min_coherence * sum |b_k|` (0.5), over the segments used. For steady
+   0.3 m common error over 5 m of track is 3.4 deg. When every segment used has its direction
+   from wheel data, `gnss.align_yaw_min_track_wheel_m` (3 m) instead (section 5.1).
+2. `r >= gnss.align_yaw_min_coherence * sum |b_k|` (0.5), over the segments used (with wheel
+   data also against the wheel-predicted displacement, section 5.1). For steady
    motion the ratio is near 1. For a parked receiver whose error wanders, the segment
    directions are random, so `r` grows like `sqrt(K)`, `sum |b_k|` like `K`, and the ratio
    falls like `1 / sqrt(K)`.
-3. `sigma_yaw <= gnss.align_yaw_max_sigma_deg` (3 deg).
+3. `sigma_yaw <= gnss.align_yaw_max_sigma_deg` (3 deg in ADR-023, 6 deg since design 2b,
+   section 5.1).
 
 Together these replace `align_min_pairs` and `align_min_spread_m`. No motion, or a frozen
 receiver, gives `r ~ 0` and no transform.
@@ -292,11 +296,12 @@ probe used other seeds):
 | 0.20 m | 16 of 100, up to 176 deg off (probe: 27 of 100, up to 178 deg) | 0 of 100 |
 
 So without wheel data a parked robot whose GNSS wanders by 0.1 m per fix or more can align
-on noise. No cheap stationary signal exists for that case: the IMU rest detector used at
+on noise. The IMU gives no stationary signal for that case: the rest detector used at
 keyframe 0 tests the spread of acceleration and rate, which is the same at rest and at
 constant velocity (in the simulator both are pure sensor noise, 0.08 m/s^2 per sample), so it
-would also block the straight cruise that the corridor needs. This is a documented limit
-(ADR-023).
+would also block the straight cruise that the corridor needs. Where the LiDAR observes the
+travel axis the front end is that signal (section 5.2: none of 100 align up to 0.30 m per fix);
+where it does not, this is a sensor-set limit (ADR-023).
 
 Variance floor (test `GnssTrackYaw.VarianceFloor`): fixes declared at 1 cm with 0.5 m true noise,
 100 seeds. Without the floor, 48 seeds are more than 10 deg off at the first transform (95
@@ -312,3 +317,365 @@ Pipeline input. `EstimatorCore` keeps a signed wheel odometer (trapezoid of
 `WheelSample::v_mps`) when `wheel_odom.enabled`, and passes the travel since the previous fix
 to `GnssFusion::on_fix`. That travel is NaN when wheel odometry is off, or when no wheel sample
 arrived since the previous fix.
+
+### 5.1 Design 2b: less motion before the alignment (ADR-023 amendment)
+
+Code: the same class. Keys `gnss.align_yaw_max_sigma_deg` (default 3 -> 6 deg),
+`gnss.align_yaw_wheel_turns`, `gnss.align_yaw_wheel_slip_frac` and
+`gnss.align_yaw_min_track_wheel_m`; the odometry frame `frames.T_b_o`. Measurements:
+`gnss_fusion_study.md` section 16.
+
+Waiting for the alignment does not limit local navigation. The LiDAR-inertial pose in w is
+valid from keyframe 0; only the ENU (global) output waits for `T_e_w`.
+
+**What sets the distance to the alignment.** On a straight track `sigma_yaw = sqrt(2 v) / L`
+(section 5), so with standard GNSS (0.5 m per axis, `v = 0.025 m^2` per 10-fix chunk mean at
+5 Hz) the distance between the first and the last chunk centre is `L = 0.224 m / sigma_yaw`: 4.3
+m for 3 deg, 2.8 m for 4.5 deg, 2.1 m for 6 deg. The alignment is decided when a chunk closes
+(every 2 s), and at 3 deg the 5 m minimum track, not the sigma, binds on a straight track. On a
+turn the chunk directions change, so the sum telescopes less and the sigma falls more slowly
+(2 m circle: 14 s at 3 deg). So the levers, in the order they act: the sigma threshold, the
+minimum track, the segments the turn gate discards. A fit of the known path shape (section 4 on
+an exact w path) would need about 15 % less distance on a straight track and about 30 % less
+time on the 2 m circle (study section 16.1); it needs a w path that is right along the track,
+which a degenerate corridor without wheel data does not have, so it is not built.
+
+**Sigma threshold 6 deg (proposed; the change of target is pending the owner's decision).** The
+graph refines `E`'s yaw after the alignment (prior 30 deg), and the pipeline's chi-square gate
+and fix shift keep using the aligner's `T_e_w`, which is re-estimated at every chunk after the
+alignment. Bounded-error argument: on a straight track the yaw sigma after a track `L` is about
+`0.224 m / L`, and the position error that a yaw error causes at a distance `d` from the fit
+centroid is `d delta_yaw`; with `d` at most about `L / 2` for the fixes in the window, a 3-sigma
+error is about `0.34 m`, inside the gate (`sqrt(7.81) x 0.5 m = 1.4 m`). Early fixes are near the
+centroid, and the lock-out guard (`max_consecutive_rejects`) bounds the rest. Measured at 3 / 4.5
+/ 6 deg (study section 16): the first-alignment yaw within its predicted sigma (NEES 0.66 to
+1.54 over 15 seeds per scene, none beyond 3 sigma), no flip of `E`, no more chi-square
+rejections after the alignment, fused ATE unchanged or better; a first `T_e_w` forced 18 deg off
+converges (test `PipelineComponent.TrackYawConvergesFromEighteenDegrees`: `E`'s prior 20.8 /
+-15.2 deg off, `E` within 0.1 deg at the end, no realign). The current target of study section
+13.6, "below 10 deg at the first factor", is a proxy for "no flip and no lock-out"; at 6 deg a
+first error of up to 3 sigma (about 15 to 18 deg) is possible. The proposal is to state the
+target as "no flip, no lock-out"; until the owner decides, the 10 deg target is not met in the
+tails. The evidence covers white noise; with coloured error the tails are larger (minimum track
+below).
+
+**Turns from the wheel path** (`align_yaw_wheel_turns`). Course over ground along the mean
+heading is only trusted on near-straight segments: the chord between two chunk means on a turn
+bends with the speed profile inside the turn, by up to half the turn angle. With wheel data the
+shape of the path in w is known. The odometer measures the forward speed of the odometry frame
+o (`frames.T_b_o`, the axle centre), so the path `q` of o is integrated from the wheel travel
+along o's heading `psi` (the travel axis, below), one step per fix,
+
+    q_i = q_{i-1} + s_i sinc(dpsi_i / 2) (cos, sin)(psi_{i-1} + dpsi_i / 2)
+
+with `s_i` the odometer difference and `dpsi_i` the heading change since the previous fix
+(exact for constant speed and yaw rate between the two fixes). Per chunk the mean `Q_k`, and the
+mean lever arm from o, `mo_k = mean (R_w_b (p_b_g - p_b_o))_h`. A segment the turn gate rejects
+is then used, when every step into the fixes of both chunks had wheel data, with
+
+    g_k = Q_{k+1} - Q_k + mo_{k+1} - mo_k   (w, antenna displacement)
+    a_k = g_k / |g_k|
+
+The lever arm is inside `g_k`, so the segment adds nothing to `L`, and the closed form of
+section 5 holds unchanged. The direction of travel is inside `g_k` too. Ignoring `T_b_o` (the
+first version) rotated every chord on a constant turn: IMU 0.2 m ahead of the axle on a 1 m
+circle gave a median yaw error of 12 deg, NEES 5.5; with it, NEES 0.87 (test
+`GnssTrackYaw2b.WheelPathUsesOdometryFrame`). Segments that pass the gate keep the heading
+direction: on a constant arc the two agree.
+
+**Travel axis** (fix round 2, review N1). A wheeled robot moves along the x axis of its odometry
+frame, so every direction of travel, for the heading segments, the wheel path and the
+forward-driving assumption alike, is the heading of `x_o = R_w_b R_b_o (1, 0, 0)`, horizontal
+part, unwrapped from fix to fix; the lever arm of the heading segments is also taken from o,
+`R_w_b (p_b_g - p_b_o)`, so they follow the point that moves along `x_o`. With `T_b_o` identity
+this is the body x axis and the body lever arm, bit for bit as before. The horizontal projection
+of `x_o` is exact for any mount, including a tilted one; the assumption is that the robot moves
+along `x_o` (not sideways), and a mount whose `x_o` is vertical has no heading ("heading
+undefined"). Before, the heading segments used `x_b`: a mount yaw of 5 deg gave NEES 2.8 on a
+straight track, 90 deg a 90 deg error, 180 deg a silent flip. Test
+`GnssTrackYaw2b.MountYawSetsTheTravelAxis` (5, 90 and 180 deg; straight and 1 m circle; NEES
+0.81 / 1.03).
+
+**Turns hidden between fixes** (fix round 2, review N2, also in design 2). The aligner sees the
+heading only at the fixes it receives. A GNSS outage over an S-jog (a turn and its opposite)
+leaves a net heading change of zero, so the turn gate passed it and a heading segment received
+the sideways GNSS displacement: on aisles, an outage over 6-16 s aligned 100 of 100 runs beyond 3
+sigma (median 26 deg off), with or without wheel data, in design 2 as well. The pipeline now
+passes, with each fix, the total absolute heading variation of the front end (the sum of
+`|heading change|` of the travel axis `x_o` scan to scan, about 10 Hz; `EstimatorCore`, only with
+`align_yaw_from_track`; read from `x_o`, not `x_b`, so that an IMU mounted with its x axis near
+vertical does not feed attitude noise into the gate, fix round 3; the wiring is tested by
+`PipelineComponent.TrackYawHeadingVariationUsesTheTravelAxis`, fix round 4). Per step the aligner takes its difference since the last fix it added,
+at least the net change (the net change alone when no reading exists); it sums the steps per
+chunk half, and the turn gate uses the larger of the net change between the chunk centres and the
+total variation of the steps between them (for a constant arc the two are equal, so nothing
+changes there). A step whose total variation exceeds `align_yaw_max_turn_deg` has no known arc
+shape and is not used through the wheel path (a GNSS outage in a turn: a 9 s outage in a 1 rad/s
+turn now aligns in 51 s, 36 s without the outage, 137 s in the first version). Test
+`GnssTrackYaw2b.OutageOverAnSJogIsGated` (aisles, outages over 6-16, 8-18 and 10-20 s, with and
+without wheel data, 100 seeds): at most 1 of 100 beyond 3 sigma, NEES 0.88 to 1.28; the 8-18 s
+case with the wheel path, which showed a bias of 10.9 deg (NEES 3.7) before, is at 3.4 deg, NEES
+1.28. Without the readings (and without wheel data) 100 of 100 are still beyond 3 sigma: the
+gate needs them. No maximum segment duration was added: straight and circular outages are
+harmless (NEES 0.92), only hidden turns matter. The scan-to-scan sum can miss the turn inside one
+scan interval at each end of a step (about 0.1 rad at 1 rad/s), far below the 45 deg gate.
+
+Error model of the wheel path, stated:
+
+- Wheel slip (scale) and skid (motion not along x_o): `align_yaw_wheel_slip_frac` (0.05) of the
+  path, along and across the motion, fully correlated inside each chunk (2 s), independent
+  between chunks.
+- Unknown speed profile between two fixes: the step direction is within `+-dpsi_i / 2` of the
+  mid heading `u_i`, uniform, independent per step: variance `(s_i dpsi_i)^2 / 12` across `u_i`.
+- The heading itself: neglected (gyro and LiDAR rotation, below 0.05 deg before the alignment on
+  the 15 box seeds).
+
+A step into fix `i` of chunk `k` enters segment `k - 1` (the chunk is the later one) with weight
+`w_f = (n - i) / n` and segment `k` with `w_r = i / n`. With `c_k` the direction of segment `k`
+when it comes from the wheel path (0 otherwise), a step error `e` moves `Z` across by
+`e x (w_f c_{k-1} + w_r c_k)`, since `conj(c) b` is about `|g| e^{i yaw}`; an error `e_perp`
+across `u_i` does so by `e_perp (w_f c_{k-1} + w_r c_k) . u_i`. So chunk `k` adds
+
+    (slip (F_k |c_{k-1}| + R_k |c_k|))^2                                (slip, triangle bound)
+    + c_{k-1}^T P_f,k c_{k-1} + c_k^T P_r,k c_k + 2 c_{k-1}^T P_x,k c_k   (speed profile)
+
+with `F_k = sum w_f |s|`, `R_k = sum w_r |s|` and `P_f, P_r, P_x` the 2x2 sums of `w_f^2`,
+`w_r^2`, `w_f w_r` times the step's profile variance times `u_i u_i^T`. This is the exact variance
+of the shared steps (review M2 of round 1; round 2 added the projection on `u_i`, without which
+the term was conservative by about 1.8x at 0.3 rad per fix) and adds to the numerator of
+`sigma_yaw` (test `GnssTrackYaw2b.ProfileVarianceOfSharedStepsIsConsistent`: NEES 0.98 over 2000
+runs where this term dominates):
+
+    sigma_yaw = sqrt(sum_k v_k |a_{k-1} - a_k|^2 + sum_k (chunk k wheel-path term)) / |Z|
+
+A segment with a weighted path below `align_yaw_min_wheel_travel_m` is stationary
+(`n_stationary_segments()`), so a spin in place has no direction of travel and is never used.
+Without wheel data, or with a missing reading in either chunk, the turn gate applies as before
+(bit-identical results), and the segment breaks the wheel/GNSS consistency window below.
+
+The variation inside a chunk (its span) is not covered by the variation between chunk centres
+(fix round 3, review R2-3): every step lies between exactly one pair of centres, so a turn
+hidden in one step gates that segment, but the chunk holding the step mixes positions from before
+and after the hidden S-jog in its centroid, which biases the other segment that uses the chunk.
+Test `GnssTrackYaw2b.ShortOutageOverAQuickSJogInsideAChunk` (a 2.8 s outage over a quick S-jog at
+10 positions in a chunk, 200 runs): NEES 0.62, none beyond 3 sigma; without the span term 2.06 and
+5 beyond 3 sigma.
+
+Tests (`test_gnss_track_yaw_2b.cpp`): exact on a noise-free 1 m circle where every segment is
+gated; aisles with 2 m straights and 90 deg corners at 1 rad/s, 200 seeds: at 3 deg, without the
+wheel path 2 of 200 runs aligned within the path (median 33.7 m driven), with it all 200 (median
+7.9 m, NEES 0.85); at 6 deg 8.9 -> 2.6 m (NEES 1.03); with 5 % slip and skid drawn per turn NEES
+0.99, none beyond 3 sigma; spin in place never aligns.
+
+Limit (pinned, `GnssTrackYaw2b.PersistentSkidPinned`): a skid that persists through a long turn
+in one direction (a skid-steer robot's offset centre of rotation does this) is correlated between
+chunks, outside the model. On a 1 m circle at 6 deg: 5 deg of skid, NEES 1.6, 1 of 200 beyond 3
+sigma; 10 deg, NEES 4.3, 24 of 200 beyond 3 sigma, up to 24 deg off. Alternating turns cancel it.
+
+**Wheel/GNSS consistency window** (round 1 and fix round 2, reviews I1 and N3). With wheel data
+on every segment, a robot whose wheels turn while the body does not move (stuck against an
+obstacle, lifted on a stand) gives segments with the heading as direction and GNSS drift as
+displacement; the odometer does not see that. Each segment with wheel data has a
+wheel-predicted displacement `d_k`: the wheel travel between the two chunk centroids, weighted as
+the steps enter them (exact on a straight track, also while accelerating), or `|g_k|` for a
+wheel-path segment. Besides all segments, the aligner sums the segments since the last
+mismatch; a mismatch is
+
+    | r_recent - sum_recent d_k | > align_yaw_reverse_nsigma x sigma_recent + slip x sum_recent d_k
+
+(their noise across Z, `sigma_recent`, and the slip fraction; counted in `n_wheel_mismatches()`,
+`Stats::n_gnss_wheel_mismatch`). Moving, `r / sum d` is about 1 (a chord against the same chord);
+stuck, `r` is the drift while `sum d` grows. After a mismatch every older segment is suspect: no
+transform ("track not coherent") until the segments since the mismatch agree with the wheels over
+`align_yaw_wheel_restart_m` (10 m) of wheel travel, and then they replace all segments
+(`n_wheel_restarts()`). A segment without wheel data (a missing odometer reading) cannot be
+checked: it breaks the window, which starts again at the next segment, and a pending restart stays
+pending (fix round 3, review R2-1). Before, such a segment switched the check off for good: after
+a mismatch, one missing reading while driving locked the alignment out (0 of 100 aligned in 540 s
+of driving; now 100 of 100 after 12 to 18 m, NEES 0.88 to 1.10), and without one the stuck-wheel
+check was lost (0.20 m per fix: 20 of 100 aligned on noise; now 1 of 100, the review probe's
+seeds, against 6 without the missing reading). The cost: with 2 % of fixes missing their reading,
+the 10 m of agreeing travel must fall between two missing readings, so after a mismatch the
+alignment can wait long (median 28.9 m, max 198 m in the probe). Agreement implies `r >= (1 - slip) sum d - n sigma`, so the round-1
+coherence test against the wheel travel (`r >= 0.5 max(sum |b|, sum d)`) is implied and was
+removed. It needs no front-end motion, which would fail in a degenerate corridor.
+
+Before fix round 2 the wheel travel was summed for ever: after T seconds of spinning the
+alignment waited for about the spun distance (300 s: 150 m), and the stuck drift stayed in Z
+(NEES up to 135 with 0.05 m per fix of drift). Envelope (tests
+`GnssTrackYaw2b.StuckWheelsDriftingGnssEnvelope` and `StuckThenDriveAlignsAfterBoundedTravel`;
+probe on the review seeds for the window length):
+
+| `align_yaw_wheel_restart_m` | stuck, 0.20 m per fix: aligned of 100 | spin 30 / 60 / 300 s then drive: median (max) distance to the alignment | NEES after the stuck phase |
+| --- | --- | --- | --- |
+| no window (round 1) | 16 | 15.9 / 30.9 / 149.9 m (300 s: 42 of 100 aligned within 150 m) | up to 77 (0.05 m per fix of drift) |
+| 3 m | 83 | 3.9 / 3.9 / 3.9 m | 0.62 to 1.12 |
+| 6 m | 16 | 5.9 / 5.9 / 6.9 m | 0.71 to 1.12 |
+| **10 m (shipped)** | **4** | **9.9 / 9.9 / 10.9 m (max 17.9 m)** | 0.70 to 1.12 |
+| 15 m | 4 | 14.9 / 14.9 / 15.9 m | 0.75 to 1.12 |
+
+At 0.05 and 0.10 m per fix of drift no run aligns while stuck at any length. 10 m is the shortest
+window whose stuck-wheel rate is at its floor (at 0.20 m per fix, 1 to 7 of 100 depending on the
+seed set: 2 in `StuckWheelsDriftingGnssEnvelope`, 4 in the window-length probe above, 6 in the
+re-review 3 probe); without the stuck phase the robot aligns after 4.9 m as before. The cost: a slow robot
+in strong coloured error (0.12 m/s, 0.05 m per fix) waits instead of aligning in 6 of 200 runs
+within 5 min. An odometer that over-reads by 2x or more mismatches at every chunk and never
+aligns; the mismatch counter shows it.
+
+**Minimum track with wheel data** (`align_yaw_min_track_wheel_m`, 3 m, its own value). It applies
+when every segment used has its direction from wheel data; otherwise `align_yaw_min_track_m`
+(5 m) holds. Chosen from the absolute-error envelope at the shipped 6 deg (straight track,
+0.3 m white plus a random walk, 200 seeds; study section 16.3, probe seeds):
+
+| minimum | 0.02 m per fix: max error, runs > 15 deg (0.12 / 0.20 / 0.50 m/s) | 0.05 m per fix: runs > 15 deg / > 30 deg (sum of 3 speeds) | stuck wheels, 0.20 m per fix | time to align at 0.5 m/s |
+| --- | --- | --- | --- | --- |
+| 0 m | 17.1 / 13.7 / 11.1 deg, 2 | 52 / 3 | 37 of 100 | 7.8 s |
+| 1 m, 2 m | the same as 0 m | 52 / 3 | 37 of 100 | 7.8 s |
+| 3 m | 14.9 / 8.9 / 9.3 deg, 0 | 30 / 1 | 16 of 100 | 9.8 s |
+| 5 m | 8.3 / 9.0 / 8.5 deg, 0 | 15 / 0 | 7 of 100 | 13.8 s |
+
+3 m halves the tails of 0 m (no run beyond 15 deg at 0.02 m per fix with these seeds, the stuck
+case at the design-2 no-wheel level) for 2 s at 0.5 m/s; 5 m costs another 4 s. A parked robot
+whose wheels stop is caught by the odometer at any minimum (every segment stationary: 0 of 100 at
+0.05, 0.10 and 0.20 m per fix). Coloured error is in none of the gates' models: the minimum
+track, the coherence test and the consistency window only bound its tails, as the table shows.
+(The stuck-wheel column is from before the consistency window of fix round 2, which brings it to
+1 to 7 of 100 depending on the seed set.)
+
+**Front-end displacement gated on its covariance: not used** (it is used gated on the
+scan-matching information along the travel axis since the root-cause study, section 5.2).
+Measured on the corridor
+(study section 16.4): with degeneracy detection off (the shipped default) the scan matcher's
+along-axis sigma is 1.5 to 4.6 cm while the front end's 2 s displacement is wrong by 1.0 m (it
+does not move along the axis); with detection on and the shipped `unobserved_var_m2` (0.001) it
+says 3.2 cm while the error reaches 5.5 m. Only the study's 1000 m^2 setting flags the axis. A
+test on that covariance would trust exactly the displacement that flipped seeds 51 and 52, so
+the direction of travel without wheel data stays the forward assumption (limit of section 5).
+
+**Yaw from rotating in place: not built.** The antenna circles the body origin at the lever arm
+`|l|` (0.22 m horizontal), so a 2-D fit of that circle gives `sigma_yaw = sigma / (|l| sqrt(N))`
+(perpendicular noise over `sum |q - mean q|^2 = N |l|^2`). One rotation in 10 s at 0.5 m: at the
+simulator's 5 Hz (N = 50) 19.5 deg (18.1 predicted), at 10 Hz (N = 100) 12.9 deg (12.8); with RTK
+at 2 cm, 0.50 deg at 10 Hz; with 0.4 m of error correlated over 5 s (plus 0.3 m white), 46 deg
+(test `GnssTrackYaw2b.InPlaceRotationYawObservability`, 2000 runs each). The brief's
+`sigma / (|l| sqrt(N / 2))` overstates the white case by sqrt(2).
+
+### 5.2 Residual limits: causes and tolerances (root-cause study)
+
+Study: `gnss_fusion_study.md` section 16.13. For each residual limit of design 2b the noise
+source was swept, and then the suspect step was replaced by an ideal one with the noise
+unchanged. A limit is algorithm-caused when the failures disappear and the pipeline has the
+information; noise-caused when the sensor gives misleading data; a sensor-set limit when no
+sensor in the set measures what is missing. Three changes follow from it (all behind
+`gnss.align_yaw_from_track`; struct defaults keep the previous behaviour).
+
+**Bridged odometer gaps** (`gnss.align_yaw_wheel_max_gap_fixes`, 4). The pipeline's reading is a
+running integral of wheel speed, interpolated across a wheel-message gap, so a bridged step is an
+estimate (backlog F1, `gnss_fusion_study.md` section 16.13). With `m` the number of consecutive fixes without a reading before a reading, the
+travel `odo_i - odo_last` is taken when `m <= max_gap` and lands on fix `i` (its half, and the
+weights of fix `i` in `d_k`). Placing a step one to four fixes late moves the weighted travel by
+at most `max_gap / n` of that step (0.04 m at 0.5 m/s), well inside the tolerance of the window
+(`3 sigma + slip d`). The wheel path is not bridged, because the arc of a step across a gap has
+an unknown shape. When `m` exceeds the bound, every chunk half the run touched has no wheel data.
+A run that started in the chunk before always overflows in the first half of this chunk, which
+the segment using the earlier half also uses (the bound is below half a chunk).
+
+**Extended stationary segments** (`gnss.align_yaw_merge_max_chunks`, 10). A segment with less than
+`align_yaw_min_wheel_travel_m` of travel (or a still front end) is not added. Instead its earlier
+chunk `A` stays the anchor, and the next segment runs from `A` to the next chunk. Its travel and
+the wheel, path and front-end flags are the sums over the chunks between (`carry`); its
+wheel-predicted displacement `d_k` is the length of its path. Its noise follows from the telescoping of section 5, because the inner chunks have
+coefficient 0.
+
+The direction of an extended segment is the path of `o` between the chunk means:
+`unit(p_o + l_k)` from the front end where it observed the travel axis, else `unit(g_k)` from the
+wheel path. Without either path the segment is skipped. The mean heading of the two end chunks
+is not used, because on a long span a turn at one end biases it: on noise-free slow S-jogs the
+first yaw was 4.8 deg off with it, and exact with the path. The path follows the turns, so the
+turn gate does not apply.
+
+The slip and profile terms of the inner chunks are left out. Their wheel travel is below
+`align_yaw_min_wheel_travel_m` in total, so their slip error is below `slip x 0.2 m` (1 cm),
+against the 0.16 m noise of a chunk mean.
+
+A stationary segment is extended only while such a path will exist: the front end observed the
+travel axis, or every chunk so far is in the wheel path. Otherwise it is added with `a_k = 0` as
+before. On E-01 a reading was missing at the first fix, so the rest chunk had no wheel path, and
+extending there lost a segment of track.
+
+After `max_chunks` the stationary segment is added with `a_k = 0` as before. So a robot slower
+than `min_travel / (2 s (max_chunks + 1))`, about 0.01 m/s, still does not align.
+
+**Front-end travel where the LiDAR observes the travel axis** (`gnss.align_yaw_frontend_travel`,
+`gnss.align_yaw_frontend_min_info` 100).
+- **The observability gate.** Per scan the pipeline computes `d^T H_rho d`, with `d` the
+  horizontal unit of `x_o` in the LiDAR frame and `H_rho` the translation block of the
+  scan-matching Hessian in the `[rho, phi]` tangent of `T_w_l`. This is the robust-weighted count
+  of point-to-plane constraints along the axis. A scan below the threshold, or a scan whose match
+  failed, increments a count that the pipeline passes with each fix.
+- **Observed segment.** A segment is observed when the count did not change over every step from
+  the first fix of its earlier chunk to the last fix of its later chunk.
+- **What the front end then decides:**
+  - the displacement `p_o` between the two chunk means of the front-end position of `o`; below
+    `align_yaw_min_wheel_travel_m` the segment is stationary, whatever the wheels say;
+  - without wheel data, the sign of `p_o . a_k` replaces the forward assumption;
+  - in a turn, `a_k = unit(p_o + l_k)`, the antenna displacement from the front-end path, with no
+    slip or profile term.
+- **Measured per scan:**
+
+  | scene | constraints along `x_o` |
+  | --- | --- |
+  | box world | 239 to 466 |
+  | E-01 | 304 to 577 |
+  | box-world corridor | 0.2 to 66 |
+
+  The scan matcher's covariance did not separate these cases (section 5.1); its information
+  does.
+
+**Classification of the limits:**
+1. **Wheels turning on a still body, with GNSS drift.** Algorithm where the LiDAR observes the
+   travel axis (fixed: none of 100 up to 0.50 m per fix). Sensor set where it does not: the
+      wheels say the robot moves, the GNSS drift looks like motion, and in steady state the IMU
+   cannot tell constant speed from rest. The onset is observable (backlog F3). There the
+   tolerance is 0.15 m per fix; above it the rate depends on the seeds, 0 to 14 of 100.
+2. **Missing wheel readings after a mismatch.** Algorithm: the window break threw away travel
+   that the next reading still gives (in the pipeline, interpolated across the gap: F1). Fixed: up to 20 % missing, the robot aligns after a
+   median 10.9 m (max 21.9 m). Before, at 2 % missing, it was 36 m (max 311 m).
+3. **A slow robot with wheel data.** Algorithm, with two causes: the per-segment travel threshold,
+   and the coherence test failing on short segments that noise dominates. Fixed down to about
+   0.01 m/s. What remains is noise: the coloured GNSS drift per metre of track, tolerable up to
+      about `0.02 m sqrt(v / 0.5 m/s)` per fix. Above it, a slow robot now aligns with a confident
+   wrong yaw instead of never aligning (backlog F2).
+4. **Without wheel data.**
+   - Backward travel: a sensor-set limit, because the travel sign is not in the GNSS positions or
+     the heading. GNSS Doppler does not give it either. Fixed where the LiDAR observes the axis.
+   - Parked with drift: as 1, with a tolerance of 0.10 m per fix where the axis is not observed.
+5. **A skid held through a one-way turn.** Noise (physics) for wheels plus gyro: the sideslip is
+   the angle between the velocity and `x_o`, and neither sensor measures it. Fixed where the
+   LiDAR observes the axis, through the front-end path. Elsewhere the tolerance is 5 deg.
+
+**Tolerance envelope** (simulator defaults: 0.5 m, 5 Hz, 0.22 m lever arm, wheel data, shipped
+keys). Each value is the largest level with at most 1 of 100 failures and, where the robot drives,
+alignment within 10 m. The two rows marked * use their own criterion, stated in the row.
+
+| source | LiDAR observes the travel axis | it does not |
+| --- | --- | --- |
+| GNSS drift, wheels turning on a still body | none up to 0.50 m per fix | 0.15 m per fix |
+| GNSS drift, parked without wheel data | none up to 0.30 m per fix | 0.10 m per fix |
+| GNSS drift while driving at speed `v` | about `0.02 m sqrt(v / 0.5 m/s)` per fix | the same |
+| white GNSS sigma (declared = true) | 1.0 m | 1.0 m |
+| missing wheel readings* (restart distance after a mismatch, which includes the 10 m window) | 20 %: median 10.9 m, max 21.9 m | the same |
+| speed with wheel data* (only with GNSS drift up to about 5 mm per fix at 0.03 m/s; see F2) | from 0.02 m/s (bound about 0.01 m/s) | the same |
+| persistent skid in a one-way turn | none up to 10 deg | 5 deg |
+| backward travel without wheel data | handled | not handled |
+
+These values are hardware requirements for the GNSS receiver, the odometer and the drive train,
+not bugs. Known open issues F1 to F6 are listed at the end of `gnss_fusion_study.md` section
+16.13 and in ADR-023.
+
+**GNSS Doppler velocity** (study only; a future ADR). At 0.05 m/s per axis, a still body is seen
+from the velocity in every environment, and the yaw reaches a 6 deg sigma within 0.4 to 2.1 m at
+0.02 to 0.5 m/s, independent of position drift.
+- It would remove limits 1 and 4b everywhere, and the drift-per-metre limit of slow robots.
+- It would not remove limit 4a (the same sign ambiguity) or limit 5 (a skid rotates the velocity
+  too).

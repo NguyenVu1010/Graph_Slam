@@ -9,7 +9,9 @@
 // variant and the shift oracles against the same frame without them (bootstrap 95 % CI of the
 // median per-seed difference, fixed seed). The `prealign` variant is `ref` with
 // gnss.attach_prealign_fixes (ADR-022, section 14); `trackyaw` is `ref` with
-// gnss.align_yaw_from_track (ADR-023, section 15), `prealign_trackyaw` has both. Writes
+// gnss.align_yaw_from_track (ADR-023, section 15), `prealign_trackyaw` has both; the `_s45` /
+// `_s60` suffixes set gnss.align_yaw_max_sigma_deg, `_wheel` runs with wheel odometry and `_2b`
+// adds the design-2b keys (section 16). Writes
 // results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-corridor-study">/gnss_corridor_study.md.
 // MSS_GCS_VARIANTS: comma-separated variant names to run (default all; the reference first is
 // always run); MSS_GCS_FIRST_SEED / MSS_GCS_LAST_SEED: seed range (default 42..56).
@@ -88,13 +90,14 @@ class CorridorObserver : public detail::CoreObserver {
     }
     E_last_ = T_e_w;
   }
-  void on_alignment(Timestamp /*t*/,
+  void on_alignment(Timestamp t,
                     const common::Pose& T_e_w,
                     double yaw_sigma_rad,
                     const gnss::GnssTrackYawAligner& /*track*/) override {
     if (n_alignments_ == 0) {
       align_T_ = T_e_w;
       align_sigma_rad_ = yaw_sigma_rad;
+      align_t_ = t;
     }
     ++n_alignments_;
   }
@@ -153,6 +156,7 @@ class CorridorObserver : public detail::CoreObserver {
   std::uint64_t n_accepted_ = 0;
   std::uint64_t n_alignments_ = 0;
   common::Pose align_T_;                   // aligner T_e_w at the first alignment
+  Timestamp align_t_{};                    // time of the first alignment
   double align_sigma_rad_ = std::nan("");  // its predicted yaw sigma (ADR-023 only)
   std::map<std::int64_t, Vec3> raw_fix_;   // dataset fixes by t (ns)
   double shift_sq_ = 0.0;
@@ -172,6 +176,7 @@ struct Variant {
   bool force_truth = false;   // CoreTestHooks::force_T_e_w with the true T_e_w
   std::string lidar_ref;      // key of the LiDAR-only run sharing the degeneracy settings
   bool oracle_shift = false;  // CoreTestHooks::gnss_shift_oracle with the true displacement
+  bool wheel = false;         // wheel_odom.enabled (it observes the corridor axis)
 };
 
 struct SeedResult {
@@ -195,6 +200,9 @@ struct SeedResult {
   std::uint64_t n_shift_big = 0;                // factors with |shift error| > kShiftBigM
   // First alignment (ADR-023): aligner yaw error vs truth and its predicted 1-sigma (deg).
   double align0_dyaw_deg = std::nan(""), align0_sigma_deg = std::nan("");
+  // Section 16: time since the motion started (s) and distance driven (m) at the first
+  // alignment; NaN when it never aligned.
+  double align0_t_s = std::nan(""), align0_dist_m = std::nan("");
 };
 
 // Errors of published estimates (estimate - truth) in w: RMS per axis and per 10 s window.
@@ -263,7 +271,7 @@ void raw_gnss(const BoxWorldParams& p,
 Config corridor_cfg(const BoxWorldParams& p, const fs::path& dir, bool gnss, const Variant& v) {
   return box_config(p,
                     gnss,
-                    false,
+                    v.wheel,
                     dir,
                     "    preprocess:\n      max_range_m: 10.0\n" + v.degeneracy + v.extra,
                     v.gnss_keys);
@@ -362,6 +370,8 @@ void fused_run(const BoxWorldParams& p,
     double dx = 0.0;
     in_w(T_true, obs.align_T_, dx, r.align0_dyaw_deg);
     r.align0_sigma_deg = obs.align_sigma_rad_ * kRadToDeg;
+    r.align0_t_s = static_cast<double>(obs.align_t_.ns - p.t0_ns) * 1e-9 - p.static_s;
+    r.align0_dist_m = test::box_path(p, obs.align_t_).s_m;
   }
   if (obs.n_gnss_ > 0) {
     in_w(T_true, obs.E_prior_, r.align_first_dx, r.align_first_dyaw_deg);
@@ -501,6 +511,43 @@ TEST(GnssCorridorStudy, Diagnosis) {
        "", "      attach_prealign_fixes: true\n      align_yaw_from_track: true\n", false, "on",
        true},
   };
+  // Section 16 (design 2b): the alignment yaw-sigma threshold, wheel odometry, and the 2b keys
+  // (turns from the wheel path, minimum track with wheel data).
+  const std::string d2 = "      align_yaw_from_track: true\n"
+                         "      align_yaw_wheel_turns: false\n"
+                         "      align_yaw_min_track_wheel_m: 5.0\n";
+  const std::string pre = "      attach_prealign_fixes: true\n";
+  const auto sig = [](const char* deg) {
+    return std::string("      align_yaw_max_sigma_deg: ") + deg + "\n";
+  };
+  const std::string b2 = "      align_yaw_from_track: true\n"
+                         "      align_yaw_wheel_turns: true\n"
+                         "      align_yaw_min_track_wheel_m: 3.0\n";
+  for (const auto& [suffix, deg] : {std::pair<const char*, const char*>{"", "3.0"},
+                                    std::pair<const char*, const char*>{"_s45", "4.5"},
+                                    std::pair<const char*, const char*>{"_s60", "6.0"}}) {
+    const std::string s = suffix;
+    variants.push_back({"trackyaw2" + s, std::string("trackyaw, yaw sigma ") + deg + " deg", deg_on,
+                        "", d2 + sig(deg), false, "on"});
+    variants.push_back({"prealign_trackyaw2" + s,
+                        std::string("prealign + trackyaw, yaw sigma ") + deg + " deg", deg_on, "",
+                        pre + d2 + sig(deg), false, "on"});
+    variants.push_back({"trackyaw_wheel_2b" + s,
+                        std::string("wheel + trackyaw + 2b keys, yaw sigma ") + deg + " deg",
+                        deg_on, "", b2 + sig(deg), false, "on_wheel", false, true});
+    variants.push_back({"prealign_trackyaw_wheel_2b" + s,
+                        std::string("wheel + prealign + trackyaw + 2b keys, yaw sigma ") + deg +
+                            " deg",
+                        deg_on, "", pre + b2 + sig(deg), false, "on_wheel", false, true});
+  }
+  variants.push_back({"ref_wheel", "ref + wheel odometry", deg_on, "", "", false, "on_wheel",
+                      false, true});
+  variants.push_back({"prealign_wheel", "prealign + wheel odometry", deg_on, "", pre, false,
+                      "on_wheel", false, true});
+  variants.push_back({"trackyaw_wheel", "wheel + trackyaw (design-2 keys)", deg_on, "", d2 + sig("3.0"), false,
+                      "on_wheel", false, true});
+  variants.push_back({"prealign_trackyaw_wheel", "wheel + prealign + trackyaw (design-2 keys)",
+                      deg_on, "", pre + d2 + sig("3.0"), false, "on_wheel", false, true});
   // clang-format on
   if (const char* sel = std::getenv("MSS_GCS_VARIANTS"); sel != nullptr) {
     const std::string s = std::string(",") + sel + ",";
@@ -552,7 +599,8 @@ TEST(GnssCorridorStudy, Diagnosis) {
           "nees_x %.3f frac3s %.3f kf_rms_x %.4f Eprior_dx %.4f Eprior_dyaw %.4f Etrue_dx %.4f "
           "Etrue_dyaw %.4f align_first_dx %.4f align_first_dyaw %.4f align_last_dx %.4f "
           "align_last_dyaw %.4f match_fail %llu nees_gnss %.3f shift_rms %.4f shift_max %.4f "
-          "shift_big %llu align0_dyaw %.3f align0_sigma %.3f win",
+          "shift_big %llu align0_dyaw %.3f align0_sigma %.3f align0_t %.2f align0_dist %.2f "
+          "win",
           v.name.c_str(),
           seed,
           r.ate,
@@ -587,7 +635,9 @@ TEST(GnssCorridorStudy, Diagnosis) {
           r.shift_max_x,
           static_cast<unsigned long long>(r.n_shift_big),
           r.align0_dyaw_deg,
-          r.align0_sigma_deg);
+          r.align0_sigma_deg,
+          r.align0_t_s,
+          r.align0_dist_m);
       for (const double w : r.win_x) {
         std::printf(" %.4f", w);
       }
@@ -661,6 +711,77 @@ TEST(GnssCorridorStudy, Diagnosis) {
     rep.line(win);
   }
 
+  // Section 16: the first alignment per variant (time since the motion started, distance
+  // driven, yaw error against its predicted sigma) and what follows it.
+  rep.line("");
+  rep.line("## First alignment (section 16)");
+  rep.line("");
+  rep.line(
+      "| variant | aligned | time median (max), s | distance median (max), m | abs yaw err median "
+      "(max), deg | predicted sigma median, deg | yaw NEES mean | beyond 3 sigma | > 10 deg at "
+      "first factor | E yaw > 10 deg at end | not accepted after, median (max) | GNSS factors "
+      "median |");
+  rep.line("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  for (std::size_t vi = 0; vi < variants.size(); ++vi) {
+    std::vector<double> t;
+    std::vector<double> d;
+    std::vector<double> e;
+    std::vector<double> sg;
+    std::vector<double> rej;
+    std::vector<double> fac;
+    double nees = 0.0;
+    int n_al = 0;
+    int b3 = 0;
+    int first10 = 0;
+    int end10 = 0;
+    for (const SeedResult& r : res[vi]) {
+      rej.push_back(static_cast<double>(r.rejected));
+      fac.push_back(static_cast<double>(r.factors));
+      first10 += std::abs(r.align_first_dyaw_deg) > 10.0 ? 1 : 0;
+      end10 += std::abs(r.E_true_dyaw_deg) > 10.0 ? 1 : 0;
+      if (!std::isfinite(r.align0_t_s)) {
+        continue;
+      }
+      ++n_al;
+      t.push_back(r.align0_t_s);
+      d.push_back(r.align0_dist_m);
+      e.push_back(std::abs(r.align0_dyaw_deg));
+      if (std::isfinite(r.align0_sigma_deg) && r.align0_sigma_deg > 0.0) {
+        sg.push_back(r.align0_sigma_deg);
+        const double z = r.align0_dyaw_deg / r.align0_sigma_deg;
+        nees += z * z;
+        b3 += std::abs(z) > 3.0 ? 1 : 0;
+      }
+    }
+    const auto mx = [](const std::vector<double>& v) {
+      return v.empty() ? std::nan("") : *std::max_element(v.begin(), v.end());
+    };
+    char b[512];
+    std::snprintf(
+        b,
+        sizeof(b),
+        "| %s | %d/%zu | %s (%s) | %s (%s) | %s (%s) | %s | %s | %d | %d | %d | %s (%s) | "
+        "%s |",
+        variants[vi].name.c_str(),
+        n_al,
+        res[vi].size(),
+        fmt("%.1f", median_of(t)).c_str(),
+        fmt("%.1f", mx(t)).c_str(),
+        fmt("%.2f", median_of(d)).c_str(),
+        fmt("%.2f", mx(d)).c_str(),
+        fmt("%.2f", median_of(e)).c_str(),
+        fmt("%.2f", mx(e)).c_str(),
+        fmt("%.2f", median_of(sg)).c_str(),
+        sg.empty() ? "n/a" : fmt("%.2f", nees / static_cast<double>(sg.size())).c_str(),
+        b3,
+        first10,
+        end10,
+        fmt("%.0f", median_of(rej)).c_str(),
+        fmt("%.0f", mx(rej)).c_str(),
+        fmt("%.0f", median_of(fac)).c_str());
+    rep.line(b);
+  }
+
   // Paired comparison against the reference (the first variant).
   rep.line("");
   rep.line("## Ablations paired against " + variants[0].name);
@@ -721,6 +842,21 @@ TEST(GnssCorridorStudy, Diagnosis) {
         std::pair<const char*, const char*>{"prealign_trackyaw", "trackyaw"},
         std::pair<const char*, const char*>{"prealign_trackyaw_oracle_shift",
                                             "prealign_oracle_shift"},
+        std::pair<const char*, const char*>{"prealign_trackyaw2_s45", "prealign_trackyaw2"},
+        std::pair<const char*, const char*>{"prealign_trackyaw2_s60", "prealign_trackyaw2"},
+        std::pair<const char*, const char*>{"trackyaw2_s45", "trackyaw2"},
+        std::pair<const char*, const char*>{"trackyaw2_s60", "trackyaw2"},
+        std::pair<const char*, const char*>{"prealign_trackyaw_wheel_2b",
+                                            "prealign_trackyaw_wheel"},
+        std::pair<const char*, const char*>{"prealign_trackyaw_wheel_2b_s45",
+                                            "prealign_trackyaw_wheel"},
+        std::pair<const char*, const char*>{"prealign_trackyaw_wheel_2b_s60",
+                                            "prealign_trackyaw_wheel"},
+        std::pair<const char*, const char*>{"prealign_trackyaw_wheel_2b_s60",
+                                            "prealign_trackyaw_wheel_2b"},
+        std::pair<const char*, const char*>{"trackyaw_wheel_2b_s60", "trackyaw_wheel"},
+        std::pair<const char*, const char*>{"prealign_trackyaw_wheel", "prealign_wheel"},
+        std::pair<const char*, const char*>{"prealign_wheel", "ref_wheel"},
         std::pair<const char*, const char*>{"oracle_shift_truth_init", "frame_truth_init"},
         std::pair<const char*, const char*>{"oracle_shift_truth_fixed", "frame_truth_fixed"}}) {
     const int a = index_of(with);
@@ -808,6 +944,272 @@ TEST(GnssCorridorStudy, BoxWorldTrackYawPairs) {
                   "      align_yaw_from_track: true\n",
                   "gnss_box_trackyaw.md",
                   "gnss-box-trackyaw");
+}
+
+// Section 16 (design 2b): the first alignment of a replay (time, predicted yaw sigma, aligner
+// T_e_w, turn segments taken from the wheel path).
+class AlignObserver : public detail::CoreObserver {
+ public:
+  void on_alignment(Timestamp t,
+                    const common::Pose& T_e_w,
+                    double yaw_sigma_rad,
+                    const gnss::GnssTrackYawAligner& track) override {
+    if (n_ == 0) {
+      t_ = t;
+      T_ = T_e_w;
+      sigma_rad_ = yaw_sigma_rad;
+      wheel_turns_ = track.n_wheel_turn_segments();
+    }
+    ++n_;
+  }
+  int n_ = 0;
+  Timestamp t_{};
+  common::Pose T_;
+  double sigma_rad_ = std::nan("");
+  int wheel_turns_ = 0;
+};
+
+// Box world (2 m circle, 20 s, GNSS 0.5 m at 5 Hz), seeds 42..56, without and with wheel
+// odometry: GnssAligner, design 2 (track yaw, 3 deg, 5 m) and design 2b at 3 / 4.5 / 6 deg
+// (turns from the wheel path, 3 m minimum track with wheel data): fused ATE paired, GNSS
+// factors, and the first alignment (time since the motion started, distance driven, yaw error
+// against the predicted sigma). Skipped unless MSS_GNSS_BOX_2B=1 (GTSAM build). Writes
+// results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-box-2b">/gnss_box_2b.md. About 8 min.
+TEST(GnssCorridorStudy, BoxWorldAlignment2b) {
+  const char* on = std::getenv("MSS_GNSS_BOX_2B");
+  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_GNSS_BOX_2B=1 (GTSAM build)";
+  }
+  StudyReport rep("gnss_box_2b.md", "MSS_GNSS_CORRIDOR_RUN_ID", "gnss-box-2b");
+  const std::string d2 =
+      "      align_yaw_from_track: true\n      align_yaw_wheel_turns: false\n"
+      "      align_yaw_min_track_wheel_m: 5.0\n";
+  const std::string b2 =
+      "      align_yaw_from_track: true\n      align_yaw_wheel_turns: true\n"
+      "      align_yaw_min_track_wheel_m: 3.0\n";
+  const auto sig = [](const char* deg) {
+    return std::string("      align_yaw_max_sigma_deg: ") + deg + "\n";
+  };
+  const std::vector<std::pair<std::string, std::string>> configs = {{"off", ""},
+                                                                    {"d2", d2 + sig("3.0")},
+                                                                    {"2b_s30", b2 + sig("3.0")},
+                                                                    {"2b_s45", b2 + sig("4.5")},
+                                                                    {"2b_s60", b2 + sig("6.0")}};
+  rep.line("# Box world, first alignment and fused ATE (GnssCorridorStudy.BoxWorldAlignment2b)");
+  struct Row {
+    double ate = 0.0, t = std::nan(""), d = std::nan(""), e = std::nan(""), s = std::nan("");
+    std::uint64_t factors = 0;
+  };
+  for (const bool wheel : {false, true}) {
+    const char* name = wheel ? "gnss_wheel" : "gnss";
+    std::vector<std::vector<Row>> rows(configs.size());
+    for (std::uint32_t seed = 42; seed <= 56; ++seed) {
+      BoxWorldParams p;
+      p.seed = seed;
+      const fs::path dir = rep.dir() / name / ("seed" + std::to_string(seed));
+      ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+      for (std::size_t ci = 0; ci < configs.size(); ++ci) {
+        AlignObserver obs;
+        detail::CoreTestHooks hooks;
+        hooks.observer = &obs;
+        ReplayResult rr;
+        {
+          const HooksScope scope(&hooks);
+          rr = replay(dir / "data",
+                      box_config(p, true, wheel, dir / configs[ci].first, "", configs[ci].second));
+        }
+        Row r;
+        r.ate = trajectory_errors(p, rr.estimates).ate_m;
+        r.factors = rr.stats.n_gnss_factors;
+        if (obs.n_ > 0) {
+          r.t = static_cast<double>(obs.t_.ns - p.t0_ns) * 1e-9 - p.static_s;
+          r.d = test::box_path(p, obs.t_).s_m;
+          const common::Pose D = test::box_T_e_w(p).inverse() * obs.T_;
+          r.e = wrap_deg(yaw_of(D.R));
+          r.s = obs.sigma_rad_ * kRadToDeg;
+        }
+        std::printf(
+            "BOX2B %s seed %u %s ate %.5f factors %llu align_t %.2f dist %.2f yaw_err %.3f "
+            "sigma %.3f wheel_turns %d\n",
+            name,
+            seed,
+            configs[ci].first.c_str(),
+            r.ate,
+            static_cast<unsigned long long>(r.factors),
+            r.t,
+            r.d,
+            r.e,
+            r.s,
+            obs.wheel_turns_);
+        std::fflush(stdout);
+        rows[ci].push_back(r);
+      }
+    }
+    rep.line("");
+    rep.line(std::string("## ") + name);
+    rep.line("");
+    rep.line(
+        "| config | fused ATE (m) | vs off: wins-losses | CI | vs d2: ATE | wins-losses | CI | "
+        "GNSS factors median "
+        "(min) | time to align median (max), s | distance median (max), m | abs yaw err median "
+        "(max), deg | sigma median, deg | yaw NEES | beyond 3 sigma |");
+    rep.line(
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    const auto col = [&](std::size_t ci, auto get) {
+      std::vector<double> v;
+      for (const Row& r : rows[ci]) {
+        v.push_back(get(r));
+      }
+      return v;
+    };
+    const auto mx = [](const std::vector<double>& v) {
+      double m = std::nan("");
+      for (const double x : v) {
+        m = std::isfinite(x) && !(x <= m) ? x : m;
+      }
+      return m;
+    };
+    for (std::size_t ci = 0; ci < configs.size(); ++ci) {
+      const auto ate = [](const Row& r) { return r.ate; };
+      std::vector<double> fac =
+          col(ci, [](const Row& r) { return static_cast<double>(r.factors); });
+      std::vector<double> t = col(ci, [](const Row& r) { return r.t; });
+      std::vector<double> d = col(ci, [](const Row& r) { return r.d; });
+      std::vector<double> e = col(ci, [](const Row& r) { return std::abs(r.e); });
+      std::vector<double> s = col(ci, [](const Row& r) { return r.s; });
+      double nees = 0.0;
+      int n = 0;
+      int b3 = 0;
+      for (const Row& r : rows[ci]) {
+        if (std::isfinite(r.e) && std::isfinite(r.s) && r.s > 0.0) {
+          const double z = r.e / r.s;
+          nees += z * z;
+          b3 += std::abs(z) > 3.0 ? 1 : 0;
+          ++n;
+        }
+      }
+      const double fac_min = *std::min_element(fac.begin(), fac.end());
+      rep.line("| " + configs[ci].first + " | " + paired(col(ci, ate), col(0, ate)) + " | " +
+               (ci >= 2 ? paired(col(ci, ate), col(1, ate)) : std::string(" | | ")) + " | " +
+               fmt("%.0f", median_of(fac)) + " (" + fmt("%.0f", fac_min) + ") | " +
+               fmt("%.1f", median_of(t)) + " (" + fmt("%.1f", mx(t)) + ") | " +
+               fmt("%.2f", median_of(d)) + " (" + fmt("%.2f", mx(d)) + ") | " +
+               fmt("%.2f", median_of(e)) + " (" + fmt("%.2f", mx(e)) + ") | " +
+               fmt("%.2f", median_of(s)) + " | " + (n > 0 ? fmt("%.2f", nees / n) : "n/a") + " | " +
+               std::to_string(b3) + " |");
+    }
+  }
+}
+
+// Replays one dataset (MSS_GNSS_REPLAY_DATA, an mssdata directory) with config/default.yaml and
+// the overlay MSS_GNSS_REPLAY_OVERLAY, and prints the first alignment: time since the first
+// record, distance driven along the ground truth by then, predicted yaw sigma, and the aligner
+// yaw against the yaw of a 2-D Procrustes fit of the published positions (w) to the ground truth
+// (its frame), plus the fused ATE against the ground truth after that fit (section 16, E-01).
+// Skipped unless both are set (GTSAM build).
+TEST(GnssCorridorStudy, ReplayAlignment) {
+  const char* data_env = std::getenv("MSS_GNSS_REPLAY_DATA");
+  const char* overlay_env = std::getenv("MSS_GNSS_REPLAY_OVERLAY");
+  if (data_env == nullptr || overlay_env == nullptr || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_GNSS_REPLAY_DATA and MSS_GNSS_REPLAY_OVERLAY (GTSAM build)";
+  }
+  const fs::path data = data_env;
+  const auto cfg = load_config(kDefault, fs::path(overlay_env));
+  ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
+  AlignObserver obs;
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  ReplayResult rr;
+  {
+    const HooksScope scope(&hooks);
+    rr = replay(data, cfg.value());
+  }
+  // Ground truth positions by time, the first record time and the path length.
+  std::map<std::int64_t, Vec3> gt;
+  Timestamp t_first{};
+  bool have_first = false;
+  {
+    auto opened = io::DatasetReader::open(data, 65536);
+    ASSERT_TRUE(opened.is_ok()) << opened.reason();
+    io::DatasetReader reader = std::move(opened).value();
+    ScanFrame scan(65536);
+    io::Record rec;
+    for (;;) {
+      const auto more = reader.next(rec, scan);
+      if (!more.is_ok() || !more.value()) {
+        break;
+      }
+      if (!have_first) {
+        t_first = rec.t;
+        have_first = true;
+      }
+      if (rec.kind == io::RecordKind::kGt) {
+        gt[rec.t.ns] = rec.gt.T_w_b.p;
+      }
+    }
+  }
+  ASSERT_FALSE(gt.empty());
+  double dist_m = 0.0;
+  if (obs.n_ > 0) {
+    const Vec3* prev = nullptr;
+    for (const auto& [t_ns, p] : gt) {
+      if (t_ns > obs.t_.ns) {
+        break;
+      }
+      if (prev != nullptr) {
+        dist_m += (p - *prev).head<2>().norm();
+      }
+      prev = &p;
+    }
+  }
+  // 2-D Procrustes of the published positions (w) onto the ground truth at the nearest time.
+  std::vector<std::pair<Vec3, Vec3>> pairs;
+  for (const common::Estimate& e : rr.estimates) {
+    const auto it = gt.lower_bound(e.state.t.ns);
+    if (it != gt.end() && it->first - e.state.t.ns < 5'000'000) {
+      pairs.emplace_back(e.state.T_w_b.p, it->second);
+    }
+  }
+  ASSERT_GT(pairs.size(), 10U);
+  Vec3 mw = Vec3::Zero();
+  Vec3 mg = Vec3::Zero();
+  for (const auto& [w, g] : pairs) {
+    mw += w;
+    mg += g;
+  }
+  mw /= static_cast<double>(pairs.size());
+  mg /= static_cast<double>(pairs.size());
+  double sd = 0.0;
+  double sc = 0.0;
+  for (const auto& [w, g] : pairs) {
+    const Vec3 a = w - mw;
+    const Vec3 b = g - mg;
+    sd += a.x() * b.x() + a.y() * b.y();
+    sc += a.x() * b.y() - a.y() * b.x();
+  }
+  const double fit_yaw = std::atan2(sc, sd);
+  double sq = 0.0;
+  for (const auto& [w, g] : pairs) {
+    const Vec3 a = w - mw;
+    const Vec3 r(std::cos(fit_yaw) * a.x() - std::sin(fit_yaw) * a.y() - (g - mg).x(),
+                 std::sin(fit_yaw) * a.x() + std::cos(fit_yaw) * a.y() - (g - mg).y(),
+                 a.z() - (g - mg).z());
+    sq += r.squaredNorm();
+  }
+  const double align_yaw = obs.n_ > 0 ? yaw_of(obs.T_.R) : std::nan("");
+  std::printf(
+      "REPLAY aligned %d t_since_first %.2f dist %.2f sigma_deg %.3f align_yaw_deg %.3f "
+      "fit_yaw_deg %.3f err_deg %.3f wheel_turns %d factors %llu fit_rmse %.5f\n",
+      obs.n_,
+      obs.n_ > 0 ? static_cast<double>(obs.t_.ns - t_first.ns) * 1e-9 : std::nan(""),
+      dist_m,
+      obs.sigma_rad_ * kRadToDeg,
+      align_yaw * kRadToDeg,
+      fit_yaw * kRadToDeg,
+      wrap_deg(align_yaw - fit_yaw),
+      obs.wheel_turns_,
+      static_cast<unsigned long long>(rr.stats.n_gnss_factors),
+      std::sqrt(sq / static_cast<double>(pairs.size())));
 }
 
 }  // namespace

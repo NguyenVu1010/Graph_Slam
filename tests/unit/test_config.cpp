@@ -276,7 +276,7 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   // ADR-023: off by default (previous behaviour); chunk >= 2, sigma (deg -> rad) and n > 0.
   EXPECT_FALSE(cfg.value().gnss.align_yaw_from_track);
   EXPECT_EQ(cfg.value().gnss.align_yaw_chunk_fixes, 10);
-  EXPECT_NEAR(cfg.value().gnss.align_yaw_max_sigma_rad, 3.0 * mss::gnss::kRadPerDegree, 1e-12);
+  EXPECT_NEAR(cfg.value().gnss.align_yaw_max_sigma_rad, 6.0 * mss::gnss::kRadPerDegree, 1e-12);
   EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_reverse_nsigma, 3.0);
   EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_min_track_m, 5.0);
   EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_min_coherence, 0.5);
@@ -334,6 +334,56 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   ASSERT_FALSE(bad_n.is_ok());
   EXPECT_TRUE(mentions(bad_n.reason(), "gnss.align_yaw_reverse_nsigma: must be > 0 (got -1)"))
       << bad_n.reason();
+  // ADR-023 amendment (design 2b): turns from the wheel path, slip fraction in (0, 1), minimum
+  // track with wheel data >= 0.
+  EXPECT_TRUE(cfg.value().gnss.align_yaw_wheel_turns);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_wheel_slip_frac, 0.05);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_min_track_wheel_m, 3.0);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_wheel_restart_m, 10.0);
+  const auto bad_restart =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_yaw_wheel_restart_m: 0\n"));
+  ASSERT_FALSE(bad_restart.is_ok());
+  EXPECT_TRUE(mentions(bad_restart.reason(), "gnss.align_yaw_wheel_restart_m: must be > 0 (got 0)"))
+      << bad_restart.reason();
+  // Root-cause study (gnss_fusion_study.md section 16.13): bridged gaps below half a chunk,
+  // extension >= 0, front end on with 100 constraints.
+  EXPECT_EQ(cfg.value().gnss.align_yaw_wheel_max_gap_fixes, 4);
+  EXPECT_EQ(cfg.value().gnss.align_yaw_merge_max_chunks, 10);
+  EXPECT_TRUE(cfg.value().gnss.align_yaw_frontend_travel);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_frontend_min_info, 100.0);
+  const auto bad_gap = parse_config(read_file(kDefault),
+                                    overlay("    gnss:\n      align_yaw_wheel_max_gap_fixes: 5\n"));
+  ASSERT_FALSE(bad_gap.is_ok());
+  EXPECT_TRUE(mentions(bad_gap.reason(),
+                       "gnss.align_yaw_wheel_max_gap_fixes: must be < align_yaw_chunk_fixes / 2"))
+      << bad_gap.reason();
+  const auto bad_merge = parse_config(read_file(kDefault),
+                                      overlay("    gnss:\n      align_yaw_merge_max_chunks: -1\n"));
+  ASSERT_FALSE(bad_merge.is_ok());
+  EXPECT_TRUE(
+      mentions(bad_merge.reason(), "gnss.align_yaw_merge_max_chunks: must be >= 0 (got -1)"))
+      << bad_merge.reason();
+  const auto bad_info = parse_config(read_file(kDefault),
+                                     overlay("    gnss:\n      align_yaw_frontend_min_info: 0\n"));
+  ASSERT_FALSE(bad_info.is_ok());
+  EXPECT_TRUE(mentions(bad_info.reason(), "gnss.align_yaw_frontend_min_info: must be > 0 (got 0)"))
+      << bad_info.reason();
+  for (const char* v : {"0", "1"}) {
+    const auto bad_slip = parse_config(
+        read_file(kDefault),
+        overlay(std::string("    gnss:\n      align_yaw_wheel_slip_frac: ") + v + "\n"));
+    ASSERT_FALSE(bad_slip.is_ok());
+    EXPECT_TRUE(
+        mentions(bad_slip.reason(),
+                 std::string("gnss.align_yaw_wheel_slip_frac: must be in (0, 1) (got ") + v + ")"))
+        << bad_slip.reason();
+  }
+  const auto bad_track_wheel = parse_config(
+      read_file(kDefault), overlay("    gnss:\n      align_yaw_min_track_wheel_m: -1\n"));
+  ASSERT_FALSE(bad_track_wheel.is_ok());
+  EXPECT_TRUE(
+      mentions(bad_track_wheel.reason(), "gnss.align_yaw_min_track_wheel_m: must be >= 0 (got -1)"))
+      << bad_track_wheel.reason();
 }
 
 // Ruling on the static-init threshold: it must exceed the per-sample accelerometer noise
