@@ -78,10 +78,62 @@ mss_node:
       # oracle) the corridor gives 0.345 m, 14/1, CI excludes 0: off until design 3 (shift
       # covariance) is in.
       attach_prealign_fixes: false
-      # Bound of that buffer, fixes (>= 1); 128 = 25.6 s at 5 Hz. When full before keyframe 0
-      # the oldest fix is dropped (farthest from the static window), after it the new one (so
-      # the static ones stay); both counted in Stats::n_gnss_prealign_dropped.
-      prealign_max_fixes: 128
+      # Bound of that buffer, fixes (>= 1); 320 = 64 s at 5 Hz (about 175 KB, reserved only
+      # when attach_prealign_fixes is true). Sizing rule: GNSS rate x (IMU initialisation window
+      # + expected time to the first alignment). With align_yaw_from_track the alignment can
+      # wait for the yaw sigma: on E-01 (1.5 m fixes on a 1.67 m circle) 264 fixes arrive before
+      # it; 256 dropped 4, 320 none (gnss_fusion_study.md section 15.3). When full before
+      # keyframe 0 the oldest fix is dropped (farthest from the static window), after it the new
+      # one (so the static ones stay); both counted in Stats::n_gnss_prealign_dropped.
+      prealign_max_fixes: 320
+      # ADR-023: take the yaw of T_e_w from the direction of the GNSS track against the body
+      # heading (gyro + LiDAR) instead of fitting front-end positions, whose along-axis part is
+      # IMU dead reckoning in a degenerate corridor. false: GnssAligner (previous behaviour).
+      # Evaluation (gnss_fusion_study.md section 15, 15 paired seeds): corridor seeds starting
+      # > 10 deg off 2 -> 0 (max 2.5 deg). Fused ATE alone: median 1.99 -> 4.66 m, CI against
+      # the reference includes 0, worse than raw GNSS (CI excludes 0); with
+      # attach_prealign_fixes 1.66 m, max 37 -> 3.17 m, CI against the reference excludes 0.
+      # Box world unchanged; E-01 0.002183 -> 0.002210 m (35 of 223 GNSS factors: later
+      # alignment). Direction of travel from the wheel speed when wheel_odom is enabled, else
+      # the forward-driving assumption: then net backward motion before the yaw is confident
+      # aligns 180 deg off, and a parked robot whose GNSS wanders by 0.1 m per fix or more can
+      # align on noise (0.2 m per fix: 16 of 100 runs). Assumes white, honestly declared fix
+      # noise (floored below).
+      # Off until design 3, then on together with attach_prealign_fixes (size
+      # prealign_max_fixes to the alignment delay).
+      align_yaw_from_track: false
+      # Fixes per chunk of the track (>= 2); segments join consecutive chunk means. 10 = 2 s at
+      # 5 Hz.
+      align_yaw_chunk_fixes: 10
+      # Predicted yaw 1-sigma needed before the track-yaw aligner returns T_e_w, deg (> 0).
+      # Replaces align_min_pairs / align_min_spread_m when align_yaw_from_track is true.
+      align_yaw_max_sigma_deg: 3.0
+      # Along-heading GNSS track needed before the track-yaw aligner returns T_e_w, m (> 0).
+      # sigma_yaw assumes white, correctly declared fix noise; this bounds the effect of coloured
+      # error (multipath, slow drift of a parked receiver): a 0.3 m common error over 5 m of
+      # track is 3.4 deg. With the coherence below, a parked receiver drifting by 0.05 m per
+      # fix never aligns (0 of 100 runs, 5 min); without wheel data, 0.2 m per fix aligns in
+      # 16 of 100 (gnss.md section 5).
+      align_yaw_min_track_m: 5.0
+      # Along-heading track over the GNSS path length of the segments used, in (0, 1]: about 1
+      # for steady motion, about 1 / sqrt(segments) for a parked receiver whose error wanders.
+      align_yaw_min_coherence: 0.5
+      # Turn gate: a segment whose heading change, or the heading span of either of its
+      # chunks, exceeds this is not used (course over ground is unreliable in turns), deg,
+      # (0, 180]. 45 keeps a 2 m circle at 0.25 rad/s (29 deg per chunk) and E-01 (34 deg).
+      align_yaw_max_turn_deg: 45.0
+      # Floor on the declared horizontal fix variance used for the yaw sigma, m^2 (> 0); a
+      # declared variance <= 0 is rejected. 0.25 = (0.5 m)^2.
+      align_yaw_min_var_m2: 0.25
+      # With wheel odometry, the sign of the wheel travel between two chunk centres gives the
+      # direction of travel of a segment; below this travel (m, > 0) the segment is taken as
+      # stationary and not used (wheel noise at rest has a random sign). 0.2 m is a fifth of a
+      # 2 s segment at 0.5 m/s. Consequence: with wheel data a robot slower than about 0.1 m/s
+      # (0.2 m per 2 s chunk interval) never aligns at these defaults.
+      align_yaw_min_wheel_travel_m: 0.2
+      # A segment whose along-heading motion is below -this x its sigma, once the yaw is within
+      # the threshold above, is taken as reverse motion (> 0, sigmas).
+      align_yaw_reverse_nsigma: 3.0
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

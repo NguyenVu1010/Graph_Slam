@@ -56,6 +56,14 @@ class CoreObserver {
   virtual void on_gnss_factor(common::Timestamp /*t_k*/,
                               const common::GnssMeasurement& /*m*/,
                               const common::Pose& /*T_e_w*/) {}
+  /// The GNSS fusion became aligned (first time or after a realign) with the fix at `t`:
+  /// `T_e_w` the aligner estimate, `yaw_sigma_rad` its predicted yaw 1-sigma (NaN for
+  /// GnssAligner; ADR-023 study) and `track` the track-yaw aligner (counters: segments without
+  /// wheel data, reversals, turn-gated segments; meaningful with gnss.align_yaw_from_track).
+  virtual void on_alignment(common::Timestamp /*t*/,
+                            const common::Pose& /*T_e_w*/,
+                            double /*yaw_sigma_rad*/,
+                            const gnss::GnssTrackYawAligner& /*track*/) {}
   /// A fix was accepted; `T_e_w` is the aligner estimate after it.
   virtual void on_fix_accepted(common::Timestamp /*t*/, const common::Pose& /*T_e_w*/) {}
   /// Scan at `t` matched: the IMU-predicted body pose, the matched one and the match result
@@ -120,6 +128,8 @@ struct CoreCounters {
   std::uint64_t n_gnss_ring_overflow = 0;        ///< deferred fixes overwritten (ring full)
   std::uint64_t n_gnss_unfused_eof = 0;  ///< deferred fixes left at end of data (no IMU after)
   std::uint64_t n_gnss_realign = 0;      ///< aligner restarts (gnss.max_consecutive_rejects)
+  std::uint64_t n_wheel_nonfinite =
+      0;  ///< wheel samples with a non-finite speed (ADR-023 odometer)
   // ADR-022, see Estimator::Stats.
   std::uint64_t n_gnss_prealign_attached = 0;
   std::uint64_t n_gnss_prealign_static = 0;
@@ -172,6 +182,8 @@ class EstimatorCore {
   /// Latest estimate (Estimator::latest_state() semantics). Default until has_estimate().
   [[nodiscard]] const common::Estimate& latest() const { return latest_; }
   [[nodiscard]] const CoreCounters& counters() const { return counters_; }
+  /// ADR-023: signed wheel odometer (m) over the finite wheel samples received so far.
+  [[nodiscard]] double wheel_odometer_m() const { return wheel_odometer_m_; }
   /// The VoxelMap cache (read-only, for diagnostics such as Estimator::stats()).
   [[nodiscard]] const map::VoxelMap& voxel_map() const { return map_; }
 
@@ -254,6 +266,14 @@ class EstimatorCore {
   common::Timestamp last_prune_t_{};
   bool have_wheel_ = false;
   common::Timestamp last_wheel_t_{};
+  // ADR-023: signed wheel odometer (m, trapezoid of the finite WheelSample::v_mps) for the
+  // track-yaw direction of travel, and the time of the last GNSS fix it was read at.
+  bool have_odometer_ = false;
+  double last_odometer_v_mps_ = 0.0;
+  common::Timestamp last_odometer_t_{};
+  double wheel_odometer_m_ = 0.0;
+  bool have_fix_odometer_t_ = false;
+  common::Timestamp last_fix_odometer_t_{};
   std::int64_t wheel_period_ns_ = 0;
   std::size_t map_dropped_ = 0;
   bool init_failure_logged_ = false;
@@ -261,6 +281,7 @@ class EstimatorCore {
   bool backend_failure_streak_ = false;
   bool imu_nonfinite_streak_ = false;
   bool gnss_reject_streak_ = false;
+  std::uint64_t n_alignments_seen_ = 0;  // observer only: alignments reported so far
   bool gnss_late_streak_ = false;
   bool uncovered_streak_ = false;
 
