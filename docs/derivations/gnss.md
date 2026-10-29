@@ -400,8 +400,9 @@ leaves a net heading change of zero, so the turn gate passed it and a heading se
 the sideways GNSS displacement: on aisles, an outage over 6-16 s aligned 100 of 100 runs beyond 3
 sigma (median 26 deg off), with or without wheel data, in design 2 as well. The pipeline now
 passes, with each fix, the total absolute heading variation of the front end (the sum of
-`|heading change|` scan to scan, about 10 Hz; `EstimatorCore`, only with
-`align_yaw_from_track`). Per step the aligner takes its difference since the last fix it added,
+`|heading change|` of the travel axis `x_o` scan to scan, about 10 Hz; `EstimatorCore`, only with
+`align_yaw_from_track`; read from `x_o`, not `x_b`, so that an IMU mounted with its x axis near
+vertical does not feed attitude noise into the gate, fix round 3). Per step the aligner takes its difference since the last fix it added,
 at least the net change (the net change alone when no reading exists); it sums the steps per
 chunk half, and the turn gate uses the larger of the net change between the chunk centres and the
 total variation of the steps between them (for a constant arc the two are equal, so nothing
@@ -447,7 +448,15 @@ runs where this term dominates):
 A segment with a weighted path below `align_yaw_min_wheel_travel_m` is stationary
 (`n_stationary_segments()`), so a spin in place has no direction of travel and is never used.
 Without wheel data, or with a missing reading in either chunk, the turn gate applies as before
-(bit-identical results).
+(bit-identical results), and the segment breaks the wheel/GNSS consistency window below.
+
+The variation inside a chunk (its span) is not covered by the variation between chunk centres
+(fix round 3, review R2-3): every step lies between exactly one pair of centres, so a turn
+hidden in one step gates that segment, but the chunk holding the step mixes positions from before
+and after the hidden S-jog in its centroid, which biases the other segment that uses the chunk.
+Test `GnssTrackYaw2b.ShortOutageOverAQuickSJogInsideAChunk` (a 2.8 s outage over a quick S-jog at
+10 positions in a chunk, 200 runs): NEES 0.62, none beyond 3 sigma; without the span term 2.06 and
+5 beyond 3 sigma.
 
 Tests (`test_gnss_track_yaw_2b.cpp`): exact on a noise-free 1 m circle where every segment is
 gated; aisles with 2 m straights and 90 deg corners at 1 rad/s, 200 seeds: at 3 deg, without the
@@ -476,7 +485,15 @@ mismatch; a mismatch is
 stuck, `r` is the drift while `sum d` grows. After a mismatch every older segment is suspect: no
 transform ("track not coherent") until the segments since the mismatch agree with the wheels over
 `align_yaw_wheel_restart_m` (10 m) of wheel travel, and then they replace all segments
-(`n_wheel_restarts()`). Agreement implies `r >= (1 - slip) sum d - n sigma`, so the round-1
+(`n_wheel_restarts()`). A segment without wheel data (a missing odometer reading) cannot be
+checked: it breaks the window, which starts again at the next segment, and a pending restart stays
+pending (fix round 3, review R2-1). Before, such a segment switched the check off for good: after
+a mismatch, one missing reading while driving locked the alignment out (0 of 100 aligned in 540 s
+of driving; now 100 of 100 after 12 to 18 m, NEES 0.88 to 1.10), and without one the stuck-wheel
+check was lost (0.20 m per fix: 20 of 100 aligned on noise; now 1 of 100, the review probe's
+seeds, against 6 without the missing reading). The cost: with 2 % of fixes missing their reading,
+the 10 m of agreeing travel must fall between two missing readings, so after a mismatch the
+alignment can wait long (median 28.9 m, max 198 m in the probe). Agreement implies `r >= (1 - slip) sum d - n sigma`, so the round-1
 coherence test against the wheel travel (`r >= 0.5 max(sum |b|, sum d)`) is implied and was
 removed. It needs no front-end motion, which would fail in a degenerate corridor.
 

@@ -518,8 +518,7 @@ void EstimatorCore::track_heading() {
   if (!(cfg_.gnss.enabled && cfg_.gnss.align_yaw_from_track)) {
     return;
   }
-  const common::Mat3& R = front_.T_w_b.R;
-  const double heading_rad = std::atan2(R(1, 0), R(0, 0));
+  const double heading_rad = travel_heading_rad(front_.T_w_b.R, cfg_.frames.T_b_o.R);
   if (have_scan_heading_) {
     heading_variation_rad_ +=
         std::abs(std::remainder(heading_rad - last_scan_heading_rad_, 2.0 * kPiRad));

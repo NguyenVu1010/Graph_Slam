@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -17,6 +18,15 @@
 #include "mss/pipeline/bounded_queue.hpp"
 
 namespace mss::pipeline::detail {
+
+/// Heading (rad, in (-pi, pi]) of the travel axis x_o = R_w_b R_b_o (1, 0, 0), horizontal part,
+/// in w: the axis the track-yaw aligner takes as the direction of travel (ADR-023 design 2b,
+/// gnss.md section 5.1). EstimatorCore sums its changes for the turn gate. With a near-vertical
+/// body x axis (a tilted IMU mount) the heading of x_b is noise; x_o stays defined.
+inline double travel_heading_rad(const common::Mat3& R_w_b, const common::Mat3& R_b_o) {
+  const common::Vec3 x_o_w = R_w_b * R_b_o.col(0);
+  return std::atan2(x_o_w.y(), x_o_w.x());
+}
 
 /// What GnssFusion::on_fix did with a fix, so callers can branch without building the
 /// Status reason string (Status::reason() may allocate).
@@ -220,7 +230,7 @@ class GnssFusion {
   common::Pose T_b_o_;                         // odometry frame in b, for the track-yaw aligner
   double first_align_yaw_offset_rad_ = 0.0;    // test-only, see set_first_alignment_yaw_offset
   int offset_fixes_left_ = 0;                  // test-only
-  std::uint64_t track_mismatches_before_ = 0;  // wheel restarts of the aligners rebuilt so far
+  std::uint64_t track_mismatches_before_ = 0;  // wheel/GNSS mismatches of the aligners rebuilt
   gnss::GnssAligner aligner_;
   gnss::GnssTrackYawAligner track_aligner_;  // ADR-023, used when cfg_.align_yaw_from_track
   std::uint64_t n_alignments_ = 0;

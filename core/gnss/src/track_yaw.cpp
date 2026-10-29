@@ -227,6 +227,12 @@ void GnssTrackYawAligner::close_chunk() {
   }
   add_segment(all_, b, l, a, a_wheel_path, wheel_disp_m, no_wheel);
   add_segment(recent_, b, l, a, a_wheel_path, wheel_disp_m, no_wheel);
+  if (no_wheel) {
+    // A segment without wheel data cannot be checked against the wheels: it breaks the window,
+    // which starts again at the next segment (a pending restart stays pending). Keeping it would
+    // switch the check off for good (review R2-1 of fix round 2).
+    recent_ = Segments{};
+  }
   prev_ = k;
 
   Solution sol = solve(all_);

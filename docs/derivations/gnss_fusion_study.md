@@ -1248,3 +1248,30 @@ Re-runs after fix round 2:
   | flag on | 4.21 / 5.54 ms | 2.52 s |
 
   Within noise.
+
+### 16.11 Fix round 3 of the review
+
+| finding | defect | fix | test |
+| --- | --- | --- | --- |
+| R2-1 | a segment without wheel data (missing odometer reading) froze the consistency window for good: after a mismatch, one missing reading while driving locked the alignment out (0 of 100 aligned in 540 s), and without a mismatch it switched the stuck-wheel check off (0.20 m per fix: 20 of 100 aligned on noise against 6) | such a segment breaks the window, which starts again at the next segment; a pending restart stays pending | `GnssTrackYaw2b.OneMissingWheelReadingAfterAMismatchDoesNotLockOut` (missing reading 1 / 3 / 6 / 12 s after the drive-off: 100 of 100 aligned after a median 11.9 / 12.9 / 14.9 / 17.9 m, NEES 0.88 to 1.10, none beyond 3 sigma), `OneMissingWheelReadingKeepsTheStuckCheck` (0.10 m per fix: 0 and 0 of 100; 0.20 m per fix: 1 of 100 with the missing reading, 6 without, review probe seeds) |
+| R2-2 | the pipeline read the heading variation from `x_b`: an IMU mounted with its x axis near vertical fed attitude noise into the turn gate (0 of 50 aligned) | the heading is read from the travel axis `x_o = R_w_b R_b_o x`, as everywhere else in the aligner | `GnssFusionTrackYaw.HeadingVariationUsesTheTravelAxis` (IMU x tilted 89.9 / 90 deg, 0.2 deg attitude noise, 50 seeds: 50 of 50 aligned from `x_o`; the `x_b` control stays below 10) |
+| R2-3 | the span term (heading variation inside a chunk) survived every test | kept: it is load-bearing. Every step lies between one pair of centres, so a turn hidden in one step gates that segment, but the chunk holding the step mixes positions from before and after the S-jog in its centroid and biases the other segment that uses the chunk | `GnssTrackYaw2b.ShortOutageOverAQuickSJogInsideAChunk` (2.8 s outage over a quick S-jog, 10 offsets x 20 seeds: NEES 0.62, none beyond 3 sigma; without the span term 2.06 and 5 beyond) |
+| R2-4 | comment on the mismatch counter | fixed | |
+
+The cost of R2-1: with 2 % of fixes missing their reading, the 10 m of agreeing travel after a
+mismatch must fall between two missing readings, so the alignment can wait long (review probe,
+spin 60 s then drive: 100 of 100 aligned, median 28.9 m, max 198 m; before the fix 11 of 100).
+Without a mismatch, 2 % missing readings cost nothing (median 3.9 m).
+
+Mutation check: the review mutant list (14 mutants, including the missing-reading break and the
+span term) and this study's list (9 mutants) are all killed.
+
+Re-runs after fix round 3:
+
+- **Outage over an S-jog (review P11, 100 seeds, with readings), beyond 3 sigma with / without
+  wheel data:** 6-16 s: 0 / 0; 8-18 s: 1 / 0 (wheel median 3.9 deg, NEES 1.18); 10-20 s: 0 / 1.
+- **Corridor, 15 seeds:** identical to section 16.5 with and without wheel data.
+- **Box world, 15 seeds:** identical to section 16.6.
+- **E-01..E-03, flag off:** `est.tum` md5 equal to main 99bd5fd.
+- **E-01..E-03, flag on:** unchanged from section 16.10 (24 s / 9 m, 0.8 deg with a 5.6 deg
+  sigma, 170 factors, ATE 0.002196 m, no wheel mismatch).

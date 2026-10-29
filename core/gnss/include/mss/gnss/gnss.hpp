@@ -199,7 +199,9 @@ class GnssAligner {
 /// align_yaw_wheel_slip_frac x sum d_k (n_wheel_mismatches()). After a mismatch the older segments
 /// are suspect: no transform ("track not coherent") until the recent segments agree with the
 /// wheels over align_yaw_wheel_restart_m of wheel travel; then they replace all segments
-/// (n_wheel_restarts()). Agreement implies r >= (1 - slip) sum d_k - n sigma, so with wheel data
+/// (n_wheel_restarts()). A segment without wheel data breaks the window (it starts again at the
+/// next segment; a pending restart stays pending). Agreement implies r >= (1 - slip) sum d_k -
+/// n sigma, so with wheel data
 /// the coherence test below also holds against the wheel travel.
 /// A transform is returned once confident: r >= the minimum track (align_yaw_min_track_wheel_m
 /// when every segment used has its direction from wheel data, else align_yaw_min_track_m),

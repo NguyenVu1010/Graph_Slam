@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <random>
 
+#include <Eigen/Geometry>
 #include <gtest/gtest.h>
 
 #include "mss/common/lie.hpp"
@@ -565,6 +567,87 @@ TEST(GnssFusionTrackYaw, RealignKeepsWheelDifferencing) {
   EXPECT_EQ(f.track_aligner().n_stationary_segments(), 0);
   EXPECT_GT(f.track_aligner().n_reversals(), 0);  // backward segments from the wheel sign
   EXPECT_LT(std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z()), 1e-6);
+}
+
+// Review R2-2 of design 2b: the heading variation that EstimatorCore passes to the track-yaw turn
+// gate must be read from the travel axis x_o = R_w_b R_b_o x, as the aligner's heading. An IMU
+// mounted with its x axis near vertical (R_b_o a pitch of 89.9 / 90 deg, x_o level) and 0.2 deg of
+// attitude noise per scan: the heading of x_b is noise, its summed variation exceeds the turn gate
+// in every chunk and the robot never aligned (0 of 50); read from x_o every run aligns, within its
+// sigma. Straight track at 0.5 m/s, wheel data, 0.5 m fixes at 5 Hz, scans at 10 Hz, shipped keys.
+TEST(GnssFusionTrackYaw, HeadingVariationUsesTheTravelAxis) {
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr double kDeg = kPi / 180.0;
+  gnss::GnssConfig c;
+  c.align_yaw_from_track = true;
+  c.align_yaw_max_sigma_rad = 6.0 * kDeg;
+  c.align_yaw_wheel_turns = true;
+  c.align_yaw_min_track_wheel_m = 3.0;
+  const Vec3 p_b_g(-0.2, 0.1, 0.6);
+  const auto rz = [](double yaw) { return Mat3(Eigen::AngleAxisd(yaw, Vec3::UnitZ())); };
+  Pose T_e_w;
+  T_e_w.R = rz(30.0 * kDeg);
+  T_e_w.p = Vec3(12.0, -7.0, 1.0);
+  for (const double tilt_deg : {89.9, 90.0}) {
+    for (const bool from_x_o : {true, false}) {
+      Pose T_b_o;
+      T_b_o.R = Mat3(Eigen::AngleAxisd(tilt_deg * kDeg, Vec3::UnitY()));
+      T_b_o.p = Vec3(-0.1, 0.05, 0.0);
+      const Pose T_o_b = T_b_o.inverse();
+      int aligned = 0;
+      int beyond_3s = 0;
+      for (std::uint32_t seed = 1; seed <= 50; ++seed) {
+        std::mt19937 rng(7000U + seed);
+        std::normal_distribution<double> n01(0.0, 1.0);
+        gnss::GnssTrackYawAligner a(c, T_b_o);
+        const double psi = 0.3 * seed;
+        double variation = 0.0;
+        double last_heading = 0.0;
+        bool have_heading = false;
+        Mat3 r_att = Mat3::Identity();
+        for (int k = 0; k <= 1200; ++k) {  // 10 Hz scans, 120 s
+          const double t = 0.1 * k;
+          const double s = t < 2.0 ? 0.0 : 0.5 * (t - 2.0);
+          Pose T_w_o;
+          T_w_o.R = rz(psi);
+          T_w_o.p = Vec3(s * std::cos(psi), s * std::sin(psi), 0.0);
+          const Pose b = T_w_o * T_o_b;
+          r_att = Mat3(Eigen::AngleAxisd(0.2 * kDeg * n01(rng), Vec3::UnitX()) *
+                       Eigen::AngleAxisd(0.2 * kDeg * n01(rng), Vec3::UnitY()));
+          const Mat3 r_meas = b.R * r_att;
+          const double heading = from_x_o ? travel_heading_rad(r_meas, T_b_o.R)
+                                          : std::atan2(r_meas(1, 0), r_meas(0, 0));
+          if (have_heading) {
+            variation += std::abs(std::remainder(heading - last_heading, 2.0 * kPi));
+          }
+          have_heading = true;
+          last_heading = heading;
+          if (k % 2 != 0) {
+            continue;  // fixes at 5 Hz
+          }
+          Pose b_meas = b;
+          b_meas.R = r_meas;
+          Vec3 p = T_e_w * (b * p_b_g);
+          p.x() += 0.5 * n01(rng);
+          p.y() += 0.5 * n01(rng);
+          const auto r = a.update(p, Mat3::Identity() * 0.25, b_meas, p_b_g, s, variation);
+          if (r.is_ok()) {
+            ++aligned;
+            const double err = std::remainder(
+                std::atan2(r.value().R(1, 0), r.value().R(0, 0)) - 30.0 * kDeg, 2.0 * kPi);
+            beyond_3s += std::abs(err) > 3.0 * a.yaw_sigma_rad() ? 1 : 0;
+            break;
+          }
+        }
+      }
+      if (from_x_o) {
+        EXPECT_EQ(aligned, 50) << tilt_deg;
+        EXPECT_LE(beyond_3s, 2) << tilt_deg;
+      } else {
+        EXPECT_LT(aligned, 10) << tilt_deg;  // negative control: the x_b heading is noise
+      }
+    }
+  }
 }
 
 }  // namespace

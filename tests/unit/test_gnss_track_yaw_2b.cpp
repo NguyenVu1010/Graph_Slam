@@ -753,11 +753,22 @@ struct Scene2 {
   double stuck_s = 0.0;
   double drift_m = 0.0;
   double tmax_s = 300.0;
+  std::vector<double> nan_at_s;  // fix times (s) whose odometer reading is missing (NaN)
+  double jog_at_s = 0.0;         // shape 3: start of a quick S-jog on a straight track
 };
 struct Run2 {
   FirstAlignment f;
   double driven_m = 0.0;
 };
+double odometer_at(const Scene2& sc, double t, double odo) {
+  for (const double tn : sc.nan_at_s) {
+    if (std::abs(t - tn) < 1e-4) {
+      return kNaN;
+    }
+  }
+  return sc.wheel ? odo : kNaN;
+}
+
 Run2 run_scene(const Scene2& sc, const GnssConfig& c, std::uint32_t seed) {
   std::mt19937 rng(7000U + seed);
   std::normal_distribution<double> n01(0.0, 1.0);
@@ -787,6 +798,19 @@ Run2 run_scene(const Scene2& sc, const GnssConfig& c, std::uint32_t seed) {
     } else if (sc.shape == 2) {
       v = 0.5;
       w = 0.5;
+    } else if (sc.shape == 3) {
+      // Straight at 0.5 m/s with one quick S-jog: +90 deg at 2 rad/s and 0.3 m/s, 1.2 s sideways
+      // at 0.5 m/s, -90 deg at 2 rad/s and 0.3 m/s.
+      const double tj = t - sc.jog_at_s;
+      constexpr double kTurnS = 0.25 * kPi;  // s, 90 deg at 2 rad/s
+      v = 0.5;
+      if (tj >= 0.0 && tj < kTurnS) {
+        v = 0.3;
+        w = 2.0;
+      } else if (tj >= kTurnS + 1.2 && tj < 2.0 * kTurnS + 1.2) {
+        v = 0.3;
+        w = -2.0;
+      }
     } else {
       const double period = 4.0 + 1.6;
       const double tt = std::fmod(tm, period);
@@ -808,8 +832,12 @@ Run2 run_scene(const Scene2& sc, const GnssConfig& c, std::uint32_t seed) {
       p.x() += kSigmaM * n01(rng);
       p.y() += kSigmaM * n01(rng);
       if (!(t >= sc.gap0_s && t < sc.gap1_s)) {
-        const auto r = a.update(
-            p, fix_cov(kSigmaM), b, kPbg, sc.wheel ? odo : kNaN, sc.heading_readings ? turn : kNaN);
+        const auto r = a.update(p,
+                                fix_cov(kSigmaM),
+                                b,
+                                kPbg,
+                                odometer_at(sc, t, odo),
+                                sc.heading_readings ? turn : kNaN);
         if (r.is_ok()) {
           return {{static_cast<int>(k / 200),
                    wrap_pi(yaw_of(r.value().R) - yaw_of(kTew.R)),
@@ -970,6 +998,118 @@ TEST(GnssTrackYaw2b, StuckThenDriveAlignsAfterBoundedTravel) {
       EXPECT_LE(beyond_3s, 3);
     }
   }
+}
+
+// Review R2-1 of design 2b fix round 2: a segment without wheel data froze the consistency
+// window, because the window only ran while every recent segment had wheel data and was only reset
+// by a mismatch. After a mismatch, one missing odometer reading while driving locked the
+// alignment out for good (0 of 100 aligned in 540 s); now such a segment breaks the window, which
+// starts again at the next segment. Wheels spin 60 s on a still body, then the robot drives; one
+// fix 1 / 3 / 6 / 12 s after the drive-off has no odometer reading: every run aligns, after a
+// bounded distance and within its sigma.
+TEST(GnssTrackYaw2b, OneMissingWheelReadingAfterAMismatchDoesNotLockOut) {
+  for (const double after_s : {1.0, 3.0, 6.0, 12.0}) {
+    Scene2 sc;
+    sc.shape = 0;
+    sc.stuck_s = 60.0;
+    sc.tmax_s = 200.0;
+    sc.nan_at_s = {62.0 + after_s};
+    double nees = 0.0;
+    int beyond_3s = 0;
+    std::vector<double> driven;
+    for (std::uint32_t seed = 1; seed <= 100; ++seed) {
+      const Run2 r = run_scene(sc, cfg_shipped(), seed);
+      ASSERT_GE(r.f.fix, 0) << after_s << " " << seed;
+      driven.push_back(r.driven_m);
+      const double z = r.f.err_rad / r.f.sigma_rad;
+      nees += z * z;
+      beyond_3s += std::abs(z) > 3.0 ? 1 : 0;
+    }
+    std::sort(driven.begin(), driven.end());
+    std::printf(
+        "[ track yaw 2b ] spin 60 s, then drive with one missing odometer reading %.0f s "
+        "after drive-off: aligned after a median %.1f m (max %.1f m), NEES %.2f, %d beyond "
+        "3 sigma\n",
+        after_s,
+        driven[50],
+        driven.back(),
+        nees / 100.0,
+        beyond_3s);
+    EXPECT_LT(driven.back(), 30.0) << after_s;
+    EXPECT_LT(nees / 100.0, 1.5) << after_s;
+    EXPECT_LE(beyond_3s, 3) << after_s;
+  }
+}
+
+// Review R2-1, second half: without a mismatch, the same frozen window switched the stuck-wheel
+// check off for good (wheels spinning for ever on a still body, 0.20 m per fix of GNSS drift, one
+// missing reading at 3 s: 20 of 100 aligned on noise against 6 without it). Now the rate with one
+// missing reading stays at the rate without it (0.10 m per fix: none).
+TEST(GnssTrackYaw2b, OneMissingWheelReadingKeepsTheStuckCheck) {
+  for (const double drift_m : {0.10, 0.20}) {
+    std::array<int, 2> aligned{0, 0};  // without / with the missing reading
+    for (const bool missing : {false, true}) {
+      Scene2 sc;
+      sc.shape = 0;
+      sc.stuck_s = 1e9;
+      sc.drift_m = drift_m;
+      sc.tmax_s = 300.0;
+      if (missing) {
+        sc.nan_at_s = {3.0};
+      }
+      for (std::uint32_t seed = 1; seed <= 100; ++seed) {
+        aligned[missing ? 1 : 0] += run_scene(sc, cfg_shipped(), seed).f.fix >= 0 ? 1 : 0;
+      }
+    }
+    std::printf(
+        "[ track yaw 2b ] wheels spin on a still body, GNSS drift %.2f m per fix: %d of 100 "
+        "aligned, %d with one missing odometer reading at 3 s\n",
+        drift_m,
+        aligned[0],
+        aligned[1]);
+    if (drift_m < 0.15) {
+      EXPECT_EQ(aligned[1], 0);
+    } else {
+      EXPECT_LE(aligned[1], aligned[0] + 5);
+    }
+  }
+}
+
+// Review R2-3 of design 2b fix round 2: the heading variation inside a chunk (its span) is not
+// redundant with the variation between the chunk centres. Every step belongs to the interval
+// between two centres, so a turn hidden in one step gates that segment; but the chunk that holds
+// the step mixes positions from before and after the hidden S-jog in its centroid, which biases
+// the other segment that uses the chunk. A quick S-jog (90 deg at 2 rad/s, 0.6 m sideways, 90 deg
+// back) inside a 2.8 s GNSS outage, at 10 start offsets 0.2 s apart (so the hidden step falls at
+// every position in a chunk), 20 seeds each: the yaw stays within its sigma.
+TEST(GnssTrackYaw2b, ShortOutageOverAQuickSJogInsideAChunk) {
+  double nees = 0.0;
+  int beyond_3s = 0;
+  int n = 0;
+  for (int offset = 0; offset < 10; ++offset) {
+    Scene2 sc;
+    sc.shape = 3;
+    sc.jog_at_s = 6.0 + 0.2 * offset;
+    sc.gap0_s = sc.jog_at_s - 0.05;
+    sc.gap1_s = sc.jog_at_s + 2.0 * 0.25 * kPi + 1.2 + 0.05;
+    sc.tmax_s = 120.0;
+    for (std::uint32_t seed = 1; seed <= 20; ++seed) {
+      const Run2 r = run_scene(sc, cfg_shipped(), seed);
+      ASSERT_GE(r.f.fix, 0) << offset << " " << seed;
+      const double z = r.f.err_rad / r.f.sigma_rad;
+      nees += z * z;
+      beyond_3s += std::abs(z) > 3.0 ? 1 : 0;
+      ++n;
+    }
+  }
+  std::printf(
+      "[ track yaw 2b ] quick S-jog in a 2.8 s outage: yaw NEES %.2f, %d of %d beyond 3 "
+      "sigma\n",
+      nees / n,
+      beyond_3s,
+      n);
+  EXPECT_LT(nees / n, 1.2);  // measured 0.62; 2.06 without the span term
+  EXPECT_LE(beyond_3s, 2);   // measured 0; 5 without the span term
 }
 
 // Review m5 of design 2b round 1: the speed-profile variance of the steps shared by two adjacent
