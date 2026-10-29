@@ -234,6 +234,12 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"n_gravity_factor_unchecked\": %" PRIu64
                ",\n"
+               "  \"n_loop_searches\": %" PRIu64
+               ",\n"
+               "  \"n_loops_accepted\": %" PRIu64
+               ",\n"
+               "  \"n_loops_rejected\": %" PRIu64
+               ",\n"
                "  \"n_map_points\": %" PRIu64
                ",\n"
                "  \"n_map_spacing_replaced\": %" PRIu64
@@ -291,6 +297,9 @@ bool write_json(const fs::path& path,
                st.n_gravity_factor_gated,
                st.n_gravity_factor_removed,
                st.n_gravity_factor_unchecked,
+               st.n_loop_searches,
+               st.n_loops_accepted,
+               st.n_loops_rejected,
                st.n_map_points,
                st.n_map_spacing_replaced,
                st.push_scan_us_p50,

@@ -85,6 +85,32 @@ TEST(Config, MapExportVoxelValidated) {
   EXPECT_TRUE(mentions(negative.reason(), "map_export.voxel_m")) << negative.reason();
 }
 
+// ADR-026: loop_closure.* loaded (off by default), degree key converted, ranges named.
+TEST(Config, LoopClosureKeys) {
+  const auto ok = load_config(kDefault);
+  ASSERT_TRUE(ok.is_ok()) << ok.reason();
+  const auto& l = ok.value().loop_closure;
+  EXPECT_FALSE(l.enabled);
+  EXPECT_DOUBLE_EQ(l.search_radius_m, 10.0);
+  EXPECT_DOUBLE_EQ(l.min_time_gap_s, 30.0);
+  EXPECT_EQ(l.max_candidates, 1);
+  EXPECT_EQ(l.sc_sectors, 60);
+  EXPECT_EQ(l.submap_max_voxels, 20000U);
+  EXPECT_NEAR(l.cov_floor_rad, 1.0 * kRadPerDeg, 1e-12);
+  EXPECT_NEAR(l.max_correction_rad, 30.0 * kRadPerDeg, 1e-12);
+  const std::string base = read_file(kDefault);
+  const auto bad = parse_config(base,
+                                overlay("    loop_closure:\n      sc_sectors: 3\n"
+                                        "      min_inlier_ratio: 1.5\n"
+                                        "      cov_floor_deg: 0.0\n"
+                                        "      search_radius_m: -1.0\n"));
+  ASSERT_FALSE(bad.is_ok());
+  EXPECT_TRUE(mentions(bad.reason(), "loop_closure.sc_sectors")) << bad.reason();
+  EXPECT_TRUE(mentions(bad.reason(), "loop_closure.min_inlier_ratio")) << bad.reason();
+  EXPECT_TRUE(mentions(bad.reason(), "loop_closure.cov_floor_deg")) << bad.reason();
+  EXPECT_TRUE(mentions(bad.reason(), "loop_closure.search_radius_m")) << bad.reason();
+}
+
 TEST(Config, OverlayWarehouse) {
   const auto cfg = load_config(kDefault, kWarehouse);
   ASSERT_TRUE(cfg.is_ok()) << cfg.reason();
