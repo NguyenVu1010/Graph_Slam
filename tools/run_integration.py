@@ -4,7 +4,7 @@ Usage:
   python tools/run_integration.py --bench-cmd "<cmd>" --out <dir>
       [--scenario sim/scenarios/E-01.yaml] [--baselines eval/baselines.json]
       [--tests E-01,E-02,E-03] [--duration-s S] [--timeout-s S] [--plots]
-      [--path-style native|wsl]
+      [--path-style native|wsl] [--bridged <dir>] [--map-out]
 
 Data: a synthetic box circle, not the warehouse lap. ``mss_sim.synth`` drives a circle of
 radius R = V / W after a still phase and a speed ramp inside a box, all taken from the
@@ -42,6 +42,9 @@ run on the E-01 dataset with a byte-identical ``est.tum`` and a valid ATE. E-03 
 3 (3 = ran with unprocessed records), mutate_bag.py dropped messages, the bench processed fewer
 scans than the E-01 dataset holds (so the drops reached it), and ATE <= 1.2 x the E-01
 baseline (its own baseline is reported only).
+``--map-out`` adds ``--map-out <test-dir>/map.pcd`` to every bench run (the global map, see
+``mss_bench``; used by ``tools/run_map_demo.sh``). Without E-03 in ``--tests`` the E-03 dataset
+is not prepared.
 PF-01 per-scan p95 latency above 1.2 x baseline only warns. A ``null`` baseline passes with a
 note that prints the measured value for the baseline-update PR.
 """
@@ -160,13 +163,19 @@ def _check_recording(bridged: Path, sc: Any) -> None:
 
 
 def prepare(
-    scenario: Path, out: Path, duration_s: float | None, bridged_dir: Path | None = None
+    scenario: Path,
+    out: Path,
+    duration_s: float | None,
+    bridged_dir: Path | None = None,
+    *,
+    with_e03: bool = True,
 ) -> Prepared:
     """Synthesise, bridge and convert the scenario's bag under ``out / "data"``.
 
     ``bridged_dir``: convert that recorded bridge output (``bag/`` + ``gt.tum``, e.g. from
     ``tools/record_scenario.sh``) instead; ``prep`` then only gives E-03's ``prep.mutate``, and
     the ENU origin is the scenario's ``origin_lla`` (= the world origin of the Gazebo worlds).
+    ``with_e03=False`` skips the E-03 dataset (``mssdata_e03`` is then None).
     """
     sc = load_scenario(scenario)
     if bridged_dir is not None:
@@ -178,7 +187,7 @@ def prepare(
         data.mkdir(parents=True, exist_ok=True)
         lla, overlay = sc.origin_lla, sc.pipeline_config
         convert(bridged / "bag", data / "mssdata", origin_lla=lla, pipeline_config=overlay)
-        mut = sc.prep.mutate if sc.prep is not None else None
+        mut = sc.prep.mutate if sc.prep is not None and with_e03 else None
         e03 = _mutate_e03(mut, bridged / "bag", data, overlay, lla)
         source = {
             "generator": "recorded bag (bridge output)",
@@ -215,7 +224,8 @@ def prepare(
     bridged = data / "bridged"
     run_bridge(data / "raw", sc, load_profile(sc.profile), bridged, seed=sc.seed)
     convert(bridged / "bag", data / "mssdata", pipeline_config=sc.pipeline_config)
-    mssdata_e03 = _mutate_e03(prep.mutate, bridged / "bag", data, sc.pipeline_config, None)
+    mut = prep.mutate if with_e03 else None
+    mssdata_e03 = _mutate_e03(mut, bridged / "bag", data, sc.pipeline_config, None)
     source = {
         "generator": "mss_sim.synth.write_synthetic_raw_bag (synthetic box circle)",
         "scenario": sc.id,
@@ -227,7 +237,7 @@ def prepare(
         "box_half_m": list(prep.box_half_m),
         "static_s": prep.static_s,
         "ramp_s": prep.ramp_s,
-        "mutate": None if prep.mutate is None else asdict(prep.mutate),
+        "mutate": None if mut is None else asdict(mut),
         "duration_s": sc.duration_s,
         "seed": sc.seed,
     }
@@ -280,14 +290,15 @@ def run_bench(
     timeout_s: float | None = None,
     *,
     kill_cmd: Sequence[str] | None = None,
+    map_out: Path | None = None,
 ) -> int:
     """Run the bench on ``data`` into ``out``; stdout/stderr go to ``out / "bench.log"``.
 
     ``{container}`` in ``bench_cmd`` is replaced with ``container_name(out)``. Returns the exit
     code, or ``BENCH_TIMEOUT`` when the bench ran longer than ``timeout_s`` (killed; a test
     failure; with the placeholder, ``kill_cmd`` (default ``DOCKER_KILL``) then runs on the
-    name). Raises SetupError when the command cannot be started or the shell reports it
-    missing.
+    name). ``map_out`` adds ``--map-out <map_out>``. Raises SetupError when the command cannot
+    be started or the shell reports it missing.
     """
     out.mkdir(parents=True, exist_ok=True)
     name = container_name(out)
@@ -301,6 +312,8 @@ def run_bench(
         "--out",
         to_bench_path(out, path_style),
     ]
+    if map_out is not None:
+        args += ["--map-out", to_bench_path(map_out, path_style)]
     log = out / "bench.log"
     try:
         proc = subprocess.run(
@@ -539,6 +552,9 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument(
         "--bridged", type=Path, help="recorded bridge output (bag/ + gt.tum) instead of synthetic"
     )
+    ap.add_argument(
+        "--map-out", action="store_true", help="bench writes <test-dir>/map.pcd (global map)"
+    )
     return ap.parse_args(argv)
 
 
@@ -575,7 +591,7 @@ def _run(args: argparse.Namespace) -> int:
     tests, bench_cmd, baselines = _setup(args)
     out: Path = args.out.resolve()
     try:
-        prep = prepare(args.scenario, out, args.duration_s, args.bridged)
+        prep = prepare(args.scenario, out, args.duration_s, args.bridged, with_e03="E-03" in tests)
     except (OSError, ValueError, KeyError) as e:
         raise SetupError(f"data preparation failed: {e}") from e
 
@@ -584,8 +600,16 @@ def _run(args: argparse.Namespace) -> int:
         timeout_s = _TIMEOUT_PER_SCENARIO_S * float(prep.data_source["duration_s"])
 
     def bench(test_id: str, data: Path) -> int:
+        map_out = out / test_id / "map.pcd" if args.map_out else None
         return run_bench(
-            bench_cmd, _DEFAULT_YAML, data, prep.overlay, out / test_id, args.path_style, timeout_s
+            bench_cmd,
+            _DEFAULT_YAML,
+            data,
+            prep.overlay,
+            out / test_id,
+            args.path_style,
+            timeout_s,
+            map_out=map_out,
         )
 
     results: dict[str, dict[str, Any]] = {}
