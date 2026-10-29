@@ -153,7 +153,7 @@ and the denominator is `n spread_w^2`. Equal variances give the observability ru
 `sigma / sqrt(sum |a_c,h|^2)`. `GnssAligner::yaw_sigma_rad()` reports it at every fit, and
 `GnssFusion::align_yaw_sigma_rad()` passes it to the study observer.
 
-With `gnss.align_check_yaw_sigma` (default false, the previous behaviour) the aligner returns no
+With `gnss.align_check_yaw_sigma` (default true since G13; false is the previous behaviour) the aligner returns no
 transform while `sigma_yaw > gnss.align_yaw_max_sigma_deg` (the same threshold as section 5,
 6 deg), error "yaw sigma above threshold"; the pair is still added. The 3-argument `update()`
 has no covariance and uses the floor for every fix.

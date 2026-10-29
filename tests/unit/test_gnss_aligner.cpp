@@ -54,6 +54,7 @@ GnssConfig cfg() {
   c.sigma_h_m = 1.0;
   c.sigma_v_m = 2.0;
   c.max_cov_m2 = 25.0;
+  c.align_check_yaw_sigma = false;  // geometry tests; the check has its own tests below (G13)
   return c;
 }
 
