@@ -432,5 +432,140 @@ TEST(GnssFusionPrealign, RealignDoesNotAttachTwice) {
   EXPECT_EQ(f.n_prealign_attached(), 9U);
 }
 
+// ADR-023: gnss.align_yaw_from_track switches the fusion to GnssTrackYawAligner. Straight line
+// at 0.5 m/s, 5 Hz, whose front-end along-axis positions run backwards (the corridor seeds 51 /
+// 52 of gnss_fusion_study.md section 13): flag off flips by 180 deg, flag on does not, and the
+// alignment counter and the predicted yaw sigma are reported.
+TEST(GnssFusionTrackYaw, FlagSelectsTrackAligner) {
+  for (const bool on : {false, true}) {
+    gnss::GnssConfig c = fusion_cfg();
+    c.align_yaw_from_track = on;
+    GnssFusion f(c, kPbg);
+    for (int k = 0; k < 150 && !f.aligned(); ++k) {
+      Pose truth;
+      truth.p = Vec3(0.1 * k, 0.0, 0.0);  // heading 0 (identity R)
+      GnssMeasurement m;
+      m.t = Timestamp{k * kSec / 5};
+      m.p_e_g = truth_T_e_w() * (truth * kPbg);
+      m.cov = Vec3(0.01, 0.01, 0.04).asDiagonal();
+      m.status = 0;
+      Pose fe = truth;
+      fe.p.x() = -0.5 * truth.p.x();  // dead reckoning with the wrong sign
+      (void)f.on_fix(m, fe, kZeroP);
+    }
+    ASSERT_TRUE(f.aligned()) << on;
+    EXPECT_EQ(f.n_alignments(), 1U);
+    const double err = std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z());
+    if (on) {
+      EXPECT_LT(err, 1e-6);  // noise-free fixes
+      EXPECT_LE(f.align_yaw_sigma_rad(), c.align_yaw_max_sigma_rad);
+    } else {
+      EXPECT_GT(err, 3.0);  // about pi: the position fit flips
+      EXPECT_TRUE(std::isnan(f.align_yaw_sigma_rad()));
+    }
+  }
+}
+
+// ADR-023 addendum: GnssFusion::on_fix passes the wheel travel to the track aligner. A body
+// driving backwards (x_b along +x, moving along -x) from the start: without wheel data the
+// forward assumption gives 180 deg; with the wheel travel the yaw is right.
+TEST(GnssFusionTrackYaw, WheelTravelGivesDirection) {
+  for (const bool wheel : {false, true}) {
+    gnss::GnssConfig c = fusion_cfg();
+    c.align_yaw_from_track = true;
+    GnssFusion f(c, kPbg);
+    for (int k = 0; k < 150 && !f.aligned(); ++k) {
+      Pose truth;
+      truth.p = Vec3(-0.1 * k, 0.0, 0.0);  // heading 0, moving backwards
+      GnssMeasurement m;
+      m.t = Timestamp{k * kSec / 5};
+      m.p_e_g = truth_T_e_w() * (truth * kPbg);
+      m.cov = Vec3(0.01, 0.01, 0.04).asDiagonal();
+      m.status = 0;
+      const double odometer = wheel ? -0.1 * k : std::numeric_limits<double>::quiet_NaN();
+      (void)f.on_fix(m, truth, kZeroP, nullptr, odometer);
+    }
+    ASSERT_TRUE(f.aligned()) << wheel;
+    const double err = std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z());
+    if (wheel) {
+      EXPECT_LT(err, 1e-6);
+      EXPECT_EQ(f.track_aligner().n_no_wheel_segments(), 0);
+    } else {
+      EXPECT_GT(err, 3.0);  // the documented fallback
+      EXPECT_GT(f.track_aligner().n_no_wheel_segments(), 0);
+    }
+  }
+}
+
+// Re-review N3: the wheel travel of a fix rejected before the aligner (here by gate_fix, status
+// < 0) is carried to the next fix, not lost. Every second fix is rejected while the body moves
+// 0.015 m per fix: between two chunk centres (10 accepted fixes = 20 fixes) it travels 0.3 m,
+// above the 0.2 m stationary threshold; counting only the accepted fixes' own steps would give
+// 0.15 m and skip every segment as stationary.
+TEST(GnssFusionTrackYaw, WheelTravelOfRejectedFixesCarried) {
+  gnss::GnssConfig c = fusion_cfg();
+  c.align_yaw_from_track = true;
+  c.align_yaw_min_track_m = 1.0;
+  GnssFusion f(c, kPbg);
+  for (int k = 0; k < 600 && !f.aligned(); ++k) {
+    Pose truth;
+    truth.p = Vec3(0.015 * k, 0.0, 0.0);
+    GnssMeasurement m;
+    m.t = Timestamp{k * kSec / 5};
+    m.p_e_g = truth_T_e_w() * (truth * kPbg);
+    m.cov = Vec3(0.01, 0.01, 0.04).asDiagonal();
+    m.status = k % 2 == 1 ? -1 : 0;  // odd fixes: "no fix", rejected by gate_fix
+    (void)f.on_fix(m, truth, kZeroP, nullptr, 0.015 * k);
+  }
+  ASSERT_TRUE(f.aligned());
+  EXPECT_EQ(f.track_aligner().n_stationary_segments(), 0);
+  EXPECT_LT(std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z()), 1e-6);
+}
+
+// Re-review 2 coverage: a realign (gnss.max_consecutive_rejects) rebuilds the track-yaw aligner,
+// whose odometer baseline restarts at NaN. Only the first fix after the realign loses its wheel
+// travel, and it sits in the first half of the new first chunk, which no segment uses; every
+// later travel is differenced from the absolute readings. The body drives backwards, so a lost
+// travel would put a segment on the forward fallback and the yaw would flip.
+TEST(GnssFusionTrackYaw, RealignKeepsWheelDifferencing) {
+  gnss::GnssConfig c = fusion_cfg();
+  c.align_yaw_from_track = true;
+  c.align_yaw_min_track_m = 1.0;
+  c.max_consecutive_rejects = 3;
+  GnssFusion f(c, kPbg);
+  const Vec3 jump(5.0, 0.0, 0.0);  // m, a frame offset the chi-square gate rejects
+  int k = 0;
+  const auto feed = [&](const Vec3& offset_e) {
+    Pose truth;
+    truth.p = Vec3(-0.1 * k, 0.0, 0.0);  // heading 0, moving backwards
+    GnssMeasurement m;
+    m.t = Timestamp{k * kSec / 5};
+    m.p_e_g = truth_T_e_w() * (truth * kPbg) + offset_e;
+    m.cov = Vec3(0.01, 0.01, 0.04).asDiagonal();
+    m.status = 0;
+    (void)f.on_fix(m, truth, kZeroP, nullptr, -0.1 * k);
+    ++k;
+  };
+  while (!f.aligned() && k < 300) {
+    feed(Vec3::Zero());
+  }
+  ASSERT_TRUE(f.aligned());
+  EXPECT_EQ(f.n_alignments(), 1U);
+  for (int i = 0; i < 3; ++i) {  // the third rejection restarts the aligner
+    feed(jump);
+  }
+  ASSERT_EQ(f.n_realign(), 1U);
+  EXPECT_FALSE(f.aligned());
+  while (!f.aligned() && k < 600) {
+    feed(jump);
+  }
+  ASSERT_TRUE(f.aligned());
+  EXPECT_EQ(f.n_alignments(), 2U);
+  EXPECT_EQ(f.track_aligner().n_no_wheel_segments(), 0);  // no travel lost after fix 1
+  EXPECT_EQ(f.track_aligner().n_stationary_segments(), 0);
+  EXPECT_GT(f.track_aligner().n_reversals(), 0);  // backward segments from the wheel sign
+  EXPECT_LT(std::abs(common::so3_log(f.T_e_w().R.transpose() * truth_T_e_w().R).z()), 1e-6);
+}
+
 }  // namespace
 }  // namespace mss::pipeline::detail

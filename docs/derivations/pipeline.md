@@ -97,6 +97,15 @@ with `T_w_b` the front-end pose predicted to the fix time and `P` the latest pos
 "reject everything" nor "accept everything"). Only accepted fixes update the aligner (a
 rejected jump never moves `T_e_w`).
 
+The aligner is `gnss::GnssAligner` (`gnss.md` section 4), or, with `gnss.align_yaw_from_track`
+(ADR-023), `gnss::GnssTrackYawAligner` (`gnss.md` section 5: yaw from the GNSS track against
+the body heading, alignment once its predicted yaw sigma is within
+`gnss.align_yaw_max_sigma_deg`, the minimum track and coherence pass). For it,
+`EstimatorCore` keeps a signed wheel odometer (trapezoid of `WheelSample::v_mps`, only with
+`wheel_odom.enabled`) and passes the travel since the previous fix to `GnssFusion::on_fix`
+(NaN without wheel data); the aligner takes the direction of travel of each segment from its
+sign. Everything else in this section is the same for both; a realign rebuilds the one in use.
+
 Lock-out guard. A rejected fix feeds neither the aligner nor the graph, so a front end that
 drifted past the gate (for example during a fix outage while the LiDAR drifts) could never
 be pulled back: every later fix would be rejected too. After `gnss.max_consecutive_rejects`

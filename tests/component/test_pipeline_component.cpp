@@ -310,6 +310,136 @@ TEST(PipelineComponent, PrealignFixesAnchorFrameAlongAxis) {
   }
 }
 
+// Records the aligner T_e_w given with the first GNSS factor (the centre of E's prior) and the
+// first alignment's predicted yaw sigma.
+class AlignObserver : public detail::CoreObserver {
+ public:
+  void on_alignment(Timestamp /*t*/,
+                    const common::Pose& /*T_e_w*/,
+                    double yaw_sigma_rad,
+                    const gnss::GnssTrackYawAligner& track) override {
+    if (n_alignments_++ == 0) {
+      sigma_rad_ = yaw_sigma_rad;
+      no_wheel_segments_ = track.n_no_wheel_segments();
+      skipped_turns_ = track.n_skipped_turns();
+    }
+  }
+  void on_gnss_factor(Timestamp /*t_k*/,
+                      const common::GnssMeasurement& /*m*/,
+                      const common::Pose& T_e_w) override {
+    if (!have_first_) {
+      first_ = T_e_w;
+      have_first_ = true;
+    }
+  }
+  int n_alignments_ = 0;
+  int no_wheel_segments_ = -1;
+  int skipped_turns_ = -1;
+  double sigma_rad_ = std::numeric_limits<double>::quiet_NaN();
+  bool have_first_ = false;
+  common::Pose first_;
+};
+
+// ADR-023 (gnss.align_yaw_from_track): on corridor seeds 51 and 52 GnssAligner gives E's prior a
+// yaw 179 / 132 deg off at the first GNSS factor (gnss_fusion_study.md section 13: the front
+// end's along-axis velocity changes sign before the alignment). With the flag the yaw is taken
+// from the GNSS track against the heading: within 10 deg (brief), and within 3 times the
+// predicted sigma at the first alignment. Negative control: off, both are above 90 deg (the
+// flag-off path is the unchanged previous code).
+TEST(PipelineComponent, TrackYawAlignsCorridorFlipSeeds) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "the front end follows the backend; measured with GTSAM";
+  }
+  constexpr double kTargetDeg = 10.0;  // deg, brief of design 2
+  for (const std::uint32_t seed : {51U, 52U}) {
+    BoxWorldParams p = corridor_params();
+    p.seed = seed;
+    const fs::path dir = test_dir() / ("seed" + std::to_string(seed));
+    ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+    const common::Pose T_true = test::box_T_e_w(p);
+    for (const bool on : {false, true}) {
+      const Config cfg =
+          box_config(p,
+                     true,
+                     false,
+                     dir / (on ? "on" : "off"),
+                     std::string("    preprocess:\n      max_range_m: 10.0\n") + kCorridorRelaxYaml,
+                     on ? "      align_yaw_from_track: true\n" : "");
+      AlignObserver obs;
+      detail::CoreTestHooks hooks;
+      hooks.observer = &obs;
+      {
+        const HooksScope scope(&hooks);
+        (void)replay(dir / "data", cfg);
+      }
+      ASSERT_TRUE(obs.have_first_) << "seed " << seed << " on " << on;
+      const double err_deg = std::abs(wrap_deg(yaw_of(T_true.R.transpose() * obs.first_.R)));
+      std::printf(
+          "[ track yaw ] seed %u on %d: aligner yaw error at the first factor %.2f deg, "
+          "predicted sigma %.2f deg\n",
+          seed,
+          on ? 1 : 0,
+          err_deg,
+          obs.sigma_rad_ * kRadToDeg);
+      if (on) {
+        EXPECT_LT(err_deg, kTargetDeg) << "seed " << seed;
+        EXPECT_LT(err_deg, 3.0 * obs.sigma_rad_ * kRadToDeg) << "seed " << seed;
+      } else {
+        EXPECT_GT(err_deg, 90.0) << "seed " << seed;
+        EXPECT_TRUE(std::isnan(obs.sigma_rad_));
+      }
+    }
+  }
+}
+
+// ADR-023 addendum: the direction of travel comes from the wheel speed when wheel odometry is
+// on. Box world (2 m circle, wheel samples in the dataset): with wheel_odom.enabled every
+// segment up to the first alignment has a wheel sign; without it every one used the
+// forward-driving fallback. The circle (29 deg per chunk) passes the 45 deg turn gate.
+TEST(PipelineComponent, TrackYawUsesWheelSignWhenAvailable) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "the front end follows the backend; measured with GTSAM";
+  }
+  BoxWorldParams p;
+  p.seed = 42;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const common::Pose T_true = test::box_T_e_w(p);
+  for (const bool wheel : {false, true}) {
+    const Config cfg = box_config(p,
+                                  true,
+                                  wheel,
+                                  dir / (wheel ? "wheel" : "no_wheel"),
+                                  "",
+                                  "      align_yaw_from_track: true\n");
+    AlignObserver obs;
+    detail::CoreTestHooks hooks;
+    hooks.observer = &obs;
+    {
+      const HooksScope scope(&hooks);
+      (void)replay(dir / "data", cfg);
+    }
+    ASSERT_GE(obs.n_alignments_, 1) << "wheel " << wheel;
+    ASSERT_TRUE(obs.have_first_);
+    const double err_deg = std::abs(wrap_deg(yaw_of(T_true.R.transpose() * obs.first_.R)));
+    std::printf(
+        "[ track yaw ] box world wheel %d: yaw error %.2f deg, sigma %.2f deg, "
+        "no-wheel segments %d, turn-gated %d\n",
+        wheel ? 1 : 0,
+        err_deg,
+        obs.sigma_rad_ * kRadToDeg,
+        obs.no_wheel_segments_,
+        obs.skipped_turns_);
+    EXPECT_LT(err_deg, 3.0 * obs.sigma_rad_ * kRadToDeg);
+    EXPECT_EQ(obs.skipped_turns_, 0);
+    if (wheel) {
+      EXPECT_EQ(obs.no_wheel_segments_, 0);
+    } else {
+      EXPECT_GT(obs.no_wheel_segments_, 0);
+    }
+  }
+}
+
 TEST(PipelineComponent, BoxWorldAteWithinTolerance) {
   run_box_world(false);
 }
@@ -733,6 +863,28 @@ TEST(PipelineComponent, NonKeyframeScanDoesNotAllocate) {
   EXPECT_EQ(s.core().counters().n_match_failures, 0U);
   EXPECT_EQ(s.core().latest().state.t, Timestamp{s.t_scan(15)});
   EXPECT_LT(s.core().latest().state.T_w_b.p.norm(), 0.02);  // static: matched near origin
+}
+
+// Re-review N1: one NaN or Inf wheel speed must not poison the ADR-023 wheel odometer (it used
+// to stay NaN for the rest of the run, silently switching the track-yaw aligner to its
+// forward-driving fallback). Non-finite samples are skipped and counted; the odometer integrates
+// the finite ones (trapezoid over the gap).
+TEST(PipelineComponent, WheelOdometerSkipsNonFiniteSpeed) {
+  detail::EstimatorCore core(StaticCore::make_cfg(true));
+  for (int k = 0; k <= 50; ++k) {  // 1 s at 50 Hz, 1 m/s forward
+    common::WheelSample w;
+    w.t = Timestamp{1'000'000'000 + k * 20'000'000LL};
+    w.v_mps = 1.0;
+    if (k == 10) {
+      w.v_mps = std::numeric_limits<double>::quiet_NaN();
+    } else if (k == 30) {
+      w.v_mps = std::numeric_limits<double>::infinity();
+    }
+    core.on_wheel(w);
+  }
+  EXPECT_EQ(core.counters().n_wheel_nonfinite, 2U);
+  EXPECT_TRUE(std::isfinite(core.wheel_odometer_m()));
+  EXPECT_NEAR(core.wheel_odometer_m(), 1.0, 1e-9);
 }
 
 // ADR-022: with gnss.attach_prealign_fixes the static body never aligns (no spread), so every
