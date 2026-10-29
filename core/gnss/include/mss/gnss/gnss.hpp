@@ -203,19 +203,31 @@ class GnssAligner {
 /// next segment; a pending restart stays pending). Agreement implies r >= (1 - slip) sum d_k -
 /// n sigma, so with wheel data
 /// the coherence test below also holds against the wheel travel.
+/// Root-cause study (gnss_fusion_study.md section 16.13): a run of at most
+/// align_yaw_wheel_max_gap_fixes fixes without an odometer reading is bridged by the next reading
+/// (its travel lands on that fix; the wheel path is not bridged). A stationary segment is extended
+/// over up to align_yaw_merge_max_chunks more chunks until it has align_yaw_min_wheel_travel_m of
+/// travel, so a slow robot's travel adds up; its direction is the path of o between the chunk
+/// means (front end where observed, else the wheel path; extended only while one will exist,
+/// skipped if it ends without), because the mean heading of its end chunks does not represent a
+/// long span. With
+/// align_yaw_frontend_travel, when every step from the first fix of the earlier chunk to the last
+/// fix of the later one was observed along the travel axis by the LiDAR, a front-end displacement
+/// of o between the chunk means below align_yaw_min_wheel_travel_m makes the segment stationary
+/// (wheels turning on a still body, a parked robot), and without wheel data the sign of that
+/// displacement along a_k is the direction of travel.
 /// A transform is returned once confident: r >= the minimum track (align_yaw_min_track_wheel_m
 /// when every segment used has its direction from wheel data, else align_yaw_min_track_m),
 /// r >= align_yaw_min_coherence * sum |b_k| over the segments used, no wheel/GNSS mismatch
 /// pending, and sigma_yaw <= align_yaw_max_sigma_rad.
-/// Not handled (gnss.md sections 5 and 5.1): without wheel data, net backward motion along the
-/// heading before the estimate is confident gives yaw + 180 deg, and a parked robot whose GNSS
-/// wanders by 0.1 m per fix or more can align on noise. With wheel data: a robot travelling less
-/// than align_yaw_min_wheel_travel_m per chunk interval (about 0.1 m/s) never aligns; wheels
-/// turning on a still body (stuck, lifted) with GNSS wandering by 0.2 m per fix can align on noise
-/// (2 of 100 runs on the test seeds, 4 of 100 on the review probe's); after wheels spun on a
-/// still body the alignment waits for align_yaw_wheel_restart_m of agreeing travel; an odometer
-/// that over-reads by 2x or more never aligns (n_wheel_mismatches() grows); a skid that persists
-/// through a long one-way turn is not in the sigma.
+/// Not handled (gnss.md sections 5 and 5.1; causes and tolerances in gnss_fusion_study.md
+/// section 16.13): where the LiDAR does not observe the travel axis, without wheel data net
+/// backward motion before the estimate is confident gives yaw + 180 deg and a parked robot whose
+/// GNSS wanders can align on noise, and with wheel data wheels turning on a still body with GNSS
+/// wandering by 0.2 m per fix can align on noise; after wheels spun on a still body the alignment
+/// waits for align_yaw_wheel_restart_m of agreeing travel; an odometer that over-reads by 2x or
+/// more never aligns (n_wheel_mismatches() grows); a skid that persists through a long one-way
+/// turn is not in the sigma.
 /// Without heading_variation_rad readings, opposite turns hidden in one step (a GNSS outage over
 /// an S-jog) cancel in the net heading change and pass the turn gate. Coloured GNSS error is not
 /// in sigma_yaw; the minimum tracks and the coherence tests only bound its tails.
@@ -248,9 +260,13 @@ class GnssTrackYawAligner {
   ///   change| of the front end, rad, non-decreasing) at the fix, or NaN when unknown; the step
   ///   variation is the difference to the last fix added here, at least the net heading change
   ///   (the net change alone when NaN). It lets the turn gate see turns hidden between fixes.
+  /// `travel_unobserved_scans`: absolute count of the front-end scans whose matching did not
+  ///   observe the travel axis (fewer than align_yaw_frontend_min_info constraints along it, or
+  ///   no match; non-decreasing), or NaN when unknown; a step is observed when the count did not
+  ///   change since the last fix added here (align_yaw_frontend_travel).
   /// Errors (Result::error), first failure returned:
-  ///   1. "non-finite input" (wheel_odometer_m and heading_variation_rad may be NaN, not
-  ///      infinite; fix NOT added);
+  ///   1. "non-finite input" (wheel_odometer_m, heading_variation_rad and
+  ///      travel_unobserved_scans may be NaN, not infinite; fix NOT added);
   ///   2. "non-positive covariance" when cov_e(0,0) <= 0 or cov_e(1,1) <= 0 (fix NOT added);
   ///   3. "heading undefined" when the travel axis x_o is within about 1e-6 rad of vertical
   ///      (fix NOT added);
@@ -271,7 +287,8 @@ class GnssTrackYawAligner {
       const common::Pose& T_w_b,
       const common::Vec3& p_b_g,
       double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN(),
-      double heading_variation_rad = std::numeric_limits<double>::quiet_NaN());
+      double heading_variation_rad = std::numeric_limits<double>::quiet_NaN(),
+      double travel_unobserved_scans = std::numeric_limits<double>::quiet_NaN());
 
   /// Predicted 1-sigma of the yaw (rad) at the last chunk boundary; +inf before it is defined.
   [[nodiscard]] double yaw_sigma_rad() const { return yaw_sigma_rad_; }
@@ -324,6 +341,17 @@ class GnssTrackYawAligner {
     double wtravel_fall_m = 0.0;  // m, the same as for path_fall_m
     bool path_rise_ok = false;    // every step into fixes 1.. of this chunk had wheel data
     bool path_fall_ok = false;    // every step into a fix of this chunk had wheel data
+    Eigen::Vector2d po = Eigen::Vector2d::Zero();  // m, mean front-end position of o, w
+    bool fe_ok = false;  // every step into a fix of this chunk observed the travel axis
+  };
+  // A stationary segment being extended (align_yaw_merge_max_chunks): its totals from the
+  // centre of prev_ to the centre of near_, the last chunk it was extended over.
+  struct Carry {
+    int chunks = 0;         // chunks it was extended over (0: none)
+    double travel_m = 0.0;  // m, signed wheel travel
+    bool wheel_ok = true;   // every step had wheel data
+    bool fe_ok = true;      // every step observed the travel axis
+    bool path_ok = true;    // every step of the chunks extended over is in the wheel path
   };
   // Sums over a run of consecutive segments (gnss.md sections 5 and 5.1): Z = sum conj(a) b and
   // L = sum conj(a) l (real part: dot, imaginary: cross), the path and wheel lengths, the noise
@@ -372,6 +400,9 @@ class GnssTrackYawAligner {
                                         const Eigen::Vector2d& c_after) const;
 
   int chunk_fixes_;            // fixes per chunk, from GnssConfig
+  int max_gap_fixes_;          // fixes, from GnssConfig
+  int merge_max_chunks_;       // chunks, from GnssConfig
+  bool frontend_travel_;       // from GnssConfig
   double max_sigma_rad_;       // rad, from GnssConfig
   double min_track_m_;         // m, from GnssConfig
   double min_coherence_;       // ratio, from GnssConfig
@@ -399,8 +430,22 @@ class GnssTrackYawAligner {
   double last_heading_variation_rad_ = std::numeric_limits<double>::quiet_NaN();  // at last fix
   double chunk_sum_var_m2_ = 0.0;                  // m^2, floored per-fix variances
   std::array<double, 2> chunk_wheel_m_{0.0, 0.0};  // m, signed wheel travel per half
-  double last_odometer_m_ = std::numeric_limits<double>::quiet_NaN();  // m, at the last fix added
+  double last_odometer_m_ = std::numeric_limits<double>::quiet_NaN();  // m, last reading
   std::array<bool, 2> chunk_wheel_ok_{true, true};  // every fix of the half had wheel
+  // Fixes without an odometer reading since the last one, and where that run started (chunk
+  // sequence number and half) (align_yaw_wheel_max_gap_fixes).
+  int odo_missing_ = 0;
+  int gap_seq_ = 0;
+  std::size_t gap_half_ = 0;
+  int chunk_seq_ = 0;  // chunks closed so far
+  // Front end (align_yaw_frontend_travel): mean position of o in the current chunk (w, shifted
+  // by ref_w_), whether every step into it observed the travel axis, and the last count.
+  Eigen::Vector2d chunk_sum_po_ = Eigen::Vector2d::Zero();  // m
+  bool chunk_fe_ok_ = true;
+  double last_unobserved_scans_ = std::numeric_limits<double>::quiet_NaN();
+  // Stationary segment being extended: its totals and the last chunk it was extended over.
+  Carry carry_;
+  Chunk near_;
   // Wheel path of the body in w (align_yaw_wheel_turns), relative to its start, and the
   // current chunk's sums (see Chunk).
   Eigen::Vector2d path_q_ = Eigen::Vector2d::Zero();               // m

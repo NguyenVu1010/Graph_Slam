@@ -345,6 +345,29 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   ASSERT_FALSE(bad_restart.is_ok());
   EXPECT_TRUE(mentions(bad_restart.reason(), "gnss.align_yaw_wheel_restart_m: must be > 0 (got 0)"))
       << bad_restart.reason();
+  // Root-cause study (gnss_fusion_study.md section 16.13): bridged gaps below half a chunk,
+  // extension >= 0, front end on with 100 constraints.
+  EXPECT_EQ(cfg.value().gnss.align_yaw_wheel_max_gap_fixes, 4);
+  EXPECT_EQ(cfg.value().gnss.align_yaw_merge_max_chunks, 10);
+  EXPECT_TRUE(cfg.value().gnss.align_yaw_frontend_travel);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_frontend_min_info, 100.0);
+  const auto bad_gap = parse_config(read_file(kDefault),
+                                    overlay("    gnss:\n      align_yaw_wheel_max_gap_fixes: 5\n"));
+  ASSERT_FALSE(bad_gap.is_ok());
+  EXPECT_TRUE(mentions(bad_gap.reason(),
+                       "gnss.align_yaw_wheel_max_gap_fixes: must be < align_yaw_chunk_fixes / 2"))
+      << bad_gap.reason();
+  const auto bad_merge = parse_config(read_file(kDefault),
+                                      overlay("    gnss:\n      align_yaw_merge_max_chunks: -1\n"));
+  ASSERT_FALSE(bad_merge.is_ok());
+  EXPECT_TRUE(
+      mentions(bad_merge.reason(), "gnss.align_yaw_merge_max_chunks: must be >= 0 (got -1)"))
+      << bad_merge.reason();
+  const auto bad_info = parse_config(read_file(kDefault),
+                                     overlay("    gnss:\n      align_yaw_frontend_min_info: 0\n"));
+  ASSERT_FALSE(bad_info.is_ok());
+  EXPECT_TRUE(mentions(bad_info.reason(), "gnss.align_yaw_frontend_min_info: must be > 0 (got 0)"))
+      << bad_info.reason();
   for (const char* v : {"0", "1"}) {
     const auto bad_slip = parse_config(
         read_file(kDefault),

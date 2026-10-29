@@ -228,6 +228,13 @@ class Reader {
     errors_.add(key, "must be one of " + names + " (got " + name + ")");
   }
 
+  // A condition between fields, checked after they are read: an error for `key` when false.
+  void check(const std::string& key, bool ok, const std::string& what) {
+    if (!ok) {
+      errors_.add(key, what);
+    }
+  }
+
   // YAML key `<name>_deg` (degrees) -> `out` in radians (struct field `<name>_rad`).
   void angle_deg(const std::string& key, double& out, Range range = Range::kAny) {
     double deg = 0.0;
@@ -465,6 +472,17 @@ Config read_config(Reader& r) {
   r.field(
       "gnss.align_yaw_min_track_wheel_m", c.gnss.align_yaw_min_track_wheel_m, Range::kNonNegative);
   r.field("gnss.align_yaw_wheel_restart_m", c.gnss.align_yaw_wheel_restart_m, Range::kPositive);
+  if (r.field("gnss.align_yaw_wheel_max_gap_fixes",
+              c.gnss.align_yaw_wheel_max_gap_fixes,
+              Range::kNonNegative)) {
+    r.check("gnss.align_yaw_wheel_max_gap_fixes",
+            2 * c.gnss.align_yaw_wheel_max_gap_fixes < c.gnss.align_yaw_chunk_fixes,
+            "must be < align_yaw_chunk_fixes / 2");
+  }
+  r.field(
+      "gnss.align_yaw_merge_max_chunks", c.gnss.align_yaw_merge_max_chunks, Range::kNonNegative);
+  r.field("gnss.align_yaw_frontend_travel", c.gnss.align_yaw_frontend_travel);
+  r.field("gnss.align_yaw_frontend_min_info", c.gnss.align_yaw_frontend_min_info, Range::kPositive);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);

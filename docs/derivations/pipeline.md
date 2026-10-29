@@ -122,7 +122,10 @@ Track-yaw aligner inputs (ADR-023, design 2b, `gnss.md` section 5.1). With
 `gnss.align_yaw_from_track`, `EstimatorCore` passes with each fix the signed wheel odometer
 reading and the total absolute heading variation of the front end (the sum of `|heading change|`
 from scan to scan, kept only while the flag is on), and `GnssFusion` builds the aligner with
-`frames.T_b_o`. Chunks where the GNSS track and the wheel travel disagree are counted in
+`frames.T_b_o`. With `gnss.align_yaw_frontend_travel` it also passes the count of scans that did
+not observe the travel axis: the match failed, or `d^T H_rho d` (the scan-matching information
+along the horizontal `x_o`, in the LiDAR frame) was below `gnss.align_yaw_frontend_min_info`
+(`gnss.md` section 5.2). Chunks where the GNSS track and the wheel travel disagree are counted in
 `Stats::n_gnss_wheel_mismatch` (bench.json `n_gnss_wheel_mismatch`), one warning until the next
 alignment; a count that keeps growing while driving means wheels that slip or an odometer scale
 that is wrong by 2x or more.

@@ -28,6 +28,27 @@ inline double travel_heading_rad(const common::Mat3& R_w_b, const common::Mat3& 
   return std::atan2(x_o_w.y(), x_o_w.x());
 }
 
+// Root-cause study (gnss_fusion_study.md section 16.13): the scan-matching information along the
+// horizontal travel axis x_o = R_w_b R_b_o x, d^T H_rho d with d that axis in the LiDAR frame l
+// (H in the [rho, phi] tangent of T_w_l, rho in l): the robust-weighted count of point-to-plane
+// constraints along it. 0 when x_o is vertical (horizontal norm below kMinTravelAxisNorm).
+// Below this horizontal norm of the unit travel axis it is taken as vertical (numerical guard,
+// as the aligner's heading).
+constexpr double kMinTravelAxisNorm = 1e-6;
+inline double travel_axis_info(const common::Mat3& R_w_b,
+                               const common::Mat3& R_b_o,
+                               const common::Mat3& R_w_l,
+                               const common::Mat6& H) {
+  common::Vec3 d_w = R_w_b * R_b_o.col(0);
+  d_w.z() = 0.0;
+  const double norm = d_w.norm();
+  if (!(norm > kMinTravelAxisNorm)) {
+    return 0.0;
+  }
+  const common::Vec3 d_l = R_w_l.transpose() * (d_w / norm);
+  return d_l.dot(H.topLeftCorner<3, 3>() * d_l);
+}
+
 /// What GnssFusion::on_fix did with a fix, so callers can branch without building the
 /// Status reason string (Status::reason() may allocate).
 enum class FixOutcome : std::uint8_t {
@@ -84,12 +105,15 @@ class GnssFusion {
   /// wheel data; used only by the track-yaw aligner (ADR-023) for the direction of travel.
   /// `heading_variation_rad`: absolute total heading variation of the front end (rad), NaN when
   /// unknown; used only by the track-yaw aligner (design 2b turn gate).
+  /// `travel_unobserved_scans`: absolute count of front-end scans that did not observe the travel
+  /// axis, NaN when unknown; used only by the track-yaw aligner (gnss.align_yaw_frontend_travel).
   common::Status on_fix(const common::GnssMeasurement& m,
                         const common::Pose& T_w_b_fix,
                         const common::PoseCovariance& P_w_b,
                         FixOutcome* outcome = nullptr,
                         double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN(),
-                        double heading_variation_rad = std::numeric_limits<double>::quiet_NaN());
+                        double heading_variation_rad = std::numeric_limits<double>::quiet_NaN(),
+                        double travel_unobserved_scans = std::numeric_limits<double>::quiet_NaN());
 
   /// Moves every queued fix with `t <= t_k` into `out[0, n)`, shifted to the keyframe
   /// pose `T_w_bk` (pipeline.md section 5), and returns n. Later fixes stay queued.

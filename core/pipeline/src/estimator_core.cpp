@@ -278,7 +278,17 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
   // Design 2b: the heading variation up to the last scan (NaN before the first one).
   const double heading_variation_rad =
       have_scan_heading_ ? heading_variation_rad_ : std::numeric_limits<double>::quiet_NaN();
-  (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome, wheel_odometer_m, heading_variation_rad);
+  // Root-cause study: the count of scans that did not observe the travel axis (NaN when off).
+  const double travel_unobserved_scans = have_scan_heading_ && cfg_.gnss.align_yaw_frontend_travel
+                                             ? travel_unobserved_scans_
+                                             : std::numeric_limits<double>::quiet_NaN();
+  (void)fusion_.on_fix(m,
+                       x.T_w_b,
+                       latest_.cov,
+                       &outcome,
+                       wheel_odometer_m,
+                       heading_variation_rad,
+                       travel_unobserved_scans);
   if (fusion_.n_track_wheel_mismatches() != counters_.n_gnss_wheel_mismatch) {
     counters_.n_gnss_wheel_mismatch = fusion_.n_track_wheel_mismatches();
     if (!track_restart_logged_) {
@@ -468,7 +478,7 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
     front_ = predicted;
     reset_prediction();
     latest_.state = front_;  // cov and keyframe id unchanged
-    track_heading();
+    track_heading(nullptr);
     return;
   }
   match_failure_streak_ = false;
@@ -508,10 +518,10 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
   latest_.state = front_;
   latest_.cov = cov_out;
   latest_.keyframe_id = last_kf_id_;
-  track_heading();
+  track_heading(&m);
 }
 
-void EstimatorCore::track_heading() {
+void EstimatorCore::track_heading(const common::MatchResult* match) {
   // Design 2b (gnss.md section 5.1): the total absolute heading variation of the front end,
   // read by the track-yaw turn gate at each fix. Only with gnss.align_yaw_from_track (flag off:
   // nothing runs here).
@@ -525,8 +535,19 @@ void EstimatorCore::track_heading() {
   }
   have_scan_heading_ = true;
   last_scan_heading_rad_ = heading_rad;
+  // Root-cause study (gnss_fusion_study.md section 16.13): a scan observes the travel axis when
+  // its matching has gnss.align_yaw_frontend_min_info constraints along it.
+  double unobserved = std::numeric_limits<double>::quiet_NaN();
+  if (cfg_.gnss.align_yaw_frontend_travel) {
+    if (match == nullptr ||
+        !(travel_axis_info(front_.T_w_b.R, cfg_.frames.T_b_o.R, match->T_w_l.R, match->H) >=
+          cfg_.gnss.align_yaw_frontend_min_info)) {
+      travel_unobserved_scans_ += 1.0;
+    }
+    unobserved = travel_unobserved_scans_;
+  }
   if (observer() != nullptr) {
-    observer()->on_track_heading(front_.t, front_.T_w_b, heading_variation_rad_);
+    observer()->on_track_heading(front_.t, front_.T_w_b, heading_variation_rad_, unobserved);
   }
 }
 

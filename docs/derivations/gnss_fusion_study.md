@@ -1296,3 +1296,246 @@ Re-runs after fix round 3:
 - **Nit:** the stuck-wheel rate at 0.20 m per fix now names its seed sets. It is 1 to 7 of 100:
   2 in `StuckWheelsDriftingGnssEnvelope`, 4 in the window-length probe (16.10), 6 in the
   re-review 3 probe.
+
+### 16.13 Root cause of the residual limits
+
+The owner did not accept the residual limits of design 2b as they stood. This section gives each
+limit's root cause and, where the cause is noise, the noise that can be tolerated. Driver:
+`GnssRootCauseStudy` in `tests/unit/test_gnss_track_yaw_study.cpp` (aligner only, front-end pose
+= truth, 5 Hz fixes, 0.22 m lever arm, 100 fixed seeds per point; `MSS_GNSS_ROOTCAUSE_STUDY=1`,
+output in `results/<run-id>/gnss_rootcause.md`). For each limit the noise source was swept, and
+then the suspect algorithm step was replaced by an ideal one (oracle) with the noise unchanged.
+If the failures disappear with the oracle, and the pipeline has the information the oracle uses,
+the cause is the algorithm. If they stay, or no sensor has that information, the cause is the
+noise or the sensor set. "Before" is the design 2b of section 16.12. "After" adds the three
+changes below, with their shipped values.
+
+The three changes (all new keys in `gnss`, behind `align_yaw_from_track`):
+
+- `align_yaw_wheel_max_gap_fixes` (4). The odometer is absolute, so a run of up to 4 fixes
+  without a reading is bridged: the next reading supplies the travel over the gap. Before, every
+  missing reading left the chunk half without wheel data, and that broke the wheel/GNSS window.
+  The wheel path is not bridged. A longer run marks every half it touched.
+- `align_yaw_merge_max_chunks` (10). A stationary segment, one with less than 0.2 m of travel,
+  is extended over up to 10 more chunks (20 s) until it has 0.2 m of travel.
+  - **Direction.** Its direction is the path of `o` between the chunk means: the front end where
+    it is observed, else the wheel path. The mean heading of its two end chunks is not used,
+    because a turn at one end biases it: on noise-free slow S-jogs (0.03 m/s, 57 deg each way at
+    0.2 rad/s) the first yaw was 4.8 deg off with the mean heading, and exact with the path.
+  - **When it is extended.** Only while one of these paths will exist; otherwise it is added as a
+    stationary segment as before, and an extended segment that ends without a path is skipped.
+    On E-01 the rest chunk had no wheel path, because a reading was missing at the first fix, and
+    extending there lost a segment of track.
+  - **Sigma.** The slip and speed-profile terms of the inner chunks are left out of the sigma.
+    Their total travel is below 0.2 m, otherwise the segment would not have been extended, so
+    their slip error is under 1 cm against 0.16 m of chunk-mean noise. With a 10 deg skid and
+    slip 0.15, NEES is 0.95 with those terms and 0.94 without.
+- `align_yaw_frontend_travel` (on) and `align_yaw_frontend_min_info` (100). The pipeline
+  counts the scans whose matching did not observe the travel axis: fewer than 100
+  robust-weighted point-to-plane constraints along `x_o`, `d^T H_rho d`, or no match. A segment
+  between two chunks is "observed" when no step from the first fix of the earlier chunk to the
+  last fix of the later one had such a scan. For an observed segment:
+  - a front-end displacement of `o` below 0.2 m makes the segment stationary, whatever the wheels
+    say;
+  - without wheel data, the sign of the displacement along `a_k` is the direction of travel;
+  - in a turn, the front-end path replaces the wheel path, with no slip term.
+
+  This revises ADR-023 decision 13. The gate is the information in the scan matcher's Hessian
+  along the axis, not its covariance (section 16.4: the covariance did not flag the corridor
+  axis). Measured per scan, in constraints:
+
+  | scene | range |
+  | --- | --- |
+  | box world | 239 to 466 |
+  | E-01 | 304 to 577 |
+  | box-world corridor (end walls out of range) | 0.2 to 66 |
+
+  Test `PipelineComponent.TrackYawFrontEndObservesTheTravelAxis` checks this: 0 of 179 scans
+  unobserved in the box world, 179 of 179 in the corridor.
+
+**1. Wheels turning on a still body, with GNSS drift** (300 s, 0.3 m white, declared 0.5 m;
+runs that aligned on noise):
+
+| drift per fix | 0.10 | 0.15 | 0.20 | 0.25 | 0.30 | 0.50 m |
+| --- | --- | --- | --- | --- | --- | --- |
+| before, and after where the travel axis is not observed | 0 | 0 | 6 | 7 | 4 | 12 |
+| after, axis observed | 0 | 0 | 0 | 0 | 0 | 0 |
+
+- The oracle is true stationarity. With it the failures disappear, and in this sim it equals the
+  front-end check with the axis observed.
+- **Classification.**
+  - **Algorithm** where the LiDAR observes the travel axis: the still front end was not used.
+    Fixed.
+  - **Sensor set** where it does not. The wheels say the robot moves. The GNSS drift looks like
+    motion. The IMU cannot tell constant speed from rest. The LiDAR is blind along the axis.
+- **Tolerance there:** GNSS drift up to 0.15 m per fix.
+
+**2. Missing wheel readings after a mismatch** (spin 60 s, then drive at 0.5 m/s; readings
+missing at random after the drive-off; distance to the alignment after the drive-off, median
+(max)):
+
+| missing | before | after (bridge 4) |
+| --- | --- | --- |
+| 0 % | 9.9 (15.9) m | 9.9 (15.9) m |
+| 2 % | 35.9 (310.9) m | 10.9 (16.9) m |
+| 5 % | 42 of 100 aligned, 147.9 (316.9) m | 10.9 (15.9) m |
+| 10 % | none of 100 aligned | 10.9 (15.9) m |
+| 20 % | none of 100 aligned | 10.9 (21.9) m |
+
+- After the fix, all runs align with NEES 0.80 to 1.03 and none beyond 3 sigma.
+- Bridging 1 or 2 fixes is worse at 10 to 20 % missing: max 59.9 and 21.9 m at 10 %; at 20 %,
+  85 of 100 aligned and max 48.9 m.
+- **Protection** (wheels spinning for ever, 0.20 m per fix): 6 of 100 align on noise at every
+  dropout rate after the fix, the same as with every reading. Before, missing readings raised it
+  to 11 of 100 at 10 % and 20 of 100 at 20 %.
+- The oracle is no reset. **Classification: algorithm.** Breaking the window at each missing
+  reading threw away the travel, which the absolute odometer still gives. Fixed.
+- **Tolerance:** up to 20 % of readings missing. The 10 m restart window is by design.
+
+**3. A slow robot with wheel data** (straight, 0.5 m white, 900 s):
+
+| speed | 0.02 | 0.03 | 0.05 | 0.08 | 0.10 | 0.15 | 0.50 m/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| before | never | never | never | never | 32.8 m | 3.6 m | 3.9 m |
+| oracle: the true travel sign, no stationary skip | never | never | never | 3.2 m (99) | 3.2 m | 3.3 m | 3.9 m |
+| after (extend 10 chunks) | 3.0 m | 3.1 m | 3.3 m | 3.2 m | 3.2 m | 3.3 m | 3.9 m |
+
+- Values are the median distance; all 100 runs aligned unless stated. NEES after the fix is 0.88
+  to 1.18, with none beyond 3 sigma.
+- **Classification: algorithm**, with two causes.
+  - Each 2 s segment had less than 0.2 m of travel and was skipped.
+  - With the true sign (the oracle), the short segments were dominated by noise (0.22 m per
+    centroid pair against 0.1 m of travel), so the track failed the coherence test
+    `r >= 0.5 sum |b_k|`.
+
+  Extending a stationary segment until it has travel fixes both. The bound is about 0.01 m/s:
+  0.2 m over 11 chunks of 2 s.
+- What remains is **noise**: at low speed the coloured GNSS drift per metre of track grows
+  (after the fix, beyond 3 sigma / within 10 m, 0.3 m white):
+
+| drift per fix | 0.03 m/s | 0.05 m/s | 0.10 m/s | 0.20 m/s | 0.50 m/s |
+| --- | --- | --- | --- | --- | --- |
+| 0.005 m | 0 / 100 | 0 / 100 | 0 / 100 | 0 / 100 | 0 / 100 |
+| 0.01 m | 2 / 100 | 0 / 100 | 0 / 100 | 0 / 100 | 0 / 100 |
+| 0.02 m | 18 / 85 | 9 / 94 | 1 / 98 | 0 / 100 | 0 / 100 |
+| 0.05 m | 14 / 17 | 46 / 32 | 47 / 61 | 15 / 84 | 3 / 100 |
+
+  The random walk grows as `sqrt(t)` while the track grows as `v t`, so the tolerated drift per
+  fix scales about as `0.02 m sqrt(v / 0.5 m/s)`. Before the fix these runs never aligned below
+  0.1 m/s, so they could not fail either.
+
+**4a. No wheel data, net backward motion** (0.5 m/s backwards):
+
+| | before | after, axis not observed | after, axis observed |
+| --- | --- | --- | --- |
+| flips (more than 90 deg off) | 100 of 100 | 100 of 100 | 0 of 100 (NEES 0.99) |
+
+- **Classification: sensor set.** GNSS positions and the heading do not give the travel sign.
+  GNSS Doppler does not give it either: the velocity direction in e against the heading has the
+  same ambiguity.
+- Where the LiDAR observes the travel axis, the front end gives the sign: fixed there. End to end,
+  `PipelineComponent.TrackYawFrontEndGivesTheTravelSign` (box world driven backwards, no wheel
+  data): 1.5 deg off with a 4.7 deg sigma, against 165 deg off without the front end.
+
+**4b. No wheel data, parked, with GNSS drift** (300 s; runs that aligned on noise):
+
+| drift per fix | 0.05 | 0.10 | 0.15 | 0.20 | 0.30 m |
+| --- | --- | --- | --- | --- | --- |
+| before, and after with the axis not observed | 0 | 1 | 7 | 25 | 44 |
+| after, axis observed | 0 | 0 | 0 | 0 | 0 |
+
+- **Classification:** as limit 1. Algorithm where the axis is observed (fixed); sensor set where
+  it is not.
+- **Tolerance there:** drift up to 0.10 m per fix.
+
+**5. A skid held through a one-way turn** (1 m circle at 0.5 m/s; beyond 3 sigma, and NEES):
+
+| skid | 0 | 2 | 3 | 4 | 5 | 6 | 8 | 10 deg |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| wheel path (before; after with the axis not observed) | 0 (0.96) | 0 (0.96) | 1 (1.09) | 1 (1.30) | 1 (1.57) | 2 (1.90) | 5 (2.83) | 9 (4.05) |
+| front-end path (after, axis observed) | 0 (0.93) | 0 (1.00) | 0 (1.00) | 0 (1.03) | 0 (0.98) | 0 (0.98) | 0 (0.93) | 0 (0.96) |
+
+- Aisles, whose alternating turns cancel the skid: 1 of 100 beyond 3 sigma at every skid angle.
+- **Does the gyro bound it? No.** The gyro measures the rotation of the body. The odometer
+  measures the speed along `x_o`. A sideslip is the angle between the velocity and `x_o`, and
+  neither sensor measures it. **Classification:** noise (physics) for wheels plus gyro.
+- The LiDAR measures the true path where it observes the travel axis, and the front-end path
+  removes the error there.
+- **Tolerance with the wheel path:** a persistent skid up to 5 deg (1 of 100 beyond 3 sigma).
+
+**White GNSS noise and drift while driving** (straight at 0.5 m/s with wheel data; before and after
+identical):
+
+| white sigma (declared = true) | 0.1 | 0.3 | 0.5 | 1.0 | 1.5 | 2.0 | 3.0 m |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| beyond 3 sigma / aligned within 10 m | 0 / 100 | 0 / 100 | 0 / 100 | 0 / 100 | 1 / 99 | 0 / 85 | 2 / 1 |
+
+| drift per fix (0.3 m white) | 0 | 0.01 | 0.02 | 0.05 | 0.10 m |
+| --- | --- | --- | --- | --- | --- |
+| beyond 3 sigma / within 10 m | 0 / 100 | 0 / 100 | 0 / 100 | 3 / 100 | 38 / 71 |
+
+**Tolerance envelope** at the simulator defaults (0.5 m, 5 Hz, 0.22 m lever arm, wheel data,
+shipped keys). Each value is the largest level with at most 1 of 100 failures (beyond 3 sigma,
+a flip, or an alignment on noise), and with alignment within 10 m of driving where the robot
+drives.
+
+| source | the LiDAR observes the travel axis | it does not (corridor, open field) |
+| --- | --- | --- |
+| GNSS drift, wheels turning on a still body | none up to 0.50 m per fix | 0.15 m per fix |
+| GNSS drift, parked without wheel data | none up to 0.30 m per fix | 0.10 m per fix |
+| GNSS drift while driving at 0.5 m/s | 0.02 m per fix | 0.02 m per fix |
+| GNSS drift at speed `v` | about `0.02 m sqrt(v / 0.5 m/s)` per fix | the same |
+| white GNSS sigma (declared = true) | 1.0 m | 1.0 m |
+| missing wheel readings | 20 % (restart after 10.9 m median, 21.9 m max) | the same |
+| speed with wheel data | from 0.02 m/s (bound about 0.01 m/s) | the same |
+| persistent skid in a one-way turn | none up to 10 deg | 5 deg |
+| backward travel without wheel data | handled | not handled (sensor set) |
+
+**GNSS Doppler velocity** (study only, for a future ADR). In the driver, the receiver gives
+the antenna velocity in e with 0.05 m/s white noise per axis, and the yaw is
+`arg(sum conj(u_k) v_k)`:
+
+| speed | 0.02 | 0.05 | 0.10 | 0.20 | 0.50 m/s |
+| --- | --- | --- | --- | --- | --- |
+| distance to a 6 deg sigma (median) | 2.1 m | 0.9 m | 0.5 m | 0.4 m | 1.0 m (at the 10-fix minimum) |
+| beyond 3 sigma (100 runs) | 0 | 0 | 0 | 1 | 1 |
+
+- **Stationarity.** With a 10-fix mean below 0.067 m/s counted as still:
+  - a still body is flagged as moving in 0.02 % of chunks;
+  - at 0.05 m/s, 17 % of chunks are flagged as moving;
+  - at 0.10 m/s, 98 %.
+
+  Doppler is not affected by the coloured position drift.
+- **What Doppler would remove:**
+  - limits 1 and 4b, everywhere, the corridor included (a still body is seen from the velocity,
+    not from the positions);
+  - the drift-per-metre limit of slow robots (the yaw comes from velocity, and position drift
+    does not enter it);
+  - most of the distance to the alignment (below 1 m from 0.05 m/s).
+- **What it would not remove:**
+  - limit 4a, because the velocity has the same sign ambiguity against the heading;
+  - limit 5, because a skid rotates the velocity just as it rotates the wheel path.
+- **Assumption:** white Doppler noise. Real receivers have time-correlated and multipath errors,
+  so a recorded bag must confirm these numbers.
+- **Open question for the owner:** whether the receiver outputs RMC/VTG course and speed or
+  NAV-PVT velocity with its accuracy.
+
+**Re-runs with the shipped keys:**
+- Corridor, 15 seeds, every variant: identical to section 16.12. The corridor does not observe the
+  travel axis, and bridging and extension change nothing there.
+- Box world: identical. The robot drives forward on a circle that never trips the turn gate, so
+  the front-end sign equals the forward assumption.
+- E-01 with the flag on: identical (24 s / 9 m, 0.76 deg off with a 5.57 deg sigma, 170 factors,
+  ATE 0.002196 m; E-03 0.002177 m).
+- P11: identical.
+- E-01..E-03 with the flag off: `est.tum` md5 equal to main 99bd5fd.
+- Bench E-01 (median of 5 interleaved runs):
+
+  | build | p50 | p95 | CPU |
+  | --- | --- | --- | --- |
+  | main | 4.19 ms | 5.47 ms | 2.54 s |
+  | flag off | 4.19 ms | 5.50 ms | 2.53 s |
+  | flag on | 4.21 ms | 5.64 ms | 2.53 s |
+
+  Within the run-to-run spread (p95 5.38 to 5.77 ms). The information along the axis costs one
+  3x3 product per scan, with the flag on only.

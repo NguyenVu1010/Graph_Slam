@@ -14,7 +14,7 @@ mss_add_test(test_preprocess test_preprocessor.cpp test_preprocess_deskew_table.
 mss_add_test(test_imu test_imu_preintegrator.cpp test_imu_covariance.cpp test_imu_initializer.cpp
              alloc_counter_impl.cpp)
 mss_add_test(test_gnss test_gnss_geodesy.cpp test_gnss_gate.cpp test_gnss_aligner.cpp
-  test_gnss_track_yaw.cpp test_gnss_track_yaw_2b.cpp
+  test_gnss_track_yaw.cpp test_gnss_track_yaw_2b.cpp test_gnss_track_yaw_study.cpp
   alloc_counter_impl.cpp)
 target_include_directories(test_gnss PRIVATE ${CMAKE_SOURCE_DIR}/core/gnss/src)
 mss_add_test(test_scan_match test_scan_match.cpp)

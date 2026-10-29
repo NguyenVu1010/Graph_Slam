@@ -162,10 +162,32 @@ mss_node:
       # still robot, slipping, a wrong odometer scale; counted in Stats::n_gnss_wheel_mismatch),
       # no transform until the segments since then agree with the wheels over this wheel travel,
       # m (> 0); they then replace all segments. 10 m: wheels spinning on a still robot with
-      # 0.2 m per fix of GNSS drift align on 4 of 100 runs (6 m: 16, 3 m: 83); after 30 / 60 /
+      # 0.2 m per fix of GNSS drift align on 4 of 100 runs of the window-length probe (6 m: 16,
+      # 3 m: 83; 1 to 7 of 100 across seed sets) where the LiDAR does not observe the travel
+      # axis (none where it does, align_yaw_frontend_travel); after 30 / 60 /
       # 300 s of spinning the robot aligns after a median 10 m of driving (before: 16 / 31 /
       # 150 m), yaw within its sigma.
       align_yaw_wheel_restart_m: 10.0
+      # Root-cause study of the residual limits (gnss_fusion_study.md section 16.13).
+      # A run of at most this many fixes without an odometer reading is bridged by the next
+      # reading (the odometer is absolute) instead of leaving the chunk half without wheel data,
+      # fixes (>= 0, < align_yaw_chunk_fixes / 2; 0: never bridged). 4: after wheels spun on a
+      # still body, with 2 % / 10 % / 20 % of readings missing the robot aligns after a median
+      # 10.9 m (max 16.9 / 15.9 / 21.9 m) instead of 36 m (max 311 m) / never / never.
+      align_yaw_wheel_max_gap_fixes: 4
+      # A stationary segment (less than align_yaw_min_wheel_travel_m of travel) is extended over
+      # up to this many more chunks, so a slow robot's travel adds up, chunks (>= 0; 0: never).
+      # 10 (20 s): with wheel data a robot at 0.02 to 0.08 m/s aligns after about 3 m instead of
+      # never; slower than about 0.01 m/s it still never aligns.
+      align_yaw_merge_max_chunks: 10
+      # When the LiDAR observes the travel axis, the front-end displacement makes a segment
+      # stationary (wheels turning on a still body, a parked robot), gives the direction of travel
+      # without wheel data, and gives the path of a turn (a skid included). false: not used.
+      align_yaw_frontend_travel: true
+      # A scan observes the travel axis with at least this many robust-weighted point-to-plane
+      # constraints along it (x^T H_rho x of the scan matcher, dimensionless, > 0). Measured per
+      # scan: box world 239 to 466, E-01 304 to 577, box-world corridor 0.2 to 66.
+      align_yaw_frontend_min_info: 100.0
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

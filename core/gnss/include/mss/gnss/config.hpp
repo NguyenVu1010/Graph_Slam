@@ -60,6 +60,24 @@ struct GnssConfig {
   // 5.1) (> 0). 10 m: stuck wheels with 0.2 m per fix of GNSS drift align on 4 of 100 runs (6 m:
   // 16, 3 m: 83).
   double align_yaw_wheel_restart_m = 10.0;
+  // Root-cause study of the residual limits (gnss_fusion_study.md section 16.13). The struct
+  // defaults keep the previous behaviour; load_config overwrites every field from YAML.
+  // fixes: a run of at most this many fixes without an odometer reading is bridged, the travel
+  // over it coming from the next reading (the odometer is absolute), instead of leaving the chunk
+  // half without wheel data (0: never bridged) (>= 0, < align_yaw_chunk_fixes / 2).
+  int align_yaw_wheel_max_gap_fixes = 0;
+  // chunks: a stationary segment is extended over up to this many more chunks until it has
+  // align_yaw_min_wheel_travel_m of travel, so that a slow robot's travel adds up instead of
+  // being skipped segment by segment (0: never extended) (>= 0).
+  int align_yaw_merge_max_chunks = 0;
+  // When the LiDAR observes the travel axis between two chunk centres, the front-end
+  // displacement of o decides that a segment is stationary (wheels turning on a still body, a
+  // parked robot), and without wheel data it gives the direction of travel.
+  bool align_yaw_frontend_travel = false;
+  // Information along the travel axis needed for a scan to observe it: x^T H_rho x of the scan
+  // matcher's translation block, the robust-weighted count of point-to-plane constraints along
+  // the axis (dimensionless, > 0).
+  double align_yaw_frontend_min_info = 100.0;
 };
 
 }  // namespace mss::gnss

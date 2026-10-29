@@ -651,4 +651,32 @@ TEST(GnssFusionTrackYaw, HeadingVariationUsesTheTravelAxis) {
 }
 
 }  // namespace
+// Root-cause study: the information along the horizontal travel axis, d^T H_rho d with d in the
+// LiDAR frame. H_rho = diag(400, 9, 50): with l = b = o and a yaw of 90 deg, x_o points along w y,
+// which is l x, so 400; with T_b_o turned by 90 deg about z it is l y, so 9; with x_o pitched to
+// vertical its horizontal part is undefined: 0. A tilted x_o uses its horizontal direction.
+TEST(GnssFusionTrackYaw, TravelAxisInfo) {
+  mss::common::Mat6 H = mss::common::Mat6::Zero();
+  H(0, 0) = 400.0;
+  H(1, 1) = 9.0;
+  H(2, 2) = 50.0;
+  H(3, 3) = 1e6;  // rotation block: not read
+  const Mat3 R_w_b = Eigen::AngleAxisd(0.5 * kPi, Vec3::UnitZ()).toRotationMatrix();
+  const Mat3 R_w_l = R_w_b;
+  EXPECT_NEAR(travel_axis_info(R_w_b, Mat3::Identity(), R_w_l, H), 400.0, 1e-9);
+  const Mat3 yaw90 = Eigen::AngleAxisd(0.5 * kPi, Vec3::UnitZ()).toRotationMatrix();
+  EXPECT_NEAR(travel_axis_info(R_w_b, yaw90, R_w_l, H), 9.0, 1e-9);
+  const Mat3 pitch90 = Eigen::AngleAxisd(0.5 * kPi, Vec3::UnitY()).toRotationMatrix();
+  const Mat3 level = Mat3::Identity();
+  EXPECT_EQ(travel_axis_info(level, pitch90, level, H), 0.0);
+  const Mat3 pitch30 = Eigen::AngleAxisd(30.0 * kPi / 180.0, Vec3::UnitY()).toRotationMatrix();
+  EXPECT_NEAR(travel_axis_info(level, pitch30, level, H), 400.0, 1e-9);
+  // The axis goes into l with R_w_l^T: x_o along w x, l yawed by 45 deg, so d_l = (c, -s, 0) with
+  // c = s = 1/sqrt(2); with H(0, 1) = 100: 0.5 400 + 0.5 9 - 100 = 104.5.
+  H(0, 1) = 100.0;
+  H(1, 0) = 100.0;
+  const Mat3 yaw45 = Eigen::AngleAxisd(0.25 * kPi, Vec3::UnitZ()).toRotationMatrix();
+  EXPECT_NEAR(travel_axis_info(level, Mat3::Identity(), yaw45, H), 104.5, 1e-9);
+}
+
 }  // namespace mss::pipeline::detail

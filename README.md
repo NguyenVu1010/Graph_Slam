@@ -211,6 +211,14 @@ direction of the GNSS track against the body heading instead of fitting front-en
   frame's x axis, and the turn gate sees turns hidden in a GNSS outage. The
   default yaw sigma is 6 deg (proposed; it drops the 10 deg first-factor target, pending the
   owner).
+- Root-cause study of the residual limits (`docs/derivations/gnss.md` section 5.2): a run of up
+  to `gnss.align_yaw_wheel_max_gap_fixes` (4) fixes without an odometer reading is bridged; a
+  stationary segment is extended over up to `gnss.align_yaw_merge_max_chunks` (10) chunks, so a
+  slow robot aligns; and with `gnss.align_yaw_frontend_travel` the front end decides stationarity,
+  the travel sign without wheel data and the path of a turn, where the scan matcher has at least
+  `gnss.align_yaw_frontend_min_info` (100) constraints along the travel axis. The tolerance
+  envelope per noise source (GNSS drift, white sigma, missing readings, speed, skid) is a
+  hardware requirement.
   Waiting for the alignment does not affect the local pose, only the ENU output.
 `gnss.enabled` is off in `config/default.yaml` until multipath and outage are evaluated; the
 sim scenarios turn it on by overlay. `backend.gnss_frame_variable` (ADR-019, default on)

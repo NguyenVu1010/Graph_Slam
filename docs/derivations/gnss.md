@@ -197,9 +197,10 @@ arc, and course over ground is a poor heading reference in turns. So a segment i
   `s_k` is the sign of that wheel travel. A travel below `gnss.align_yaw_min_wheel_travel_m`
   (0.2 m) is a stationary segment and is skipped (`a_k = 0`, `n_stationary_segments()`): it
   carries no direction, and the random sign of wheel noise at rest would alternate `a_k`.
-  Consequence: with 2 s between chunk centres, a robot slower than about 0.1 m/s never aligns
-  with wheel data at the defaults (test `GnssTrackYaw.LowSpeedWithWheelNeverAligns`; without
-  wheel data the same track aligns).
+  Consequence: with 2 s between chunk centres, a robot slower than about 0.1 m/s never aligned
+  with wheel data (test `GnssTrackYaw.LowSpeedWithWheelNeverAligns`, struct defaults; without
+  wheel data the same track aligns). Since the root-cause study a stationary segment is extended
+  over up to `gnss.align_yaw_merge_max_chunks` more chunks instead (section 5.2).
   Before this rule, E-01 with the flag aligned so late that it got 8 GNSS factors instead of 65
   (test `GnssTrackYaw.StationaryWheelNoiseDoesNotDelay`).
 - **No wheel data (fallback).** `s_k = +1` (forward driving), counted in
@@ -295,11 +296,12 @@ probe used other seeds):
 | 0.20 m | 16 of 100, up to 176 deg off (probe: 27 of 100, up to 178 deg) | 0 of 100 |
 
 So without wheel data a parked robot whose GNSS wanders by 0.1 m per fix or more can align
-on noise. No cheap stationary signal exists for that case: the IMU rest detector used at
+on noise. The IMU gives no stationary signal for that case: the rest detector used at
 keyframe 0 tests the spread of acceleration and rate, which is the same at rest and at
 constant velocity (in the simulator both are pure sensor noise, 0.08 m/s^2 per sample), so it
-would also block the straight cruise that the corridor needs. This is a documented limit
-(ADR-023).
+would also block the straight cruise that the corridor needs. Where the LiDAR observes the
+travel axis the front end is that signal (section 5.2: none of 100 align up to 0.30 m per fix);
+where it does not, this is a sensor-set limit (ADR-023).
 
 Variance floor (test `GnssTrackYaw.VarianceFloor`): fixes declared at 1 cm with 0.5 m true noise,
 100 seeds. Without the floor, 48 seeds are more than 10 deg off at the first transform (95
@@ -540,7 +542,9 @@ track, the coherence test and the consistency window only bound its tails, as th
 (The stuck-wheel column is from before the consistency window of fix round 2, which brings it to
 1 to 7 of 100 depending on the seed set.)
 
-**Front-end displacement where the LiDAR is not degenerate: not used.** Measured on the corridor
+**Front-end displacement gated on its covariance: not used** (it is used gated on the
+scan-matching information along the travel axis since the root-cause study, section 5.2).
+Measured on the corridor
 (study section 16.4): with degeneracy detection off (the shipped default) the scan matcher's
 along-axis sigma is 1.5 to 4.6 cm while the front end's 2 s displacement is wrong by 1.0 m (it
 does not move along the axis); with detection on and the shipped `unobserved_var_m2` (0.001) it
@@ -555,3 +559,119 @@ simulator's 5 Hz (N = 50) 19.5 deg (18.1 predicted), at 10 Hz (N = 100) 12.9 deg
 at 2 cm, 0.50 deg at 10 Hz; with 0.4 m of error correlated over 5 s (plus 0.3 m white), 46 deg
 (test `GnssTrackYaw2b.InPlaceRotationYawObservability`, 2000 runs each). The brief's
 `sigma / (|l| sqrt(N / 2))` overstates the white case by sqrt(2).
+
+### 5.2 Residual limits: causes and tolerances (root-cause study)
+
+Study: `gnss_fusion_study.md` section 16.13. For each residual limit of design 2b the noise
+source was swept, and then the suspect step was replaced by an ideal one with the noise
+unchanged. A limit is algorithm-caused when the failures disappear and the pipeline has the
+information; noise-caused when the sensor gives misleading data; a sensor-set limit when no
+sensor in the set measures what is missing. Three changes follow from it (all behind
+`gnss.align_yaw_from_track`; struct defaults keep the previous behaviour).
+
+**Bridged odometer gaps** (`gnss.align_yaw_wheel_max_gap_fixes`, 4). The odometer reading is
+absolute. With `m` the number of consecutive fixes without a reading before a reading, the
+travel `odo_i - odo_last` is taken when `m <= max_gap` and lands on fix `i` (its half, and the
+weights of fix `i` in `d_k`). Placing a step one to four fixes late moves the weighted travel by
+at most `max_gap / n` of that step (0.04 m at 0.5 m/s), well inside the tolerance of the window
+(`3 sigma + slip d`). The wheel path is not bridged, because the arc of a step across a gap has
+an unknown shape. When `m` exceeds the bound, every chunk half the run touched has no wheel data.
+A run that started in the chunk before always overflows in the first half of this chunk, which
+the segment using the earlier half also uses (the bound is below half a chunk).
+
+**Extended stationary segments** (`gnss.align_yaw_merge_max_chunks`, 10). A segment with less than
+`align_yaw_min_wheel_travel_m` of travel (or a still front end) is not added. Instead its earlier
+chunk `A` stays the anchor, and the next segment runs from `A` to the next chunk. Its travel and
+the wheel, path and front-end flags are the sums over the chunks between (`carry`); its
+wheel-predicted displacement `d_k` is the length of its path. Its noise follows from the telescoping of section 5, because the inner chunks have
+coefficient 0.
+
+The direction of an extended segment is the path of `o` between the chunk means:
+`unit(p_o + l_k)` from the front end where it observed the travel axis, else `unit(g_k)` from the
+wheel path. Without either path the segment is skipped. The mean heading of the two end chunks
+is not used, because on a long span a turn at one end biases it: on noise-free slow S-jogs the
+first yaw was 4.8 deg off with it, and exact with the path. The path follows the turns, so the
+turn gate does not apply.
+
+The slip and profile terms of the inner chunks are left out. Their wheel travel is below
+`align_yaw_min_wheel_travel_m` in total, so their slip error is below `slip x 0.2 m` (1 cm),
+against the 0.16 m noise of a chunk mean.
+
+A stationary segment is extended only while such a path will exist: the front end observed the
+travel axis, or every chunk so far is in the wheel path. Otherwise it is added with `a_k = 0` as
+before. On E-01 a reading was missing at the first fix, so the rest chunk had no wheel path, and
+extending there lost a segment of track.
+
+After `max_chunks` the stationary segment is added with `a_k = 0` as before. So a robot slower
+than `min_travel / (2 s (max_chunks + 1))`, about 0.01 m/s, still does not align.
+
+**Front-end travel where the LiDAR observes the travel axis** (`gnss.align_yaw_frontend_travel`,
+`gnss.align_yaw_frontend_min_info` 100).
+- **The observability gate.** Per scan the pipeline computes `d^T H_rho d`, with `d` the
+  horizontal unit of `x_o` in the LiDAR frame and `H_rho` the translation block of the
+  scan-matching Hessian in the `[rho, phi]` tangent of `T_w_l`. This is the robust-weighted count
+  of point-to-plane constraints along the axis. A scan below the threshold, or a scan whose match
+  failed, increments a count that the pipeline passes with each fix.
+- **Observed segment.** A segment is observed when the count did not change over every step from
+  the first fix of its earlier chunk to the last fix of its later chunk.
+- **What the front end then decides:**
+  - the displacement `p_o` between the two chunk means of the front-end position of `o`; below
+    `align_yaw_min_wheel_travel_m` the segment is stationary, whatever the wheels say;
+  - without wheel data, the sign of `p_o . a_k` replaces the forward assumption;
+  - in a turn, `a_k = unit(p_o + l_k)`, the antenna displacement from the front-end path, with no
+    slip or profile term.
+- **Measured per scan:**
+
+  | scene | constraints along `x_o` |
+  | --- | --- |
+  | box world | 239 to 466 |
+  | E-01 | 304 to 577 |
+  | box-world corridor | 0.2 to 66 |
+
+  The scan matcher's covariance did not separate these cases (section 5.1); its information
+  does.
+
+**Classification of the limits:**
+1. **Wheels turning on a still body, with GNSS drift.** Algorithm where the LiDAR observes the
+   travel axis (fixed: none of 100 up to 0.50 m per fix). Sensor set where it does not: the
+   wheels say the robot moves, the GNSS drift looks like motion, and the IMU cannot tell constant
+   speed from rest. There the tolerance is 0.15 m per fix.
+2. **Missing wheel readings after a mismatch.** Algorithm: the window break threw away travel
+   that the absolute odometer still gives. Fixed: up to 20 % missing, the robot aligns after a
+   median 10.9 m (max 21.9 m). Before, at 2 % missing, it was 36 m (max 311 m).
+3. **A slow robot with wheel data.** Algorithm, with two causes: the per-segment travel threshold,
+   and the coherence test failing on short segments that noise dominates. Fixed down to about
+   0.01 m/s. What remains is noise: the coloured GNSS drift per metre of track, tolerable up to
+   about `0.02 m sqrt(v / 0.5 m/s)` per fix.
+4. **Without wheel data.**
+   - Backward travel: a sensor-set limit, because the travel sign is not in the GNSS positions or
+     the heading. GNSS Doppler does not give it either. Fixed where the LiDAR observes the axis.
+   - Parked with drift: as 1, with a tolerance of 0.10 m per fix where the axis is not observed.
+5. **A skid held through a one-way turn.** Noise (physics) for wheels plus gyro: the sideslip is
+   the angle between the velocity and `x_o`, and neither sensor measures it. Fixed where the
+   LiDAR observes the axis, through the front-end path. Elsewhere the tolerance is 5 deg.
+
+**Tolerance envelope** (simulator defaults: 0.5 m, 5 Hz, 0.22 m lever arm, wheel data, shipped
+keys). Each value is the largest level with at most 1 of 100 failures and, where the robot drives,
+alignment within 10 m.
+
+| source | LiDAR observes the travel axis | it does not |
+| --- | --- | --- |
+| GNSS drift, wheels turning on a still body | none up to 0.50 m per fix | 0.15 m per fix |
+| GNSS drift, parked without wheel data | none up to 0.30 m per fix | 0.10 m per fix |
+| GNSS drift while driving at speed `v` | about `0.02 m sqrt(v / 0.5 m/s)` per fix | the same |
+| white GNSS sigma (declared = true) | 1.0 m | 1.0 m |
+| missing wheel readings | 20 % | 20 % |
+| speed with wheel data | from 0.02 m/s (bound about 0.01 m/s) | the same |
+| persistent skid in a one-way turn | none up to 10 deg | 5 deg |
+| backward travel without wheel data | handled | not handled |
+
+These values are hardware requirements for the GNSS receiver, the odometer and the drive train,
+not bugs.
+
+**GNSS Doppler velocity** (study only; a future ADR). At 0.05 m/s per axis, a still body is seen
+from the velocity in every environment, and the yaw reaches a 6 deg sigma within 0.4 to 2.1 m at
+0.02 to 0.5 m/s, independent of position drift.
+- It would remove limits 1 and 4b everywhere, and the drift-per-metre limit of slow robots.
+- It would not remove limit 4a (the same sign ambiguity) or limit 5 (a skid rotates the velocity
+  too).

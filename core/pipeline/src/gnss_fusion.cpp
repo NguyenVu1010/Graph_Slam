@@ -40,7 +40,8 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
                                   const common::PoseCovariance& P_w_b,
                                   FixOutcome* outcome,
                                   double wheel_odometer_m,
-                                  double heading_variation_rad) {
+                                  double heading_variation_rad,
+                                  double travel_unobserved_scans) {
   FixOutcome dummy = FixOutcome::kAccepted;
   FixOutcome& out = outcome != nullptr ? *outcome : dummy;
   common::Status gate = gnss::gate_fix(m, max_cov_m2_);
@@ -74,11 +75,15 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
   }
   // ADR-023: the track-yaw aligner replaces GnssAligner when gnss.align_yaw_from_track.
   const common::Result<common::Pose> T =
-      forced_ ? common::Result<common::Pose>::error("forced T_e_w")
-      : cfg_.align_yaw_from_track
-          ? track_aligner_.update(
-                m.p_e_g, m.cov, T_w_b_fix, p_b_g_, wheel_odometer_m, heading_variation_rad)
-          : aligner_.update(m.p_e_g, T_w_b_fix, p_b_g_);
+      forced_                     ? common::Result<common::Pose>::error("forced T_e_w")
+      : cfg_.align_yaw_from_track ? track_aligner_.update(m.p_e_g,
+                                                          m.cov,
+                                                          T_w_b_fix,
+                                                          p_b_g_,
+                                                          wheel_odometer_m,
+                                                          heading_variation_rad,
+                                                          travel_unobserved_scans)
+                                  : aligner_.update(m.p_e_g, T_w_b_fix, p_b_g_);
   if (T.is_ok()) {
     T_e_w_ = T.value();
     if (!aligned_) {
