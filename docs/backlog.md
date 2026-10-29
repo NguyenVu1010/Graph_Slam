@@ -82,7 +82,7 @@ Each item names where its numbers live.
 | R8 | `export_map` runs on the executor thread at 1 Hz and blocks the callbacks while it runs (1.1 ms at 90 keyframes; not measured at 1000 keyframes or on the Pi 5). Locking: see M4. | Important |
 | R9 | `/mss/path` holds front-end poses as published, never the optimised ones; a keyframe path from `visit_map` poses would show the GNSS and loop corrections the map already shows. | Minor |
 | R10 | Only the last estimate of a `run_once()` is published; two scans finished in one timer tick give one pose (not seen at 1x or 2x: 579 poses, as the bench). An estimate callback or queue from the estimator would publish every pose. | Minor |
-| R11 | Body frame name: `default.yaml` names b `imu_link`, the node publishes `base_link`, and Gazebo bags hang `lidar_link` under `imu_link` (`body_frame:=imu_link` needed). Pick one name for the rig, or default `tf.body_frame` to `frames.body`. | Minor |
+| R11 | Done in B3: `tf.body_frame` defaults to `frames.body` (`imu_link`), synthetic bags use `imu_link`, both launches leave `body_frame` empty (ADR-024 amendment). | Minor |
 | R12 | Odometry twist: angular velocity is not published (the bias-corrected gyro would do) and the twist covariance is all zeros, which consumers such as robot_localization read as perfectly known; mark it unknown (review M-3). | Minor |
 | R13 | `row_step` is ignored: an organized cloud with padded rows (`row_step > width * point_step`, `height > 1`) is read with the wrong stride. Bridge clouds are packed. Reject or honour it (review M-1). | Minor |
 | R14 | The LiDAR and IMU `header.frame_id` are not checked against the configured frames (extrinsics come from YAML); log once on a mismatch (review M-2). | Minor |
@@ -92,3 +92,21 @@ Each item names where its numbers live.
 | R18 | The node is not bit-for-bit reproducible by design (processing depends on arrival time against the timer); it matched `mss_bench` to 1e-8 m here, but that is not guaranteed under load. | Minor |
 | R19 | The RViz screenshot from `xwd` has false colours (channel order of the XWD-to-PNG step); evidence quality only (review M-5). | Minor |
 | R20 | PR size: about 1650 lines, four times the 400-line target; it splits into conversions plus tests, then node plus launch (review M-6). | Minor |
+
+## Live sim (B3)
+
+| # | Item | Severity |
+|---|------|----------|
+| L1 | Handheld-rig sim variant: no wheels, 6-DoF walking motion (owner, 2026-10-29). | Important |
+| L2 | GNSS lever arm of 0.2 m as the default in every scene (owner, 2026-10-29). | Important |
+| L3 | Outdoor wheel slip, e.g. `WheelSlip` values for grass and wet patches in the `outdoor` world, still open from ADR-011 (owner, 2026-10-29). | Important |
+| L4 | LiDAR model to be decided; the owner has only a 2D LiDAR today. 2D LiDAR support (scan type, matching, map) would need its own ADR (owner, 2026-10-29). | Important |
+| L5 | No automated live test: CI has no Gazebo, so `check_launch.sh` only loads `mss_live.launch.py` (`--show-args`) and pytest covers the ROS-free core (`LiveNoise`). The rclpy wiring (`live_node`, `live_start`) and the launch run only by hand. | Important |
+| L6 | Dropped messages are counted by comparing two logs (mss_node's exit summary against the noise node's `out` counters). Publish the counters (e.g. `/diagnostics`) so a script can check them. | Minor |
+| L7 | Every rclpy node on sim time receives the 1 kHz `/clock`: `tf_static`, idle after start-up, uses 29-42 % of a core, the driver and `live_start` likewise. Lower the Gazebo clock rate for live runs or drop sim time where a node does not need it. | Minor |
+| L8 | The noise node is one Python thread: 77-90 % of a core at E-01 rates, a scan 13-25 ms. A denser LiDAR or a second robot would fall behind; profile `process_scan` or move the cloud work off the callback thread. | Minor |
+| L9 | The first scan can start before the first ground-truth sample: its early points are skewed with the clamped start pose (449 points in one of two runs, `gt clamped`). The robot is still then, so the effect is nil; offline has the same edge (A3). | Minor |
+| L10 | The last scan of a run waits for ground truth past the final pause and is never published (one scan per run); `live_start` steps the paused world one `gz service` call per 1 ms until the robot exists, and has no wall timeout once running (Gazebo dying ends the launch, a frozen one does not). | Minor |
+| L11 | The Gazebo GUI screenshot is partly covered by the RViz window (no window manager control under WSLg); evidence only. | Minor |
+| L12 | `core/io` `DatasetMeta::body_frame` still defaults to `base_link`; the converter writes the bag's own frame, so no output changes, but the default no longer matches the rig name. | Minor |
+| L13 | PR size above the 400-line target (code, tests, launch and docs in one PR). | Minor |
