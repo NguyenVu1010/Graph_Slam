@@ -227,7 +227,7 @@ GNSS fusion keys: `gnss.align_min_pairs` (accepted fixes before the w->e alignme
 `gnss.chi2_gate` (NIS threshold of the chi-square innovation gate, 3 DoF, default the 95 %
 quantile 7.81), `gnss.max_consecutive_rejects` (fixes; after that many chi-square rejections in
 a row the aligner restarts, so a front end that drifted during an outage can re-align).
-`gnss.align_check_yaw_sigma` (ADR-025, default off) makes the default aligner (`GnssAligner`)
+`gnss.align_check_yaw_sigma` (ADR-025, default on since G13; false is the previous behaviour) makes the default aligner (`GnssAligner`)
 also wait until its predicted yaw 1-sigma (from the declared fix covariance, floored at
 `gnss.align_yaw_min_var_m2`) is at most `gnss.align_yaw_max_sigma_deg`; the sigma itself is
 always computed (`docs/derivations/gnss.md` section 4.1).
