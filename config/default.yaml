@@ -63,6 +63,13 @@ mss_node:
       max_cov_m2: 25.0  # gate: reject fixes whose per-axis variance exceeds this, m^2
       align_min_pairs: 10      # accepted fixes needed before the w->e alignment is used
       align_min_spread_m: 1.0  # min RMS horizontal spread of the fixes for alignment, m
+      # Backlog G1: GnssAligner also waits until its predicted yaw 1-sigma is at most
+      # align_yaw_max_sigma_deg (declared fix variance floored at align_yaw_min_var_m2; the
+      # front-end positions taken as exact, gnss.md section 4.1). false: no yaw check (previous
+      # behaviour). On E-01 (1.0 m fixes on a 1.67 m circle) the 1 m spread is reached at 13 s
+      # with a 7.6 deg sigma and the yaw 21 deg off; the noise alone explains it (white, same
+      # error on the true path). Evaluation: gnss_fusion_study.md section 17.
+      align_check_yaw_sigma: false
       chi2_gate: 7.814727903251178  # chi-square 3 DoF at q = 0.95 (G-02 band 90-99 %), NIS
       # Lock-out guard: after this many chi-square rejections in a row (fixes) the aligner
       # restarts on the current front end (pipeline.md section 5). >= 1. Rule: the window must
@@ -107,7 +114,8 @@ mss_node:
       # 5 Hz.
       align_yaw_chunk_fixes: 10
       # Predicted yaw 1-sigma needed before the track-yaw aligner returns T_e_w, deg (> 0).
-      # Replaces align_min_pairs / align_min_spread_m when align_yaw_from_track is true.
+      # Replaces align_min_pairs / align_min_spread_m when align_yaw_from_track is true. Also
+      # GnssAligner's threshold when align_check_yaw_sigma is true.
       # Design 2b (gnss_fusion_study.md section 16, proposed): 3 -> 6. The graph refines E's
       # yaw after the alignment; at 3 / 4.5 / 6 deg the first yaw stayed within its sigma (none
       # beyond 3 sigma), no flip, no more rejections after it. With wheel data 2b aligns after 4 m
@@ -129,7 +137,8 @@ mss_node:
       # (0, 180]. 45 keeps a 2 m circle at 0.25 rad/s (29 deg per chunk) and E-01 (34 deg).
       align_yaw_max_turn_deg: 45.0
       # Floor on the declared horizontal fix variance used for the yaw sigma, m^2 (> 0); a
-      # declared variance <= 0 is rejected. 0.25 = (0.5 m)^2.
+      # declared variance <= 0 is rejected (GnssAligner, align_check_yaw_sigma: floored).
+      # 0.25 = (0.5 m)^2.
       align_yaw_min_var_m2: 0.25
       # With wheel odometry, the sign of the wheel travel between two chunk centres gives the
       # direction of travel of a segment; below this travel (m, > 0) the segment is taken as

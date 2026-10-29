@@ -185,11 +185,11 @@ class GnssFusion {
   }
   /// Times the fusion went from not aligned to aligned (first alignment and each realign).
   [[nodiscard]] std::uint64_t n_alignments() const { return n_alignments_; }
-  /// ADR-023: predicted yaw 1-sigma (rad) of the track-yaw aligner at its last chunk boundary;
-  /// NaN when gnss.align_yaw_from_track is false (GnssAligner reports none).
+  /// Predicted yaw 1-sigma (rad) of the aligner in use: the track-yaw aligner's at its last
+  /// chunk boundary (ADR-023, gnss.align_yaw_from_track), else GnssAligner's at its last fit
+  /// (backlog G1, gnss.md section 4.1); NaN before either has one.
   [[nodiscard]] double align_yaw_sigma_rad() const {
-    return cfg_.align_yaw_from_track ? track_aligner_.yaw_sigma_rad()
-                                     : std::numeric_limits<double>::quiet_NaN();
+    return cfg_.align_yaw_from_track ? track_aligner_.yaw_sigma_rad() : aligner_.yaw_sigma_rad();
   }
   /// ADR-023: the track-yaw aligner in use (its counters are meaningful only when
   /// gnss.align_yaw_from_track is true).

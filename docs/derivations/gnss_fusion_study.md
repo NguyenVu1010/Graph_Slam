@@ -1571,3 +1571,117 @@ details are in the review of 3e32aa3.
   - the extended segment's `wheel_ok`;
   - cross-chunk half marking of a missing-reading gap;
   - the front-end position of `b` instead of `o`.
+
+## 17. Backlog G1: the default aligner's yaw on E-01 (ADR-025)
+
+With the flags of designs 1, 2 and 2b off, `GnssAligner` (`gnss.md` section 4) aligns E-01 at
+13 s, 3.5 m into the run, with its yaw 21.0 deg off and no sigma to say so (section 16.7). This
+section finds why and evaluates the fix. GTSAM build, desktop WSL, on main e5e8320.
+
+### 17.1 Diagnosis
+
+E-01 GNSS (`sim/noise/default.yaml`, nominal mode): white noise of 1.0 m horizontal and 2.0 m
+vertical, plus a Gauss-Markov drift of 0.5 m with a time constant of 300 s. The bag declares the
+white part (`position_covariance` 1.0 m^2 horizontal; the 1.5 m of `config/sim/warehouse.yaml`
+fills only an unknown covariance). The aligner receives fixes from keyframe 0 at 2.0 s.
+
+An offline replica of section 4 (probe script, not in the repo) runs on the E-01 dataset with
+the same pairs (the first fix after keyframe 0 up to 13 s, 55 fixes). It takes the w side from
+the published estimate or from the ground truth, and the fixes as recorded or noise-free (the
+true antenna position, rotated into e by the yaw of a 60 s fit, -0.056 deg):
+
+| w side | fixes | yaw error at 13 s |
+| --- | --- | --- |
+| published estimate (front end) | recorded | 21.07 deg (pipeline: 21.00 deg) |
+| ground truth | recorded | 21.04 deg |
+| published estimate | noise-free | 0.00 deg |
+| ground truth | noise-free | -0.01 deg |
+
+This rules out the candidate causes one by one:
+- **Front-end (dead-reckoned) positions:** the error stays the same on the true path (0.03 deg).
+- **Lever arm, time pairing, e frame:** with noise-free fixes the error is 0.00 deg.
+- **Fix noise on a short spread:** this is the cause.
+  - At 13 s the w-side spread is 1.01 m, just past `align_min_spread_m`. The predicted yaw sigma
+    is `sigma_h / sqrt(sum |a_c|^2)` = 7.65 deg.
+  - The linear term of the recorded noise, `sum (J a_c,i) . n_i / sum |a_c,i|^2`, is 19.8 deg,
+    so the error is about 2.7 sigma.
+  - The noise is white over those 55 fixes: lag-1 autocorrelation 0.02, lag 5 0.11, -0.02 over
+    the run, residual standard deviation 1.05 / 1.01 m against 1.0 m declared. The drift bias
+    (1.3, -1.5) m is common to all fixes and cancels in the centring.
+  - In the replica the error then shrinks as the circle closes: 16.1 deg at 14 s (sigma 6.6),
+    5.3 at 20 s (4.0), -2.9 at 30 s (3.2), -0.4 at 58 s (2.2).
+- **The e-side spread check passes on noise alone:** 1.72 m against a true spread of 1.01 m.
+  With 1 m fixes it is satisfied from the start; it only catches a frozen receiver.
+
+So this is an unlucky but genuine draw of the fix noise. It is not a code error. The aligner
+accepts it because its only gate is a fixed 1 m of spread, which does not scale with the noise.
+
+### 17.2 Fix
+
+`GnssAligner` computes its predicted yaw sigma at every fit (`gnss.md` section 4.1): the declared
+covariance, the larger horizontal eigenvalue floored at `gnss.align_yaw_min_var_m2`, and the w
+side taken as exact. The cost is three running sums and no allocation. With
+`gnss.align_check_yaw_sigma` it returns no transform while the sigma is above
+`gnss.align_yaw_max_sigma_deg` (6 deg, the threshold of designs 2 and 2b). The flag is off by
+default (previous behaviour). The sigma is reported in both cases
+(`GnssFusion::align_yaw_sigma_rad()`, `CoreObserver::on_alignment`).
+
+The sigma does not enter the prior of `E`, which stays at 30 deg; that would need `graph.hpp`.
+Making the track-yaw aligner (designs 2 and 2b) the default is not done here, because backlog
+G2 and G10 block it.
+
+### 17.3 Unit level
+
+`GnssAligner.E01LikeSigmaConsistent` builds an E-01-like run as the aligner sees it: 3 s at rest
+after keyframe 0, a 2 s ramp, the 1.67 m circle, the lever arm, 1.0 m white fixes and an exact
+front end. Over 400 seeds, at the first alignment:
+
+| check | yaw NEES | beyond 18 deg (3 x 6 deg) | beyond 3 sigma |
+| --- | --- | --- | --- |
+| off | 0.947 | 6 / 400 | 0 / 400 |
+| on (6 deg) | 0.971 | 0 / 400 | 0 / 400 |
+
+The sigma is honest on this geometry. Without the check the aligner always starts at about
+7.6 deg of sigma (56 fixes). `GnssAligner.E01LikeUnsupportedYawRefused` pins one seed that
+reproduces E-01: 20.7 deg off at 56 fixes without the check, and within 3 sigma with it.
+
+### 17.4 E-01..E-03
+
+- **Flag off:** `est.tum` md5 equal to main e5e8320: E-01 and E-02 `d1b1e4ba...`, E-03
+  `ca02a49f...`; ATE 0.002183 m. `align_yaw_sigma_rad()` now reports the sigma (7.64 deg at the
+  first alignment, see below), which affects only the test observer.
+- **Flag on (`config/sim/warehouse.yaml` + `align_check_yaw_sigma: true`):** all gates pass.
+
+`GnssCorridorStudy.ReplayAlignment` for the first alignment (time since the first record; the
+yaw error is measured against a 2-D fit of the published trajectory to the ground truth). The
+3 and 4.5 deg rows lower the shared `align_yaw_max_sigma_deg` to show the trade-off:
+
+| config | first alignment | distance | yaw err / sigma | GNSS factors E-01 / E-03 | ATE E-01 / E-03 |
+| --- | --- | --- | --- | --- | --- |
+| off (main) | 13.0 s | 3.5 m | 21.0 / 7.64 deg | 223 / 225 | 0.002183 / 0.002183 m |
+| on, 6 deg (shipped threshold) | 14.8 s | 4.4 m | 15.4 / 5.97 deg | 214 / 216 | 0.002160 / 0.002172 m |
+| on, 4.5 deg | 18.0 s | 6.0 m | 9.1 / 4.47 deg | 198 / - | - |
+| on, 3 deg | 33.6 s | 13.8 m | -1.7 / 2.99 deg | 125 / - | - |
+
+At 6 deg the E-01 draw is still 2.6 sigma off at the first alignment: within 3 sigma, so the
+check accepts it as supported. A first-factor target of 10 deg, the brief of design 2, needs
+about 4.5 deg on this run; at 3 deg the alignment waits 34 s. The threshold is shared with
+designs 2 and 2b; choosing it, and the default of the flag, belongs to the owner (backlog G13).
+
+Bench: no per-scan code changed (the aligner runs per fix, adding three sums), so the bench was
+not re-run. The integration harness's PF-01 p95 was 7.58 ms with the flag off and 7.95 ms with it
+on, against an 8.04 ms baseline; it was not interleaved.
+
+### 17.5 Corridor and box world, 15 paired seeds
+
+- **Corridor** (`GnssCorridorStudy.Diagnosis`, variant `aligncheck` against `ref`): identical on
+  every seed. Fused ATE median 1.994 m on both, 0/0, CI [+0.000, +0.000]. First alignment at
+  7.8 s median, sigma 4.29 deg median. With 0.5 m fixes on a straight track the sigma is below
+  6 deg by the time the spread reaches 1 m.
+- **Flip seeds 51 and 52 are not caught.** GnssAligner's sigma there is 3.36 and 3.35 deg, while
+  the yaw is 178.9 and 131.8 deg off (`PipelineComponent.TrackYawAlignsCorridorFlipSeeds`). The
+  sigma takes the dead-reckoned along-axis positions as exact. The flip is the domain of design
+  2 (section 15).
+- **Box world** (`GnssCorridorStudy.BoxWorldAlignCheckPairs`, 0.5 m fixes on the 2 m circle):
+  identical on every seed. GNSS 0.010 m median, GNSS + wheel 0.006 m, CI [+0.000, +0.000], same
+  factor counts.
