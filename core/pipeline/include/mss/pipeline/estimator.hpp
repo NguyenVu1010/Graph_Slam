@@ -257,7 +257,7 @@ class Estimator {
   ///   (about 1 Hz); it must then take the estimator's map/backend lock, which this method does
   ///   not take yet.
   /// Allocation: none itself (the visitor may). Hot path: no (on demand, O(stored points)).
-  /// Tests: test_pipeline_component (MapExport*).
+  /// Tests: test_map_export_component (MapExportComponent*), test_map_downsample.
   common::Result<MapExportInfo> visit_map(const MapKeyframeVisitor& visit) const;
 
   /// The global map as points in w: visit_map() with every point transformed by its T_w_l
@@ -267,7 +267,8 @@ class Estimator {
   /// then point order; with downsampling, first-met voxel order).
   /// Errors, frames, thread contract: as visit_map(); on error `out` is empty.
   /// Allocation: yes (`out`, the voxel hash); off the hot path.
-  /// Tests: test_pipeline_component (MapExport*), E-01 with mss_bench --map-out.
+  /// Tests: test_map_export_component (MapExportComponent*), test_map_downsample, E-01 with
+  /// mss_bench --map-out.
   common::Result<MapExportInfo> export_map(std::vector<Eigen::Vector3f>& out) const;
 
  private:

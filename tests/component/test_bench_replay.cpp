@@ -344,6 +344,32 @@ TEST(BenchReplay, MissingDatasetExits2AndWritesNothing) {
   EXPECT_FALSE(fs::exists(out));
 }
 
+// M2: an unwritable --map-out directory is found at start-up: exit 2 before the replay, so
+// nothing is written under --out (it used to be found after the whole run, with est.tum and
+// bench.json already written).
+TEST(BenchReplay, BadMapOutDirectoryExits2BeforeTheReplay) {
+  TempDir tmp;
+  const fs::path data = tmp.path() / "mssdata";
+  const fs::path out = tmp.path() / "out";
+  ASSERT_NO_FATAL_FAILURE(write_dataset(data, 2000, true, false, 0, 1));
+  const fs::path bad = tmp.path() / "no_such_dir" / "map.pcd";
+  const std::string cmd = bench_cmd(data, out) + " --map-out '" + bad.string() + "' 2>/dev/null";
+  EXPECT_EQ(run(cmd), 2) << cmd;
+  EXPECT_FALSE(fs::exists(out)) << "the replay ran before the map-out check";
+  // A good path passes the check and leaves no probe file behind. The export itself needs the
+  // GTSAM backend (M5), so the exit code and the file are only checked when it succeeded.
+  const fs::path good = tmp.path() / "map.pcd";
+  const std::string ok_cmd =
+      bench_cmd(data, out) + " --map-out '" + good.string() + "' 2>/dev/null";
+  const int ok_exit = run(ok_cmd);
+  EXPECT_TRUE(ok_exit == 0 || ok_exit == 2) << ok_cmd;
+  if (ok_exit == 0) {
+    EXPECT_TRUE(fs::exists(good));
+  }
+  EXPECT_FALSE(fs::exists(good.string() + ".probe"));
+  EXPECT_FALSE(fs::exists(good.string() + ".tmp"));
+}
+
 TEST(BenchReplay, MissingOutIsUsageError) {
   const std::string cmd = std::string("'") + MSS_BENCH_PATH + "' '" +
                           (kRepo / "config/default.yaml").string() + "' /nonexistent 2>/dev/null";

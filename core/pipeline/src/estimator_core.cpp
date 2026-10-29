@@ -883,7 +883,7 @@ void EstimatorCore::maybe_rebuild_map(bool force) {
 
 MapExportInfo EstimatorCore::visit_map(const MapKeyframeVisitor& visit) const {
   MapExportInfo info;
-  info.n_evicted = store_.n_evicted();
+  info.n_evicted = static_cast<std::size_t>(store_.n_evicted());
   for (std::size_t i = 0; i < store_.size(); ++i) {
     const KeyframeEntry& e = store_.at(i);
     const common::Result<common::NavState> s = graph_.keyframe_state(e.id);

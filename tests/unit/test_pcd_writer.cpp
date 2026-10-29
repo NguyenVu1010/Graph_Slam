@@ -153,5 +153,27 @@ TEST(Pcd, BadPathsReturnErrorNamingThePath) {
   EXPECT_NE(is_dir.reason().find("is a directory"), std::string::npos) << is_dir.reason();
 }
 
+// M7: the data goes to <path>.tmp and is renamed, so a failed write never replaces or
+// truncates an existing file, and a successful one leaves no temporary file.
+TEST(Pcd, FailedWriteKeepsExistingFileAndLeavesNoTemp) {
+  const PcdDir dir;
+  const fs::path file = dir.path() / "map.pcd";
+  const std::vector<Eigen::Vector3f> first = {{1.0F, 2.0F, 3.0F}, {4.0F, 5.0F, 6.0F}};
+  ASSERT_TRUE(write_pcd(file, first).is_ok());
+  EXPECT_FALSE(fs::exists(file.string() + ".tmp"));
+  const std::uintmax_t size_before = fs::file_size(file);
+
+  // A directory in the temporary file's place makes the open fail.
+  fs::create_directory(file.string() + ".tmp");
+  const std::vector<Eigen::Vector3f> second = {{7.0F, 8.0F, 9.0F}};
+  const common::Status st = write_pcd(file, second);
+  ASSERT_FALSE(st.is_ok());
+  EXPECT_NE(st.reason().find("cannot open"), std::string::npos) << st.reason();
+  EXPECT_EQ(fs::file_size(file), size_before);
+  const ParsedPcd p = parse(file);
+  ASSERT_EQ(p.points.size(), 2U);
+  EXPECT_EQ(p.points[1], first[1]);
+}
+
 }  // namespace
 }  // namespace mss::io

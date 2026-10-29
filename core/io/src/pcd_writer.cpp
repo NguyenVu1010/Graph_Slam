@@ -1,9 +1,9 @@
 #include "mss/io/pcd_writer.hpp"
 
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
-#include <memory>
+#include <fstream>
+#include <ostream>
 #include <string>
 #include <system_error>
 
@@ -12,15 +12,6 @@ namespace {
 
 static_assert(sizeof(Eigen::Vector3f) == 3 * sizeof(float),
               "Eigen::Vector3f must be three packed floats (PCD record layout)");
-
-struct FileCloser {
-  void operator()(std::FILE* f) const {
-    if (f != nullptr) {
-      std::fclose(f);
-    }
-  }
-};
-using FilePtr = std::unique_ptr<std::FILE, FileCloser>;
 
 bool host_is_little_endian() {
   const std::uint32_t one = 1U;
@@ -49,33 +40,41 @@ common::Status write_pcd(const std::filesystem::path& path,
   if (!host_is_little_endian()) {
     return common::Status::error("write_pcd: big-endian host is not supported");
   }
-  FilePtr f(std::fopen(path.c_str(), "wb"));
-  if (!f) {
-    return common::Status::error("write_pcd: cannot open " + path.string());
-  }
+  // Write next to the target, then rename: a failed or interrupted write never leaves a
+  // truncated `path` (the previous file, if any, stays). std::ofstream takes the path in its
+  // native encoding, so this also opens on Windows.
+  const fs::path tmp = path.string() + ".tmp";
   const std::size_t n = points.size();
-  const int header_ok = std::fprintf(f.get(),
-                                     "# .PCD v0.7 - Point Cloud Data file format\n"
-                                     "VERSION 0.7\n"
-                                     "FIELDS x y z\n"
-                                     "SIZE 4 4 4\n"
-                                     "TYPE F F F\n"
-                                     "COUNT 1 1 1\n"
-                                     "WIDTH %zu\n"
-                                     "HEIGHT 1\n"
-                                     "VIEWPOINT 0 0 0 1 0 0 0\n"
-                                     "POINTS %zu\n"
-                                     "DATA binary\n",
-                                     n,
-                                     n);
-  if (header_ok < 0) {
-    return common::Status::error("write_pcd: cannot write " + path.string());
+  {
+    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    if (!f) {
+      return common::Status::error("write_pcd: cannot open " + tmp.string());
+    }
+    f << "# .PCD v0.7 - Point Cloud Data file format\n"
+         "VERSION 0.7\n"
+         "FIELDS x y z\n"
+         "SIZE 4 4 4\n"
+         "TYPE F F F\n"
+         "COUNT 1 1 1\n"
+         "WIDTH "
+      << n << "\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS " << n << "\nDATA binary\n";
+    if (n > 0) {
+      f.write(reinterpret_cast<const char*>(points.data()),
+              static_cast<std::streamsize>(n * sizeof(Eigen::Vector3f)));
+    }
+    f.close();
+    if (f.fail()) {
+      std::error_code rm_ec;
+      fs::remove(tmp, rm_ec);
+      return common::Status::error("write_pcd: cannot write " + path.string());
+    }
   }
-  if (n > 0 && std::fwrite(points.data(), sizeof(Eigen::Vector3f), n, f.get()) != n) {
-    return common::Status::error("write_pcd: cannot write " + path.string());
-  }
-  if (std::fclose(f.release()) != 0) {
-    return common::Status::error("write_pcd: cannot close " + path.string());
+  fs::rename(tmp, path, ec);
+  if (ec) {
+    std::error_code rm_ec;
+    fs::remove(tmp, rm_ec);
+    return common::Status::error("write_pcd: cannot replace " + path.string() + ": " +
+                                 ec.message());
   }
   return common::Status::ok();
 }

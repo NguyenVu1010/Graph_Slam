@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 #include <functional>
 
 #include "mss/common/span.hpp"
@@ -31,7 +30,7 @@ using MapKeyframeVisitor = std::function<void(const MapKeyframe&)>;
 struct MapExportInfo {
   std::size_t n_keyframes = 0;   ///< keyframes exported (store entries with an optimised pose)
   std::size_t n_no_pose = 0;     ///< store entries skipped: the backend has no estimate for them
-  std::uint64_t n_evicted = 0;   ///< keyframes evicted from the store (map.max_keyframes) so far;
+  std::size_t n_evicted = 0;     ///< keyframes evicted from the store (map.max_keyframes) so far;
                                  ///< their points are not in the map
   std::size_t n_points_in = 0;   ///< points of the exported keyframes
   std::size_t n_points_out = 0;  ///< points written by export_map() (after map_export.voxel_m);
