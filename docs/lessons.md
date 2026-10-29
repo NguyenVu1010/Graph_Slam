@@ -290,10 +290,11 @@ Format of an entry: **symptom** → cause → fix → rule.
   - The front end runs and publishes the local pose from the first frame.
   - The only fixed wait is the static phase at keyframe 0, for IMU bias and gravity.
   - The GNSS alignment waits on conditions, all of which must pass:
-    - predicted yaw sigma at most 3°;
-    - at least 5 m of track along the heading;
+    - predicted yaw sigma at most 3° (6° since design 2b, section 1.18);
+    - at least 5 m of track along the heading (3 m when every segment has wheel data, 1.18);
     - track coherence at least 0.5;
-    - segments that turn more than 45° are not used;
+    - segments that turn more than 45° are not used (with wheel data they take their direction
+      from the wheel path since design 2b);
     - segments without wheel motion are not used.
   - Fixes received before alignment are buffered and attached once it succeeds (design 1), not
     dropped. The buffer is sized to the expected alignment delay (320 fixes; E-01 needs 264).
@@ -302,6 +303,127 @@ Format of an entry: **symptom** → cause → fix → rule.
 - **Rule.** When a quantity needs excitation to become observable, gate on a measure of that
   observability (a sigma, a track length, an eigenvalue), never on a frame count. Keep the data
   that arrives before the gate opens, and say in the output which estimates are valid yet.
+
+### 1.18 Hardware numbers decide which alignment motion works (design 2b, ADR-023 amendment, `derivations/gnss.md` section 5.1, `derivations/gnss_fusion_study.md` section 16)
+
+- **Symptom.** The GNSS frame yaw needed about 6 m of straight driving before it aligned (box
+  world 6 to 17 GNSS factors instead of 38 to 45, E-01 35 of 223). Several ways to align with
+  less motion were proposed: rotate in place, use turns, trust the front-end displacement.
+- **The owner's numbers.** Standard (non-RTK) GNSS; 0.5 m per axis is the working value in the
+  simulator. Antenna lever arm 0.22 m horizontal (`p_b_g_m` [-0.20, 0.10, 0.60]). Wheel odometry
+  on the robot.
+- **What the numbers say.**
+  - **Rotating in place.** The antenna circles the body origin at 0.22 m, so the yaw sigma is
+    `sigma / (|l| sqrt(N))`: one rotation in 10 s at 0.5 m gives 19.5 deg at the simulator's
+    5 Hz (Monte Carlo; 18.1 predicted) and 12.9 deg at 10 Hz (12.8). With RTK at 2 cm the same
+    rotation gives 0.5 deg at 10 Hz. With
+    GNSS error correlated over a few seconds it is several times worse (46 deg). Useless
+    on this hardware, good with RTK.
+  - **Straight driving.** On a straight track `sigma_yaw = sqrt(2 v) / L` with `v = sigma^2 / 10`
+    per 2 s chunk: `L = 0.224 m / sigma_yaw`, so 4.3 m for 3 deg, 2.8 m for 4.5 deg, 2.1 m for
+    6 deg between the first and last chunk centres (probe with no minimum track, 200 seeds at
+    0.5 m/s: first alignment at 4.9, 3.9 and 2.9 m driven; study section 16.1). The 5 m minimum
+    track, not the sigma, set the distance at 3 deg.
+  - **Turns.** The chord between two chunk means on a turn bends with the speed inside the turn,
+    by up to half the turn angle, so course over ground along the mean heading is skipped above
+    45 deg. With wheel data the path shape in w is known (the odometry frame's travel along the
+    gyro/LiDAR heading, with `T_b_o`: ignoring a 0.2 m IMU-to-axle offset cost 12 deg on a 1 m
+    circle) and the chord direction comes from it, with a stated slip model. On aisles with
+    90 deg corners at 3 deg: 2 of 200 runs aligned before, all now (median 7.9 m); a 1 m circle
+    (57 deg per chunk) went from never to 12 s at 6 deg.
+  - **Minimum track with wheel data.** Wheels can turn while the body stands still (stuck,
+    lifted), so "the odometer detects a parked robot" is only true when the wheels stop too. A
+    zero minimum aligned such a robot on GNSS drift (64 of 100 at 0.2 m per fix, about 90 deg
+    off). Comparing the GNSS track with the wheel travel over a window since the last mismatch,
+    and replacing all segments only after 10 m of agreeing travel, brings it to 1 to 7 of 100
+    depending on the seed set, and the alignment after the wheels spun waits
+    about 10 m instead of the spun distance (300 s of spinning: 150 m). The 3 m minimum was
+    chosen from the absolute-error tails at 6 deg, not from NEES, which a larger sigma lowers
+    while the tails grow.
+  - **The frames and the time between fixes matter as much as the noise.** The direction of
+    travel is the odometry frame's x axis, not the IMU's (a 90 deg mount gave a 90 deg error),
+    and a GNSS outage can hide two opposite turns whose net heading change is zero (aisles: 100
+    of 100 runs beyond 3 sigma, in design 2 too); the turn gate now uses the total heading
+    variation from the front end between fixes.
+  - **The front-end displacement.** Its covariance does not say where the LiDAR is blind in the
+    shipped configuration: 1.5 to 4.6 cm along the corridor axis while the front end was 1 m off
+    over 2 s. The scan matcher's information along the travel axis does say it: 239 to 577
+    point-to-plane constraints per scan in the box world and E-01, 0.2 to 66 in the corridor. So
+    it is used, gated on that information (see the residual limits below).
+- **Chosen (proposed; the change of the first-factor target is the owner's call).** Sigma 6 deg
+  (the graph refines the yaw; the first yaw stayed within its sigma, no flip, no more rejections,
+  and a forced 18 deg start converged), turns from the wheel path, wheel/GNSS consistency, 3 m
+  minimum track when every segment has wheel data. With wheel data: corridor 6 -> 4 m, box 7 ->
+  4 m, E-01 23 -> 9 m to the alignment. Without wheel data the corridor is unchanged (the 5 m
+  guard for a parked robot stays).
+- **Waiting is cheap.** The local LiDAR-inertial pose is valid from frame 0; only the ENU output
+  waits for the alignment. A later alignment costs nothing for local navigation.
+- **Residual limits: find the root cause before accepting one** (`derivations/gnss_fusion_study.md`
+  section 16.13, `derivations/gnss.md` section 5.2). The owner did not accept the limits of the
+  first version. For each one, the noise source was swept against the failure rate (100 fixed
+  seeds per point). Then the suspect step was replaced by an ideal one (an oracle) with the noise
+  unchanged. Three classes came out, and each is handled differently.
+  - **Algorithm-caused.** A threshold or a reset rule threw away information the sensors still
+    give. Fix it.
+        - A missing odometer reading reset the wheel/GNSS window. After a mismatch, with 2 % of
+      readings missing, the robot aligned after a median 36 m (max 311 m). Bridging gaps of up
+      to 4 fixes gives 10.9 m (max 16.9 m) in the study. The study gave the aligner the true
+      odometer after a gap, but the pipeline integrates wheel speed and interpolates across a
+      wheel-message gap, so a bridged step is an estimate. With stop-and-go and a silent wheel
+      driver, alignment drops from 99 to 85 of 100 (open issue F1).
+    - A per-segment travel threshold, and a coherence test on short segments that noise
+      dominates, kept a robot below 0.1 m/s from ever aligning. The oracle with the true travel
+      sign alone did not fix it. Accumulating travel across chunks does: from 0.02 m/s, after
+      about 3 m.
+        - A still front end was not used where the LiDAR observes the travel axis. Wheels spinning
+      on a still body aligned on GNSS drift in 6 of 100 runs at 0.2 m per fix, and a parked
+      robot without wheel data in 25 of 100. Now none: swept to 0.5 m per fix with spinning
+      wheels, and to 0.30 m per fix without wheel data.
+    - **Noise-caused.** The sensor really gives misleading data. Publish the tolerance envelope:
+    the largest noise per source for at most 1 failure in 100 and, where the robot drives,
+    alignment within 10 m. It is a hardware requirement, not a bug. At the simulator defaults:
+    - GNSS drift while driving: about `0.02 m sqrt(v / 0.5 m/s)` per fix;
+    - white GNSS sigma: 1.0 m;
+    - a skid held through a one-way turn: 5 deg with the wheel path. Gyro and odometer cannot
+      see the sideslip; the front-end path removes it where the LiDAR observes the axis.
+
+    What remains after the algorithm fixes, with its own criteria:
+    - Missing wheel readings, up to 20 %. This is restart distance, not the 10 m criterion: after
+      a mismatch the 10 m restart window comes first, then a median 10.9 m and a max 21.9 m.
+    - Speed with wheel data, from 0.02 m/s. This holds only with GNSS drift of about 5 mm per fix
+      or less at 0.03 m/s. Under more drift, a slow robot now aligns with a confident wrong yaw
+      instead of never aligning (open issue F2).
+  - **Sensor-set limits.** The quantity is not observable with these sensors. State it as such,
+    with the sensor that would observe it.
+    - The travel sign without wheel data is not in the GNSS positions or the heading, and GNSS
+      Doppler does not give it either. The front end gives it where the LiDAR observes the axis.
+        - Where the LiDAR is blind along the axis, a still body with spinning wheels or a parked
+      robot cannot be told from GNSS drift in steady state: the IMU sees the same signal at rest
+      and at constant speed. The onset is observable, though (wheel delta-v against IMU delta-v),
+      and no oracle tested it (open issue F3).
+    - The tolerance there is 0.15 m per fix with spinning wheels and 0.10 m per fix when parked
+      without wheel data. Above 0.15 m per fix the rate depends on the seeds, 0 to 14 of 100.
+    - GNSS Doppler velocity would remove these everywhere. That is a study-only estimate:
+      0.05 m/s per axis reaches a 6 deg sigma within 0.4 to 2.1 m.
+  - **Where cross-sensor checks belong.** Before `E` exists there is no innovation to test, so
+    the aligner needs its own consistency checks (wheel against GNSS, front-end stationarity).
+    After the alignment, the graph's chi-square gate already holds every sensor, and it is the
+    right place.
+  - **Prior art:**
+    - ZUPT and stationarity detectors (OpenVINS, the Autoware stop filter);
+    - gyro plus wheel odometry before the filter (Autoware `gyro_odometer`);
+    - GNSS Doppler velocity for the heading (GVINS; a receiver's course over ground);
+    - Mahalanobis gating against the fused state (robot_localization, Autoware
+      `ekf_localizer`).
+- **Rule.** Before proposing a manoeuvre or a source for an observability problem, compute its
+  information from the sensor noise and the geometry (here `sigma / (|l| sqrt(N))` against
+  `sigma sqrt(2 / n) / L`), and check that the signal you would trust is calibrated in the
+  configuration that ships (the scan-match covariance was not). Measure the remaining levers in
+  that order: threshold, minimum guards, then the data the gates discard. Judge a guard by the
+  absolute-error tails and the failure cases it exists for (stuck wheels, drift), not by NEES.
+  For every residual failure mode, find the root cause with a noise sweep and an oracle ablation
+  before accepting it. Fix an algorithm cause. Publish a noise cause as a tolerance envelope (a
+  hardware requirement). State a sensor-set limit together with the sensor that would remove it.
 
 ## 2. Simulation and evaluation
 

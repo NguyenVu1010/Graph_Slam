@@ -93,9 +93,10 @@ mss_node:
       # > 10 deg off 2 -> 0 (max 2.5 deg). Fused ATE alone: median 1.99 -> 4.66 m, CI against
       # the reference includes 0, worse than raw GNSS (CI excludes 0); with
       # attach_prealign_fixes 1.66 m, max 37 -> 3.17 m, CI against the reference excludes 0.
-      # Box world unchanged; E-01 0.002183 -> 0.002210 m (35 of 223 GNSS factors: later
-      # alignment). Direction of travel from the wheel speed when wheel_odom is enabled, else
-      # the forward-driving assumption: then net backward motion before the yaw is confident
+      # Box world unchanged; E-01 0.002183 -> 0.002210 m with the design-2 keys (35 of 223 GNSS
+      # factors), 0.002196 m with the design-2b defaults below (170). Direction of travel from the
+      # wheel speed when wheel_odom is enabled, else the forward-driving assumption: then net
+      # backward motion before the yaw is confident
       # aligns 180 deg off, and a parked robot whose GNSS wanders by 0.1 m per fix or more can
       # align on noise (0.2 m per fix: 16 of 100 runs). Assumes white, honestly declared fix
       # noise (floored below).
@@ -107,7 +108,12 @@ mss_node:
       align_yaw_chunk_fixes: 10
       # Predicted yaw 1-sigma needed before the track-yaw aligner returns T_e_w, deg (> 0).
       # Replaces align_min_pairs / align_min_spread_m when align_yaw_from_track is true.
-      align_yaw_max_sigma_deg: 3.0
+      # Design 2b (gnss_fusion_study.md section 16, proposed): 3 -> 6. The graph refines E's
+      # yaw after the alignment; at 3 / 4.5 / 6 deg the first yaw stayed within its sigma (none
+      # beyond 3 sigma), no flip, no more rejections after it. With wheel data 2b aligns after 4 m
+      # instead of 6 m (corridor), 4 m instead of 7 m (box), 9 m instead of 23 m (E-01).
+      # Straight-track rule at 0.5 m fixes: 0.224 m / sigma between the first and last chunk.
+      align_yaw_max_sigma_deg: 6.0
       # Along-heading GNSS track needed before the track-yaw aligner returns T_e_w, m (> 0).
       # sigma_yaw assumes white, correctly declared fix noise; this bounds the effect of coloured
       # error (multipath, slow drift of a parked receiver): a 0.3 m common error over 5 m of
@@ -134,6 +140,55 @@ mss_node:
       # A segment whose along-heading motion is below -this x its sigma, once the yaw is within
       # the threshold above, is taken as reverse motion (> 0, sigmas).
       align_yaw_reverse_nsigma: 3.0
+      # ADR-023 amendment (design 2b): with wheel data, a segment the turn gate rejects takes its
+      # direction from the path of the odometry frame (frames.T_b_o) integrated from the wheel
+      # travel along its heading (gnss.md section 5.1) instead of being skipped. false: skipped
+      # (design 2). Aisles with 90 deg corners: at 3 deg 2 of 200 runs aligned without it, all
+      # with it (7.9 m); never used without wheel data.
+      align_yaw_wheel_turns: true
+      # 1-sigma wheel travel error, fraction of the path along and across the motion (slip,
+      # skid), fully correlated within a chunk, in (0, 1). A skid held through a long one-way
+      # turn is outside this model (gnss.md section 5.1).
+      align_yaw_wheel_slip_frac: 0.05
+      # Along-heading track needed to align when every segment used has its direction from
+      # wheel data, m (>= 0); else align_yaw_min_track_m applies. 3 m from the absolute-error
+      # envelope at 6 deg (gnss.md section 5.1): against 0 m it halves the runs beyond 15 deg
+      # with 0.05 m per fix of GNSS drift (52 -> 30 of 600) and the stuck-wheel alignments at
+      # 0.2 m per fix (37 -> 16 of 100, before the consistency window below), for 2 s more at
+      # 0.5 m/s.
+      align_yaw_min_track_wheel_m: 3.0
+      # Wheel/GNSS consistency (gnss.md section 5.1). When the GNSS track and the wheel travel
+      # disagree by more than their noise plus align_yaw_wheel_slip_frac (wheels turning on a
+      # still robot, slipping, a wrong odometer scale; counted in Stats::n_gnss_wheel_mismatch),
+      # no transform until the segments since then agree with the wheels over this wheel travel,
+      # m (> 0); they then replace all segments. 10 m: wheels spinning on a still robot with
+      # 0.2 m per fix of GNSS drift align on 4 of 100 runs of the window-length probe (6 m: 16,
+      # 3 m: 83; 1 to 7 of 100 across seed sets) where the LiDAR does not observe the travel
+      # axis (none where it does, align_yaw_frontend_travel); after 30 / 60 /
+      # 300 s of spinning the robot aligns after a median 10 m of driving (before: 16 / 31 /
+      # 150 m), yaw within its sigma.
+      align_yaw_wheel_restart_m: 10.0
+      # Root-cause study of the residual limits (gnss_fusion_study.md section 16.13).
+            # A run of at most this many fixes without an odometer reading is bridged by the next
+      # reading instead of leaving the chunk half without wheel data, fixes (>= 0,
+      # < align_yaw_chunk_fixes / 2; 0: never bridged). The pipeline integrates wheel speed and
+      # interpolates across a wheel-message gap, so a bridged step is an estimate (backlog F1). 4: after wheels spun on a
+      # still body, with 2 % / 10 % / 20 % of readings missing the robot aligns after a median
+      # 10.9 m (max 16.9 / 15.9 / 21.9 m) instead of 36 m (max 311 m) / never / never.
+      align_yaw_wheel_max_gap_fixes: 4
+      # A stationary segment (less than align_yaw_min_wheel_travel_m of travel) is extended over
+      # up to this many more chunks, so a slow robot's travel adds up, chunks (>= 0; 0: never).
+      # 10 (20 s): with wheel data a robot at 0.02 to 0.08 m/s aligns after about 3 m instead of
+      # never; slower than about 0.01 m/s it still never aligns.
+      align_yaw_merge_max_chunks: 10
+      # When the LiDAR observes the travel axis, the front-end displacement makes a segment
+      # stationary (wheels turning on a still body, a parked robot), gives the direction of travel
+      # without wheel data, and gives the path of a turn (a skid included). false: not used.
+      align_yaw_frontend_travel: true
+      # A scan observes the travel axis with at least this many robust-weighted point-to-plane
+      # constraints along it (x^T H_rho x of the scan matcher, dimensionless, > 0). Measured per
+      # scan: box world 239 to 466, E-01 304 to 577, box-world corridor 0.2 to 66.
+      align_yaw_frontend_min_info: 100.0
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m
