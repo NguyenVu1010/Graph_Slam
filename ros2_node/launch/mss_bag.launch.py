@@ -1,7 +1,7 @@
 """Play a bridged bag into mss_node, optionally with RViz (ADR-024).
 
     ros2 launch mss_ros2 mss_bag.launch.py bag:=<bag dir> [rate:=1.0] [rviz:=true]
-        [config_path:=<default.yaml>] [overlay:=<overlay.yaml>] [body_frame:=base_link]
+        [config_path:=<default.yaml>] [overlay:=<overlay.yaml>] [body_frame:=<frames.body>]
         [origin_lla:="lat_deg lon_deg alt_m"] [delay_s:=5.0] [exit_on_end:=false]
 
 The bag is the output of the noise bridge (``sim/mss_sim/bridge.py``: per-point ``t`` and
@@ -10,7 +10,9 @@ node and RViz use it. ``overlay`` is the scenario's pipeline overlay (E-01:
 ``config/sim/warehouse.yaml``, installed under ``share/mss_ros2/config/sim``); the default
 ``""`` runs config/default.yaml alone. ``origin_lla`` fixes the GNSS ENU origin (the scenario's
 ``origin_lla``, as mss_bench's data conversion uses for recorded bags); empty takes the first
-valid fix. ``exit_on_end:=true`` shuts the launch down when the bag ends.
+valid fix. ``body_frame`` empty (default) publishes TF to ``frames.body`` of the config
+(``imu_link``), the parent of ``lidar_link`` in the sim bags' ``/tf_static``.
+``exit_on_end:=true`` shuts the launch down when the bag ends.
 """
 
 from pathlib import Path
@@ -107,7 +109,9 @@ def generate_launch_description() -> LaunchDescription:
                 "config_path", default_value=str(share / "config" / "default.yaml")
             ),
             DeclareLaunchArgument("overlay", default_value="", description="pipeline overlay"),
-            DeclareLaunchArgument("body_frame", default_value="base_link"),
+            DeclareLaunchArgument(
+                "body_frame", default_value="", description="default: frames.body of the config"
+            ),
             DeclareLaunchArgument("origin_lla", default_value=""),
             DeclareLaunchArgument(
                 "delay_s",
