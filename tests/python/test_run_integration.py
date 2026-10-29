@@ -25,7 +25,8 @@ _REPO = Path(__file__).resolve().parents[2]
 
 # Stand-in for mss_bench: copies the dataset's ground truth (gt.bin, GT_DTYPE of
 # bag_to_mssdata) to <out>/est.tum and writes a bench.json (n_scans = the dataset's scan
-# count); exit code from FAKE_BENCH_EXIT, optional delay FAKE_BENCH_SLEEP_S.
+# count) and, with --map-out FILE, a placeholder FILE; exit code from FAKE_BENCH_EXIT, optional
+# delay FAKE_BENCH_SLEEP_S.
 _FAKE_BENCH = """
 import json, os, sys, time
 from pathlib import Path
@@ -37,6 +38,8 @@ data, out = Path(args[1]), Path(args[args.index("--out") + 1])
 assert Path(args[0]).is_absolute() and data.is_absolute() and out.is_absolute()
 assert Path(args[args.index("--overlay") + 1]).is_file()
 out.mkdir(parents=True, exist_ok=True)
+if "--map-out" in args:
+    Path(args[args.index("--map-out") + 1]).write_bytes(b"fake pcd")
 gt = np.fromfile(data / "gt.bin", dtype=GT)
 lines = []
 for r in gt:
@@ -420,3 +423,19 @@ def test_bridged_e03_without_prep_is_setup_error(
     out = tmp_path / "b"
     e01 = [*argv, "--out", str(out), "--scenario", str(no_prep), "--tests", "E-01,E-02"]
     assert main(e01) == 0
+
+
+def test_bridged_map_out_e01_only(bridged_bag: tuple[Path, object], tmp_path: Path) -> None:
+    """--map-out hands the bench <test-dir>/map.pcd; without E-03 no E-03 dataset is built."""
+    bridged, _ = bridged_bag
+    out = tmp_path / "map"
+    argv = ["--bench-cmd", _fake_bench_cmd(tmp_path), "--out", str(out), "--bridged", str(bridged)]
+    argv += ["--scenario", str(_scenario(tmp_path)), "--tests", "E-01", "--map-out"]
+    assert main(argv) == 0
+    assert (out / "E-01" / "map.pcd").read_bytes() == b"fake pcd"
+    log = (out / "E-01" / "bench.log").read_text(encoding="utf-8")
+    assert "--map-out " in log and "map.pcd" in log
+    assert not (out / "data" / "bag_e03").exists()
+    assert not (out / "data" / "mssdata_e03").exists()
+    res = json.loads((out / "integration.json").read_text(encoding="utf-8"))
+    assert res["data_source"]["mutate"] is None
