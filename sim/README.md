@@ -379,7 +379,8 @@ Python dependencies on `PYTHONPATH`):
 
 ```
 export ROS_DOMAIN_ID=<free id>   # other Gazebo runs use the same topic names
-ros2 launch mss_ros2 mss_live.launch.py scenario:=sim/scenarios/E-01.yaml rviz:=true     [rtf:=1.0] [headless:=false] [seed:=N] [exit_on_end:=true]
+ros2 launch mss_ros2 mss_live.launch.py scenario:=sim/scenarios/E-01.yaml rviz:=true \
+    [rtf:=1.0] [headless:=false] [seed:=N] [exit_on_end:=true]
 ```
 
 - Assets are generated at launch into `results/live/<id>/assets` (`assets_dir:=`).
@@ -390,6 +391,13 @@ ros2 launch mss_ros2 mss_live.launch.py scenario:=sim/scenarios/E-01.yaml rviz:=
   sweep (about 0.1 s sim) and logs its counters every 10 s and at exit.
 - `python -m mss_sim.live_start` waits until mss_node and the noise node subscribe, sets the
   real-time factor (`rtf:=`), unpauses, and pauses the world at `duration_s` + 2 s of sim time.
+  It exits 2 (no false success) when the sim clock is not within `--max-start-clock-s` (1 s)
+  of 0 once the robot exists, i.e. not this run's Gazebo, or when the clock does not advance
+  for `--stall-timeout-s` (10 s) of wall time or goes back.
+- Isolation and shutdown: the launch runs Gazebo transport in its own `GZ_PARTITION`
+  (`mss_live_<launch pid>`), and on shutdown `sim.launch.py` stops the gz processes below its
+  own launch process (SIGINT, SIGKILL after 5 s); launch alone signals only the `ruby gz`
+  wrapper, whose `gz sim` server child used to survive and break the next run.
   With `exit_on_end:=true` the launch then shuts down; otherwise it stays up for viewing.
 - Determinism: only the seed is fixed. Fed the same raw messages, `mss_sim.live.LiveNoise` gives
   the offline bridge's bytes (`tests/python/test_live.py`); Gazebo itself is not deterministic.
