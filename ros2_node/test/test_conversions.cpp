@@ -157,6 +157,17 @@ TEST(Conversions, CloudErrorsLeaveScanEmpty) {
   past_step.fields[5].offset = 21;  // ring would end at byte 23 > point_step 22
   EXPECT_FALSE(mss_ros2::scan_from_cloud(past_step, scan).is_ok());
 
+  // Offsets near UINT32_MAX: offset + width wraps in 32-bit arithmetic; before the fix both
+  // passed the bound check and read about 4 GB past the buffer (SIGSEGV, review B-1).
+  sensor_msgs::msg::PointCloud2 ring_wrap = bridge_cloud(kPoints);
+  ring_wrap.fields[5].offset = 0xFFFFFFFFU;
+  EXPECT_FALSE(mss_ros2::scan_from_cloud(ring_wrap, scan).is_ok());
+  EXPECT_EQ(scan.size(), 0U);
+  sensor_msgs::msg::PointCloud2 x_wrap = bridge_cloud(kPoints);
+  x_wrap.fields[0].offset = 0xFFFFFFFDU;
+  EXPECT_FALSE(mss_ros2::scan_from_cloud(x_wrap, scan).is_ok());
+  EXPECT_EQ(scan.size(), 0U);
+
   sensor_msgs::msg::PointCloud2 big_endian = bridge_cloud(kPoints);
   big_endian.is_bigendian = true;
   EXPECT_FALSE(mss_ros2::scan_from_cloud(big_endian, scan).is_ok());

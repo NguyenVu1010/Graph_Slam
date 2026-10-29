@@ -1,6 +1,5 @@
 #include "mss_ros2/conversions.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -101,19 +100,24 @@ mss::common::Status scan_from_cloud(const sensor_msgs::msg::PointCloud2& msg,
   }
   const bool has_intensity = i_ok == FieldLookup::kOk;
 
-  const std::size_t step = msg.point_step;
-  const std::uint32_t max_end = 4;  // every field read here is at most 4 bytes wide
-  const std::uint32_t last_off =
-      std::max({off_x, off_y, off_z, off_t, has_intensity ? off_i : 0U}) + max_end;
-  if (off_ring + 2 > step || last_off > step) {
+  // Bounds in 64-bit: offsets are untrusted uint32 values, and offset + width in 32-bit
+  // arithmetic wraps for offsets near UINT32_MAX (an out-of-bounds read).
+  const std::uint64_t step = msg.point_step;
+  const auto fits = [step](std::uint32_t offset, std::uint64_t bytes) {
+    return static_cast<std::uint64_t>(offset) + bytes <= step;
+  };
+  if (!fits(off_x, sizeof(float)) || !fits(off_y, sizeof(float)) || !fits(off_z, sizeof(float)) ||
+      !fits(off_t, sizeof(std::uint32_t)) || !fits(off_ring, sizeof(std::uint16_t)) ||
+      (has_intensity && !fits(off_i, sizeof(float)))) {
     return mss::common::Status::error("PointCloud2 field lies past point_step");
   }
-  const std::size_t n = static_cast<std::size_t>(msg.width) * msg.height;
-  if (msg.data.size() < n * step) {
-    return mss::common::Status::error("PointCloud2 data shorter than width * height * point_step");
-  }
+  // Capacity first: then n * step <= capacity * UINT32_MAX cannot overflow 64 bits.
+  const std::uint64_t n = static_cast<std::uint64_t>(msg.width) * msg.height;
   if (n > out.capacity()) {
     return mss::common::Status::error("PointCloud2 has more points than max_points_per_scan");
+  }
+  if (msg.data.size() < n * step) {
+    return mss::common::Status::error("PointCloud2 data shorter than width * height * point_step");
   }
   float* xyz = out.xyz_mut();
   float* inten = out.intensity_mut();

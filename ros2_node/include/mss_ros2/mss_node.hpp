@@ -83,7 +83,17 @@ class MssNode : public rclcpp::Node {
 
   NodeParams read_params();
   bool accept_stamp(Topic topic, mss::common::Timestamp t);
-  void report(Topic topic, const char* what, const std::string& reason);
+  /// Counts one problem on `topic` and logs one throttled warning (error_log_period_s) with
+  /// `reason()`; the reason string is only built when the warning is actually logged, so the
+  /// per-message paths stay allocation-free (CLAUDE.md hot path; review I-3).
+  template <typename ReasonFn>
+  void report(Topic topic, const char* what, ReasonFn&& reason) {
+    if (report_due(topic)) {
+      log_report(topic, what, reason());
+    }
+  }
+  bool report_due(Topic topic);
+  void log_report(Topic topic, const char* what, const std::string& reason);
 
   void on_lidar(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
   void on_imu(const sensor_msgs::msg::Imu::ConstSharedPtr& msg);

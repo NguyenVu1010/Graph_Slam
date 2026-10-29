@@ -180,13 +180,10 @@ bool MssNode::accept_stamp(Topic topic, mss::common::Timestamp t) {
   if (c.has_last_stamp && t <= c.last_stamp) {
     ++c.time_skipped;
     const double back_s = mss::common::seconds_between(t, c.last_stamp);
-    if (back_s > params_.time_jump_back_warn_s) {
-      report(topic,
-             "time jumped back (bag loop or clock reset), skipped",
-             std::to_string(back_s) + " s back");
-    } else {
-      report(topic, "stamp not increasing, skipped", std::to_string(back_s) + " s back");
-    }
+    const char* what = back_s > params_.time_jump_back_warn_s
+                           ? "time jumped back (bag loop or clock reset), skipped"
+                           : "stamp not increasing, skipped";
+    report(topic, what, [back_s] { return std::to_string(back_s) + " s back"; });
     return false;
   }
   c.has_last_stamp = true;
@@ -194,14 +191,17 @@ bool MssNode::accept_stamp(Topic topic, mss::common::Timestamp t) {
   return true;
 }
 
-void MssNode::report(Topic topic, const char* what, const std::string& reason) {
+bool MssNode::report_due(Topic topic) {
   TopicCounters& c = counters_[topic];
   ++c.pending_report;
   const auto now = std::chrono::steady_clock::now();
-  if (c.last_report != std::chrono::steady_clock::time_point{} &&
-      now - c.last_report < to_period(params_.error_log_period_s)) {
-    return;
-  }
+  return c.last_report == std::chrono::steady_clock::time_point{} ||
+         now - c.last_report >= to_period(params_.error_log_period_s);
+}
+
+void MssNode::log_report(Topic topic, const char* what, const std::string& reason) {
+  TopicCounters& c = counters_[topic];
+  const auto now = std::chrono::steady_clock::now();
   RCLCPP_WARN(get_logger(),
               "%s: %s: %s (%llu such events since the last report; totals: time %llu, "
               "convert %llu, push %llu)",
@@ -225,13 +225,13 @@ void MssNode::on_lidar(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
   const mss::common::Status conv = scan_from_cloud(*msg, scan_);
   if (!conv) {
     ++c.convert_errors;
-    report(kLidar, "conversion failed, scan dropped", conv.reason());
+    report(kLidar, "conversion failed, scan dropped", [&conv] { return conv.reason(); });
     return;
   }
   const mss::common::Status st = est_->push_scan(scan_);
   if (!st) {
     ++c.push_errors;
-    report(kLidar, "push_scan", st.reason());
+    report(kLidar, "push_scan", [&st] { return st.reason(); });
   }
 }
 
@@ -245,7 +245,7 @@ void MssNode::on_imu(const sensor_msgs::msg::Imu::ConstSharedPtr& msg) {
   const mss::common::Status st = est_->push_imu(s);
   if (!st) {
     ++c.push_errors;
-    report(kImu, "push_imu", st.reason());
+    report(kImu, "push_imu", [&st] { return st.reason(); });
   }
 }
 
@@ -270,7 +270,7 @@ void MssNode::on_gnss(const sensor_msgs::msg::NavSatFix::ConstSharedPtr& msg) {
   const mss::common::Status st = est_->push_gnss(gnss_from_navsat(*msg, origin_, gnss_sigma_));
   if (!st) {
     ++c.push_errors;
-    report(kGnss, "push_gnss", st.reason());
+    report(kGnss, "push_gnss", [&st] { return st.reason(); });
   }
 }
 
@@ -284,7 +284,7 @@ void MssNode::on_odom(const nav_msgs::msg::Odometry::ConstSharedPtr& msg) {
   const mss::common::Status st = est_->push_odom(s);
   if (!st) {
     ++c.push_errors;
-    report(kOdom, "push_odom", st.reason());
+    report(kOdom, "push_odom", [&st] { return st.reason(); });
   }
 }
 
@@ -307,7 +307,7 @@ void MssNode::on_map_timer() {
   const auto info = est_->export_map(map_points_);
   if (!info) {
     ++counters_[kMap].push_errors;
-    report(kMap, "export_map", info.reason());
+    report(kMap, "export_map", [&info] { return info.reason(); });
     return;
   }
   if (info.value().n_keyframes == 0) {
