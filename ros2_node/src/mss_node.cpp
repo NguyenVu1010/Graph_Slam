@@ -265,9 +265,12 @@ void MssNode::on_imu(const sensor_msgs::msg::Imu::ConstSharedPtr& msg) {
 void MssNode::on_gnss(const sensor_msgs::msg::NavSatFix::ConstSharedPtr& msg) {
   TopicCounters& c = counters_[kGnss];
   ++c.received;
-  if (!accept_stamp(kGnss, to_timestamp(msg->header.stamp))) {
+  const mss::common::Timestamp stamp = to_timestamp(msg->header.stamp);
+  if (!check_stamp(kGnss, stamp)) {
     return;
   }
+  // A fix that is skipped below must not advance the stamp gate (as R4 for the lidar): a garbage
+  // fix with a late stamp would otherwise block the real publisher's fixes.
   if (!has_origin_) {
     if (!origin_from_fix(*msg, origin_)) {
       ++n_gnss_before_origin_;
@@ -280,6 +283,14 @@ void MssNode::on_gnss(const sensor_msgs::msg::NavSatFix::ConstSharedPtr& msg) {
                 origin_.lon_deg,
                 origin_.alt_m);
   }
+  if (!fix_in_range(*msg)) {  // R21: every fix, not only the origin
+    ++c.convert_errors;
+    report(kGnss, "fix outside the WGS-84 range or not finite, skipped", [msg] {
+      return std::to_string(msg->latitude) + " deg, " + std::to_string(msg->longitude) + " deg";
+    });
+    return;
+  }
+  commit_stamp(kGnss, stamp);
   const mss::common::Status st = est_->push_gnss(gnss_from_navsat(*msg, origin_, gnss_sigma_));
   if (!st) {
     ++c.push_errors;

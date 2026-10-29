@@ -58,6 +58,11 @@ mss::common::WheelSample wheel_from_odometry(const nav_msgs::msg::Odometry& msg)
 /// outside [-90, 90] or a longitude outside [-180, 180] deg (the lla_to_enu precondition; the
 /// node skips and counts such a fix instead of taking it as the origin). Status and finiteness: as
 /// bag_to_mssdata._gnss_records.
+/// True when latitude, longitude and altitude are finite, |lat| <= 90 and |lon| <= 180 deg (the
+/// lla_to_enu precondition). The node skips and counts every fix that fails this, not only the
+/// origin (backlog R21).
+bool fix_in_range(const sensor_msgs::msg::NavSatFix& msg);
+
 bool origin_from_fix(const sensor_msgs::msg::NavSatFix& msg, mss::gnss::Lla& out);
 
 /// Sigmas used when a fix declares COVARIANCE_TYPE_UNKNOWN (config gnss.sigma_h_m, sigma_v_m).
