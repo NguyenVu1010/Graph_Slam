@@ -1,6 +1,7 @@
 #include "estimator_core.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -777,6 +778,29 @@ void EstimatorCore::maybe_rebuild_map() {
   map_dropped_ = map_.num_dropped();
   ++counters_.n_map_rebuilds;
   common::log_info("voxel map rebuilt from the keyframe window after a pose correction");
+}
+
+MapExportInfo EstimatorCore::visit_map(const MapKeyframeVisitor& visit) const {
+  MapExportInfo info;
+  info.n_evicted = store_.n_evicted();
+  for (std::size_t i = 0; i < store_.size(); ++i) {
+    const KeyframeEntry& e = store_.at(i);
+    const common::Result<common::NavState> s = graph_.keyframe_state(e.id);
+    if (!s.is_ok()) {
+      ++info.n_no_pose;
+      continue;
+    }
+    MapKeyframe kf;
+    kf.id = e.id;
+    kf.t = e.t;
+    kf.T_w_l = s.value().T_w_b * T_b_l_;
+    kf.xyz_l = e.cloud_l.xyz();
+    ++info.n_keyframes;
+    info.n_points_in += e.cloud_l.size();
+    visit(kf);
+  }
+  info.n_points_out = info.n_points_in;
+  return info;
 }
 
 }  // namespace mss::pipeline::detail

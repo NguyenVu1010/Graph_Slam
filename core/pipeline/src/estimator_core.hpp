@@ -18,6 +18,7 @@
 #include "mss/odom/wheel_integrator.hpp"
 #include "mss/pipeline/bounded_queue.hpp"
 #include "mss/pipeline/config.hpp"
+#include "mss/pipeline/map_export.hpp"
 #include "mss/preprocess/preprocessor.hpp"
 #include "mss/scan_match/scan_matcher.hpp"
 
@@ -200,6 +201,11 @@ class EstimatorCore {
   [[nodiscard]] double wheel_odometer_m() const { return wheel_odometer_m_; }
   /// The VoxelMap cache (read-only, for diagnostics such as Estimator::stats()).
   [[nodiscard]] const map::VoxelMap& voxel_map() const { return map_; }
+  /// Global map export (Estimator::visit_map): calls `visit` for every keyframe in the store,
+  /// oldest first, at T_w_b(k) * T_b_l with T_w_b(k) = graph_.keyframe_state(k) now; entries
+  /// without a backend estimate are skipped and counted (n_no_pose). Reads only; allocates
+  /// nothing itself.
+  MapExportInfo visit_map(const MapKeyframeVisitor& visit) const;
 
  private:
   // Processes deferred GNSS fixes whose time the buffered IMU now covers.
