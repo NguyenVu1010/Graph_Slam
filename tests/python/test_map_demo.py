@@ -95,3 +95,12 @@ def test_demo_refuses_a_failed_bench(
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert "run_map_demo: OK" not in proc.stdout
     assert not (out / "map.png").exists() and not (out / "map_demo.json").exists()
+
+
+def test_pf01_failure_does_not_make_the_e01_gate_fail() -> None:
+    """run_integration exits 1 when only the PF-01 latency check fails; E-01 itself passed."""
+    doc = {**_e01(passed=True), "PF-01": {"passed": False, "note": "p95 too high"}}
+    v = judge_run(doc, 1, "E-01")
+    assert v["usable"] and v["gate_passed"] is True
+    assert v["pf01_passed"] is False and v["pf01_note"] == "p95 too high"
+    assert "ATE" not in v["reason"] and "PF-01" in v["reason"]

@@ -130,7 +130,10 @@ m = re.search(r"^map: .*$", log, re.M)
 doc = {
     "scenario": verdict["scenario"],
     "bag": bag,
-    "gate": {k: verdict[k] for k in ("gate_passed", "gate_note", "reason")},
+    "gate": {
+        k: verdict[k]
+        for k in ("gate_passed", "gate_note", "pf01_passed", "pf01_note", "reason")
+    },
     "wall_s": {"record": record_s, "convert_and_bench": run_s, "map_png": png_s},
     "record_exit": record_status,
     "run_integration_exit": run_status,

@@ -357,9 +357,10 @@ scenario.
 The picture uses the scenario's `pipeline_config` (for E-04 the degeneracy-off one). The E-01
 gate inside `run_integration.py` compares against the synthetic baselines, so a Gazebo bag
 "fails" it on the ATE; the demo records that in `map_demo.json` (`gate`) and still draws the
-map. A failed or timed-out bench (E-01 `bench_exit` not 0) is not accepted: exit 2. Exit 0 = picture written, 2 = a
-step failed (the message names its log). Wrap it in `flock ~/.mss-build.lock` when another
-heavy job may run.
+map. `gate.gate_passed` is the E-01 ATE gate only; a PF-01 latency failure is recorded apart
+(`gate.pf01_passed`). A failed or timed-out bench (E-01 `bench_exit` not 0) is not accepted:
+exit 2. Exit 0 = picture written, 2 = a step failed (the message names its log). Wrap it in
+`flock ~/.mss-build.lock` when another heavy job may run.
 
 Numbers (2026-10-29 UTC, desktop WSL, Release build of `feat/map-demo`, seed 42, fresh
 recordings, so they differ from the tables above; Gazebo is not deterministic):
