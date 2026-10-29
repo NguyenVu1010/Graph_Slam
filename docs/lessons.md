@@ -365,34 +365,44 @@ Format of an entry: **symptom** → cause → fix → rule.
   unchanged. Three classes came out, and each is handled differently.
   - **Algorithm-caused.** A threshold or a reset rule threw away information the sensors still
     give. Fix it.
-    - A missing odometer reading reset the wheel/GNSS window, although the odometer is absolute.
-      After a mismatch, with 2 % of readings missing, the robot aligned after a median 36 m
-      (max 311 m). Bridging gaps of up to 4 fixes gives 10.9 m (max 16.9 m), and up to 20 %
-      missing is tolerated.
+        - A missing odometer reading reset the wheel/GNSS window. After a mismatch, with 2 % of
+      readings missing, the robot aligned after a median 36 m (max 311 m). Bridging gaps of up
+      to 4 fixes gives 10.9 m (max 16.9 m) in the study. The study gave the aligner the true
+      odometer after a gap, but the pipeline integrates wheel speed and interpolates across a
+      wheel-message gap, so a bridged step is an estimate. With stop-and-go and a silent wheel
+      driver, alignment drops from 99 to 85 of 100 (open issue F1).
     - A per-segment travel threshold, and a coherence test on short segments that noise
       dominates, kept a robot below 0.1 m/s from ever aligning. The oracle with the true travel
       sign alone did not fix it. Accumulating travel across chunks does: from 0.02 m/s, after
       about 3 m.
-    - A still front end was not used where the LiDAR observes the travel axis. Wheels spinning
+        - A still front end was not used where the LiDAR observes the travel axis. Wheels spinning
       on a still body aligned on GNSS drift in 6 of 100 runs at 0.2 m per fix, and a parked
-      robot without wheel data in 25 of 100. Now none, up to 0.5 m per fix.
-  - **Noise-caused.** The sensor really gives misleading data. Publish the tolerance envelope:
-    the largest noise per source for at most 1 failure in 100 and alignment within 10 m. It is a
-    hardware requirement, not a bug. At the simulator defaults:
+      robot without wheel data in 25 of 100. Now none: swept to 0.5 m per fix with spinning
+      wheels, and to 0.30 m per fix without wheel data.
+    - **Noise-caused.** The sensor really gives misleading data. Publish the tolerance envelope:
+    the largest noise per source for at most 1 failure in 100 and, where the robot drives,
+    alignment within 10 m. It is a hardware requirement, not a bug. At the simulator defaults:
     - GNSS drift while driving: about `0.02 m sqrt(v / 0.5 m/s)` per fix;
     - white GNSS sigma: 1.0 m;
-    - missing wheel readings: 20 %;
-    - speed with wheel data: from 0.02 m/s;
     - a skid held through a one-way turn: 5 deg with the wheel path. Gyro and odometer cannot
       see the sideslip; the front-end path removes it where the LiDAR observes the axis.
+
+    What remains after the algorithm fixes, with its own criteria:
+    - Missing wheel readings, up to 20 %. This is restart distance, not the 10 m criterion: after
+      a mismatch the 10 m restart window comes first, then a median 10.9 m and a max 21.9 m.
+    - Speed with wheel data, from 0.02 m/s. This holds only with GNSS drift of about 5 mm per fix
+      or less at 0.03 m/s. Under more drift, a slow robot now aligns with a confident wrong yaw
+      instead of never aligning (open issue F2).
   - **Sensor-set limits.** The quantity is not observable with these sensors. State it as such,
     with the sensor that would observe it.
     - The travel sign without wheel data is not in the GNSS positions or the heading, and GNSS
       Doppler does not give it either. The front end gives it where the LiDAR observes the axis.
-    - Where the LiDAR is blind along the axis, a still body with spinning wheels or a parked
-      robot cannot be told from GNSS drift: the IMU sees the same signal at rest and at constant
-      speed. The tolerance there is 0.15 m per fix with spinning wheels and 0.10 m per fix when
-      parked without wheel data.
+        - Where the LiDAR is blind along the axis, a still body with spinning wheels or a parked
+      robot cannot be told from GNSS drift in steady state: the IMU sees the same signal at rest
+      and at constant speed. The onset is observable, though (wheel delta-v against IMU delta-v),
+      and no oracle tested it (open issue F3).
+    - The tolerance there is 0.15 m per fix with spinning wheels and 0.10 m per fix when parked
+      without wheel data. Above 0.15 m per fix the rate depends on the seeds, 0 to 14 of 100.
     - GNSS Doppler velocity would remove these everywhere. That is a study-only estimate:
       0.05 m/s per axis reaches a 6 deg sigma within 0.4 to 2.1 m.
   - **Where cross-sensor checks belong.** Before `E` exists there is no innovation to test, so

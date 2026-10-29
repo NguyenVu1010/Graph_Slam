@@ -169,9 +169,10 @@ mss_node:
       # 150 m), yaw within its sigma.
       align_yaw_wheel_restart_m: 10.0
       # Root-cause study of the residual limits (gnss_fusion_study.md section 16.13).
-      # A run of at most this many fixes without an odometer reading is bridged by the next
-      # reading (the odometer is absolute) instead of leaving the chunk half without wheel data,
-      # fixes (>= 0, < align_yaw_chunk_fixes / 2; 0: never bridged). 4: after wheels spun on a
+            # A run of at most this many fixes without an odometer reading is bridged by the next
+      # reading instead of leaving the chunk half without wheel data, fixes (>= 0,
+      # < align_yaw_chunk_fixes / 2; 0: never bridged). The pipeline integrates wheel speed and
+      # interpolates across a wheel-message gap, so a bridged step is an estimate (backlog F1). 4: after wheels spun on a
       # still body, with 2 % / 10 % / 20 % of readings missing the robot aligns after a median
       # 10.9 m (max 16.9 / 15.9 / 21.9 m) instead of 36 m (max 311 m) / never / never.
       align_yaw_wheel_max_gap_fixes: 4

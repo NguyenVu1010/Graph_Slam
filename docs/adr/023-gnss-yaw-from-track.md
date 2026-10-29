@@ -127,7 +127,7 @@ Bối cảnh. Chủ dự án không chấp nhận các giới hạn còn lại c
 
 Quyết định (sau cờ `gnss.align_yaw_from_track`; mặc định của struct giữ hành vi cũ, YAML bật):
 
-17. **Bắc cầu qua số đọc đồng hồ quãng bị thiếu** (`gnss.align_yaw_wheel_max_gap_fixes`, 4). Đồng hồ quãng là tuyệt đối, nên một chuỗi tối đa 4 fix thiếu số đọc được nối bằng số đọc kế tiếp (quãng của khoảng thiếu đặt vào fix đó) thay vì làm nửa khối mất dữ liệu bánh xe và cắt cửa sổ nhất quán. Đường bánh xe không bắc cầu (cung qua khoảng thiếu không rõ hình dạng). Chuỗi dài hơn đánh dấu mọi nửa khối nó chạm. Sau khi bánh quay tại chỗ, với 2 % / 10 % / 20 % số đọc thiếu: căn chỉnh sau trung vị 10,9 m (lớn nhất 16,9 / 15,9 / 21,9 m) thay vì 36 m (lớn nhất 311 m) / không bao giờ / không bao giờ; bảo vệ bánh kẹt giữ nguyên (6/100 ở 0,20 m mỗi fix, như khi không thiếu; trước đó thiếu số đọc làm tăng lên 11 và 20/100). Bắc cầu 1 hoặc 2 fix kém hơn ở 10 đến 20 % thiếu.
+17. **Bắc cầu qua số đọc đồng hồ quãng bị thiếu** (`gnss.align_yaw_wheel_max_gap_fixes`, 4). Một chuỗi tối đa 4 fix thiếu số đọc được nối bằng số đọc kế tiếp (quãng của khoảng thiếu đặt vào fix đó) thay vì làm nửa khối mất dữ liệu bánh xe và cắt cửa sổ nhất quán. Pipeline tích phân tốc độ bánh xe (hình thang giữa hai mẫu), nên qua một khoảng không có mẫu bánh xe, quãng nối là nội suy chứ không phải đo (mục tồn đọng F1). Đường bánh xe không bắc cầu (cung qua khoảng thiếu không rõ hình dạng). Chuỗi dài hơn đánh dấu mọi nửa khối nó chạm. Sau khi bánh quay tại chỗ, với 2 % / 10 % / 20 % số đọc thiếu: căn chỉnh sau trung vị 10,9 m (lớn nhất 16,9 / 15,9 / 21,9 m) thay vì 36 m (lớn nhất 311 m) / không bao giờ / không bao giờ; bảo vệ bánh kẹt giữ nguyên (6/100 ở 0,20 m mỗi fix, như khi không thiếu; trước đó thiếu số đọc làm tăng lên 11 và 20/100). Bắc cầu 1 hoặc 2 fix kém hơn ở 10 đến 20 % thiếu.
 18. **Kéo dài đoạn đứng yên** (`gnss.align_yaw_merge_max_chunks`, 10). Đoạn có ít hơn 0,2 m quãng không được thêm; khối đầu của nó giữ làm mốc và đoạn sau chạy từ mốc tới khối kế tiếp, cộng dồn quãng và các cờ, tối đa 10 khối (20 s); độ dời dự đoán `d_k` của nó là độ dài đường đi. Hướng của đoạn kéo dài là đường đi của `o` giữa hai tâm khối (front-end nếu được quan sát, nếu không thì đường bánh xe; chỉ kéo dài khi một trong hai đường đó sẽ có, nếu không thì thêm đoạn đứng yên như trước; trên E-01 khối đứng yên đầu tiên thiếu đường bánh xe vì thiếu số đọc ở fix đầu, và kéo dài ở đó làm mất một đoạn vết), không phải hướng trung bình của hai khối đầu cuối: với hướng trung bình, khúc chữ S chậm không nhiễu (0,03 m/s, 57° mỗi chiều) lệch 4,8°, với đường đi thì đúng tuyệt đối. Không cộng số hạng trượt và profile của các khối bên trong: tổng quãng của chúng dưới 0,2 m, nên sai số trượt dưới 1 cm, so với 0,16 m nhiễu của tâm khối (NEES 0,95 có, 0,94 không, ở 10° trượt và slip 0,15). Xe 0,02 đến 0,08 m/s có bánh xe căn chỉnh sau khoảng 3 m (trước: không bao giờ; 0,10 m/s: 32,8 m), NEES 0,88 đến 1,18. Oracle "chiều chạy thật, không bỏ đoạn đứng yên" một mình không đủ: đoạn ngắn bị nhiễu chi phối nên vết không qua phép thử độ nhất quán.
 19. **Front-end ở nơi LiDAR quan sát được trục chạy** (`gnss.align_yaw_frontend_travel`, bật; `gnss.align_yaw_frontend_min_info` 100). Mỗi scan pipeline tính `d^T H_rho d`, với `d` là hướng ngang của `x_o` trong khung LiDAR và `H_rho` là khối tịnh tiến của Hessian scan matching: số ràng buộc điểm-mặt phẳng (có trọng số robust) dọc trục chạy. Scan dưới ngưỡng, hoặc match hỏng, tăng một bộ đếm truyền kèm mỗi fix. Một đoạn được quan sát khi bộ đếm không đổi suốt từ fix đầu khối trước tới fix cuối khối sau. Với đoạn được quan sát:
     - độ dời front-end của `o` giữa hai tâm khối dưới 0,2 m: đoạn đứng yên, bất kể bánh xe nói gì;
@@ -140,15 +140,15 @@ Phân loại các giới hạn (bảng đầy đủ: `gnss_fusion_study.md` mụ
 
 1. **Bánh quay trên thân đứng yên, GNSS trôi.**
    - Do thuật toán ở nơi LiDAR quan sát trục chạy: front-end đứng yên mà không được dùng. Đã sửa: 0/100 tới 0,50 m mỗi fix, trước đó 6/100 ở 0,20 m.
-   - Do bộ cảm biến ở nơi không quan sát: bánh xe nói xe chạy, GNSS trôi giống chuyển động, IMU không phân biệt tốc độ đều với đứng yên. Ở đó dung sai là 0,15 m mỗi fix.
-2. **Thiếu số đọc bánh xe sau một lần lệch.** Do thuật toán: cắt cửa sổ ở mỗi số đọc thiếu bỏ mất quãng mà đồng hồ tuyệt đối vẫn cho. Đã sửa (quyết định 17); dung sai 20 % số đọc thiếu.
-3. **Xe chậm có bánh xe.** Do thuật toán: ngưỡng quãng theo từng đoạn, và phép thử độ nhất quán trên đoạn ngắn bị nhiễu chi phối. Đã sửa xuống khoảng 0,01 m/s (quyết định 18). Phần còn lại do nhiễu: trôi GNSS có màu trên mỗi mét vết, chịu được tới khoảng `0,02 m sqrt(v / 0,5 m/s)` mỗi fix.
+      - Ở nơi không quan sát: ở trạng thái ổn định, bánh xe nói xe chạy, GNSS trôi giống chuyển động, IMU không phân biệt tốc độ đều với đứng yên. Lúc bắt đầu thì quan sát được (delta-v bánh xe so với delta-v IMU), nhưng chưa có oracle nào thử điều này (mục tồn đọng F3). Ở đó dung sai là 0,15 m mỗi fix; trên 0,15 m mỗi fix, tỷ lệ phụ thuộc bộ seed, 0 đến 14/100.
+2. **Thiếu số đọc bánh xe sau một lần lệch.** Do thuật toán: cắt cửa sổ ở mỗi số đọc thiếu bỏ mất quãng mà số đọc kế tiếp vẫn cho. Đã sửa trong nghiên cứu (quyết định 17); dung sai 20 % số đọc thiếu. Trong pipeline, quãng qua khoảng thiếu là nội suy (F1).
+3. **Xe chậm có bánh xe.** Do thuật toán: ngưỡng quãng theo từng đoạn, và phép thử độ nhất quán trên đoạn ngắn bị nhiễu chi phối. Đã sửa xuống khoảng 0,01 m/s (quyết định 18). Phần còn lại do nhiễu: trôi GNSS có màu trên mỗi mét vết, chịu được tới khoảng `0,02 m sqrt(v / 0,5 m/s)` mỗi fix. Trên mức đó, xe chậm giờ căn chỉnh với yaw sai mà tự tin, thay vì không căn chỉnh (F2).
 4. **Không có bánh xe.**
    - Lùi: do bộ cảm biến. Chiều chạy không có trong vị trí GNSS và hướng; vận tốc Doppler của GNSS cũng không cho dấu này. Đã sửa ở nơi LiDAR quan sát trục chạy: 0/100 lật, trước đó 100/100.
    - Đỗ với GNSS trôi: như 1. Đã sửa ở nơi quan sát (0/100 tới 0,30 m mỗi fix, trước đó 25/100 ở 0,20 m); ở nơi không quan sát, dung sai là 0,10 m mỗi fix.
 5. **Trượt ngang giữ suốt một khúc rẽ một chiều.** Do nhiễu (vật lý) với bánh xe cộng con quay: góc trượt là góc giữa vận tốc và `x_o`, không cảm biến nào trong hai cái đo được. Đã sửa ở nơi LiDAR quan sát, qua đường đi front-end: 0/100 quá 3 sigma ở 10°, trước đó 9/100. Ở nơi khác dung sai là 5°.
 
-Đường bao dung sai ở mặc định mô phỏng (0,5 m, 5 Hz, tay đòn 0,22 m, có bánh xe, khoá phát hành; tối đa 1/100 lỗi và, khi xe chạy, căn chỉnh trong 10 m):
+Đường bao dung sai ở mặc định mô phỏng (0,5 m, 5 Hz, tay đòn 0,22 m, có bánh xe, khoá phát hành; tối đa 1/100 lỗi và, khi xe chạy, căn chỉnh trong 10 m, trừ hai dòng có ghi chú riêng):
 
 | Nguồn | LiDAR quan sát trục chạy | Không quan sát (hành lang, bãi trống) |
 | --- | --- | --- |
@@ -156,12 +156,25 @@ Phân loại các giới hạn (bảng đầy đủ: `gnss_fusion_study.md` mụ
 | GNSS trôi, đỗ không có bánh xe | không giới hạn tới 0,30 m mỗi fix | 0,10 m mỗi fix |
 | GNSS trôi khi chạy ở tốc độ `v` | khoảng `0,02 m sqrt(v / 0,5 m/s)` mỗi fix | như vậy |
 | Sigma GNSS trắng (khai báo đúng) | 1,0 m | 1,0 m |
-| Số đọc bánh xe thiếu | 20 % | 20 % |
-| Tốc độ khi có bánh xe | từ 0,02 m/s (cận khoảng 0,01 m/s) | như vậy |
+| Số đọc bánh xe thiếu (tiêu chí riêng: quãng khởi động lại sau một lần lệch, sau cửa sổ 10 m) | 20 %: trung vị 10,9 m, lớn nhất 21,9 m | như vậy |
+| Tốc độ khi có bánh xe (chỉ khi GNSS trôi tới khoảng 5 mm mỗi fix ở 0,03 m/s; xem F2) | từ 0,02 m/s (cận khoảng 0,01 m/s) | như vậy |
 | Trượt ngang giữ suốt khúc rẽ một chiều | không giới hạn tới 10° | 5° |
 | Lùi khi không có bánh xe | xử lý được | không xử lý được |
 
 Đây là yêu cầu phần cứng cho máy thu GNSS, đồng hồ quãng và hệ truyền động, không phải lỗi.
+
+Các vấn đề còn mở (tồn đọng; PR này merge với cờ tắt, main không đổi; chi tiết trong review của 3e32aa3):
+
+- **F1. Bắc cầu qua khoảng thiếu bánh xe.** Pipeline tích phân tốc độ bánh xe và nội suy qua khoảng không có thông điệp bánh xe, không có đồng hồ quãng tuyệt đối. Với chạy dừng, driver bánh xe im lặng khi dừng: 99 xuống 85/100 căn chỉnh (lớn nhất 95 m).
+- **F2. Kéo dài đoạn chậm.** Xe chậm dưới GNSS trôi có màu căn chỉnh với yaw sai mà tự tin. Ở 0,05 m/s và 0,02 m mỗi fix: 10/100 quá 3 sigma (trước: không căn chỉnh). Ở 0,10 m/s và 0,05 m mỗi fix: 27 lên 43/100.
+- **F3. Giới hạn 1 và 4b ở nơi trục không được quan sát** được phân loại "bộ cảm biến" mà không có oracle. Lúc bắt đầu thì quan sát được bằng IMU cộng bánh xe.
+- **F4. Cổng front-end.** Số đếm thô, không phải bù Schur. Cần kiểm trên bag ghi thật, và cần một bộ đếm khi front-end bất đồng với bánh xe (front-end sai mà qua cổng thì chặn căn chỉnh im lặng: 0/100). Việc sửa quyết định 13 chờ chủ dự án.
+- **F5. Lệch dây cung trên khúc rẽ nhẹ.** Yaw đầu lệch 1,4 đến 2,3° (0,52° trên main); đường bánh xe loại bỏ được nó.
+- **F6. Bốn mutant sống sót:**
+  - `ext_path_ok`;
+  - `wheel_ok` của phần kéo dài;
+  - đánh dấu nửa khối qua ranh giới khối khi thiếu số đọc;
+  - vị trí front-end của `b` thay vì `o`.
 
 Vận tốc Doppler của GNSS (chỉ nghiên cứu, đầu vào cho một ADR sau; chủ dự án kiểm tra máy thu có xuất RMC/VTG hay NAV-PVT). Với 0,05 m/s mỗi trục:
 - Nó bỏ được giới hạn 1 và 4b ở mọi nơi, kể cả hành lang, vì thân đứng yên thấy được từ vận tốc chứ không từ vị trí.

@@ -1312,8 +1312,10 @@ changes below, with their shipped values.
 
 The three changes (all new keys in `gnss`, behind `align_yaw_from_track`):
 
-- `align_yaw_wheel_max_gap_fixes` (4). The odometer is absolute, so a run of up to 4 fixes
-  without a reading is bridged: the next reading supplies the travel over the gap. Before, every
+- `align_yaw_wheel_max_gap_fixes` (4). A run of up to 4 fixes without a reading is bridged:
+  the next reading supplies the travel over the gap. The study's driver gives the aligner the
+  true odometer after a gap. The pipeline integrates wheel speed, though, and interpolates across
+  a wheel-message gap, so in the pipeline a bridged step is an estimate (open issue F1). Before, every
   missing reading left the chunk half without wheel data, and that broke the wheel/GNSS window.
   The wheel path is not bridged. A longer run marks every half it touched.
 - `align_yaw_merge_max_chunks` (10). A stationary segment, one with less than 0.2 m of travel,
@@ -1367,8 +1369,12 @@ runs that aligned on noise):
   - **Algorithm** where the LiDAR observes the travel axis: the still front end was not used.
     Fixed.
   - **Sensor set** where it does not. The wheels say the robot moves. The GNSS drift looks like
-    motion. The IMU cannot tell constant speed from rest. The LiDAR is blind along the axis.
-- **Tolerance there:** GNSS drift up to 0.15 m per fix.
+        motion. The IMU cannot tell constant speed from rest in steady state, and the LiDAR is
+    blind along the axis. The onset is observable, though (wheel delta-v against IMU delta-v),
+    and no oracle tested it (open issue F3).
+- **Tolerance there:** GNSS drift up to 0.15 m per fix. Above 0.15 m per fix the rate depends on
+  the seed set: 0 to 14 of 100 (here 6, 7, 4 and 12; the review's seeds give 0 at 0.20 and 14 at
+  0.30).
 
 **2. Missing wheel readings after a mismatch** (spin 60 s, then drive at 0.5 m/s; readings
 missing at random after the drive-off; distance to the alignment after the drive-off, median
@@ -1389,7 +1395,8 @@ missing at random after the drive-off; distance to the alignment after the drive
   dropout rate after the fix, the same as with every reading. Before, missing readings raised it
   to 11 of 100 at 10 % and 20 of 100 at 20 %.
 - The oracle is no reset. **Classification: algorithm.** Breaking the window at each missing
-  reading threw away the travel, which the absolute odometer still gives. Fixed.
+    reading threw away the travel that the next reading still gives. Fixed in this model; in the
+  pipeline the travel across a gap is interpolated (F1).
 - **Tolerance:** up to 20 % of readings missing. The 10 m restart window is by design.
 
 **3. A slow robot with wheel data** (straight, 0.5 m white, 900 s):
@@ -1477,7 +1484,7 @@ identical):
 **Tolerance envelope** at the simulator defaults (0.5 m, 5 Hz, 0.22 m lever arm, wheel data,
 shipped keys). Each value is the largest level with at most 1 of 100 failures (beyond 3 sigma,
 a flip, or an alignment on noise), and with alignment within 10 m of driving where the robot
-drives.
+drives. The two rows marked * use their own criterion, stated in the row.
 
 | source | the LiDAR observes the travel axis | it does not (corridor, open field) |
 | --- | --- | --- |
@@ -1486,8 +1493,8 @@ drives.
 | GNSS drift while driving at 0.5 m/s | 0.02 m per fix | 0.02 m per fix |
 | GNSS drift at speed `v` | about `0.02 m sqrt(v / 0.5 m/s)` per fix | the same |
 | white GNSS sigma (declared = true) | 1.0 m | 1.0 m |
-| missing wheel readings | 20 % (restart after 10.9 m median, 21.9 m max) | the same |
-| speed with wheel data | from 0.02 m/s (bound about 0.01 m/s) | the same |
+| missing wheel readings* (restart distance after a mismatch, which includes the 10 m window) | 20 %: median 10.9 m, max 21.9 m | the same |
+| speed with wheel data* (only with GNSS drift up to about 5 mm per fix at 0.03 m/s; see F2) | from 0.02 m/s (bound about 0.01 m/s) | the same |
 | persistent skid in a one-way turn | none up to 10 deg | 5 deg |
 | backward travel without wheel data | handled | not handled (sensor set) |
 
@@ -1539,3 +1546,28 @@ the antenna velocity in e with 0.05 m/s white noise per axis, and the yaw is
 
   Within the run-to-run spread (p95 5.38 to 5.77 ms). The information along the axis costs one
   3x3 product per scan, with the flag on only.
+
+**Known open issues (backlog).** This PR merges with the flag off, and main does not change. The
+details are in the review of 3e32aa3.
+- **F1. Gap bridging.** The pipeline integrates wheel speed and interpolates across wheel-message
+  gaps; there is no absolute odometer. Stop-and-go with a wheel driver that goes silent when
+  stopped: 99 to 85 of 100 aligned (max 95 m).
+- **F2. Slow-segment extension.** A slow robot under coloured GNSS drift aligns with a confident
+  wrong yaw:
+  - 0.05 m/s at 0.02 m per fix: 10 of 100 beyond 3 sigma (before: never aligned);
+  - 0.10 m/s at 0.05 m per fix: 27 to 43 of 100.
+- **F3. No oracle for limits 1 and 4b where the axis is not observed.** They are classified as
+  sensor-set without an oracle; the onset is observable with IMU plus wheels.
+- **F4. The front-end gate.**
+  - It is a raw count, not the Schur complement.
+  - It needs a recorded-bag check.
+  - It needs a counter for front-end versus wheel disagreement: a wrong front end that passes the
+    gate blocks the alignment silently (0 of 100).
+  - Decision 13's revision awaits the owner.
+- **F5. Chord bias on gentle turns.** 1.4 to 2.3 deg of first-yaw bias (0.52 deg on main); the
+  wheel path removes it.
+- **F6. Four surviving mutants:**
+  - `ext_path_ok`;
+  - the extended segment's `wheel_ok`;
+  - cross-chunk half marking of a missing-reading gap;
+  - the front-end position of `b` instead of `o`.

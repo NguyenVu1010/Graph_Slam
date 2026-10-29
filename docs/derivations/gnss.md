@@ -569,8 +569,9 @@ information; noise-caused when the sensor gives misleading data; a sensor-set li
 sensor in the set measures what is missing. Three changes follow from it (all behind
 `gnss.align_yaw_from_track`; struct defaults keep the previous behaviour).
 
-**Bridged odometer gaps** (`gnss.align_yaw_wheel_max_gap_fixes`, 4). The odometer reading is
-absolute. With `m` the number of consecutive fixes without a reading before a reading, the
+**Bridged odometer gaps** (`gnss.align_yaw_wheel_max_gap_fixes`, 4). The pipeline's reading is a
+running integral of wheel speed, interpolated across a wheel-message gap, so a bridged step is an
+estimate (backlog F1, `gnss_fusion_study.md` section 16.13). With `m` the number of consecutive fixes without a reading before a reading, the
 travel `odo_i - odo_last` is taken when `m <= max_gap` and lands on fix `i` (its half, and the
 weights of fix `i` in `d_k`). Placing a step one to four fixes late moves the weighted travel by
 at most `max_gap / n` of that step (0.04 m at 0.5 m/s), well inside the tolerance of the window
@@ -634,15 +635,17 @@ than `min_travel / (2 s (max_chunks + 1))`, about 0.01 m/s, still does not align
 **Classification of the limits:**
 1. **Wheels turning on a still body, with GNSS drift.** Algorithm where the LiDAR observes the
    travel axis (fixed: none of 100 up to 0.50 m per fix). Sensor set where it does not: the
-   wheels say the robot moves, the GNSS drift looks like motion, and the IMU cannot tell constant
-   speed from rest. There the tolerance is 0.15 m per fix.
+      wheels say the robot moves, the GNSS drift looks like motion, and in steady state the IMU
+   cannot tell constant speed from rest. The onset is observable (backlog F3). There the
+   tolerance is 0.15 m per fix; above it the rate depends on the seeds, 0 to 14 of 100.
 2. **Missing wheel readings after a mismatch.** Algorithm: the window break threw away travel
-   that the absolute odometer still gives. Fixed: up to 20 % missing, the robot aligns after a
+   that the next reading still gives (in the pipeline, interpolated across the gap: F1). Fixed: up to 20 % missing, the robot aligns after a
    median 10.9 m (max 21.9 m). Before, at 2 % missing, it was 36 m (max 311 m).
 3. **A slow robot with wheel data.** Algorithm, with two causes: the per-segment travel threshold,
    and the coherence test failing on short segments that noise dominates. Fixed down to about
    0.01 m/s. What remains is noise: the coloured GNSS drift per metre of track, tolerable up to
-   about `0.02 m sqrt(v / 0.5 m/s)` per fix.
+      about `0.02 m sqrt(v / 0.5 m/s)` per fix. Above it, a slow robot now aligns with a confident
+   wrong yaw instead of never aligning (backlog F2).
 4. **Without wheel data.**
    - Backward travel: a sensor-set limit, because the travel sign is not in the GNSS positions or
      the heading. GNSS Doppler does not give it either. Fixed where the LiDAR observes the axis.
@@ -653,7 +656,7 @@ than `min_travel / (2 s (max_chunks + 1))`, about 0.01 m/s, still does not align
 
 **Tolerance envelope** (simulator defaults: 0.5 m, 5 Hz, 0.22 m lever arm, wheel data, shipped
 keys). Each value is the largest level with at most 1 of 100 failures and, where the robot drives,
-alignment within 10 m.
+alignment within 10 m. The two rows marked * use their own criterion, stated in the row.
 
 | source | LiDAR observes the travel axis | it does not |
 | --- | --- | --- |
@@ -661,13 +664,14 @@ alignment within 10 m.
 | GNSS drift, parked without wheel data | none up to 0.30 m per fix | 0.10 m per fix |
 | GNSS drift while driving at speed `v` | about `0.02 m sqrt(v / 0.5 m/s)` per fix | the same |
 | white GNSS sigma (declared = true) | 1.0 m | 1.0 m |
-| missing wheel readings | 20 % | 20 % |
-| speed with wheel data | from 0.02 m/s (bound about 0.01 m/s) | the same |
+| missing wheel readings* (restart distance after a mismatch, which includes the 10 m window) | 20 %: median 10.9 m, max 21.9 m | the same |
+| speed with wheel data* (only with GNSS drift up to about 5 mm per fix at 0.03 m/s; see F2) | from 0.02 m/s (bound about 0.01 m/s) | the same |
 | persistent skid in a one-way turn | none up to 10 deg | 5 deg |
 | backward travel without wheel data | handled | not handled |
 
 These values are hardware requirements for the GNSS receiver, the odometer and the drive train,
-not bugs.
+not bugs. Known open issues F1 to F6 are listed at the end of `gnss_fusion_study.md` section
+16.13 and in ADR-023.
 
 **GNSS Doppler velocity** (study only; a future ADR). At 0.05 m/s per axis, a still body is seen
 from the velocity in every environment, and the yaw reaches a 6 deg sigma within 0.4 to 2.1 m at
