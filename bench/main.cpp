@@ -30,7 +30,6 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
-#include <fstream>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -508,32 +507,43 @@ class Replayer {
 };
 
 // --map-out is checked before the replay (a bad path used to show only after the whole run):
-// FILE is not a directory, its parent directory exists, and a file can be created next to it.
+// FILE is not a directory, its parent directory exists, and a new file can be created there.
 // The probe file is removed. Returns false (reason on stderr) when the map could not be written.
 bool check_map_out(const fs::path& path) {
   std::error_code ec;
   if (path.empty() || fs::is_directory(path, ec)) {
-    std::fprintf(stderr, "mss_bench: --map-out %s is empty or a directory\n", path.c_str());
+    std::fprintf(
+        stderr, "mss_bench: --map-out %s is empty or a directory\n", path.string().c_str());
     return false;
   }
   const fs::path parent = path.parent_path();
   if (!parent.empty() && !fs::is_directory(parent, ec)) {
     std::fprintf(stderr,
                  "mss_bench: --map-out %s: directory %s does not exist\n",
-                 path.c_str(),
-                 parent.c_str());
+                 path.string().c_str(),
+                 parent.string().c_str());
     return false;
   }
-  const fs::path probe = path.string() + ".probe";
-  {
-    std::ofstream f(probe, std::ios::binary | std::ios::trunc);
-    if (!f) {
-      std::fprintf(stderr, "mss_bench: --map-out %s: directory is not writable\n", path.c_str());
-      return false;
+  // Probe in the target directory under a name that does not exist ("wx" = exclusive create),
+  // so a user file is never truncated or deleted.
+  constexpr int kProbeTries = 8;
+  for (int attempt = 0; attempt < kProbeTries; ++attempt) {
+    const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path probe =
+        parent / (".mss_bench_probe_" + std::to_string(ticks) + "_" + std::to_string(attempt));
+    std::FILE* f = std::fopen(probe.string().c_str(), "wx");
+    if (f != nullptr) {
+      std::fclose(f);
+      fs::remove(probe, ec);
+      return true;
+    }
+    if (!fs::exists(probe, ec)) {
+      break;  // not a name clash: the directory is not writable
     }
   }
-  fs::remove(probe, ec);
-  return true;
+  std::fprintf(
+      stderr, "mss_bench: --map-out %s: directory is not writable\n", path.string().c_str());
+  return false;
 }
 
 // --map-out: exports the global map and writes it as PCD. Returns false (reason on stderr)

@@ -359,6 +359,10 @@ TEST(BenchReplay, BadMapOutDirectoryExits2BeforeTheReplay) {
   // A good path passes the check and leaves no probe file behind. The export itself needs the
   // GTSAM backend (M5), so the exit code and the file are only checked when it succeeded.
   const fs::path good = tmp.path() / "map.pcd";
+  {
+    std::ofstream user(good.string() + ".probe");  // the old probe name: must be left alone
+    user << "mine";
+  }
   const std::string ok_cmd =
       bench_cmd(data, out) + " --map-out '" + good.string() + "' 2>/dev/null";
   const int ok_exit = run(ok_cmd);
@@ -366,8 +370,12 @@ TEST(BenchReplay, BadMapOutDirectoryExits2BeforeTheReplay) {
   if (ok_exit == 0) {
     EXPECT_TRUE(fs::exists(good));
   }
-  EXPECT_FALSE(fs::exists(good.string() + ".probe"));
+  for (const auto& e : fs::directory_iterator(tmp.path())) {
+    EXPECT_EQ(e.path().filename().string().rfind(".mss_bench_probe", 0), std::string::npos)
+        << "probe file left behind: " << e.path();
+  }
   EXPECT_FALSE(fs::exists(good.string() + ".tmp"));
+  EXPECT_EQ(read_file(good.string() + ".probe"), "mine");
 }
 
 TEST(BenchReplay, MissingOutIsUsageError) {
