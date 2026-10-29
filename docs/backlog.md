@@ -110,3 +110,4 @@ Each item names where its numbers live.
 | L11 | The Gazebo GUI screenshot is partly covered by the RViz window (no window manager control under WSLg); evidence only. | Minor |
 | L12 | `core/io` `DatasetMeta::body_frame` still defaults to `base_link`; the converter writes the bag's own frame, so no output changes, but the default no longer matches the rig name. | Minor |
 | L13 | PR size above the 400-line target (code, tests, launch and docs in one PR). | Minor |
+| L14 | With `headless:=false`, the `gz sim server` and `gz sim gui` processes outlived the launch shutdown (launch escalates SIGINT/SIGTERM to the `ruby gz` wrapper only); they kept running and held inherited file descriptors until killed by hand. `record_scenario.sh` has a `pkill` backstop; the live launch has none. | Important |
