@@ -2,7 +2,7 @@
 
     ros2 launch sim/launch/sim.launch.py scenario:=sim/scenarios/E-01.yaml \\
         [world:=<name>] [assets_dir:=results/sim-assets] [headless:=true] \\
-        [render_engine:=ogre2] [paused:=false] [driver:=true]
+        [render_engine:=ogre2] [paused:=false] [driver:=true] [raw_prefix:=]
 
 Starts the gz server (``ros_gz_sim``, ``-s -r --headless-rendering`` by default, gz seed = the
 scenario seed), spawns the generated robot (``tools/gen_sim_assets.py``) at the world's ``spawn``
@@ -13,6 +13,9 @@ the route driver (``python3 -m mss_sim.driver``). Every node uses sim time.
 ``paused:=true`` starts the server paused (no ``-r``) so a recorder can subscribe first;
 ``tools/record_scenario.sh`` then unpauses through the world control service. ``world``
 defaults to the scenario's world. Relative paths resolve against the current directory.
+``raw_prefix:=/sim/raw`` moves the raw sensor topics that share a name with the noisy ones
+(``RAW_SENSOR_TOPICS``) under that namespace, for the live noise node
+(``ros2_node/launch/mss_live.launch.py``); empty (default) keeps the recording names.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from launch_ros.substitutions import FindPackageShare
 
 REPO = Path(__file__).resolve().parents[2]
 SIM_TIME = {"use_sim_time": True}
+RAW_SENSOR_TOPICS = ("/lidar/points", "/imu/data", "/gnss/fix", "/joint_states")
 
 
 def _flag(context: LaunchContext, name: str) -> bool:
@@ -58,6 +62,8 @@ def _setup(context: LaunchContext) -> list:
     gz_args += ["--render-engine-server", engine, "--seed", str(int(sc["seed"])), str(world_sdf)]
 
     spawn = side["spawn"]
+    prefix = LaunchConfiguration("raw_prefix").perform(context).rstrip("/")
+    remaps = [(t, prefix + t) for t in RAW_SENSOR_TOPICS] if prefix else []
     actions: list = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -94,6 +100,7 @@ def _setup(context: LaunchContext) -> list:
             name="gz_bridge",
             output="screen",
             parameters=[{"config_file": str(assets / meta["bridge_yaml"]), **SIM_TIME}],
+            remappings=remaps,
         ),
     ]
     env_path = os.pathsep.join(
@@ -140,6 +147,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("render_engine", default_value="ogre2"),
             DeclareLaunchArgument("paused", default_value="false"),
             DeclareLaunchArgument("driver", default_value="true"),
+            DeclareLaunchArgument("raw_prefix", default_value="", description="e.g. /sim/raw"),
             OpaqueFunction(function=_setup),
         ]
     )
