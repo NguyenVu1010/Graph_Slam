@@ -293,9 +293,50 @@ mss_node:
       relax_factor: 10.0
 
     loop_closure:
+      # ADR-026, docs/derivations/loop_closure.md. Off by default until evaluated (CLAUDE.md).
+      # Runs at keyframe time on the estimator thread: radius search on the backend's
+      # optimised keyframe positions, Scan Context yaw, point-to-plane ICP against a submap of
+      # the candidate, acceptance gates, then a Cauchy-wrapped relative factor (ADR-021 form).
       enabled: false
-      search_radius_m: 10.0      # candidate keyframes within this distance, m
+      search_radius_m: 10.0      # candidate keyframes within this distance, m (drift beyond it is not found)
       min_time_gap_s: 30.0       # candidates must be at least this much older, s
+      max_candidates: 1          # candidates verified per keyframe, nearest first (>= 1)
+      min_interval_keyframes: 5  # keyframes skipped after an accepted loop (>= 0)
+      submap_keyframes: 2        # store neighbours on each side of the candidate in the submap
+      submap_max_voxels: 20000   # voxels reserved for the submap (memory bound)
+      # Scan Context (Kim & Kim 2018) in the gravity-levelled body frame: rings x sectors,
+      # value = max height + sc_height_offset_m, cells <= 0 empty. One sector = 360 / sc_sectors
+      # deg (6 deg at 60).
+      sc_rings: 20
+      sc_sectors: 60             # >= 4
+      sc_max_range_m: 40.0       # m, horizontal range of the descriptor
+      # m, > 0. Below the body height above the ground, so ground returns are empty and only
+      # structure counts (with ground in every cell all places look alike). Sim robot: body
+      # (IMU) on the wheel axle, 0.10 m above the ground.
+      sc_height_offset_m: 0.05
+      sc_max_distance: 0.4       # column-cosine distance gate in (0, 1]
+      # ICP verification: scan_match.* with these overrides (wider basin than tracking).
+      icp_max_iterations: 30
+      icp_max_corr_dist_m: 2.0   # m
+      # Acceptance after ICP: inlier = nearest submap point within inlier_dist_m and a plane
+      # through its map.knn_k neighbours; residual = distance to that plane.
+      inlier_dist_m: 0.5         # m (the stored clouds are spaced by map.keyframe_voxel_m)
+      min_inlier_ratio: 0.6      # in (0, 1]
+      max_rms_m: 0.08            # m, point-to-plane RMS of the inliers
+      # Smallest eigenvalue of the ICP Hessian (units of MatchResult::H); below it the loop is
+      # degenerate. Lower than degeneracy.eig_threshold (100, full scans): stored keyframe
+      # clouds hold fewer points (map.keyframe_voxel_m).
+      min_hessian_eig: 20.0
+      # Largest ICP correction of the query pose against its graph pose: drift the graph may
+      # have accumulated since the candidate. Larger: a symmetric false fit (a rectangular room
+      # matched 180 deg off), discarded. Drift beyond these is not closed (ADR-026).
+      max_correction_m: 3.0      # m
+      max_correction_deg: 30.0   # deg (radians in code)
+      # Floor of the loop covariance (C >= diag(floor^2) in the PSD sense); the ICP inverse
+      # Hessian alone is mm-level and would make a wrong loop rigid before the kernel acts.
+      cov_floor_m: 0.05          # m
+      cov_floor_deg: 1.0         # deg (radians in code)
+      isam_extra_updates: 2      # extra iSAM2 updates after the one that adds a loop (>= 0)
 
     backend:
       keyframe_dist_m: 1.0           # new keyframe after this translation, m (ADR-004)

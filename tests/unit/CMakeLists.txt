@@ -18,6 +18,7 @@ mss_add_test(test_gnss test_gnss_geodesy.cpp test_gnss_gate.cpp test_gnss_aligne
   alloc_counter_impl.cpp)
 target_include_directories(test_gnss PRIVATE ${CMAKE_SOURCE_DIR}/core/gnss/src)
 mss_add_test(test_scan_match test_scan_match.cpp)
+mss_add_test(test_loop test_loop_detector.cpp)
 target_include_directories(test_scan_match PRIVATE ${CMAKE_SOURCE_DIR}/core/scan_match/src)
 # backend API (both builds) and the no-GTSAM stub.
 mss_add_test(test_backend_api test_backend_api.cpp)

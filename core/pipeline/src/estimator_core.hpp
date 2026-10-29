@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "mss/backend/graph.hpp"
 #include "mss/common/scan_frame.hpp"
@@ -14,6 +15,7 @@
 #include "mss/imu/initializer.hpp"
 #include "mss/imu/preintegrator.hpp"
 #include "mss/imu/trajectory.hpp"
+#include "mss/loop/loop_detector.hpp"
 #include "mss/map/voxel_map.hpp"
 #include "mss/odom/wheel_integrator.hpp"
 #include "mss/pipeline/bounded_queue.hpp"
@@ -82,6 +84,8 @@ class CoreObserver {
   /// The gravity factor consistency check ran: its innovation statistic (NaN when unchecked)
   /// and the outcome.
   virtual void on_gravity_check(double /*chi2*/, GravityCheckOutcome /*outcome*/) {}
+  /// A loop-closure search ran for the keyframe at `t` (ADR-026; loop_closure.enabled).
+  virtual void on_loop_search(common::Timestamp /*t*/, const loop::LoopResult& /*result*/) {}
   /// Design 2b (only with gnss.align_yaw_from_track): the front-end heading of the scan at `t`
   /// was read from the body pose `T_w_b`; `heading_variation_rad` is the total absolute heading
   /// variation passed to the track-yaw turn gate so far, `travel_unobserved_scans` the count of
@@ -119,6 +123,9 @@ struct CoreTestHooks {
   /// the first GNSS alignment on is turned by this yaw (rad) about each fix
   /// (GnssFusion::set_first_alignment_yaw_offset).
   double gnss_first_align_yaw_offset_rad = 0.0;
+  /// ADR-026 failure path: every loop_closure.isam_extra_updates update after an accepted loop
+  /// reports a failure (the loop factor itself is already committed by the first update).
+  bool fail_loop_extra_updates = false;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).
@@ -158,6 +165,10 @@ struct CoreCounters {
   std::uint64_t n_gravity_factor_gated = 0;      ///< kf-0 gravity factor not added (rest gate)
   std::uint64_t n_gravity_factor_removed = 0;    ///< removed by the chi-square check (ADR-020)
   std::uint64_t n_gravity_factor_unchecked = 0;  ///< check not evaluated, factor kept (ADR-020)
+  // ADR-026 (loop_closure.enabled), see Estimator::Stats.
+  std::uint64_t n_loop_searches = 0;
+  std::uint64_t n_loops_accepted = 0;
+  std::uint64_t n_loops_rejected = 0;
   /// VoxelMap spacing replacements counted before the map's last clear() (rebuilds); the
   /// total is this plus VoxelMap::num_spacing_replaced().
   std::uint64_t n_map_spacing_replaced_cleared = 0;
@@ -233,8 +244,13 @@ class EstimatorCore {
                     common::PoseCovariance& cov_out);
   // Inserts the keyframe cloud (from pre_out_) at front_ into store, map and window.
   void insert_keyframe_cloud(common::KeyId id, common::Timestamp t);
-  // ADR-016 rebuild check after a successful optimize().
-  void maybe_rebuild_map();
+  // ADR-016 rebuild check after a successful optimize(); `force` (an accepted loop, ADR-026)
+  // rebuilds without comparing poses.
+  void maybe_rebuild_map(bool force);
+  // ADR-026: loop search for keyframe j (at t, already optimised and in the store). On an
+  // accepted loop: loop factor, optimize() (+ loop_closure.isam_extra_updates), then front_,
+  // ref_, kf_ and cov_out re-synced; returns true.
+  bool try_loop_closure(common::KeyId j, common::Timestamp t, common::PoseCovariance& cov_out);
   // ADR-020 consistency check of the gravity factor after keyframe `j` was optimised.
   void check_gravity_factor(common::KeyId j);
   // Prediction preintegrator restarted at front_ (bias) with the boundary sample.
@@ -260,6 +276,9 @@ class EstimatorCore {
   GnssFusion fusion_;
   KeyframeStore store_;
   MapWindow window_;
+  loop::LoopDetector loop_;
+  std::vector<loop::KeyframeView> loop_views_;  // reserved map.max_keyframes when enabled
+  int loop_skip_ = 0;  // keyframes left to skip after an accepted loop (min_interval_keyframes)
 
   ImuBuffer imu_;
   std::unique_ptr<std::array<common::ImuSample, kMaxImuQueue>> init_window_;

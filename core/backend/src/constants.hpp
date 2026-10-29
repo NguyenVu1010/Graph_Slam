@@ -5,8 +5,8 @@
 namespace mss::backend::detail {
 
 // Robust kernel width for loop factors (backend_factors.md section 5, ADR-015):
-// sqrt(chi2_6(0.95)) = sqrt(12.5916), in whitened (Mahalanobis) units. A
-// backend.loop_cauchy_k YAML key comes with the loop module.
+// sqrt(chi2_6(0.95)) = sqrt(12.5916), in whitened (Mahalanobis) units. A quantile, not a
+// tunable, so no YAML key (ADR-026 decision 3).
 inline constexpr double kLoopCauchyK = 3.5485;
 
 // Gravity-factor consistency check (backend_factors.md section 6c, ADR-020): smallest

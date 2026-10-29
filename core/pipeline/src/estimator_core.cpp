@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -92,6 +93,11 @@ EstimatorCore::EstimatorCore(const Config& cfg)
       fusion_(cfg.gnss, cfg.frames.p_b_g, cfg.frames.T_b_o),
       store_(cfg.map.max_keyframes),
       window_(static_cast<std::size_t>(cfg.map.window_keyframes)),
+      loop_(cfg.loop_closure,
+            cfg.scan_match,
+            cfg.map,
+            cfg.frames.T_b_l,
+            cfg.realtime.max_points_per_scan),
       init_window_(std::make_unique<std::array<common::ImuSample, kMaxImuQueue>>()),
       traj_(std::make_unique<imu::ImuTrajectory>()),
       gnss_out_(std::make_unique<std::array<common::GnssMeasurement, kMaxAuxQueue>>()),
@@ -100,6 +106,9 @@ EstimatorCore::EstimatorCore(const Config& cfg)
                      : nullptr),
       pre_out_(cfg.realtime.max_points_per_scan),
       kf_cloud_(cfg.realtime.max_points_per_scan) {
+  if (cfg.loop_closure.enabled) {
+    loop_views_.reserve(cfg.map.max_keyframes);
+  }
   hooks_ = g_test_hooks;
   if (g_test_hooks != nullptr) {
     if (g_test_hooks->force_T_e_w) {
@@ -699,8 +708,100 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   ++counters_.n_keyframes;
   insert_keyframe_cloud(j, t);
   if (optimised) {
-    maybe_rebuild_map();
+    const bool loop_added = cfg_.loop_closure.enabled && try_loop_closure(j, t, cov_out);
+    maybe_rebuild_map(loop_added);
   }
+}
+
+bool EstimatorCore::try_loop_closure(common::KeyId j,
+                                     common::Timestamp t,
+                                     common::PoseCovariance& cov_out) {
+  if (loop_skip_ > 0) {
+    --loop_skip_;
+    return false;
+  }
+  // Views of the stored keyframes at the optimised poses of the backend (no cloud copied).
+  loop_views_.clear();
+  for (std::size_t i = 0; i < store_.size(); ++i) {
+    const KeyframeEntry& e = store_.at(i);
+    const common::Result<common::NavState> s = graph_.keyframe_state(e.id);
+    if (!s.is_ok()) {
+      continue;
+    }
+    loop::KeyframeView v;
+    v.id = e.id;
+    v.t = e.t;
+    v.T_w_b = s.value().T_w_b;
+    v.cloud_l = &e.cloud_l;
+    loop_views_.push_back(v);
+  }
+  if (loop_views_.empty() || loop_views_.back().id != j) {
+    return false;  // stub backend, or keyframe j has no pose: nothing to search with
+  }
+  ++counters_.n_loop_searches;
+  const loop::LoopResult r =
+      loop_.detect(loop_views_.back(), common::Span<const loop::KeyframeView>(loop_views_));
+  if (observer() != nullptr) {
+    observer()->on_loop_search(t, r);
+  }
+  if (r.outcome != loop::LoopOutcome::kAccepted) {
+    counters_.n_loops_rejected += r.n_verified > 0 ? 1U : 0U;
+    return false;
+  }
+  graph_.add_loop_factor(r.constraint);
+  common::Result<common::Estimate> opt = graph_.optimize();
+  if (!opt.is_ok()) {
+    log_backend_failure(opt.reason());  // the pending loop factor was dropped with the update
+    return false;
+  }
+  // The loop factor is committed from here on: whatever the extra updates do, the loop counts,
+  // the front end re-syncs and the next keyframes skip the search (no duplicate loop). A
+  // failed extra update leaves the graph at the estimate of the last good update (graph.hpp),
+  // which `opt` holds.
+  for (int k = 0; k < cfg_.loop_closure.isam_extra_updates; ++k) {
+    const common::Result<common::Estimate> more =
+        (hooks_ != nullptr && hooks_->fail_loop_extra_updates)  // test-only seam
+            ? common::Result<common::Estimate>::error("test: injected extra-update failure")
+            : graph_.optimize();
+    if (!more.is_ok()) {
+      log_backend_failure(more.reason());
+      break;
+    }
+    opt = more;
+  }
+  ++counters_.n_loops_accepted;
+  {
+    // One line per accepted loop (off the hot path), parsed by the E-07 evaluation: the two
+    // keyframes with their times and the measured T_bi_bj (translation in b_i, yaw).
+    const common::Pose& Z = r.constraint.T_bi_bj;
+    char buf[256];
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "loop closure accepted: j %llu t_ns %lld i %llu t_ns %lld dp_m %.4f %.4f %.4f "
+                  "dyaw_rad %.5f",
+                  static_cast<unsigned long long>(r.constraint.j),
+                  static_cast<long long>(t.ns),
+                  static_cast<unsigned long long>(r.constraint.i),
+                  static_cast<long long>(r.candidate_t.ns),
+                  Z.p.x(),
+                  Z.p.y(),
+                  Z.p.z(),
+                  std::atan2(Z.R(1, 0), Z.R(0, 0)));
+    common::log_info(buf);
+  }
+  if (hooks_ == nullptr || !hooks_->frontend_keeps_own_state) {  // test-only seam
+    front_ = opt.value().state;
+    front_.t = t;
+  }
+  cov_out = opt.value().cov;
+  kf_.reset(front_.bias);
+  (void)kf_.integrate(boundary_);
+  ref_ = front_.T_w_b;
+  if (early_out_ != nullptr) {
+    fusion_.set_keyframe_reference(j, t, ref_);  // ADR-022: target of backward shifts
+  }
+  loop_skip_ = cfg_.loop_closure.min_interval_keyframes;
+  return true;
 }
 
 void EstimatorCore::check_gravity_factor(common::KeyId j) {
@@ -750,16 +851,16 @@ void EstimatorCore::insert_keyframe_cloud(common::KeyId id, common::Timestamp t)
   }
 }
 
-void EstimatorCore::maybe_rebuild_map() {
+void EstimatorCore::maybe_rebuild_map(bool force) {
   if (window_.size() == 0) {
     return;
   }
   const WindowEntry& oldest = window_.at(0);
   const common::Result<common::NavState> st = graph_.keyframe_state(oldest.id);
-  if (!st.is_ok() || !pose_moved(oldest.T_w_b_inserted,
-                                 st.value().T_w_b,
-                                 cfg_.map.rebuild_trans_m,
-                                 cfg_.map.rebuild_rot_rad)) {
+  if (!force && (!st.is_ok() || !pose_moved(oldest.T_w_b_inserted,
+                                            st.value().T_w_b,
+                                            cfg_.map.rebuild_trans_m,
+                                            cfg_.map.rebuild_rot_rad))) {
     return;
   }
   counters_.n_map_spacing_replaced_cleared += map_.num_spacing_replaced();

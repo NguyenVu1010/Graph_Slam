@@ -98,6 +98,13 @@ class Estimator {
     /// keyframe-0 gravity factor kept without a check: the innovation statistic could not be
     /// evaluated (innovation covariance not positive definite, or no estimate) (ADR-020)
     std::uint64_t n_gravity_factor_unchecked = 0;
+    /// Loop closure (ADR-026, loop_closure.enabled; all 0 when off): keyframes searched;
+    /// loops verified and added to the graph; searches whose verified candidate failed the
+    /// ICP acceptance gates (a candidate that failed only the Scan Context gate is not
+    /// counted).
+    std::uint64_t n_loop_searches = 0;
+    std::uint64_t n_loops_accepted = 0;
+    std::uint64_t n_loops_rejected = 0;
     std::uint64_t n_map_points = 0;  ///< points in the VoxelMap cache now (ADR-007)
     /// map points refreshed in place by map.min_point_dist_m since construction (summed
     /// over map rebuilds; ADR-007 amendment)
