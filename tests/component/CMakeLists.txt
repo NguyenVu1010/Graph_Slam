@@ -53,3 +53,10 @@ mss_add_test(test_map_export_component test_map_export_component.cpp)
 target_include_directories(test_map_export_component PRIVATE ${CMAKE_SOURCE_DIR}/core/pipeline/src)
 target_compile_definitions(test_map_export_component PRIVATE
   MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)
+
+# loop: loop closure end to end (ADR-026): Graph + LoopDetector two-lap drift, Estimator box world.
+mss_add_test(test_loop_component test_loop_component.cpp)
+target_include_directories(test_loop_component PRIVATE
+  ${CMAKE_SOURCE_DIR}/core/pipeline/src ${CMAKE_SOURCE_DIR}/tests/unit)
+target_compile_definitions(test_loop_component PRIVATE
+  MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)
