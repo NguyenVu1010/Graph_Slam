@@ -1,7 +1,9 @@
-"""Launch mss_node with the shared config/default.yaml.
+"""Launch mss_node with the shared config/default.yaml (live sensors, wall clock).
 
 The YAML is read by the core config loader (ADR-008), so the node gets only its path as the
-string parameter `config_path`; override it with `config:=<file>`.
+string parameter `config_path`; override it with `config:=<file>` and add an overlay with
+`overlay:=<file>`. Topics, frames and rates are ROS parameters of the node (ADR-024). To play a
+bag instead, use mss_bag.launch.py.
 """
 
 from pathlib import Path
@@ -19,13 +21,19 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument("config", default_value=default_cfg),
+            DeclareLaunchArgument("overlay", default_value=""),
             Node(
                 package="mss_ros2",
                 executable="mss_node",
                 name="mss_node",
                 output="screen",
                 emulate_tty=True,
-                parameters=[{"config_path": LaunchConfiguration("config")}],
+                parameters=[
+                    {
+                        "config_path": LaunchConfiguration("config"),
+                        "config_overlay": LaunchConfiguration("overlay"),
+                    }
+                ],
             ),
         ]
     )
