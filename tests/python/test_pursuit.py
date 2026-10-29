@@ -118,7 +118,7 @@ def test_limits_from_robot_yaml() -> None:
     assert Limits.from_robot(gsa.load_robot()) == LIMITS
 
 
-@pytest.mark.parametrize("scenario", ["E-01", "E-04"])
+@pytest.mark.parametrize("scenario", ["E-01", "E-04", "E-07"])
 def test_scenario_routes_start_at_spawn_inside_world_and_finish(scenario: str) -> None:
     sc = load_scenario(REPO / f"sim/scenarios/{scenario}.yaml")
     assert sc.route is not None
@@ -138,7 +138,7 @@ MIN_CLEARANCE_M = 0.5
 ROBOT_HEIGHT_M = 0.75  # LiDAR top above the floor; boxes above this cannot be hit
 
 
-@pytest.mark.parametrize("scenario", ["E-01", "E-04"])
+@pytest.mark.parametrize("scenario", ["E-01", "E-04", "E-07"])
 def test_routes_keep_clearance(scenario: str) -> None:
     """Every point of the route polyline keeps >= 0.5 m between the robot's collision footprint
     (+-0.30 m) and every world box that reaches the robot's height."""

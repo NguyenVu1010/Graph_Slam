@@ -1,0 +1,22 @@
+# E-07: long loop for loop closure (Test_CI_CD.md E-07, ADR-026): the warehouse lap driven
+# three times. The pipeline config turns GNSS off (config/sim/warehouse_e07.yaml), so the
+# drift that loop closure must remove is not hidden by GNSS.
+id: E-07
+world: warehouse
+profile: sim/noise/default.yaml
+pipeline_config: config/sim/warehouse_e07.yaml
+trajectory: sim/trajectories/warehouse_3laps.yaml
+seed: 42
+duration_s: 170
+origin_lla: [21.0278, 105.8342, 12.0]  # lat_deg, lon_deg, alt_m
+gnss:
+  - {mode: nominal, t_start_s: 0, t_end_s: 170}
+gnss_zones: []
+topics:
+  - /lidar/points
+  - /imu/data
+  - /gnss/fix
+  - /wheel/odom
+  - /ground_truth
+  - /tf_static
+  - /clock

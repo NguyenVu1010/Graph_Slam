@@ -533,8 +533,35 @@ Config read_config(Reader& r) {
   r.field("degeneracy.relax_factor", c.degeneracy.relax_factor, Range::kAtLeastOne);
 
   r.field("loop_closure.enabled", c.loop_closure.enabled);
-  r.field("loop_closure.search_radius_m", c.loop_closure.search_radius_m);
-  r.field("loop_closure.min_time_gap_s", c.loop_closure.min_time_gap_s);
+  // ADR-026. Ranges are checked whether or not the flag is on (the shipped values pass).
+  r.field("loop_closure.search_radius_m", c.loop_closure.search_radius_m, Range::kPositive);
+  r.field("loop_closure.min_time_gap_s", c.loop_closure.min_time_gap_s, Range::kNonNegative);
+  r.field("loop_closure.max_candidates", c.loop_closure.max_candidates, Range::kAtLeastOne);
+  r.field("loop_closure.min_interval_keyframes",
+          c.loop_closure.min_interval_keyframes,
+          Range::kNonNegative);
+  r.field("loop_closure.submap_keyframes", c.loop_closure.submap_keyframes, Range::kNonNegative);
+  r.field("loop_closure.submap_max_voxels", c.loop_closure.submap_max_voxels, Range::kPositive);
+  r.field("loop_closure.sc_rings", c.loop_closure.sc_rings, Range::kAtLeastOne);
+  if (r.field("loop_closure.sc_sectors", c.loop_closure.sc_sectors)) {
+    r.check("loop_closure.sc_sectors", c.loop_closure.sc_sectors >= 4, "must be >= 4");
+  }
+  r.field("loop_closure.sc_max_range_m", c.loop_closure.sc_max_range_m, Range::kPositive);
+  r.field("loop_closure.sc_height_offset_m", c.loop_closure.sc_height_offset_m, Range::kPositive);
+  r.field("loop_closure.sc_max_distance", c.loop_closure.sc_max_distance, Range::kUnitOpenClosed);
+  r.field("loop_closure.icp_max_iterations", c.loop_closure.icp_max_iterations, Range::kPositive);
+  r.field("loop_closure.icp_max_corr_dist_m", c.loop_closure.icp_max_corr_dist_m, Range::kPositive);
+  r.field("loop_closure.inlier_dist_m", c.loop_closure.inlier_dist_m, Range::kPositive);
+  r.field("loop_closure.min_inlier_ratio", c.loop_closure.min_inlier_ratio, Range::kUnitOpenClosed);
+  r.field("loop_closure.max_rms_m", c.loop_closure.max_rms_m, Range::kPositive);
+  r.field("loop_closure.min_hessian_eig", c.loop_closure.min_hessian_eig, Range::kPositive);
+  r.field("loop_closure.cov_floor_m", c.loop_closure.cov_floor_m, Range::kPositive);
+  r.angle_deg("loop_closure.cov_floor_deg", c.loop_closure.cov_floor_rad, Range::kPositive);
+  r.field("loop_closure.max_correction_m", c.loop_closure.max_correction_m, Range::kPositive);
+  r.angle_deg(
+      "loop_closure.max_correction_deg", c.loop_closure.max_correction_rad, Range::kPositive);
+  r.field(
+      "loop_closure.isam_extra_updates", c.loop_closure.isam_extra_updates, Range::kNonNegative);
 
   r.field("backend.keyframe_dist_m", c.backend.keyframe_dist_m, Range::kPositive);
   r.angle_deg("backend.keyframe_rot_deg", c.backend.keyframe_rot_rad);

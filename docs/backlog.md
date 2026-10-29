@@ -123,3 +123,32 @@ Each item names where its numbers live.
 | L19 | Review m-2: ground-truth gaps are not counted. The GT subscription is best effort; a lost sample widens an interpolation interval for skew without any counter. Count GT gaps above two periods. | Minor |
 | L20 | Review m-3: the `sim/README.md` live command lost its line continuation. Fixed in the fix round. | Minor |
 | L21 | Review m-4: `live_start` waits for subscribers on the noisy and raw topics but not on `/ground_truth` for the noise node; it works because the noise node subscribes in its constructor. A lazy GT subscription would lose the first samples and shift `t0`. | Minor |
+
+## Loop closure (C1)
+
+ADR-026, `docs/derivations/loop_closure.md`; numbers in the C1 PR description.
+
+| # | Item | Severity |
+|---|------|----------|
+| C1-1 | No global place search: a revisit is found only when the drift leaves the true place within `search_radius_m` (10 m) of the estimate, and closed only when the correction is within `max_correction_m` / `max_correction_deg` (3 m, 30°). Add a Scan Context ring-key search over the store (with its own false-loop evaluation) before long outdoor routes. | Important |
+| C1-2 | The acceptance thresholds (`sc_max_distance` 0.4, `min_inlier_ratio` 0.6, `max_rms_m` 0.08, `min_hessian_eig` 20, correction gates) come from the synthetic box world, the pillar hall of the unit tests and one Gazebo warehouse bag (E-07, seed 42). Evaluate precision and recall over several seeds and worlds (S2 outdoor/loop worlds) and on real data. | Important |
+| C1-3 | The loop covariance floor (0.05 m, 1°) is chosen, not calibrated: measure the loop factor NEES against ground truth (lessons §1.5) and set the floor from it. | Important |
+| C1-4 | E-07 on the Gazebo warehouse shows almost no drift to remove (horizontal end-to-start 4 cm over 72 m with loops off; the 8 cm ATE is the known vertical offset, S2). A world or route where the front end drifts by decimetres is needed to show the effect on a recording (the two-lap drift component test shows it on synthetic data: 1.21 m to 0.08 m). | Important |
+| C1-5 | Loop detection runs on the estimator thread at keyframe time (ADR-026 decision 4). Pi 5 cost not measured; when the ADR-005 threads land, move it to the loop thread (input `KeyframeView`s, output `LoopConstraint`) with the store and graph locking that needs. | Important |
+| C1-6 | `sc_height_offset_m` (0.05 m) depends on the body height above the ground (sim robot: 0.10 m). The handheld variant (platform backlog) needs its own value, or a ground estimate from the static window. | Minor |
+| C1-7 | Each accepted loop forces a `VoxelMap` rebuild (ADR-016, about 35 ms at 50 keyframes on the desktop) and `isam_extra_updates` iSAM2 updates; `min_interval_keyframes` (5) bounds how often. Partial rebuild (only moved keyframes) is the ADR-016 open item. | Minor |
+| C1-8 | Only the nearest candidate is verified (`max_candidates` 1); a near candidate that fails the Scan Context gate hides a farther good one until the next keyframe. | Minor |
+| C1-9 | The stub (no-GTSAM) build has no keyframe poses, so loop closure is a no-op there by construction (documented, tested). | Minor |
+| C1-10 | The loop log line (`loop closure accepted: ...`) is the only per-loop output; the E-07 false-loop check parses it. A structured loop list in `bench.json` (and a `/mss/loops` marker topic in the node) would be cleaner. | Minor |
+| C1-11 | Live run with loops on (`mss_live.launch.py`, PR #41) and an RViz screenshot were not done in this PR. | Minor |
+| C1-12 | Review I-1: aliasing in repeated structure. Above half the period (P = 2 m: drift > 1 m) a false loop passes every gate and drags a loose chain 0.34–0.64 m (`LoopKnownLimits.PeriodicStructureAliasingAboveHalfPeriod`). Fix: a correction gate from the graph's relative covariance of (i, j) (Mahalanobis on the joint marginal) instead of the fixed 3 m / 30°, plus a second-best-fit check (second ICP basin or Scan Context second-best ratio). | Important |
+| C1-13 | Review I-2: Cauchy with the 5 cm / 1° floor applies only 3–13 % of a true 0.5–2 m correction (stiff chain 10 / 3 / 1 % at 0.5 / 1 / 2 m, loose chain 13 % at 2 m; `LoopKnownLimits.RobustKernelAppliesLittleOfLargeCorrections`): loops close only while drift is small. Recalibrate kernel and floor (NEES, C1-3), gate first (C1-12) then a wider kernel or switchable constraints / GNC; add a component test with one late loop and > 0.5 m drift. | Important |
+| C1-14 | Review I-3: E-07 is not met on Gazebo (end-to-start 0.078 m off, 0.081 m on). Re-record the E-07 bag after #41 (body frame `imu_link`; this bag was recorded at e5e8320) on a scene with real drift (C1-4), before quoting numbers as E-07. | Important |
+| C1-15 | Review I-5: report max / p99 scan latency with the flag on (an accepted loop adds 2 iSAM2 updates with marginals and a forced rebuild, about 35 ms) and the Pi 5 numbers before enabling the flag (C1-5). | Important |
+| C1-16 | Review m-1: the correction gate checks position and yaw only; a converged result with a large roll / pitch error is caught only by fitness. | Minor |
+| C1-17 | Review m-2: `load_config` range-checks `loop_closure.*` with the flag off, so a config that loaded on main (e.g. `search_radius_m: 0`, `enabled: false`) now fails; `config.hpp` says "validated only when enabled", contradicting `config.cpp`. Pick one. | Minor |
+| C1-18 | Review m-3: `detect()` says "Allocation: none", but the candidate buffer grows with the store on the first calls after it grows (0 on a warm call). Fix the comment. | Minor |
+| C1-19 | Review m-4: `min_hessian_eig` compares the smallest eigenvalue of a mixed-unit `[rho, phi]` Hessian (same convention as `degeneracy.eig_threshold`); note the scale dependence in the YAML comment. | Minor |
+| C1-20 | Review m-5: = C1-8 (one nearest candidate hides a farther good one). | Minor |
+| C1-21 | Review m-6: the PR is about 2000 lines against the 400-line guideline (split into two commits per the brief; reviewed as one squash). | Minor |
+| C1-22 | Review m-7: `scan_context_distance` is O(S² R), 72k multiply-adds per candidate; use the ring-key / FFT variant if `max_candidates` grows. | Minor |

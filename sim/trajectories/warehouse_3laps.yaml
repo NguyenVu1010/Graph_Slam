@@ -1,0 +1,19 @@
+# E-07 route in sim/worlds/warehouse.sdf (loop closure, ADR-026): the E-01 rectangle
+# (warehouse_lap_60s.yaml, 24 m, aisle south of the shelf run) driven three times, starting and
+# ending at the spawn pose. About 155 s with the 5 s still start. Same schema.
+waypoints:
+  - [-8.0, 0.8]
+  - [2.0, 0.8]
+  - [2.0, -1.2]
+  - [-8.0, -1.2]
+  - [-8.0, 0.8]
+  - [2.0, 0.8]
+  - [2.0, -1.2]
+  - [-8.0, -1.2]
+  - [-8.0, 0.8]
+  - [2.0, 0.8]
+  - [2.0, -1.2]
+  - [-8.0, -1.2]
+  - [-8.0, 0.8]
+speed_mps: 0.5
+lookahead_m: 1.0
