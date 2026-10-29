@@ -402,7 +402,8 @@ sigma (median 26 deg off), with or without wheel data, in design 2 as well. The 
 passes, with each fix, the total absolute heading variation of the front end (the sum of
 `|heading change|` of the travel axis `x_o` scan to scan, about 10 Hz; `EstimatorCore`, only with
 `align_yaw_from_track`; read from `x_o`, not `x_b`, so that an IMU mounted with its x axis near
-vertical does not feed attitude noise into the gate, fix round 3). Per step the aligner takes its difference since the last fix it added,
+vertical does not feed attitude noise into the gate, fix round 3; the wiring is tested by
+`PipelineComponent.TrackYawHeadingVariationUsesTheTravelAxis`, fix round 4). Per step the aligner takes its difference since the last fix it added,
 at least the net change (the net change alone when no reading exists); it sums the steps per
 chunk half, and the turn gate uses the larger of the net change between the chunk centres and the
 total variation of the steps between them (for a constant arc the two are equal, so nothing
@@ -512,8 +513,9 @@ probe on the review seeds for the window length):
 | 15 m | 4 | 14.9 / 14.9 / 15.9 m | 0.75 to 1.12 |
 
 At 0.05 and 0.10 m per fix of drift no run aligns while stuck at any length. 10 m is the shortest
-window whose stuck-wheel rate is at its floor (4 of 100 on the probe seeds, 2 of 100 on the test
-seeds); without the stuck phase the robot aligns after 4.9 m as before. The cost: a slow robot
+window whose stuck-wheel rate is at its floor (at 0.20 m per fix, 1 to 7 of 100 depending on the
+seed set: 2 in `StuckWheelsDriftingGnssEnvelope`, 4 in the window-length probe above, 6 in the
+re-review 3 probe); without the stuck phase the robot aligns after 4.9 m as before. The cost: a slow robot
 in strong coloured error (0.12 m/s, 0.05 m per fix) waits instead of aligning in 6 of 200 runs
 within 5 min. An odometer that over-reads by 2x or more mismatches at every chunk and never
 aligns; the mismatch counter shows it.
@@ -536,7 +538,7 @@ whose wheels stop is caught by the odometer at any minimum (every segment statio
 0.05, 0.10 and 0.20 m per fix). Coloured error is in none of the gates' models: the minimum
 track, the coherence test and the consistency window only bound its tails, as the table shows.
 (The stuck-wheel column is from before the consistency window of fix round 2, which brings it to
-4 of 100.)
+1 to 7 of 100 depending on the seed set.)
 
 **Front-end displacement where the LiDAR is not degenerate: not used.** Measured on the corridor
 (study section 16.4): with degeneracy detection off (the shipped default) the scan matcher's

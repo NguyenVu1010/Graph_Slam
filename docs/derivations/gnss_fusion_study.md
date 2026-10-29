@@ -1061,8 +1061,9 @@ Wheels turning at 0.5 m/s on a still body (stuck, lifted), 0.3 m white plus a ra
 | 0.10 m | 21 (median 78 deg off) | 0 | 0 | 0 |
 | 0.20 m | 64 (median 91 deg off) | 37 | 16 (unit-test seeds: 19) | 7 |
 
-(Fix round 2 replaced the consistency test by a window, section 16.10: 4 of 100 at 0.20 m per
-fix on the probe seeds, 2 of 100 on the test seeds.) Design 2 without wheel data aligns a parked
+(Fix round 2 replaced the consistency test by a window, section 16.10: at 0.20 m per fix 1 to 7
+of 100 depending on the seed set; 2 in `StuckWheelsDriftingGnssEnvelope`, 4 in the window-length
+probe, 6 in the re-review 3 probe.) Design 2 without wheel data aligns a parked
 robot at 0.20 m per fix on 16 of 100 (its unit-test seeds; 27 of 100 on the design-2 review
 probe's). A parked robot
 whose wheels stop never aligns at any minimum (every segment stationary). NEES is not the
@@ -1275,3 +1276,23 @@ Re-runs after fix round 3:
 - **E-01..E-03, flag off:** `est.tum` md5 equal to main 99bd5fd.
 - **E-01..E-03, flag on:** unchanged from section 16.10 (24 s / 9 m, 0.8 deg with a 5.6 deg
   sigma, 170 factors, ATE 0.002196 m, no wheel mismatch).
+
+### 16.12 Fix round 4 of the review
+
+- **R3-1:** the reading of the turn gate from `x_o` inside `EstimatorCore` had no test. Setting
+  `track_heading()` back to `x_b` passed every test, because no pipeline test ran the flag with a
+  tilted `R_b_o`.
+  - Option chosen: the reviewer's cheaper one, a test seam. `CoreObserver::on_track_heading`
+    reports each heading reading (the body pose read and the running sum).
+  - A full scene with a near-vertical IMU x axis would need the box-world generator (IMU, LiDAR,
+    wheel and GNSS models) rewritten for a rotated mount, so it was not built.
+  - New test `PipelineComponent.TrackYawHeadingVariationUsesTheTravelAxis`. It runs the
+    box-world circle with GNSS and the flag on, and with `T_b_o` pitched by 90 deg
+    (`x_o = -z_b`). Wheel odometry is off, because the simulated wheels move along `x_b`.
+  - The sum the pipeline passes equals the `x_o` sum of the poses it read: 67.37 rad over 179
+    scans without GTSAM and 110.17 rad with it. The `x_b` sum is 3.98 rad in both builds.
+  - With the wiring mutant the pipeline passes the `x_b` sum and the test fails. The test runs
+    in both builds.
+- **Nit:** the stuck-wheel rate at 0.20 m per fix now names its seed sets. It is 1 to 7 of 100:
+  2 in `StuckWheelsDriftingGnssEnvelope`, 4 in the window-length probe (16.10), 6 in the
+  re-review 3 probe.

@@ -81,6 +81,12 @@ class CoreObserver {
   /// The gravity factor consistency check ran: its innovation statistic (NaN when unchecked)
   /// and the outcome.
   virtual void on_gravity_check(double /*chi2*/, GravityCheckOutcome /*outcome*/) {}
+  /// Design 2b (only with gnss.align_yaw_from_track): the front-end heading of the scan at `t`
+  /// was read from the body pose `T_w_b`; `heading_variation_rad` is the total absolute heading
+  /// variation passed to the track-yaw turn gate so far.
+  virtual void on_track_heading(common::Timestamp /*t*/,
+                                const common::Pose& /*T_w_b*/,
+                                double /*heading_variation_rad*/) {}
 };
 
 /// Test-only seam (studies): `observer` receives the factor events; with `force_T_e_w` the

@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <Eigen/Eigenvalues>
+#include <Eigen/Geometry>
 #include <gtest/gtest.h>
 
 #include "mss/common/lie.hpp"
@@ -1779,6 +1780,68 @@ TEST(PipelineComponent, TrackYawConvergesFromEighteenDegrees) {
       EXPECT_GE(10 * rr.stats.n_gnss_factors, 9 * factors_ref) << offset_deg;
     }
   }
+}
+
+// Records the heading readings of the track-yaw turn gate (CoreObserver::on_track_heading).
+class TrackHeadingObserver : public detail::CoreObserver {
+ public:
+  void on_track_heading(Timestamp /*t*/,
+                        const common::Pose& T_w_b,
+                        double heading_variation_rad) override {
+    R_w_b_.push_back(T_w_b.R);
+    sum_rad_.push_back(heading_variation_rad);
+  }
+  std::vector<common::Mat3> R_w_b_;
+  std::vector<double> sum_rad_;
+};
+
+// Total absolute heading variation of the horizontal projection of R_w_b * x_axis_b, scan to scan.
+double heading_variation_of(const std::vector<common::Mat3>& R_w_b, const Vec3& x_axis_b) {
+  double sum_rad = 0.0;
+  for (std::size_t k = 1; k < R_w_b.size(); ++k) {
+    const Vec3 a = R_w_b[k - 1] * x_axis_b;
+    const Vec3 b = R_w_b[k] * x_axis_b;
+    sum_rad += std::abs(
+        std::remainder(std::atan2(b.y(), b.x()) - std::atan2(a.y(), a.x()), 2.0 * test::kBoxPi));
+  }
+  return sum_rad;
+}
+
+// Review R3-1 of design 2b: EstimatorCore reads the heading variation of the turn gate from the
+// travel axis x_o = R_w_b R_b_o x, not from the body x axis. A wheel-odometry frame pitched by
+// 90 deg (x_o along -z_b) makes the two readings differ: on the level box-world circle the x_b
+// heading turns smoothly, the x_o heading is the direction of the small attitude error and jumps
+// from scan to scan. Wheel odometry stays off (the simulated wheels move along x_b); the gate
+// reading does not depend on it. The sum the pipeline passes at each scan equals the x_o sum of
+// the poses it was read from, and differs from the x_b sum.
+TEST(PipelineComponent, TrackYawHeadingVariationUsesTheTravelAxis) {
+  BoxWorldParams p;
+  p.seed = 42;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  Config cfg = box_config(p, true, false, dir / "run", "", "      align_yaw_from_track: true\n");
+  // Wheel-odometry frame pitched by +90 deg about y_b: x_o = -z_b.
+  cfg.frames.T_b_o.R = Eigen::AngleAxisd(0.5 * test::kBoxPi, Vec3::UnitY()).toRotationMatrix();
+  TrackHeadingObserver obs;
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  {
+    const HooksScope scope(&hooks);
+    (void)replay(dir / "data", cfg);
+  }
+  ASSERT_GT(obs.sum_rad_.size(), 100U);
+  const Vec3 x_o_b = cfg.frames.T_b_o.R.col(0);
+  const double sum_x_o_rad = heading_variation_of(obs.R_w_b_, x_o_b);
+  const double sum_x_b_rad = heading_variation_of(obs.R_w_b_, Vec3::UnitX());
+  std::printf(
+      "[ track yaw 2b ] heading variation over %zu scans: pipeline %.4f rad, x_o %.4f rad, "
+      "x_b %.4f rad\n",
+      obs.sum_rad_.size(),
+      obs.sum_rad_.back(),
+      sum_x_o_rad,
+      sum_x_b_rad);
+  EXPECT_NEAR(obs.sum_rad_.back(), sum_x_o_rad, 1e-9 * (1.0 + sum_x_o_rad));
+  EXPECT_GT(std::abs(sum_x_o_rad - sum_x_b_rad), 1.0);  // the scene tells the two axes apart
 }
 
 }  // namespace

@@ -525,6 +525,9 @@ void EstimatorCore::track_heading() {
   }
   have_scan_heading_ = true;
   last_scan_heading_rad_ = heading_rad;
+  if (observer() != nullptr) {
+    observer()->on_track_heading(front_.t, front_.T_w_b, heading_variation_rad_);
+  }
 }
 
 void EstimatorCore::first_keyframe(common::Timestamp t, const common::NavState& predicted) {

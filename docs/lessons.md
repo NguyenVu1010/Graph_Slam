@@ -335,8 +335,8 @@ Format of an entry: **symptom** → cause → fix → rule.
     lifted), so "the odometer detects a parked robot" is only true when the wheels stop too. A
     zero minimum aligned such a robot on GNSS drift (64 of 100 at 0.2 m per fix, about 90 deg
     off). Comparing the GNSS track with the wheel travel over a window since the last mismatch,
-    and replacing all segments only after 10 m of agreeing travel, brings it to 2 of 100 (test
-    seeds; 4 of 100 on the review probe's seeds), and the alignment after the wheels spun waits
+    and replacing all segments only after 10 m of agreeing travel, brings it to 1 to 7 of 100
+    depending on the seed set, and the alignment after the wheels spun waits
     about 10 m instead of the spun distance (300 s of spinning: 150 m). The 3 m minimum was
     chosen from the absolute-error tails at 6 deg, not from NEES, which a larger sigma lowers
     while the tails grow.
