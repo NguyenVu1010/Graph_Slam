@@ -346,7 +346,7 @@ class AlignObserver : public detail::CoreObserver {
 // end's along-axis velocity changes sign before the alignment). With the flag the yaw is taken
 // from the GNSS track against the heading: within 10 deg (brief), and within 3 times the
 // predicted sigma at the first alignment. Negative control: off, both are above 90 deg (the
-// flag-off path is the unchanged previous code).
+// flag-off path is the unchanged previous code), far beyond GnssAligner's own sigma.
 TEST(PipelineComponent, TrackYawAlignsCorridorFlipSeeds) {
   if (!kWithGtsam) {
     GTEST_SKIP() << "the front end follows the backend; measured with GTSAM";
@@ -387,7 +387,9 @@ TEST(PipelineComponent, TrackYawAlignsCorridorFlipSeeds) {
         EXPECT_LT(err_deg, 3.0 * obs.sigma_rad_ * kRadToDeg) << "seed " << seed;
       } else {
         EXPECT_GT(err_deg, 90.0) << "seed " << seed;
-        EXPECT_TRUE(std::isnan(obs.sigma_rad_));
+        // Backlog G1: GnssAligner's sigma takes the dead-reckoned front end as exact, so it does
+        // not see the flip (gnss.md section 4.1, limits).
+        EXPECT_LT(3.0 * obs.sigma_rad_ * kRadToDeg, err_deg) << "seed " << seed;
       }
     }
   }

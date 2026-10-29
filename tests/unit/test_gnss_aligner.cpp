@@ -1,4 +1,7 @@
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <random>
 #include <string>
@@ -223,6 +226,229 @@ TEST(GnssAligner, ReestimatesAsPairsArrive) {
   EXPECT_LT((last.p - T_e_w.p).head<2>().norm(), 0.15);
 }
 
+// Backlog G1: the predicted yaw sigma, gnss.md section 4. Four pairs at the corners of a
+// diamond of radius 1 m: sum |a_c|^2 = 4 m^2, so sigma = sqrt(4 var) / 4 = sqrt(var) / 2.
+TEST(GnssAligner, YawSigmaKnownValue) {
+  GnssConfig c = cfg();
+  c.align_min_pairs = 4;
+  c.align_yaw_min_var_m2 = 0.25;
+  const Vec3 corners[4] = {Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(-1, 0, 0), Vec3(0, -1, 0)};
+  const auto sigma_with = [&](const Mat3& cov, bool three_arg) {
+    GnssAligner aligner(c);
+    EXPECT_TRUE(std::isnan(aligner.yaw_sigma_rad()));
+    mss::common::Result<Pose> res = mss::common::Result<Pose>::error("none");
+    for (const Vec3& p : corners) {
+      const Pose T_w_b = yaw_pose(0.0, p);
+      res = three_arg ? aligner.update(p, T_w_b, Vec3::Zero())
+                      : aligner.update(p, cov, T_w_b, Vec3::Zero());
+    }
+    EXPECT_TRUE(res.is_ok()) << res.reason();
+    return aligner.yaw_sigma_rad();
+  };
+  const Mat3 iso = Mat3::Identity();
+  EXPECT_NEAR(sigma_with(iso, false), 0.5, 1e-12);
+  // Anisotropic: the larger horizontal eigenvalue (4 m^2) counts; the vertical is ignored.
+  Mat3 aniso = Mat3::Identity();
+  aniso(0, 0) = 4.0;
+  aniso(2, 2) = 100.0;
+  EXPECT_NEAR(sigma_with(aniso, false), 1.0, 1e-12);
+  // Off-diagonal: [[1, 1], [1, 1]] has eigenvalues 0 and 2.
+  Mat3 corr = Mat3::Identity();
+  corr(0, 1) = 1.0;
+  corr(1, 0) = 1.0;
+  EXPECT_NEAR(sigma_with(corr, false), std::sqrt(2.0) / 2.0, 1e-12);
+  // Below the floor (here negative): 0.25 m^2; the 3-argument update uses the floor too.
+  const Mat3 neg = -Mat3::Identity();
+  EXPECT_NEAR(sigma_with(neg, false), 0.25, 1e-12);
+  EXPECT_NEAR(sigma_with(Mat3::Zero(), true), 0.25, 1e-12);
+}
+
+TEST(GnssAligner, NonFiniteCovarianceNotAdded) {
+  GnssConfig c = cfg();
+  c.align_min_pairs = 1;
+  GnssAligner aligner(c);
+  Mat3 bad = Mat3::Identity();
+  bad(1, 0) = kNan;
+  EXPECT_EQ(aligner.update(Vec3::Zero(), bad, yaw_pose(0.0, Vec3::Zero()), Vec3::Zero()).reason(),
+            "non-finite input");
+  // Not added: the next pair is the first one (no spread), and the sums stay finite.
+  EXPECT_EQ(
+      aligner.update(Vec3::Zero(), Mat3::Identity(), yaw_pose(0.0, Vec3::Zero()), Vec3::Zero())
+          .reason(),
+      "insufficient horizontal spread");
+}
+
+// Portable normal deviates (splitmix64 + Box-Muller): the same values with libstdc++ and
+// libc++, so a seed reproduces a known case on both.
+class PortableNormal {
+ public:
+  explicit PortableNormal(std::uint64_t seed) : state_(seed) {}
+  double operator()() {
+    if (have_spare_) {
+      have_spare_ = false;
+      return spare_;
+    }
+    const double u1 = (static_cast<double>(next() >> 11U) + 0.5) * 0x1.0p-53;
+    const double u2 = static_cast<double>(next() >> 11U) * 0x1.0p-53;
+    const double r = std::sqrt(-2.0 * std::log(u1));
+    spare_ = r * std::sin(2.0 * kPi * u2);
+    have_spare_ = true;
+    return r * std::cos(2.0 * kPi * u2);
+  }
+
+ private:
+  std::uint64_t next() {
+    std::uint64_t z = (state_ += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27U)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31U);
+  }
+  std::uint64_t state_;
+  double spare_ = 0.0;
+  bool have_spare_ = false;
+};
+
+// E-01-like run as the aligner sees it (gnss_fusion_study.md section 17): from keyframe 0 at
+// 2 s, 3 s at rest, a 2 s ramp to 0.5 m/s, then a circle of R = 0.5 / 0.3 = 1.67 m with the
+// body yaw along the path, the lever arm of config/sim/warehouse.yaml, 5 Hz fixes with white
+// 1.0 m horizontal noise declared as such (the bag covariance). The front end is exact.
+constexpr double kE01DtS = 0.2;          // s, 5 Hz
+constexpr double kE01RestS = 3.0;        // s, rest after keyframe 0
+constexpr double kE01RampS = 2.0;        // s
+constexpr double kE01SpeedMps = 0.5;     // m/s
+constexpr double kE01OmegaRadps = 0.3;   // rad/s
+constexpr double kE01SigmaM = 1.0;       // m, horizontal fix sigma
+constexpr double kE01SigmaVM = 2.0;      // m, vertical fix sigma (declared only)
+constexpr double kE01MaxSigmaDeg = 6.0;  // config/default.yaml gnss.align_yaw_max_sigma_deg
+constexpr double kE01YawTrue = 30.0 * kDeg;
+constexpr int kE01MaxFixes = 300;  // 60 s
+
+Pose e01_body(int k) {
+  const double t = kE01DtS * k;
+  const double tm = std::max(0.0, t - kE01RestS);  // time since the motion started
+  // Arc length: v = V tm / T_r during the ramp, then V; heading = s / R.
+  const double s = tm < kE01RampS
+                       ? 0.5 * kE01SpeedMps * tm * tm / kE01RampS
+                       : 0.5 * kE01SpeedMps * kE01RampS + kE01SpeedMps * (tm - kE01RampS);
+  const double radius = kE01SpeedMps / kE01OmegaRadps;
+  const double th = s / radius;
+  return yaw_pose(th, Vec3(radius * std::sin(th), radius * (1.0 - std::cos(th)), 0.0));
+}
+
+struct FirstAlignment {
+  int n = 0;  // fixes fed when the aligner first returned T_e_w (0: never)
+  double err_rad = 0.0;
+  double sigma_rad = 0.0;
+};
+
+FirstAlignment e01_first_alignment(std::uint64_t seed, bool check) {
+  GnssConfig c = cfg();
+  c.align_check_yaw_sigma = check;
+  c.align_yaw_max_sigma_rad = kE01MaxSigmaDeg * kDeg;
+  c.align_yaw_min_var_m2 = 0.25;
+  GnssAligner aligner(c);
+  PortableNormal noise(seed);
+  const Pose T_e_w = yaw_pose(kE01YawTrue, Vec3(120.0, -45.0, 3.0));
+  const Vec3 p_b_g(-0.20, 0.10, 0.60);
+  Mat3 cov = Mat3::Identity() * (kE01SigmaM * kE01SigmaM);
+  cov(2, 2) = kE01SigmaVM * kE01SigmaVM;
+  for (int k = 0; k < kE01MaxFixes; ++k) {
+    const Pose T_w_b = e01_body(k);
+    const double nx = kE01SigmaM * noise();
+    const double ny = kE01SigmaM * noise();
+    const Vec3 p_e_g = T_e_w * (T_w_b * p_b_g) + Vec3(nx, ny, 0.0);
+    const auto res = aligner.update(p_e_g, cov, T_w_b, p_b_g);
+    if (res.is_ok()) {
+      return {k + 1, wrap_pi(yaw_of(res.value().R) - kE01YawTrue), aligner.yaw_sigma_rad()};
+    }
+  }
+  return {};
+}
+
+// G1 reproduction: with the default (no yaw check) the aligner accepts the first fit whose
+// spread passes 1 m, 11 s after keyframe 0 as on E-01 (13 s since the first record), with
+// a 7.6 deg sigma and, for this seed, the yaw about 21 deg off as on E-01. With the check it
+// waits until the sigma is at most 6 deg, and the yaw is then within 3 sigma.
+TEST(GnssAligner, E01LikeUnsupportedYawRefused) {
+  constexpr std::uint64_t kSeed = 129;  // 20.7 deg off without the check
+  const FirstAlignment off = e01_first_alignment(kSeed, false);
+  ASSERT_GT(off.n, 0);
+  EXPECT_EQ(off.n, 56);
+  EXPECT_NEAR(off.sigma_rad, 7.6 * kDeg, 0.2 * kDeg);
+  EXPECT_GT(std::abs(off.err_rad), 18.0 * kDeg);  // beyond 3 x the 6 deg threshold
+  const FirstAlignment on = e01_first_alignment(kSeed, true);
+  ASSERT_GT(on.n, off.n);
+  EXPECT_LE(on.sigma_rad, kE01MaxSigmaDeg * kDeg);
+  EXPECT_LT(std::abs(on.err_rad), 3.0 * on.sigma_rad);
+}
+
+// The predicted sigma is honest on this geometry (white, declared noise): over 400 seeds the
+// yaw error at the first alignment, normalised by its sigma, has a mean square near 1, with
+// and without the check. Without it more than 1 run in 100 starts beyond 18 deg (3 x 6 deg),
+// with it none.
+TEST(GnssAligner, E01LikeSigmaConsistent) {
+  constexpr int kRuns = 400;
+  for (const bool check : {false, true}) {
+    double nees = 0.0;
+    int beyond_18 = 0;
+    int beyond_3s = 0;
+    for (int i = 0; i < kRuns; ++i) {
+      const FirstAlignment a = e01_first_alignment(1000U + static_cast<std::uint64_t>(i), check);
+      ASSERT_GT(a.n, 0);
+      const double z = a.err_rad / a.sigma_rad;
+      nees += z * z;
+      beyond_18 += std::abs(a.err_rad) > 18.0 * kDeg ? 1 : 0;
+      beyond_3s += std::abs(z) > 3.0 ? 1 : 0;
+      if (check) {
+        EXPECT_LE(a.sigma_rad, kE01MaxSigmaDeg * kDeg);
+      }
+    }
+    nees /= kRuns;
+    std::printf("check %d: yaw NEES %.3f, beyond 18 deg %d, beyond 3 sigma %d of %d\n",
+                check ? 1 : 0,
+                nees,
+                beyond_18,
+                beyond_3s,
+                kRuns);
+    EXPECT_GT(nees, 0.8) << "check " << check;
+    EXPECT_LT(nees, 1.25) << "check " << check;
+    if (check) {
+      EXPECT_EQ(beyond_18, 0);
+    } else {
+      EXPECT_GT(beyond_18, kRuns / 100);
+    }
+  }
+}
+
+TEST(GnssAligner, YawSigmaCheckErrorOrder) {
+  // The check runs after the spread check and the pair is added, so the fit aligns once the
+  // spread is large enough.
+  GnssConfig c = cfg();
+  c.align_check_yaw_sigma = true;
+  c.align_yaw_max_sigma_rad = 1.0 * kDeg;
+  c.align_yaw_min_var_m2 = 0.25;
+  GnssAligner aligner(c);
+  int n_ok_at = 0;
+  for (int n = 1; n <= 400 && n_ok_at == 0; ++n) {
+    const Pose T_w_b = body_on_line(n - 1, 0.0);
+    const auto res = aligner.update(T_w_b.p, Mat3::Identity(), T_w_b, Vec3::Zero());
+    if (n <= 9) {
+      EXPECT_EQ(res.reason(), "not enough pairs") << "n " << n;
+    } else if (n <= 17) {
+      EXPECT_EQ(res.reason(), "insufficient horizontal spread") << "n " << n;
+    } else if (!res.is_ok()) {
+      EXPECT_EQ(res.reason(), "yaw sigma above threshold") << "n " << n;
+      EXPECT_GT(aligner.yaw_sigma_rad(), 1.0 * kDeg);
+    } else {
+      n_ok_at = n;
+      EXPECT_LE(aligner.yaw_sigma_rad(), 1.0 * kDeg);
+    }
+  }
+  // 1 m^2 fixes on the 0.2 m-step line: sum |a_c|^2 = 0.04 (n^3 - n) / 12 m^2 and
+  // sigma = 1 / sqrt(that), <= 1 deg (3283 m^2) from n = 100 on.
+  EXPECT_EQ(n_ok_at, 100);
+}
+
 TEST(GnssAligner, NoAllocation) {
   GnssAligner aligner(cfg());
   const Pose T_e_w = yaw_pose(0.5, Vec3(10.0, 20.0, 1.0));
@@ -240,9 +466,10 @@ TEST(GnssAligner, NoAllocation) {
       n_ok += aligner.update(T_e_w * (T_w_b * p_b_g), T_w_b, p_b_g).is_ok() ? 1 : 0;
     }
     n_ok += aligner.update(Vec3(kNan, 0.0, 0.0), T_e_w, p_b_g).is_ok() ? 1 : 0;
+    n_ok += aligner.update(T_e_w.p, Mat3::Identity(), T_e_w, p_b_g).is_ok() ? 1 : 0;
   }
   EXPECT_EQ(AllocCounter::count(), 0u);
-  EXPECT_EQ(n_ok, 100);
+  EXPECT_EQ(n_ok, 101);
 }
 
 }  // namespace

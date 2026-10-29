@@ -123,6 +123,50 @@ and 5 Hz has 151 fixes and `sum |a_c,h|^2 ~ n L^2 / 12 ~ 151 * 900 / 12 ~ 1.13e4
 `sigma_h = 1.0` m `sigma_yaw ~ 1 / 106 rad ~ 0.54 deg`. G-03 therefore uses
 `sigma_h = 0.2` m (1-sigma about 0.11 deg) to test the 0.5 deg requirement with margin.
 
+### 4.1 Predicted yaw sigma and the yaw check (backlog G1)
+
+The spread check is a fixed 1 m and does not scale with the fix noise. On E-01 (fixes with
+1.0 m white horizontal noise on a 1.67 m circle) it passes at 13 s with a 7.6 deg yaw sigma, and
+the first fit is 21 deg off (`gnss_fusion_study.md` section 17). The e-side spread also passes
+on noise alone: 1.72 m there against 1.01 m of true spread.
+
+Model. The w side (front-end antenna positions) is taken as exact; fix `i` has white noise
+`n_i` with covariance `C_i` in e. Linearise the fit of this section about the true yaw:
+`b_c,i = Rz(yaw) a_c,i + n_c,i`. The score `sum b_c^T Rz(yaw) a_c` is stationary where
+
+    delta_yaw = sum_i (Rz(yaw) J a_c,i) . n_i / sum_i |a_c,i|^2,     J = [[0, -1], [1, 0]]
+
+(the centring of `n` drops out because `sum a_c,i = 0`). Its variance is
+`sum_i u_i^T C_i u_i / (sum |a_c,i|^2)^2` with `u_i = Rz(yaw) J a_c,i`, `|u_i| = |a_c,i|`. The
+aligner bounds `u^T C_i u` by `var_i |u|^2` with `var_i` the larger eigenvalue of the
+horizontal 2x2 block of the declared covariance, floored at `gnss.align_yaw_min_var_m2` (as
+section 5; a declared variance <= 0 gets the floor), so that the yaw does not need to be known:
+
+    sigma_yaw^2 = sum_i var_i |a_c,i|^2 / (sum_i |a_c,i|^2)^2
+
+With `a_c,i = a_h,i - m`, `m = sum a_h / n`, the numerator expands over three running sums
+(`S0 = sum var_i`, `S1 = sum var_i a_h,i`, `S2 = sum var_i |a_h,i|^2`):
+
+    sum_i var_i |a_c,i|^2 = S2 - 2 m . S1 + |m|^2 S0
+
+and the denominator is `n spread_w^2`. Equal variances give the observability rule above,
+`sigma / sqrt(sum |a_c,h|^2)`. `GnssAligner::yaw_sigma_rad()` reports it at every fit, and
+`GnssFusion::align_yaw_sigma_rad()` passes it to the study observer.
+
+With `gnss.align_check_yaw_sigma` (default false, the previous behaviour) the aligner returns no
+transform while `sigma_yaw > gnss.align_yaw_max_sigma_deg` (the same threshold as section 5,
+6 deg), error "yaw sigma above threshold"; the pair is still added. The 3-argument `update()`
+has no covariance and uses the floor for every fix.
+
+Limits.
+- The front end is taken as exact. Along a LiDAR-degenerate axis its positions are dead
+  reckoning (section 5), and the sigma is then optimistic: the check does not prevent the
+  corridor's 180 deg starts (seeds 51, 52), which need section 5.
+- The noise is taken as white and honestly declared. A slow common drift cancels in the
+  centring; multipath steps and drift that changes within the window do not.
+- The sigma does not enter the prior of `E` (ADR-019 keeps 30 deg; changing that needs
+  `graph.hpp`), so the check only delays the alignment until its yaw is supported.
+
 ## 5. Yaw of `T_e_w` from the track direction (ADR-023)
 
 Code: `GnssTrackYawAligner` in `core/gnss/src/track_yaw.cpp`, used instead of section 4 when
