@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Configure, build and test the repo inside WSL.
 # Usage: build.sh [--no-gtsam] [--asan] [--build-dir DIR] [--target T]
+# Builds are serialised through a lock file (default ~/.mss-build.lock): WSL has ~10 GB RAM and
+# two parallel builds get killed for low memory. Do not wrap this script in `flock` on the same
+# file (it would wait on itself). MSS_BUILD_LOCK=<file> changes the lock, MSS_BUILD_LOCK=off
+# disables it.
 set -euo pipefail
 
 usage() { echo "Usage: $0 [--no-gtsam] [--asan] [--build-dir DIR] [--target T]" >&2; }
@@ -37,6 +41,15 @@ if [ -z "$build_dir" ]; then
   build_dir="$HOME/mss-build/${branch//\//-}"
   if [ "$with_gtsam" = OFF ]; then build_dir="${build_dir}-nogtsam"; fi
   if [ "$asan" = 1 ]; then build_dir="${build_dir}-asan"; fi
+fi
+
+lock_file="${MSS_BUILD_LOCK:-$HOME/.mss-build.lock}"
+if [ "$lock_file" != off ] && command -v flock >/dev/null 2>&1; then
+  exec 9>"$lock_file"
+  if ! flock -n 9; then
+    echo "build.sh: another build holds $lock_file, waiting..." >&2
+    flock 9
+  fi
 fi
 
 args=(-S "$repo" -B "$build_dir" "-DMSS_WITH_GTSAM=$with_gtsam" -DMSS_WERROR=ON
