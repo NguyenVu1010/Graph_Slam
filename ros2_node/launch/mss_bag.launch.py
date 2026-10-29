@@ -2,7 +2,7 @@
 
     ros2 launch mss_ros2 mss_bag.launch.py bag:=<bag dir> [rate:=1.0] [rviz:=true]
         [config_path:=<default.yaml>] [overlay:=<overlay.yaml>] [body_frame:=base_link]
-        [origin_lla:="lat_deg lon_deg alt_m"] [delay_s:=2.0] [exit_on_end:=false]
+        [origin_lla:="lat_deg lon_deg alt_m"] [delay_s:=5.0] [exit_on_end:=false]
 
 The bag is the output of the noise bridge (``sim/mss_sim/bridge.py``: per-point ``t`` and
 ``ring``). Everything runs on sim time: ``ros2 bag play --clock`` publishes /clock and the
@@ -109,7 +109,11 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("overlay", default_value="", description="pipeline overlay"),
             DeclareLaunchArgument("body_frame", default_value="base_link"),
             DeclareLaunchArgument("origin_lla", default_value=""),
-            DeclareLaunchArgument("delay_s", default_value="2.0", description="play delay, s"),
+            DeclareLaunchArgument(
+                "delay_s",
+                default_value="5.0",
+                description="play delay so the node subscribes first, s",
+            ),
             DeclareLaunchArgument("exit_on_end", default_value="false"),
             OpaqueFunction(function=_setup),
             Node(

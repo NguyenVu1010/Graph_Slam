@@ -100,7 +100,8 @@ ros2 launch mss_ros2 mss_bag.launch.py bag:=<run>/bag rviz:=true \
 
 Other arguments: `rate:=1.0`, `config_path:=<default.yaml>`, `body_frame:=base_link` (use
 `imu_link` on Gazebo bags so that their `/tf_static` hangs under the published TF),
-`delay_s:=2.0`, `exit_on_end:=true` (stop when the bag ends).
+`delay_s:=5.0` (the node must have subscribed before play starts: with 2 s a Gazebo bag lost
+its first second on a loaded desktop), `exit_on_end:=true` (stop when the bag ends).
 
 Docker: `docker/Dockerfile` (usage in its header) builds the same three packages, runs the
 superbuild and `mss_ros2` tests (`colcon test --packages-select multi_sensor_slam mss_ros2`),

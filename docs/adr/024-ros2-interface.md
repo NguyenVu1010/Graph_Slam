@@ -79,7 +79,7 @@ Tham số ước lượng vẫn chỉ ở `config/default.yaml` + overlay (ADR-0
 
 ## Hệ quả
 
-- `ros2 launch mss_ros2 mss_bag.launch.py bag:=<thư mục bag> rviz:=true` phát bag vào node. Đo trên bag E-01 tổng hợp (60 s, GTSAM, desktop WSL), tốc độ phát 1x và 2x: node nhận đủ 600/600 scan, 12000/12000 mẫu IMU, 300 fix, 2999 mẫu bánh xe với QoS best effort, không bỏ message nào; 579 pose phát ra, ATE 0,002184 m, bằng `mss_bench` trên cùng bag (cùng 579 pose, vị trí lệch tối đa 7e-9 m).
+- `ros2 launch mss_ros2 mss_bag.launch.py bag:=<thư mục bag> rviz:=true` phát bag vào node. Đo trên bag E-01 tổng hợp (60 s, GTSAM, desktop WSL), tốc độ phát 1x và 2x: node nhận đủ 600/600 scan, 12000/12000 mẫu IMU, 300 fix, 2999 mẫu bánh xe với QoS best effort, không bỏ message nào; 579 pose phát ra, ATE 0,002184 m, bằng `mss_bench` trên cùng bag (cùng 579 pose, vị trí lệch tối đa 7e-9 m). Bag Gazebo E-01 (warehouse, 66,9 s): 669 scan, 647 pose, ATE 0,0952 m, bằng `mss_bench` (lệch 9e-9 m). Với `delay_s` 2 s, node mất giây đầu của bag Gazebo (chưa kịp subscribe), nên mặc định là 5 s.
 - Đường đi phát lại toàn bộ mỗi lần có ước lượng: O(số pose); chạy dài cần giới hạn hoặc phát theo keyframe (tồn đọng).
 - Bản build không GTSAM không có bản đồ (`export_map()` báo lỗi, node log có điều tiết).
 - Thứ tự xử lý của node phụ thuộc thời điểm message đến so với timer, nên không tái lập bit-cho-bit như bench; `deterministic: true` vẫn là chế độ của bench và test.
