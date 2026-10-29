@@ -371,6 +371,69 @@ The record time includes the noise report. In the E-04 picture the corridor floo
 through the 0.3-2.0 m cut along the corridor: the map's vertical drift (median z of the
 in-corridor points 0.36 m at x 8-16 m, 1.30 m at x 40-48 m).
 
+## Live
+
+Gazebo, the noise layer, `mss_node` and RViz in one launch (ADR-011 amendment of 2026-10-29;
+desktop as in "Máy bàn", with the colcon workspace of `mss_ros2` sourced and the `sim/`
+Python dependencies on `PYTHONPATH`):
+
+```
+export ROS_DOMAIN_ID=<free id>   # other Gazebo runs use the same topic names
+ros2 launch mss_ros2 mss_live.launch.py scenario:=sim/scenarios/E-01.yaml rviz:=true \
+    [rtf:=1.0] [headless:=false] [seed:=N] [exit_on_end:=true]
+```
+
+- Assets are generated at launch into `results/live/<id>/assets` (`assets_dir:=`).
+- Gazebo starts paused and publishes the raw sensor topics under `/sim/raw`
+  (`sim.launch.py raw_prefix:=/sim/raw`). `python -m mss_sim.live_node` turns them into
+  `/lidar/points`, `/imu/data`, `/gnss/fix` and `/wheel/odom` with the offline bridge's models
+  (`NoiseLayer`), messages kept as CDR bytes. It holds each scan until `/ground_truth` covers its
+  sweep (about 0.1 s sim) and logs its counters every 10 s and at exit.
+- `python -m mss_sim.live_start` waits until mss_node and the noise node subscribe, sets the
+  real-time factor (`rtf:=`), unpauses, and pauses the world at `duration_s` + 2 s of sim time.
+  It exits 2 (no false success) when the sim clock is not within `--max-start-clock-s` (1 s)
+  of 0 once the robot exists, i.e. not this run's Gazebo, or when the clock does not advance
+  for `--stall-timeout-s` (10 s) of wall time or goes back.
+- Isolation and shutdown: the launch runs Gazebo transport in its own `GZ_PARTITION`
+  (`mss_live_<launch pid>`), and on shutdown `sim.launch.py` stops the gz processes below its
+  own launch process (SIGINT, SIGKILL after 5 s); launch alone signals only the `ruby gz`
+  wrapper, whose `gz sim` server child used to survive and break the next run.
+  With `exit_on_end:=true` the launch then shuts down; otherwise it stays up for viewing.
+- Determinism: only the seed is fixed. Fed the same raw messages, `mss_sim.live.LiveNoise` gives
+  the offline bridge's bytes (`tests/python/test_live.py`); Gazebo itself is not deterministic.
+  Use bags for numbers that must reproduce.
+
+E-01, full run, 2026-10-29 UTC, desktop WSL (12 cores, 10 GB RAM), gz-sim 8.15, ogre2,
+Release colcon build with GTSAM, `rtf:=1.0`, seed 42:
+
+| Run | real-time factor | scans / IMU / GNSS / odom received by mss_node | dropped | poses | ATE `/mss/path` vs `/ground_truth` |
+| --- | --- | --- | --- | --- | --- |
+| headless, no RViz | 0.983 (61.4 sim s in 62.4 wall s) | 621 / 12442 / 311 / 3110 | 0 | 601 | 0.097 m |
+| Gazebo GUI + RViz | 0.934 (61.5 sim s in 65.8 wall s) | 623 / 12465 / 312 / 3116 | 0 | 602 | 0.102 m |
+
+"Dropped" compares what mss_node received (its exit summary) with what the noise node published:
+equal on every topic, and no message was skipped by time. The noise node received every raw
+message (joint states at 1 kHz, IMU and ground truth at 200 Hz without gaps); its last scan
+waits for ground truth past the pause. Scan processing in the noise node: p50 13 ms, p95 16 ms
+(headless), 19 / 25 ms with the GUI. mss_node: 42 keyframes, 0 dropped scans, 0 match failures.
+The ATE is the estimator's on Gazebo data, as on the recorded bags (0.095 m in "Pipeline on the
+Gazebo bag"); Gazebo runs differ, so the numbers do not match a bag run exactly.
+
+CPU (average over the run, % of one core) and peak RSS:
+
+| Process | headless | GUI + RViz |
+| --- | --- | --- |
+| Gazebo (`gz sim`) | 99 %, 373 MB | 222 %, 881 MB |
+| noise node (`live_node`) | 77 %, 111 MB | 90 %, 111 MB |
+| mss_node | 15 %, 206 MB | 23 %, 207 MB |
+| RViz | - | 38 %, 241 MB |
+| driver, `live_start`, `tf_static`, `parameter_bridge` | 42 / 39 / 29 / 35 % | 56 / 52 / 42 / 46 % |
+| system memory used (max) | 1.6 GB | 1.7 GB |
+
+`tf_static` does nothing after start-up and still uses 29-42 % of a core: every rclpy node on
+sim time receives the 1 kHz `/clock` (driver and `live_start` likewise). The machine keeps up at
+`rtf` 1.0, so the real-time factor was not lowered.
+
 ## Mutating a bag (E-03)
 
 `tools/mutate_bag.py` derives the robustness bag from a bridged one (packet loss and reordering

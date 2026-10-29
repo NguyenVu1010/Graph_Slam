@@ -1,5 +1,6 @@
 """Offline noise bridge: raw (clean) bag -> noisy bag, deterministic for a given seed.
 
+The per-message models live in ``NoiseLayer``, which the live node (``mss_sim.live``) reuses.
 Geometry (``T_b_l``, antenna position) comes from the raw bag, not from the pipeline config.
 Seeds: ``SeedSequence(seed).spawn(5)`` in the order [lidar, gnss, odom, imu, mutate]; the imu and
 mutate streams are reserved and unused here.
@@ -63,7 +64,7 @@ class BridgeReport:
     odom_errors: dict[str, int] = field(default_factory=dict)
 
 
-def _t_b_l_from_tf(tf_msgs: Iterable[Any]) -> tuple[np.ndarray, str]:
+def t_b_l_from_tf(tf_msgs: Iterable[Any]) -> tuple[np.ndarray, str]:
     """4x4 ``T_b_l`` and the body frame name from the first ``* -> lidar_link`` transform.
 
     The body frame is that transform's parent (``header.frame_id``); nothing is hard-coded.
@@ -80,7 +81,7 @@ def _t_b_l_from_tf(tf_msgs: Iterable[Any]) -> tuple[np.ndarray, str]:
     raise ValueError(msg)
 
 
-def _shift_stamp(msg: Any, offset_ns: int) -> Any:
+def shift_stamp(msg: Any, offset_ns: int) -> Any:
     """Copy of a message whose ``header.stamp`` is shifted by ``offset_ns``."""
     header = make_header(stamp_ns(msg.header) + offset_ns, msg.header.frame_id)
     return replace(msg, header=header)
@@ -140,6 +141,82 @@ def _odometry(stamp: int, pose: _OdomIntegrator, tw: OdomTwist, body_frame: str)
     )
 
 
+class NoiseLayer:
+    """The per-message noise models, shared by the offline bridge and the live node.
+
+    One instance per run. Each method takes one raw message (``rosbags`` dataclass) and returns
+    the noisy message, or ``None`` when nothing is emitted. Every sensor has its own rng stream,
+    so the output depends only on each sensor's own input order, not on how the sensors
+    interleave. ``t0_ns`` (first ground-truth stamp) anchors the GNSS segment times;
+    ``body_frame`` (parent of ``lidar_link`` in ``/tf_static``) is the odometry child frame.
+    """
+
+    def __init__(
+        self,
+        scenario: Scenario,
+        profile: NoiseProfile,
+        t0_ns: int,
+        T_b_l: np.ndarray,  # noqa: N803
+        body_frame: str,
+        *,
+        seed: int | None = None,
+        skew: bool = True,
+    ) -> None:
+        seeds = np.random.SeedSequence(scenario.seed if seed is None else seed).spawn(5)
+        rng_lidar, rng_gnss, rng_odom, _rng_imu, _rng_mutate = (
+            np.random.default_rng(s) for s in seeds
+        )
+        self._scenario = scenario
+        self._profile = profile
+        self._rng_lidar = rng_lidar
+        self._t_b_l = T_b_l
+        self._body_frame = body_frame
+        self._skew = skew
+        self.offset_ns = profile.clock_offset_ns
+        self.degrader = GnssDegrader(
+            profile.gnss, scenario.gnss, scenario.gnss_zones, scenario.origin_lla, rng_gnss, t0_ns
+        )
+        self.quantizer = WheelQuantizer(profile.odom, rng_odom)
+        self._pose = _OdomIntegrator()
+        self.n_dropped_gnss = 0
+
+    def imu(self, msg: Any) -> Any:
+        return shift_stamp(msg, self.offset_ns["imu"])
+
+    def lidar(self, msg: Any, gt: GroundTruth) -> Any:
+        """Noisy cloud; ``gt`` must cover ``[stamp, stamp + scan period]`` (else it clamps)."""
+        stamp = stamp_ns(msg.header)
+        scan = process_scan(
+            cloud_to_arrays(msg),
+            stamp,
+            gt,
+            self._t_b_l,
+            self._profile.lidar,
+            self._rng_lidar,
+            skew=self._skew,
+        )
+        return arrays_to_cloud(scan, stamp + self.offset_ns["lidar"], _LIDAR_FRAME)
+
+    def gnss(self, msg: Any) -> Any | None:
+        stamp = stamp_ns(msg.header)
+        lla = (msg.latitude, msg.longitude, msg.altitude)
+        n_rejected = self.degrader.n_rejected
+        sample = self.degrader.step(stamp, lla_to_enu(lla, self._scenario.origin_lla))
+        if sample is None:
+            if self.degrader.n_rejected == n_rejected:
+                self.n_dropped_gnss += 1  # declared outage; rejected stamps counted apart
+            return None
+        return _navsatfix(stamp + self.offset_ns["gnss"], sample)
+
+    def joints(self, msg: Any) -> Any | None:
+        stamp = stamp_ns(msg.header)
+        tw = self.quantizer.step(stamp, list(msg.name), [float(v) for v in msg.velocity])
+        if tw is None:
+            return None
+        self._pose.step(stamp, tw)
+        return _odometry(stamp + self.offset_ns["odom"], self._pose, tw, self._body_frame)
+
+
 def run_bridge(
     raw_bag: Path,
     scenario: Scenario,
@@ -150,27 +227,17 @@ def run_bridge(
     skew: bool = True,
 ) -> BridgeReport:
     """Turn ``raw_bag`` into ``out_dir/bag`` (+ ``gt.tum``, ``bridge_report.json``)."""
-    seeds = np.random.SeedSequence(scenario.seed if seed is None else seed).spawn(5)
-    rng_lidar, rng_gnss, rng_odom, _rng_imu, _rng_mutate = (np.random.default_rng(s) for s in seeds)
     off = profile.clock_offset_ns
     out_dir.mkdir(parents=True, exist_ok=True)
 
     with BagReader(raw_bag) as reader:
         gt = GroundTruth.from_odometry_msgs(m for _, _, m in reader.messages([_GT]))
         tf_topic = [_TF] if _TF in reader.topics() else []
-        t_b_l, body_frame = _t_b_l_from_tf(m for _, _, m in reader.messages(tf_topic))
-        degrader = GnssDegrader(
-            profile.gnss,
-            scenario.gnss,
-            scenario.gnss_zones,
-            scenario.origin_lla,
-            rng_gnss,
-            gt.t_start_ns,
+        t_b_l, body_frame = t_b_l_from_tf(m for _, _, m in reader.messages(tf_topic))
+        layer = NoiseLayer(
+            scenario, profile, gt.t_start_ns, t_b_l, body_frame, seed=seed, skew=skew
         )
-        quantizer = WheelQuantizer(profile.odom, rng_odom)
-        pose = _OdomIntegrator()
         counts = dict.fromkeys(_OUT_TYPES, 0)
-        n_dropped_gnss = 0
 
         with BagWriter(out_dir / "bag") as writer:
             for topic, typename in _OUT_TYPES.items():
@@ -184,40 +251,26 @@ def run_bridge(
                 if topic in (_GT, _TF):
                     emit(topic, log_time, msg)
                 elif topic == _IMU:
-                    emit(topic, log_time + off["imu"], _shift_stamp(msg, off["imu"]))
+                    emit(topic, log_time + off["imu"], layer.imu(msg))
                 elif topic == _LIDAR:
-                    stamp = stamp_ns(msg.header)
-                    scan = process_scan(
-                        cloud_to_arrays(msg), stamp, gt, t_b_l, profile.lidar, rng_lidar, skew=skew
-                    )
-                    cloud = arrays_to_cloud(scan, stamp + off["lidar"], _LIDAR_FRAME)
-                    emit(topic, log_time + off["lidar"], cloud)
+                    emit(topic, log_time + off["lidar"], layer.lidar(msg, gt))
                 elif topic == _GNSS:
-                    stamp = stamp_ns(msg.header)
-                    lla = (msg.latitude, msg.longitude, msg.altitude)
-                    n_rejected = degrader.n_rejected
-                    sample = degrader.step(stamp, lla_to_enu(lla, scenario.origin_lla))
-                    if sample is None and degrader.n_rejected == n_rejected:
-                        n_dropped_gnss += 1  # declared outage; rejected stamps counted apart
-                    elif sample is not None:
-                        fix = _navsatfix(stamp + off["gnss"], sample)
+                    fix = layer.gnss(msg)
+                    if fix is not None:
                         emit(topic, log_time + off["gnss"], fix)
                 else:  # _JOINTS -> _ODOM
-                    stamp = stamp_ns(msg.header)
-                    tw = quantizer.step(stamp, list(msg.name), [float(v) for v in msg.velocity])
-                    if tw is not None:
-                        pose.step(stamp, tw)
-                        odom = _odometry(stamp + off["odom"], pose, tw, body_frame)
+                    odom = layer.joints(msg)
+                    if odom is not None:
                         emit(_ODOM, log_time + off["odom"], odom)
 
     gt.to_tum(out_dir / "gt.tum")
     report = BridgeReport(
         counts,
-        n_dropped_gnss,
-        quantizer.n_errors,
+        layer.n_dropped_gnss,
+        layer.quantizer.n_errors,
         gt.n_clamped,
-        degrader.n_rejected,
-        dict(quantizer.errors),
+        layer.degrader.n_rejected,
+        dict(layer.quantizer.errors),
     )
     (out_dir / "bridge_report.json").write_text(json.dumps(asdict(report), indent=2))
     return report

@@ -37,8 +37,9 @@ struct NodeParams {
   std::string topic_imu = "/imu/data";
   std::string topic_gnss = "/gnss/fix";
   std::string topic_odom = "/wheel/odom";
-  OutputFrames frames{"map", "base_link"};  ///< tf.world_frame, tf.body_frame
-  int qos_depth_lidar = 10;                 ///< messages (> 0)
+  /// tf.world_frame, tf.body_frame ("" = frames.body of the loaded config).
+  OutputFrames frames{"map", ""};
+  int qos_depth_lidar = 10;        ///< messages (> 0)
   int qos_depth_imu = 400;         ///< messages (> 0): 2 s at 200 Hz, as realtime.imu_queue_depth
   int qos_depth_gnss = 50;         ///< messages (> 0)
   int qos_depth_odom = 50;         ///< messages (> 0)

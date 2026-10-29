@@ -75,7 +75,7 @@ def test_index_keys_and_counts(
     }
     assert set(index["T_b_l"]) == {"translation_m", "quaternion_wxyz"}
     assert index["p_b_g_m"] == [-0.20, 0.10, 0.60]
-    assert index["body_frame"] == "base_link"
+    assert index["body_frame"] == "imu_link"
     assert index["lidar_frame"] == "lidar_link"
     assert index["gnss_cov_filled_from_sigma"] is False
     assert report.n == {k: v["count"] for k, v in index["topics"].items()}
