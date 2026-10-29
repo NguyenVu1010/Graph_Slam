@@ -24,7 +24,10 @@ optimised poses, so earlier loops (and GNSS, when on) shrink the drift seen here
 
 Limit: a revisit is found only when the accumulated drift leaves the true place within
 `search_radius_m` of the estimate. Larger drift needs a global place search (ring-key /
-descriptor database), listed in the backlog (ADR-026).
+descriptor database), listed in the backlog (ADR-026). Being found and passing the gates does
+not mean being closed: see section 7 (aliasing above half the structure period, and the
+kernel applying only a few percent of large corrections). Loops work only while the drift is
+small.
 
 ## 2. Scan Context and the relative yaw
 
@@ -129,7 +132,27 @@ candidate: two descriptors (`O(points)`), the shift search (`S^2 R` = 72k produc
 of up to `2 submap_keyframes + 1` stored clouds, at most two ICP runs and one fitness pass. The
 bench numbers are in ADR-026.
 
-## 7. No-GTSAM build
+## 7. Known limits (review C1; pinned by `LoopKnownLimits.*`)
+
+**Aliasing.** With structure repeating every `P` along a direction the scan cannot otherwise
+resolve (identical pillar pairs in a corridor without end walls in range), ICP from the graph
+seed converges to the copy nearest the seed. Once the graph drift along that direction exceeds
+`P/2` (and stays inside the correction gate), the loop is wrong by about `P` and passes every
+gate (P = 2 m, drift 1.3 m: error 1.98 m; Scan Context 0.13, ratio 0.93, RMS 3.7 cm, smallest
+eigenvalue above 300). On a loose chain (2 cm / 0.15 deg per 0.5 m step) such a loop drags the
+lap by 0.34 to 0.64 m; on a stiff chain (5 mm) by centimetres. The fixed 3 m / 30 deg
+correction gate cannot reject it; a gate on the graph's relative covariance of `(i, j)`
+(Mahalanobis on the joint marginal) and a second-best-fit check can (backlog C1-12).
+
+**Kernel against large true corrections.** With `C'` at the floor (5 cm / 1 deg) a correction
+`c` is `c / 0.05` whitened sigmas; the Cauchy weight `1 / (1 + (e/k)^2)` at `e = 20` (1 m) is
+0.03. A correct loop asking 0.5 / 1 / 2 m moves the lap end by about 10 / 3 / 1 % on a stiff
+chain (5 mm per step) and 92 / 60 / 13 % on a loose one (2 cm). So a first revisit after a long
+excursion with 0.5 to 2 m of drift is accepted but barely applied. The two-lap component test
+passes because its loops arrive while the drift is centimetres (backlog C1-13: gate, then a
+wider kernel or switchable constraints / GNC, and a floor calibrated by NEES).
+
+## 8. No-GTSAM build
 
 The stub backend has no keyframe pose (`keyframe_state` returns an error), so no keyframe view
 is built, no search runs and `n_loop_searches` stays 0: loop closure is a no-op there
