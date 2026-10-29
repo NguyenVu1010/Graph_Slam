@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <Eigen/Eigenvalues>
+#include <Eigen/Geometry>
 #include <gtest/gtest.h>
 
 #include "mss/common/lie.hpp"
@@ -1705,6 +1706,261 @@ TEST(PipelineComponent, GravityFactorCheckRemovesMovingStarts) {
     EXPECT_EQ(on.unchecked, 0U) << ramp_s;
     EXPECT_EQ(on.outcome, detail::GravityCheckOutcome::kRemoved) << ramp_s;
     EXPECT_LE(on.ate_m, off.ate_m * 1.1) << ramp_s;
+  }
+}
+
+// Records the GNSS frame variable E after each optimize, and the T_e_w of the first GNSS factor
+// (the centre of E's prior).
+class LastFrameObserver : public detail::CoreObserver {
+ public:
+  void on_frame_estimate(Timestamp /*t*/, const common::Pose& T_e_w) override { last_ = T_e_w; }
+  void on_gnss_factor(Timestamp /*t_k*/,
+                      const common::GnssMeasurement& /*m*/,
+                      const common::Pose& T_e_w) override {
+    if (!have_first_) {
+      first_ = T_e_w;
+      have_first_ = true;
+    }
+  }
+  common::Pose last_;
+  common::Pose first_;
+  bool have_first_ = false;
+};
+
+// ADR-023 amendment (design 2b), review M6: at the shipped 6 deg the first alignment can be up to
+// 3 sigma (about 18 deg) off. The first published T_e_w is turned by +-18 deg about its fix (test
+// seam gnss_first_align_yaw_offset_rad); E's prior is centred there, later fixes use the
+// aligner's re-estimated T_e_w. Corridor with wheel odometry (60 s), seed 42: E converges to
+// within 2 deg of the truth, no aligner restart (no lock-out), and at least 90 % of the GNSS
+// factors of the run without the offset.
+TEST(PipelineComponent, TrackYawConvergesFromEighteenDegrees) {
+  if (!kWithGtsam) {
+    GTEST_SKIP() << "the front end follows the backend; measured with GTSAM";
+  }
+  BoxWorldParams p = corridor_params();
+  p.seed = 42;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const common::Pose T_true = test::box_T_e_w(p);
+  std::uint64_t factors_ref = 0;
+  for (const double offset_deg : {0.0, 18.0, -18.0}) {
+    const Config cfg =
+        box_config(p,
+                   true,
+                   true,
+                   dir / ("off" + std::to_string(static_cast<int>(offset_deg))),
+                   std::string("    preprocess:\n      max_range_m: 10.0\n") + kCorridorRelaxYaml,
+                   "      align_yaw_from_track: true\n");
+    LastFrameObserver obs;
+    detail::CoreTestHooks hooks;
+    hooks.observer = &obs;
+    hooks.gnss_first_align_yaw_offset_rad = offset_deg / kRadToDeg;
+    ReplayResult rr;
+    {
+      const HooksScope scope(&hooks);
+      rr = replay(dir / "data", cfg);
+    }
+    const double e_deg = std::abs(wrap_deg(yaw_of(T_true.R.transpose() * obs.last_.R)));
+    ASSERT_TRUE(obs.have_first_);
+    const double prior_deg = wrap_deg(yaw_of(T_true.R.transpose() * obs.first_.R));
+    std::printf(
+        "[ track yaw 2b ] first alignment turned by %+.0f deg: E prior %+.1f deg off, E "
+        "yaw error at the end %.2f deg, GNSS factors %llu, realigns %llu\n",
+        offset_deg,
+        prior_deg,
+        e_deg,
+        static_cast<unsigned long long>(rr.stats.n_gnss_factors),
+        static_cast<unsigned long long>(rr.stats.n_gnss_realign));
+    EXPECT_NEAR(prior_deg, offset_deg, 10.0) << offset_deg;  // the seam took effect
+    EXPECT_LT(e_deg, 2.0) << offset_deg;
+    EXPECT_EQ(rr.stats.n_gnss_realign, 0U) << offset_deg;
+    if (offset_deg == 0.0) {
+      factors_ref = rr.stats.n_gnss_factors;
+    } else {
+      EXPECT_GE(10 * rr.stats.n_gnss_factors, 9 * factors_ref) << offset_deg;
+    }
+  }
+}
+
+// Records the heading readings of the track-yaw turn gate (CoreObserver::on_track_heading).
+class TrackHeadingObserver : public detail::CoreObserver {
+ public:
+  void on_track_heading(Timestamp /*t*/,
+                        const common::Pose& T_w_b,
+                        double heading_variation_rad,
+                        double /*travel_unobserved_scans*/) override {
+    R_w_b_.push_back(T_w_b.R);
+    sum_rad_.push_back(heading_variation_rad);
+  }
+  std::vector<common::Mat3> R_w_b_;
+  std::vector<double> sum_rad_;
+};
+
+// Total absolute heading variation of the horizontal projection of R_w_b * x_axis_b, scan to scan.
+double heading_variation_of(const std::vector<common::Mat3>& R_w_b, const Vec3& x_axis_b) {
+  double sum_rad = 0.0;
+  for (std::size_t k = 1; k < R_w_b.size(); ++k) {
+    const Vec3 a = R_w_b[k - 1] * x_axis_b;
+    const Vec3 b = R_w_b[k] * x_axis_b;
+    sum_rad += std::abs(
+        std::remainder(std::atan2(b.y(), b.x()) - std::atan2(a.y(), a.x()), 2.0 * test::kBoxPi));
+  }
+  return sum_rad;
+}
+
+// Review R3-1 of design 2b: EstimatorCore reads the heading variation of the turn gate from the
+// travel axis x_o = R_w_b R_b_o x, not from the body x axis. A wheel-odometry frame pitched by
+// 90 deg (x_o along -z_b) makes the two readings differ: on the level box-world circle the x_b
+// heading turns smoothly, the x_o heading is the direction of the small attitude error and jumps
+// from scan to scan. Wheel odometry stays off (the simulated wheels move along x_b); the gate
+// reading does not depend on it. The sum the pipeline passes at each scan equals the x_o sum of
+// the poses it was read from, and differs from the x_b sum.
+TEST(PipelineComponent, TrackYawHeadingVariationUsesTheTravelAxis) {
+  BoxWorldParams p;
+  p.seed = 42;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  Config cfg = box_config(p, true, false, dir / "run", "", "      align_yaw_from_track: true\n");
+  // Wheel-odometry frame pitched by +90 deg about y_b: x_o = -z_b.
+  cfg.frames.T_b_o.R = Eigen::AngleAxisd(0.5 * test::kBoxPi, Vec3::UnitY()).toRotationMatrix();
+  TrackHeadingObserver obs;
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  {
+    const HooksScope scope(&hooks);
+    (void)replay(dir / "data", cfg);
+  }
+  ASSERT_GT(obs.sum_rad_.size(), 100U);
+  const Vec3 x_o_b = cfg.frames.T_b_o.R.col(0);
+  const double sum_x_o_rad = heading_variation_of(obs.R_w_b_, x_o_b);
+  const double sum_x_b_rad = heading_variation_of(obs.R_w_b_, Vec3::UnitX());
+  std::printf(
+      "[ track yaw 2b ] heading variation over %zu scans: pipeline %.4f rad, x_o %.4f rad, "
+      "x_b %.4f rad\n",
+      obs.sum_rad_.size(),
+      obs.sum_rad_.back(),
+      sum_x_o_rad,
+      sum_x_b_rad);
+  EXPECT_NEAR(obs.sum_rad_.back(), sum_x_o_rad, 1e-9 * (1.0 + sum_x_o_rad));
+  EXPECT_GT(std::abs(sum_x_o_rad - sum_x_b_rad), 1.0);  // the scene tells the two axes apart
+}
+
+// Records the count of scans that did not observe the travel axis (on_track_heading).
+class UnobservedObserver : public detail::CoreObserver {
+ public:
+  void on_track_heading(Timestamp /*t*/,
+                        const common::Pose& /*T_w_b*/,
+                        double /*heading_variation_rad*/,
+                        double travel_unobserved_scans) override {
+    last_ = travel_unobserved_scans;
+    ++scans_;
+  }
+  double last_ = 0.0;
+  int scans_ = 0;
+};
+
+// Root-cause study (gnss_fusion_study.md section 16.13): a scan observes the travel axis with
+// gnss.align_yaw_frontend_min_info (100) point-to-plane constraints along it. Box world (walls in
+// range in every direction, 239 to 466 per scan): every scan observes it. Corridor whose end walls
+// are out of range (0.2 to 66 per scan): no scan does, so the front end is not used there.
+TEST(PipelineComponent, TrackYawFrontEndObservesTheTravelAxis) {
+  const fs::path dir = test_dir();
+  for (const bool corridor : {false, true}) {
+    BoxWorldParams p = corridor ? corridor_params() : BoxWorldParams{};
+    p.seed = 42;
+    if (corridor) {
+      p.motion_s = 15.0;
+    }
+    const fs::path data = dir / (corridor ? "corridor" : "box");
+    ASSERT_TRUE(test::write_box_dataset(data, p).is_ok());
+    const Config cfg =
+        box_config(p,
+                   true,
+                   true,
+                   dir / (corridor ? "corridor_run" : "box_run"),
+                   corridor ? std::string("    preprocess:\n      max_range_m: 10.0\n") : "",
+                   "      align_yaw_from_track: true\n");
+    ASSERT_TRUE(cfg.gnss.align_yaw_frontend_travel);
+    UnobservedObserver obs;
+    detail::CoreTestHooks hooks;
+    hooks.observer = &obs;
+    {
+      const HooksScope scope(&hooks);
+      (void)replay(data, cfg);
+    }
+    std::printf("[ root cause ] %s: %.0f of %d scans did not observe the travel axis\n",
+                corridor ? "corridor" : "box world",
+                obs.last_,
+                obs.scans_);
+    ASSERT_GT(obs.scans_, 100);
+    if (corridor) {
+      EXPECT_EQ(obs.last_, static_cast<double>(obs.scans_));
+    } else {
+      EXPECT_EQ(obs.last_, 0.0);
+    }
+  }
+}
+
+// Records the first alignment of the GNSS fusion (yaw of T_e_w and its predicted sigma).
+class FirstAlignmentObserver : public detail::CoreObserver {
+ public:
+  void on_alignment(Timestamp /*t*/,
+                    const common::Pose& T_e_w,
+                    double yaw_sigma_rad,
+                    const gnss::GnssTrackYawAligner& /*track*/) override {
+    if (!have_) {
+      have_ = true;
+      T_e_w_ = T_e_w;
+      sigma_rad_ = yaw_sigma_rad;
+    }
+  }
+  bool have_ = false;
+  common::Pose T_e_w_;
+  double sigma_rad_ = 0.0;
+};
+
+// Root-cause study, limit 4a, end to end: without wheel data the travel sign was the forward
+// assumption, so a robot driving backwards aligned 180 deg off. Box world driven backwards at
+// 0.5 m/s on its 2 m circle (every scan observes the travel axis): with
+// gnss.align_yaw_frontend_travel the front end gives the sign and the yaw is within 3 sigma; with
+// it off (control) it is about 180 deg off.
+TEST(PipelineComponent, TrackYawFrontEndGivesTheTravelSign) {
+  BoxWorldParams p;
+  p.seed = 42;
+  p.speed_mps = -0.5;
+  p.yaw_rate_radps = -0.25;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const common::Pose T_true = test::box_T_e_w(p);
+  for (const bool frontend : {true, false}) {
+    const Config cfg = box_config(p,
+                                  true,
+                                  false,
+                                  dir / (frontend ? "on" : "off"),
+                                  "",
+                                  std::string("      align_yaw_from_track: true\n"
+                                              "      align_yaw_frontend_travel: ") +
+                                      (frontend ? "true\n" : "false\n"));
+    FirstAlignmentObserver obs;
+    detail::CoreTestHooks hooks;
+    hooks.observer = &obs;
+    {
+      const HooksScope scope(&hooks);
+      (void)replay(dir / "data", cfg);
+    }
+    ASSERT_TRUE(obs.have_) << frontend;
+    const double err_deg = wrap_deg(yaw_of(T_true.R.transpose() * obs.T_e_w_.R));
+    std::printf(
+        "[ root cause ] box world backwards, no wheel data, front end %d: first yaw %.1f "
+        "deg off, sigma %.1f deg\n",
+        frontend ? 1 : 0,
+        err_deg,
+        obs.sigma_rad_ * kRadToDeg);
+    if (frontend) {
+      EXPECT_LT(std::abs(err_deg), 3.0 * obs.sigma_rad_ * kRadToDeg);
+    } else {
+      EXPECT_GT(std::abs(err_deg), 150.0);  // negative control: the forward assumption
+    }
   }
 }
 

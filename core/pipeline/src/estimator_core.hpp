@@ -81,6 +81,14 @@ class CoreObserver {
   /// The gravity factor consistency check ran: its innovation statistic (NaN when unchecked)
   /// and the outcome.
   virtual void on_gravity_check(double /*chi2*/, GravityCheckOutcome /*outcome*/) {}
+  /// Design 2b (only with gnss.align_yaw_from_track): the front-end heading of the scan at `t`
+  /// was read from the body pose `T_w_b`; `heading_variation_rad` is the total absolute heading
+  /// variation passed to the track-yaw turn gate so far, `travel_unobserved_scans` the count of
+  /// scans that did not observe the travel axis (NaN without gnss.align_yaw_frontend_travel).
+  virtual void on_track_heading(common::Timestamp /*t*/,
+                                const common::Pose& /*T_w_b*/,
+                                double /*heading_variation_rad*/,
+                                double /*travel_unobserved_scans*/) {}
 };
 
 /// Test-only seam (studies): `observer` receives the factor events; with `force_T_e_w` the
@@ -106,6 +114,10 @@ struct CoreTestHooks {
   /// by gnss_shift_oracle(t_fix, t_k), the antenna displacement in w, instead of the front-end
   /// poses (GnssFusion::collect).
   std::function<common::Vec3(common::Timestamp, common::Timestamp)> gnss_shift_oracle;
+  /// Study (gnss.md section 5.1, design 2b): the T_e_w published for the first chunk of fixes from
+  /// the first GNSS alignment on is turned by this yaw (rad) about each fix
+  /// (GnssFusion::set_first_alignment_yaw_offset).
+  double gnss_first_align_yaw_offset_rad = 0.0;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).
@@ -128,6 +140,8 @@ struct CoreCounters {
   std::uint64_t n_gnss_ring_overflow = 0;        ///< deferred fixes overwritten (ring full)
   std::uint64_t n_gnss_unfused_eof = 0;  ///< deferred fixes left at end of data (no IMU after)
   std::uint64_t n_gnss_realign = 0;      ///< aligner restarts (gnss.max_consecutive_rejects)
+  /// Design 2b: chunks with a GNSS track / wheel travel mismatch in the track-yaw aligner.
+  std::uint64_t n_gnss_wheel_mismatch = 0;
   std::uint64_t n_wheel_nonfinite =
       0;  ///< wheel samples with a non-finite speed (ADR-023 odometer)
   // ADR-022, see Estimator::Stats.
@@ -196,6 +210,7 @@ class EstimatorCore {
   // front-end pose) and, once aligned, adds them as factors on their keyframes.
   void attach_prealign_fixes(common::KeyId j, common::Timestamp t);
   void sync_prealign_counters();
+  void track_heading(const common::MatchResult* match);
   // Feeds `s` to both preintegrators when it is newer than the last fed sample.
   void feed_preintegrators(const common::ImuSample& s);
   // Drops buffered samples older than the last one at or before `t`.
@@ -274,6 +289,13 @@ class EstimatorCore {
   double wheel_odometer_m_ = 0.0;
   bool have_fix_odometer_t_ = false;
   common::Timestamp last_fix_odometer_t_{};
+  // Design 2b: total absolute heading variation of the front end (rad), summed scan to scan when
+  // gnss.align_yaw_from_track, and the heading of the last scan it was updated at.
+  bool have_scan_heading_ = false;
+  double last_scan_heading_rad_ = 0.0;
+  double heading_variation_rad_ = 0.0;
+  // Scans whose matching did not observe the travel axis (gnss.align_yaw_frontend_travel).
+  double travel_unobserved_scans_ = 0.0;
   std::int64_t wheel_period_ns_ = 0;
   std::size_t map_dropped_ = 0;
   bool init_failure_logged_ = false;
@@ -281,6 +303,7 @@ class EstimatorCore {
   bool backend_failure_streak_ = false;
   bool imu_nonfinite_streak_ = false;
   bool gnss_reject_streak_ = false;
+  bool track_restart_logged_ = false;    // one log line until the next alignment
   std::uint64_t n_alignments_seen_ = 0;  // observer only: alignments reported so far
   bool gnss_late_streak_ = false;
   bool uncovered_streak_ = false;
