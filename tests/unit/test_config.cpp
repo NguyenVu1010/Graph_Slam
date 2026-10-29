@@ -339,6 +339,12 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   EXPECT_TRUE(cfg.value().gnss.align_yaw_wheel_turns);
   EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_wheel_slip_frac, 0.05);
   EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_min_track_wheel_m, 3.0);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_wheel_restart_m, 10.0);
+  const auto bad_restart =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_yaw_wheel_restart_m: 0\n"));
+  ASSERT_FALSE(bad_restart.is_ok());
+  EXPECT_TRUE(mentions(bad_restart.reason(), "gnss.align_yaw_wheel_restart_m: must be > 0 (got 0)"))
+      << bad_restart.reason();
   for (const char* v : {"0", "1"}) {
     const auto bad_slip = parse_config(
         read_file(kDefault),

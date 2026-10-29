@@ -132,6 +132,8 @@ struct CoreCounters {
   std::uint64_t n_gnss_ring_overflow = 0;        ///< deferred fixes overwritten (ring full)
   std::uint64_t n_gnss_unfused_eof = 0;  ///< deferred fixes left at end of data (no IMU after)
   std::uint64_t n_gnss_realign = 0;      ///< aligner restarts (gnss.max_consecutive_rejects)
+  /// Design 2b: chunks with a GNSS track / wheel travel mismatch in the track-yaw aligner.
+  std::uint64_t n_gnss_wheel_mismatch = 0;
   std::uint64_t n_wheel_nonfinite =
       0;  ///< wheel samples with a non-finite speed (ADR-023 odometer)
   // ADR-022, see Estimator::Stats.
@@ -200,6 +202,7 @@ class EstimatorCore {
   // front-end pose) and, once aligned, adds them as factors on their keyframes.
   void attach_prealign_fixes(common::KeyId j, common::Timestamp t);
   void sync_prealign_counters();
+  void track_heading();
   // Feeds `s` to both preintegrators when it is newer than the last fed sample.
   void feed_preintegrators(const common::ImuSample& s);
   // Drops buffered samples older than the last one at or before `t`.
@@ -278,6 +281,11 @@ class EstimatorCore {
   double wheel_odometer_m_ = 0.0;
   bool have_fix_odometer_t_ = false;
   common::Timestamp last_fix_odometer_t_{};
+  // Design 2b: total absolute heading variation of the front end (rad), summed scan to scan when
+  // gnss.align_yaw_from_track, and the heading of the last scan it was updated at.
+  bool have_scan_heading_ = false;
+  double last_scan_heading_rad_ = 0.0;
+  double heading_variation_rad_ = 0.0;
   std::int64_t wheel_period_ns_ = 0;
   std::size_t map_dropped_ = 0;
   bool init_failure_logged_ = false;
@@ -285,6 +293,7 @@ class EstimatorCore {
   bool backend_failure_streak_ = false;
   bool imu_nonfinite_streak_ = false;
   bool gnss_reject_streak_ = false;
+  bool track_restart_logged_ = false;    // one log line until the next alignment
   std::uint64_t n_alignments_seen_ = 0;  // observer only: alignments reported so far
   bool gnss_late_streak_ = false;
   bool uncovered_streak_ = false;

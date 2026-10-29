@@ -72,11 +72,14 @@ class GnssFusion {
   /// literals: no allocation unless the caller calls Status::reason().
   /// `wheel_odometer_m`: absolute signed wheel odometer reading at the fix (m), NaN without
   /// wheel data; used only by the track-yaw aligner (ADR-023) for the direction of travel.
+  /// `heading_variation_rad`: absolute total heading variation of the front end (rad), NaN when
+  /// unknown; used only by the track-yaw aligner (design 2b turn gate).
   common::Status on_fix(const common::GnssMeasurement& m,
                         const common::Pose& T_w_b_fix,
                         const common::PoseCovariance& P_w_b,
                         FixOutcome* outcome = nullptr,
-                        double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN());
+                        double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN(),
+                        double heading_variation_rad = std::numeric_limits<double>::quiet_NaN());
 
   /// Moves every queued fix with `t <= t_k` into `out[0, n)`, shifted to the keyframe
   /// pose `T_w_bk` (pipeline.md section 5), and returns n. Later fixes stay queued.
@@ -157,6 +160,12 @@ class GnssFusion {
   /// ADR-023: the track-yaw aligner in use (its counters are meaningful only when
   /// gnss.align_yaw_from_track is true).
   [[nodiscard]] const gnss::GnssTrackYawAligner& track_aligner() const { return track_aligner_; }
+  /// Design 2b: chunks at which the track-yaw aligner found the GNSS track and the wheel travel
+  /// in disagreement (gnss::GnssTrackYawAligner::n_wheel_mismatches), over all aligners.
+  [[nodiscard]] std::uint64_t n_track_wheel_mismatches() const {
+    return track_mismatches_before_ +
+           static_cast<std::uint64_t>(track_aligner_.n_wheel_mismatches());
+  }
   /// Latest aligner estimate (identity until aligned()). Maps w to e.
   [[nodiscard]] const common::Pose& T_e_w() const { return T_e_w_; }
   /// Accepted fixes dropped from the full pending queue so far.
@@ -208,9 +217,10 @@ class GnssFusion {
   bool forced_ = false;  // force_T_e_w: the aligner is never run
   std::uint64_t n_realign_ = 0;
   common::Vec3 p_b_g_;
-  common::Pose T_b_o_;                       // odometry frame in b, for the track-yaw aligner
-  double first_align_yaw_offset_rad_ = 0.0;  // test-only, see set_first_alignment_yaw_offset
-  int offset_fixes_left_ = 0;                // test-only
+  common::Pose T_b_o_;                         // odometry frame in b, for the track-yaw aligner
+  double first_align_yaw_offset_rad_ = 0.0;    // test-only, see set_first_alignment_yaw_offset
+  int offset_fixes_left_ = 0;                  // test-only
+  std::uint64_t track_mismatches_before_ = 0;  // wheel restarts of the aligners rebuilt so far
   gnss::GnssAligner aligner_;
   gnss::GnssTrackYawAligner track_aligner_;  // ADR-023, used when cfg_.align_yaw_from_track
   std::uint64_t n_alignments_ = 0;

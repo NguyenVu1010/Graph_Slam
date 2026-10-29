@@ -334,10 +334,17 @@ Format of an entry: **symptom** → cause → fix → rule.
   - **Minimum track with wheel data.** Wheels can turn while the body stands still (stuck,
     lifted), so "the odometer detects a parked robot" is only true when the wheels stop too. A
     zero minimum aligned such a robot on GNSS drift (64 of 100 at 0.2 m per fix, about 90 deg
-    off); comparing the GNSS track with the wheel-predicted displacement and a 3 m minimum bring
-    it to 16 of 100, the level of design 2 without wheel data. The 3 m was chosen from the
-    absolute-error tails at 6 deg, not from NEES, which a larger sigma lowers while the tails
-    grow.
+    off). Comparing the GNSS track with the wheel travel over a window since the last mismatch,
+    and replacing all segments only after 10 m of agreeing travel, brings it to 2 of 100 (test
+    seeds; 4 of 100 on the review probe's seeds), and the alignment after the wheels spun waits
+    about 10 m instead of the spun distance (300 s of spinning: 150 m). The 3 m minimum was
+    chosen from the absolute-error tails at 6 deg, not from NEES, which a larger sigma lowers
+    while the tails grow.
+  - **The frames and the time between fixes matter as much as the noise.** The direction of
+    travel is the odometry frame's x axis, not the IMU's (a 90 deg mount gave a 90 deg error),
+    and a GNSS outage can hide two opposite turns whose net heading change is zero (aisles: 100
+    of 100 runs beyond 3 sigma, in design 2 too); the turn gate now uses the total heading
+    variation from the front end between fixes.
   - **The front-end displacement.** Its covariance does not say where the LiDAR is blind in the
     shipped configuration: 1.5 to 4.6 cm along the corridor axis while the front end was 1 m off
     over 2 s. Not used.

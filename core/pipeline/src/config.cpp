@@ -464,6 +464,7 @@ Config read_config(Reader& r) {
   r.field("gnss.align_yaw_wheel_slip_frac", c.gnss.align_yaw_wheel_slip_frac, Range::kUnitOpen);
   r.field(
       "gnss.align_yaw_min_track_wheel_m", c.gnss.align_yaw_min_track_wheel_m, Range::kNonNegative);
+  r.field("gnss.align_yaw_wheel_restart_m", c.gnss.align_yaw_wheel_restart_m, Range::kPositive);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);

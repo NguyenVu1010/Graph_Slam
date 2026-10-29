@@ -55,6 +55,11 @@ struct GnssConfig {
   // wheel data, in place of align_yaw_min_track_m (>= 0). Its own value, not tied to
   // align_yaw_min_track_m: 3 m from the absolute-error envelope at 6 deg (gnss.md section 5.1).
   double align_yaw_min_track_wheel_m = 3.0;
+  // m, wheel travel over which the segments since the last wheel/GNSS mismatch must agree with the
+  // wheels before they replace all segments (wheels that turned on a still body; gnss.md section
+  // 5.1) (> 0). 10 m: stuck wheels with 0.2 m per fix of GNSS drift align on 4 of 100 runs (6 m:
+  // 16, 3 m: 83).
+  double align_yaw_wheel_restart_m = 10.0;
 };
 
 }  // namespace mss::gnss

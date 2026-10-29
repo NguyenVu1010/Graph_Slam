@@ -203,6 +203,8 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"n_gnss_realign\": %" PRIu64
                ",\n"
+               "  \"n_gnss_wheel_mismatch\": %" PRIu64
+               ",\n"
                "  \"n_gnss_prealign_attached\": %" PRIu64
                ",\n"
                "  \"n_gnss_prealign_static\": %" PRIu64
@@ -268,6 +270,7 @@ bool write_json(const fs::path& path,
                st.n_gnss_ring_overflow,
                st.n_gnss_unfused_eof,
                st.n_gnss_realign,
+               st.n_gnss_wheel_mismatch,
                st.n_gnss_prealign_attached,
                st.n_gnss_prealign_static,
                st.n_gnss_prealign_dropped,

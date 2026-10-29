@@ -123,8 +123,6 @@ mss_node:
       align_yaw_min_track_m: 5.0
       # Along-heading track over the GNSS path length of the segments used, in (0, 1]: about 1
       # for steady motion, about 1 / sqrt(segments) for a parked receiver whose error wanders.
-      # With wheel data also over the wheel-predicted displacement (design 2b): catches wheels
-      # turning on a still body (stuck, lifted).
       align_yaw_min_coherence: 0.5
       # Turn gate: a segment whose heading change, or the heading span of either of its
       # chunks, exceeds this is not used (course over ground is unreliable in turns), deg,
@@ -156,8 +154,18 @@ mss_node:
       # wheel data, m (>= 0); else align_yaw_min_track_m applies. 3 m from the absolute-error
       # envelope at 6 deg (gnss.md section 5.1): against 0 m it halves the runs beyond 15 deg
       # with 0.05 m per fix of GNSS drift (52 -> 30 of 600) and the stuck-wheel alignments at
-      # 0.2 m per fix (37 -> 16 of 100), for 2 s more at 0.5 m/s.
+      # 0.2 m per fix (37 -> 16 of 100, before the consistency window below), for 2 s more at
+      # 0.5 m/s.
       align_yaw_min_track_wheel_m: 3.0
+      # Wheel/GNSS consistency (gnss.md section 5.1). When the GNSS track and the wheel travel
+      # disagree by more than their noise plus align_yaw_wheel_slip_frac (wheels turning on a
+      # still robot, slipping, a wrong odometer scale; counted in Stats::n_gnss_wheel_mismatch),
+      # no transform until the segments since then agree with the wheels over this wheel travel,
+      # m (> 0); they then replace all segments. 10 m: wheels spinning on a still robot with
+      # 0.2 m per fix of GNSS drift align on 4 of 100 runs (6 m: 16, 3 m: 83); after 30 / 60 /
+      # 300 s of spinning the robot aligns after a median 10 m of driving (before: 16 / 31 /
+      # 150 m), yaw within its sigma.
+      align_yaw_wheel_restart_m: 10.0
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

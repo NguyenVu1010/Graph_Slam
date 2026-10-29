@@ -39,7 +39,8 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
                                   const common::Pose& T_w_b_fix,
                                   const common::PoseCovariance& P_w_b,
                                   FixOutcome* outcome,
-                                  double wheel_odometer_m) {
+                                  double wheel_odometer_m,
+                                  double heading_variation_rad) {
   FixOutcome dummy = FixOutcome::kAccepted;
   FixOutcome& out = outcome != nullptr ? *outcome : dummy;
   common::Status gate = gnss::gate_fix(m, max_cov_m2_);
@@ -62,6 +63,7 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
       // fix can pull it back. Restart the alignment on the current front end; the new
       // factors share the graph's T_e_w with the old ones (ADR-019) and pull the chain back.
       aligner_ = gnss::GnssAligner(cfg_);
+      track_mismatches_before_ += static_cast<std::uint64_t>(track_aligner_.n_wheel_mismatches());
       track_aligner_ = gnss::GnssTrackYawAligner(cfg_, T_b_o_);
       aligned_ = false;
       consecutive_rejects_ = 0;
@@ -74,7 +76,8 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
   const common::Result<common::Pose> T =
       forced_ ? common::Result<common::Pose>::error("forced T_e_w")
       : cfg_.align_yaw_from_track
-          ? track_aligner_.update(m.p_e_g, m.cov, T_w_b_fix, p_b_g_, wheel_odometer_m)
+          ? track_aligner_.update(
+                m.p_e_g, m.cov, T_w_b_fix, p_b_g_, wheel_odometer_m, heading_variation_rad)
           : aligner_.update(m.p_e_g, T_w_b_fix, p_b_g_);
   if (T.is_ok()) {
     T_e_w_ = T.value();

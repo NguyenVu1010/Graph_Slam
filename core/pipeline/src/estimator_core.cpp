@@ -19,6 +19,8 @@ namespace mss::pipeline::detail {
 
 namespace {
 
+constexpr double kPiRad = 3.14159265358979323846;  // pi, for wrapping heading differences
+
 const Config& validated(const Config& cfg) {
   const double window_samples = std::ceil(cfg.imu.init_window_s * cfg.imu.rate_hz);
   // +3: both ends of the window, the sample at or before its start and the one at or
@@ -273,7 +275,19 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
   }
   have_fix_odometer_t_ = true;
   last_fix_odometer_t_ = m.t;
-  (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome, wheel_odometer_m);
+  // Design 2b: the heading variation up to the last scan (NaN before the first one).
+  const double heading_variation_rad =
+      have_scan_heading_ ? heading_variation_rad_ : std::numeric_limits<double>::quiet_NaN();
+  (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome, wheel_odometer_m, heading_variation_rad);
+  if (fusion_.n_track_wheel_mismatches() != counters_.n_gnss_wheel_mismatch) {
+    counters_.n_gnss_wheel_mismatch = fusion_.n_track_wheel_mismatches();
+    if (!track_restart_logged_) {
+      common::log_warn(
+          "gnss: the GNSS track disagrees with the wheel travel (wheels turning on a still "
+          "robot, slipping wheels, or a wrong odometer scale); see Stats::n_gnss_wheel_mismatch");
+      track_restart_logged_ = true;
+    }
+  }
   if (early_out_ != nullptr) {
     sync_prealign_counters();
   }
@@ -282,6 +296,9 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
     common::log_warn(
         "gnss: chi-square rejected gnss.max_consecutive_rejects fixes in a row, "
         "aligner restarted");
+  }
+  if (fusion_.aligned()) {
+    track_restart_logged_ = false;
   }
   if (observer() != nullptr && fusion_.n_alignments() != n_alignments_seen_) {
     n_alignments_seen_ = fusion_.n_alignments();
@@ -451,6 +468,7 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
     front_ = predicted;
     reset_prediction();
     latest_.state = front_;  // cov and keyframe id unchanged
+    track_heading();
     return;
   }
   match_failure_streak_ = false;
@@ -490,6 +508,24 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
   latest_.state = front_;
   latest_.cov = cov_out;
   latest_.keyframe_id = last_kf_id_;
+  track_heading();
+}
+
+void EstimatorCore::track_heading() {
+  // Design 2b (gnss.md section 5.1): the total absolute heading variation of the front end,
+  // read by the track-yaw turn gate at each fix. Only with gnss.align_yaw_from_track (flag off:
+  // nothing runs here).
+  if (!(cfg_.gnss.enabled && cfg_.gnss.align_yaw_from_track)) {
+    return;
+  }
+  const common::Mat3& R = front_.T_w_b.R;
+  const double heading_rad = std::atan2(R(1, 0), R(0, 0));
+  if (have_scan_heading_) {
+    heading_variation_rad_ +=
+        std::abs(std::remainder(heading_rad - last_scan_heading_rad_, 2.0 * kPiRad));
+  }
+  have_scan_heading_ = true;
+  last_scan_heading_rad_ = heading_rad;
 }
 
 void EstimatorCore::first_keyframe(common::Timestamp t, const common::NavState& predicted) {

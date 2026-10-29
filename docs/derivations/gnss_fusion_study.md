@@ -1061,7 +1061,10 @@ Wheels turning at 0.5 m/s on a still body (stuck, lifted), 0.3 m white plus a ra
 | 0.10 m | 21 (median 78 deg off) | 0 | 0 | 0 |
 | 0.20 m | 64 (median 91 deg off) | 37 | 16 (unit-test seeds: 19) | 7 |
 
-Design 2 without wheel data aligns a parked robot at 0.20 m per fix on 16 of 100. A parked robot
+(Fix round 2 replaced the consistency test by a window, section 16.10: 4 of 100 at 0.20 m per
+fix on the probe seeds, 2 of 100 on the test seeds.) Design 2 without wheel data aligns a parked
+robot at 0.20 m per fix on 16 of 100 (its unit-test seeds; 27 of 100 on the design-2 review
+probe's). A parked robot
 whose wheels stop never aligns at any minimum (every segment stationary). NEES is not the
 criterion here: a larger sigma lowers it while the absolute tails grow (review I2). 3 m is the
 smallest minimum that removes the runs beyond 15 deg at 0.02 m per fix and brings the stuck case
@@ -1194,3 +1197,54 @@ changed (the aligner runs per fix), so it was not re-run.
 | M5 | numbers out of step; in-place figure at 10 Hz only | all doc numbers re-checked; 19.5 deg at 5 Hz and 12.9 deg at 10 Hz | |
 | M6 | convergence from a 3-sigma start rested on one sample | test seam `gnss_first_align_yaw_offset_rad`: E prior 20.8 / -15.2 deg off converges to 0.06 deg, no realign | `PipelineComponent.TrackYawConvergesFromEighteenDegrees` |
 | M7 | size | no split (ruling); production code stated in the PR body | |
+
+### 16.10 Fix round 2 of the review
+
+| finding | defect | fix | test |
+| --- | --- | --- | --- |
+| N1 | heading segments took the direction of travel from `x_b`, the wheel path from `x_o`: a 5 deg mount yaw gave NEES 2.8 on a straight track, 90 deg a 90 deg error, 180 deg a silent flip | every direction of travel is the heading of `x_o` (horizontal projection of `R_w_b R_b_o x`, exact for a tilted mount), and the heading segments take their lever arm from o; identical when `T_b_o` is identity | `GnssTrackYaw2b.MountYawSetsTheTravelAxis` (5 / 90 / 180 deg, straight and 1 m circle: NEES 0.81 / 1.03) |
+| N2 (also in design 2) | a GNSS outage over an S-jog cancels in the net heading change and passed the turn gate: aisles, outage 6-16 s, 100 of 100 beyond 3 sigma (median 26 deg off) | the pipeline passes the total absolute heading variation of the front end (summed scan to scan); the turn gate and the wheel-path step check use it | `GnssTrackYaw2b.OutageOverAnSJogIsGated` (6-16 / 8-18 / 10-20 s, with and without wheel data: at most 1 of 100 beyond 3 sigma; without the readings 100 of 100) |
+| N3 | the wheel travel of the consistency check was summed for ever: after T s of spinning the alignment waited for the spun distance (300 s: 150 m), and the stuck drift stayed in Z | consistency window: a mismatch between the GNSS track and the wheel travel since the last mismatch makes the older segments suspect; after `align_yaw_wheel_restart_m` (10 m) of agreeing travel the recent segments replace them. The round-1 coherence term against the wheel travel is implied and was removed | `GnssTrackYaw2b.StuckThenDriveAlignsAfterBoundedTravel` (30 / 60 / 300 s: median 10.9 to 11.9 m, max 17 m, NEES 0.82 to 1.15), `StuckWheelsDriftingGnssEnvelope` (0 / 0 / 2 of 100 at 0.05 / 0.10 / 0.20 m per fix) |
+| m5 | the profile cross term and the `T_b_o` yaw survived all tests | dedicated Monte Carlo of the profile term (and the term now projects the across-step error on each segment: it was conservative by about 1.8x); the mount-yaw test | `ProfileVarianceOfSharedStepsIsConsistent` (NEES 0.98) |
+| m1 | 16 vs 19 of 100 without naming the seeds | the seed set is named where each number appears | |
+| m2 | "ATE unchanged" in the PR body against 0.180 vs 0.160 m | the PR body states 0.180 vs 0.160 m, 10/5, CI [-0.080, +0.011], not significant | |
+| m3 | an odometer that over-reads by 2x or more never aligned, silently | `Stats::n_gnss_wheel_mismatch` (bench.json `n_gnss_wheel_mismatch`) and one warning per streak | |
+| m4 | level mount | the travel axis is the horizontal projection of `x_o`, exact for any mount | |
+
+Window length (`align_yaw_wheel_restart_m`), probe on the review seeds, 100 seeds:
+
+| window | stuck, 0.20 m per fix: aligned | spin 30 / 60 / 300 s, then drive: median distance to the alignment |
+| --- | --- | --- |
+| none (round 1) | 16 | 15.9 / 30.9 / 149.9 m |
+| 3 m | 83 | 3.9 / 3.9 / 3.9 m |
+| 6 m | 16 | 5.9 / 5.9 / 6.9 m |
+| **10 m (shipped)** | **4** | **9.9 / 9.9 / 10.9 m** |
+| 15 m | 4 | 14.9 / 14.9 / 15.9 m |
+
+Mutation check (no-GTSAM private copy, `test_gnss` filter `GnssTrackYaw*:GnssAligner*`): all seven mutants are killed. The round-1 coherence mutant no longer applies because its term was removed; the mutant that disables the mismatch takes its place.
+
+| mutant | killed by |
+| --- | --- |
+| mismatch disabled | `StuckThenDriveAlignsAfterBoundedTravel`, `StuckWheelsDriftingGnssEnvelope` |
+| `p_b_o` dropped from the lever arm | `MountYawSetsTheTravelAxis`, `WheelPathUsesOdometryFrame` |
+| `R_b_o` dropped from the travel axis | `MountYawSetsTheTravelAxis` |
+| per-step turn check dropped | `OutageInTurnDoesNotStall`, `OutageOverAnSJogIsGated` |
+| profile cross term dropped | `ProfileVarianceOfSharedStepsIsConsistent` |
+| hidden-turn sum dropped from the gate | `OutageOverAnSJogIsGated` |
+| no pending restart after a mismatch | `StuckThenDriveAlignsAfterBoundedTravel`, `StuckWheelsDriftingGnssEnvelope` |
+
+Re-runs after fix round 2:
+
+- **Corridor, 15 seeds:** identical to section 16.5 with and without wheel data. On the straight corridor there are no hidden turns and no mismatches, and `T_b_o` is identity.
+- **Box world, 15 seeds:** identical to section 16.6.
+- **E-01..E-03, flag off:** `est.tum` md5 equal to main 99bd5fd.
+- **E-01..E-03, flag on:** 24 s / 9 m, 0.8 deg with a 5.6 deg sigma, 170 factors, ATE 0.002196 m. `n_gnss_wheel_mismatch` is 0.
+- **Bench, E-01, median of 5 interleaved runs:** the turn gate now reads the heading once per scan, but only when the flag is on.
+
+  | build | p50 / p95 | CPU |
+  | --- | --- | --- |
+  | main 99bd5fd | 4.19 / 5.50 ms | 2.54 s |
+  | flag off | 4.20 / 5.44 ms | 2.53 s |
+  | flag on | 4.21 / 5.54 ms | 2.52 s |
+
+  Within noise.

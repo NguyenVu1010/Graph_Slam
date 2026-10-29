@@ -205,7 +205,10 @@ direction of the GNSS track against the body heading instead of fitting front-en
   `gnss.align_yaw_wheel_turns` gives turn-gated segments their direction from the wheel path
   (of the odometry frame `frames.T_b_o`), with `gnss.align_yaw_wheel_slip_frac` as its error;
   `gnss.align_yaw_min_track_wheel_m` (3 m) replaces the minimum track when every segment has
-  wheel data, and the coherence test also compares the GNSS track with the wheel travel. The
+  wheel data, and a consistency window compares the GNSS track with the wheel travel
+  (`gnss.align_yaw_wheel_restart_m`; mismatches in `Stats::n_gnss_wheel_mismatch`, which grows
+  with an odometer that over-reads by 2x or more). The direction of travel is the odometry
+  frame's x axis, and the turn gate sees turns hidden in a GNSS outage. The
   default yaw sigma is 6 deg (proposed; it drops the 10 deg first-factor target, pending the
   owner).
   Waiting for the alignment does not affect the local pose, only the ENU output.
