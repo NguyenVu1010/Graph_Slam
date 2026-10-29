@@ -82,15 +82,33 @@ ros2 launch mss_ros2 mss.launch.py   # config:=<file> overrides the config path
 ```
 
 `mss_node` gets the path of `config/default.yaml` (installed to `share/mss_ros2/config`) as the
-string parameter `config_path` and logs `mss_node up; config_path=...` once; the pipeline is
-not wired to ROS topics yet.
+string parameter `config_path` (and an optional `config_overlay`) and logs `mss_node up; ...`
+once. It subscribes to `/lidar/points` (bridged PointCloud2 with per-point `t` and `ring`),
+`/imu/data`, `/gnss/fix` and `/wheel/odom`, and publishes `/mss/odometry`, `/mss/path`, TF
+`map -> base_link` and `/mss/map` (the global map from `Estimator::export_map()`, 1 Hz,
+transient local). Topics, frame names, QoS depths, timer periods and the GNSS ENU origin are
+ROS parameters of the node; design and parameter list: ADR-024.
+
+Play a bridged bag (the noise bridge's `bag/`, e.g. from `tools/record_scenario.sh` or
+`tools/run_integration.py`'s `data/bridged/bag`) into the node, with RViz:
+
+```sh
+ros2 launch mss_ros2 mss_bag.launch.py bag:=<run>/bag rviz:=true \
+  overlay:=install/mss_ros2/share/mss_ros2/config/sim/warehouse.yaml \
+  origin_lla:="21.0278 105.8342 12.0"   # the scenario's origin_lla; omit to use the first fix
+```
+
+Other arguments: `rate:=1.0`, `config_path:=<default.yaml>`, `body_frame:=base_link` (use
+`imu_link` on Gazebo bags so that their `/tf_static` hangs under the published TF),
+`delay_s:=5.0` (the node must have subscribed before play starts: with 2 s a Gazebo bag lost
+its first second on a loaded desktop), `exit_on_end:=true` (stop when the bag ends).
 
 Docker: `docker/Dockerfile` (usage in its header) builds the same three packages, runs the
-superbuild tests (`colcon test --packages-select multi_sensor_slam`), and installs the bench
-at `/ws/install/multi_sensor_slam/bin/mss_bench`; the image's default command runs the launch
-file. CI then runs the launch check, which passes when the launch is still up after 15 s and
-the startup line was printed (`tools/ci/check_launch.sh [INSTALL_DIR]` also works on any
-machine with ROS 2 Jazzy):
+superbuild and `mss_ros2` tests (`colcon test --packages-select multi_sensor_slam mss_ros2`),
+and installs the bench at `/ws/install/multi_sensor_slam/bin/mss_bench`; the image's default
+command runs the launch file. CI then runs the launch check, which passes when the launch is
+still up after 15 s and the startup line was printed (`tools/ci/check_launch.sh [INSTALL_DIR]`
+also works on any machine with ROS 2 Jazzy):
 
 ```sh
 docker run --rm -v "$PWD:$PWD" -w "$PWD" mss bash tools/ci/check_launch.sh
