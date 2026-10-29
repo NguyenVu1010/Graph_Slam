@@ -687,7 +687,12 @@ TEST(PipelineComponent, BoxWorldGnssOnlyDoesNotDegrade) {
         ate_off_m,
         ate_on_m / ate_off_m,
         static_cast<unsigned long long>(on.stats.n_gnss_factors));
-    EXPECT_GT(on.stats.n_gnss_factors, 0U) << sigma_m;
+    // G13: with gnss.align_check_yaw_sigma (default on) the aligner waits for a 6 deg yaw sigma;
+    // 2.0 m fixes on the 1.67 m circle never reach it, so no GNSS factor is added (the run is
+    // then the LiDAR-only one, which is what the ratio check guards).
+    if (sigma_m <= 0.5) {
+      EXPECT_GT(on.stats.n_gnss_factors, 0U) << sigma_m;
+    }
     EXPECT_LE(ate_on_m, 1.2 * ate_off_m) << sigma_m;
   }
 }

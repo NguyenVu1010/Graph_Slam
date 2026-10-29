@@ -68,8 +68,13 @@ mss_node:
       # front-end positions taken as exact, gnss.md section 4.1). false: no yaw check (previous
       # behaviour). On E-01 (1.0 m fixes on a 1.67 m circle) the 1 m spread is reached at 13 s
       # with a 7.6 deg sigma and the yaw 21 deg off; the noise alone explains it (white, same
-      # error on the true path). Evaluation: gnss_fusion_study.md section 17.
-      align_check_yaw_sigma: false
+      # error on the true path). Evaluation: gnss_fusion_study.md section 17. On since G13
+      # (owner decision 2026-10-29, ADR-025; false restores the previous behaviour): at the 6 deg
+      # of align_yaw_max_sigma_deg E-01 aligns at 14.8 s after 4.4 m with the yaw 15.4 deg off
+      # (2.6 sigma), 214 GNSS factors instead of 223; ATE E-01 0.002183 -> 0.002160 m, E-03
+      # 0.002183 -> 0.002172 m (see docs/baselines/2026-10-29/). Box world and corridor
+      # (15 seeds each) unchanged on every seed.
+      align_check_yaw_sigma: true
       chi2_gate: 7.814727903251178  # chi-square 3 DoF at q = 0.95 (G-02 band 90-99 %), NIS
       # Lock-out guard: after this many chi-square rejections in a row (fixes) the aligner
       # restarts on the current front end (pipeline.md section 5). >= 1. Rule: the window must

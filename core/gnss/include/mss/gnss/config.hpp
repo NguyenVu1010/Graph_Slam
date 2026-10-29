@@ -19,9 +19,9 @@ struct GnssConfig {
   int align_min_pairs = 10;         // pairs needed before the aligner returns T_e_w (>= 1)
   double align_min_spread_m = 1.0;  // m, min RMS horizontal spread of the pairs (> 0)
   // Backlog G1: GnssAligner also waits until its predicted yaw 1-sigma (declared fix variance,
-  // floored at align_yaw_min_var_m2) is at most align_yaw_max_sigma_rad. The struct default
-  // keeps the previous behaviour (no yaw check); load_config overwrites it from YAML.
-  bool align_check_yaw_sigma = false;
+  // floored at align_yaw_min_var_m2) is at most align_yaw_max_sigma_rad. On by default since
+  // G13 (ADR-025); load_config overwrites it from YAML.
+  bool align_check_yaw_sigma = true;
   double chi2_gate = 7.814727903251178;  // NIS threshold, 3 DoF (chi-square q = 0.95) (> 0)
   // Consecutive chi-square rejections (fixes) after which the pipeline restarts the aligner
   // so a front end that drifted during an outage can be re-aligned (docs/derivations/
