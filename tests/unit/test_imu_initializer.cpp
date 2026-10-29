@@ -162,6 +162,51 @@ TEST(ImuInitializer, ErrorsInDocumentedOrder) {
   EXPECT_EQ(init.try_init(Span<const ImuSample>(shaky_gyro)).reason(), "not static");
 }
 
+// ADR-027 known answer: a level body with accelerometer bias b reads f = b + [0, 0, g]. The
+// shipped initialiser tilts by about (-b_y, b_x) / g and sets ba = 0; level start keeps the
+// body level and recovers b exactly, and the window statistics are the same in both modes.
+TEST(ImuInitializer, LevelStartPutsWindowMeanIntoBias) {
+  const Vec3 ba(0.5884, 0.1564, 0.2360);  // m/s^2: the Gazebo E-04 seed-42 draw
+  const Vec3 bg(0.01, -0.02, 0.005);
+  std::vector<ImuSample> w = static_window(Mat3::Identity(), bg);
+  for (ImuSample& s : w) {
+    s.acc_b += ba;
+  }
+  ImuConfig cfg = default_imu_config();
+  const common::Result<InitState> off = ImuInitializer(cfg).try_init(Span<const ImuSample>(w));
+  cfg.init_level_start = true;
+  const common::Result<InitState> on = ImuInitializer(cfg).try_init(Span<const ImuSample>(w));
+  ASSERT_TRUE(off.is_ok()) << off.reason();
+  ASSERT_TRUE(on.is_ok()) << on.reason();
+  // Off: tilt of the bias (rotation vector about x, y of w), ba = 0.
+  const Vec3 tilt = common::so3_log(off.value().R_w_b);
+  EXPECT_NEAR(tilt.y(), -std::atan2(ba.x(), kGravityMps2 + ba.z()), 2e-3);
+  EXPECT_GT(std::abs(tilt.y()), 0.05);
+  EXPECT_TRUE(off.value().bias.ba == Vec3::Zero());
+  // On: level, ba = b, everything else equal.
+  EXPECT_TRUE(on.value().R_w_b == Mat3::Identity());
+  EXPECT_LT((on.value().bias.ba - ba).norm(), 1e-12);
+  EXPECT_TRUE(on.value().bias.bg == off.value().bias.bg);
+  EXPECT_TRUE(on.value().g_w == off.value().g_w);
+  EXPECT_TRUE(on.value().acc_mean_b == off.value().acc_mean_b);
+  EXPECT_TRUE(on.value().acc_mean_cov == off.value().acc_mean_cov);
+  // The specific force at rest is reproduced: ba - R_w_b^T g_w = mean acc.
+  const Vec3 f = on.value().bias.ba - on.value().R_w_b.transpose() * on.value().g_w;
+  EXPECT_LT((f - mean_acc(w)).norm(), 1e-12);
+}
+
+// Level start needs the body z axis up; an upside-down window is an error, not a 2 g bias.
+TEST(ImuInitializer, LevelStartRejectsBodyZDown) {
+  std::vector<ImuSample> w = static_window(Mat3::Identity(), Vec3::Zero());
+  for (ImuSample& s : w) {
+    s.acc_b = Vec3(0.0, 0.0, -kGravityMps2);
+  }
+  ImuConfig cfg = default_imu_config();
+  cfg.init_level_start = true;
+  EXPECT_EQ(ImuInitializer(cfg).try_init(Span<const ImuSample>(w)).reason(),
+            "level start: body z not up");
+}
+
 // "Sample standard deviation" is the n-1 estimator (planner's call).
 TEST(ImuInitializer, StdUsesSampleStdPerAxis) {
   std::vector<ImuSample> w = static_window(Mat3::Identity(), Vec3::Zero());

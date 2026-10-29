@@ -1716,6 +1716,69 @@ TEST(PipelineComponent, GravityFactorCheckRemovesMovingStarts) {
   }
 }
 
+struct TiltRun {
+  double max_abs_dz_m = 0.0;   // max |z_est - z_true| over the run, m
+  double end_dz_m = 0.0;       // z_est - z_true at the last estimate, m
+  Vec3 end_tilt_rad{0, 0, 0};  // (R_true^T e_z) x (R_est^T e_z) at the last estimate, in b
+  std::size_t estimates = 0;
+};
+
+TiltRun tilt_run(const BoxWorldParams& p,
+                 const fs::path& data,
+                 const fs::path& dir,
+                 const std::string& yaml) {
+  const ReplayResult r = replay(data, box_config(p, false, false, dir, yaml));
+  TiltRun out;
+  out.estimates = r.estimates.size();
+  for (const Estimate& e : r.estimates) {
+    const common::NavState truth = test::box_truth(p, e.state.t);
+    const double dz = e.state.T_w_b.p.z() - truth.T_w_b.p.z();
+    out.max_abs_dz_m = std::max(out.max_abs_dz_m, std::abs(dz));
+    out.end_dz_m = dz;
+    const Vec3 up_true = truth.T_w_b.R.transpose() * Vec3::UnitZ();
+    const Vec3 up_est = e.state.T_w_b.R.transpose() * Vec3::UnitZ();
+    out.end_tilt_rad = up_true.cross(up_est);
+  }
+  std::printf(
+      "[ level start ] %s: %zu estimates, max |dz| %.4f m, end dz %.4f m, end tilt (x, y) "
+      "%.2f, %.2f mrad\n",
+      dir.filename().string().c_str(),
+      out.estimates,
+      out.max_abs_dz_m,
+      out.end_dz_m,
+      1e3 * out.end_tilt_rad.x(),
+      1e3 * out.end_tilt_rad.y());
+  return out;
+}
+
+// ADR-027 known answer (docs/derivations/vertical_drift_study.md): a straight run on a level
+// floor (3 s still, 2 s ramp, 15 s at 0.5 m/s, about 8 m) with a constant horizontal
+// accelerometer bias b = (0.3, -0.1, 0) m/s^2 in b. The static window reads b as a tilt, so
+// the shipped initialiser starts tilted by about (-b_y, b_x) / g = (10.2, 30.6) mrad about
+// (x, y) of b, and on a straight run nothing separates them again: the map is built tilted and the
+// estimate climbs about 30 mrad x 8 m. Level start takes b into the bias: no tilt, no climb.
+TEST(PipelineComponent, LevelStartRemovesBiasTilt) {
+  BoxWorldParams p;
+  p.yaw_rate_radps = 1e-4;  // rad/s: an almost straight run
+  p.box_half_m.x() = 30.0;  // m: the run stays inside the box
+  p.acc_bias_b = Vec3(0.3, -0.1, 0.0);
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const TiltRun off = tilt_run(p, dir / "data", dir / "off", "");
+  const TiltRun on =
+      tilt_run(p, dir / "data", dir / "on", "    imu:\n      init_level_start: true\n");
+  ASSERT_GT(off.estimates, 100U);
+  ASSERT_EQ(on.estimates, off.estimates);
+  // Off: the tilt is the bias over g, (-b_y, b_x) / g.
+  constexpr double kG = 9.80665;
+  EXPECT_NEAR(off.end_tilt_rad.y(), 0.3 / kG, 0.2 * 0.3 / kG);
+  EXPECT_NEAR(off.end_tilt_rad.x(), 0.1 / kG, 0.3 * 0.1 / kG);
+  EXPECT_GT(off.max_abs_dz_m, 0.1);
+  // On: tilt and height error stay small.
+  EXPECT_LT(on.end_tilt_rad.norm(), 3e-3);
+  EXPECT_LT(on.max_abs_dz_m, 0.03);
+}
+
 // Records the GNSS frame variable E after each optimize, and the T_e_w of the first GNSS factor
 // (the centre of E's prior).
 class LastFrameObserver : public detail::CoreObserver {

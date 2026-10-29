@@ -292,6 +292,14 @@ chi-square check `backend.static_gravity_check_keyframes` (default 0 = off; > 0 
 that keyframe against `backend.static_gravity_chi2_gate`, counters `n_gravity_factor_removed`
 and `n_gravity_factor_unchecked`) was evaluated and ships off: at rest it removed the factor
 in 6 of 15 GNSS-corridor runs, with statistics that overlap those of starts in motion.
+`imu.init_level_start` (ADR-027, default off) takes the body as level during the init window:
+roll and pitch start at 0 and the window's mean specific force minus gravity becomes the
+initial accelerometer bias. Off, a horizontal bias `b` becomes a tilt `b / g` that a straight
+run never corrects. On Gazebo the map then climbs `|b| / g` per metre (E-04: 0.3 to 0.96 m
+end height error, about 0.03 m with the flag), and E-01's ATE is mostly vertical (0.035 to
+0.095 m, 0.014 to 0.016 m with the flag) (`docs/derivations/vertical_drift_study.md`). It
+assumes a level floor and a level IMU mount: a slope or mount tilt `theta` becomes the tilt
+error instead.
 
 `backend.relative_factor` (default `decoupled`, ADR-021) selects the form of the LiDAR and
 loop relative-pose factors: `decoupled` (translation and rotation residuals separate, exact

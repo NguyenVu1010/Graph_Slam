@@ -49,6 +49,13 @@ mss_node:
       init_max_mean_gyro_radps: 0.15
       init_max_wheel_speed_mps: 0.1
       init_gravity_check_sigma: 3.0
+      # Level start (ADR-027, docs/derivations/vertical_drift_study.md): the robot rests on a
+      # level floor at initialisation, so the initial roll and pitch are 0 and the window's
+      # mean specific force minus gravity is accelerometer bias. A static window cannot tell
+      # tilt from horizontal bias (ADR-020); without this the bias b becomes a tilt b/g that
+      # nothing corrects until the robot turns. Gazebo E-04, bias 0.59 m/s^2: tilt 59 -> ~0
+      # mrad, end vertical error 0.95 -> ~0.03 m. Requires the IMU mounted level in b.
+      init_level_start: false   # flag; off = roll/pitch from the window mean, bias 0
 
     gnss:
       # Off until multipath (E-06) and outage (E-05) are evaluated end to end (CLAUDE.md DoD 3);

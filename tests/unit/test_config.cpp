@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include "mss/common/lie.hpp"
+#include "mss/imu/config.hpp"
 #include "mss/pipeline/config.hpp"
 
 namespace {
@@ -516,6 +517,15 @@ TEST(Config, StaticGravityFactorKey) {
   EXPECT_DOUBLE_EQ(cfg.value().imu.init_max_mean_gyro_radps, 0.15);
   EXPECT_DOUBLE_EQ(cfg.value().imu.init_max_wheel_speed_mps, 0.1);
   EXPECT_DOUBLE_EQ(cfg.value().imu.init_gravity_check_sigma, 3.0);
+  // ADR-027 level start: shipped off (the previous behaviour), a bool.
+  EXPECT_FALSE(cfg.value().imu.init_level_start);
+  EXPECT_FALSE(mss::imu::ImuConfig{}.init_level_start);
+  const auto level = parse_config(base, overlay("    imu:\n      init_level_start: true\n"));
+  ASSERT_TRUE(level.is_ok()) << level.reason();
+  EXPECT_TRUE(level.value().imu.init_level_start);
+  const auto level_bad = parse_config(base, overlay("    imu:\n      init_level_start: 2.5\n"));
+  ASSERT_FALSE(level_bad.is_ok());
+  EXPECT_TRUE(mentions(level_bad.reason(), "imu.init_level_start")) << level_bad.reason();
   // Consistency check shipped off (0); 0 and positive values parse, negative ones do not.
   EXPECT_EQ(cfg.value().backend.static_gravity_check_keyframes, 0);
   EXPECT_EQ(mss::backend::BackendConfig{}.static_gravity_check_keyframes, 0);

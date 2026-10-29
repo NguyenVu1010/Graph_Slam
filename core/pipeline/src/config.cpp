@@ -452,6 +452,7 @@ Config read_config(Reader& r) {
   r.field("imu.init_max_mean_gyro_radps", c.imu.init_max_mean_gyro_radps, Range::kPositive);
   r.field("imu.init_max_wheel_speed_mps", c.imu.init_max_wheel_speed_mps, Range::kPositive);
   r.field("imu.init_gravity_check_sigma", c.imu.init_gravity_check_sigma, Range::kPositive);
+  r.field("imu.init_level_start", c.imu.init_level_start);
 
   r.field("gnss.enabled", c.gnss.enabled);
   r.field("gnss.sigma_h_m", c.gnss.sigma_h_m, Range::kNonNegative);
