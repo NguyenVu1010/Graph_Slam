@@ -126,6 +126,7 @@ Dependency direction is fixed: apps -> pipeline -> modules -> common.
 - When a task is ambiguous about frames or units, ask instead of guessing.
 - C++ builds/tests on the dev machine go through `tools/wsl/build.sh [--no-gtsam] [--target T]`
   from WSL (Windows has no toolchain); `colcon build` is for the ROS 2 workspace on Ubuntu/CI.
+  It serialises builds through `~/.mss-build.lock` (WSL has ~10 GB RAM); do not wrap it in `flock`.
 - Interface headers under `core/<module>/include/mss/<module>/*.hpp` are the contract.
   Changing a signature needs the controller's or owner's agreement and a note in the PR.
 - Build with `tools/wsl/build.sh` (or `colcon build --parallel-workers 2` in the ROS 2
