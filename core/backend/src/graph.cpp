@@ -23,6 +23,7 @@
 #include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 #include <gtsam/inference/Symbol.h>
+#include <gtsam/linear/GaussianFactorGraph.h>
 #include <gtsam/linear/JacobianFactor.h>
 #include <gtsam/linear/LossFunctions.h>
 #include <gtsam/linear/NoiseModel.h>
@@ -37,6 +38,7 @@
 #include <tbb/global_control.h>
 #endif
 
+#include "mss/common/lie.hpp"
 #include "mss/common/logger.hpp"
 
 #include "constants.hpp"
@@ -899,6 +901,57 @@ common::PoseCovariance Graph::marginal_cov(common::KeyId k) const {
     common::log_warn(std::string("backend: marginal_cov failed: ") + e.what());
     return nan;
   }
+}
+
+// Joint marginal of (X_i, X_j) from the iSAM2 Bayes tree (BayesTree::joint: shortcuts to the
+// lowest common ancestor clique, then a dense 12x12 information matrix), inverted, each 6x6
+// block permuted to [rho, phi], then mapped to the relative pose (loop_closure.md section 9).
+common::Result<common::PoseCovariance> Graph::relative_pose_cov(common::KeyId i,
+                                                                common::KeyId j) const {
+  using R = common::Result<common::PoseCovariance>;
+  const Impl& m = *impl_;
+  if (!m.known(i) || !m.known(j)) {
+    return R::error("unknown keyframe");
+  }
+  if (i == j) {
+    return R::error("i == j");
+  }
+  const gtsam::Key x_i = detail::pose_key(i);
+  const gtsam::Key x_j = detail::pose_key(j);
+  if (!m.last_estimate.exists(x_i) || !m.last_estimate.exists(x_j)) {
+    return R::error("keyframe not optimised");
+  }
+  Eigen::Matrix<double, 12, 12> P_g;
+  try {
+    const gtsam::GaussianFactorGraph::shared_ptr joint = m.isam->joint(x_i, x_j);
+    const gtsam::Ordering order{x_i, x_j};
+    const Eigen::MatrixXd info = joint->hessian(order).first;
+    if (info.rows() != 12 || info.cols() != 12) {
+      return R::error("relative marginal failed: joint is not 12x12");
+    }
+    const Eigen::Matrix<double, 12, 12> info12 = info;
+    const Eigen::Matrix<double, 12, 12> info_sym = 0.5 * (info12 + info12.transpose());
+    const Eigen::LLT<Eigen::Matrix<double, 12, 12>> llt(info_sym);
+    if (llt.info() != Eigen::Success) {
+      return R::error("relative marginal failed: joint information not positive definite");
+    }
+    P_g = llt.solve(Eigen::Matrix<double, 12, 12>::Identity());
+  } catch (const std::exception& e) {
+    return R::error(std::string("relative marginal failed: ") + e.what());
+  }
+  const Mat6 P_ii = detail::permute_cov(Mat6(P_g.topLeftCorner<6, 6>()));
+  const Mat6 P_jj = detail::permute_cov(Mat6(P_g.bottomRightCorner<6, 6>()));
+  const Mat6 P_ij = detail::permute_cov(Mat6(P_g.topRightCorner<6, 6>()));
+  const common::Pose T_w_bi = detail::from_gtsam(m.last_estimate.at<gtsam::Pose3>(x_i));
+  const common::Pose T_w_bj = detail::from_gtsam(m.last_estimate.at<gtsam::Pose3>(x_j));
+  const Mat6 Ad = common::se3_adj(T_w_bj.inverse() * T_w_bi);  // Ad(T_bj_bi)
+  const Mat6 cov =
+      Ad * P_ii * Ad.transpose() - Ad * P_ij - P_ij.transpose() * Ad.transpose() + P_jj;
+  const Mat6 sym = 0.5 * (cov + cov.transpose());
+  if (!is_spd<6>(sym)) {
+    return R::error("relative marginal failed: result not positive definite");
+  }
+  return R::ok(sym);
 }
 
 common::Result<common::NavState> Graph::keyframe_state(common::KeyId k) const {

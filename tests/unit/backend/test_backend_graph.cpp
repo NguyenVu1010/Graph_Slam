@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -642,6 +643,107 @@ TEST(BackendGraph, MarginalCovIsMssOrder) {
       Vec3::Constant(cfg.prior_rot_sigma_rad * cfg.prior_rot_sigma_rad);
   const Mat6 cov = g.marginal_cov(0);
   EXPECT_LT((cov - expected).norm(), 1e-9 * expected.norm());
+}
+
+// --- relative_pose_cov (ADR-026 amendment, loop_closure.md section 9) -----------------------
+
+// A random SPD 6x6 covariance in [rho, phi] with m^2 / rad^2 scales (fixed seed).
+Mat6 random_cov(std::mt19937& rng, double sig_m, double sig_rad) {
+  Mat6 A;
+  std::normal_distribution<double> n(0.0, 1.0);
+  for (int r = 0; r < 6; ++r) {
+    for (int c = 0; c < 6; ++c) {
+      A(r, c) = n(rng);
+    }
+  }
+  Vec6 s;
+  s << sig_m, sig_m, sig_m, sig_rad, sig_rad, sig_rad;
+  const Mat6 B = s.asDiagonal() * A;
+  const Mat6 C = 0.25 * B * B.transpose() + Mat6(s.cwiseAbs2().asDiagonal());
+  return C;
+}
+
+// Known answer: a noise-free chain 0 -> 1 -> 2 of exact SE(3) relative factors with full
+// covariances C1, C2 (linearised at the truth, so first order is exact). The relative pose
+// T_02 = Z1 Exp(n1) Z2 Exp(n2) = Z1 Z2 Exp(Ad(Z2^-1) n1 + n2), so
+//   cov(0,1) = C1,  cov(1,2) = C2,  cov(0,2) = Ad(Z2^-1) C1 Ad(Z2^-1)^T + C2,
+// whatever the prior on keyframe 0.
+TEST(BackendGraph, RelativePoseCovKnownAnswerChain) {
+  BackendConfig cfg = default_backend_config();
+  cfg.relative_factor = RelativeFactor::kSe3Exact;
+  Graph g(cfg, default_imu_config(), Vec3::Zero());
+  std::mt19937 rng(7);
+  const Pose T0 = test::pose_from(Vec3(0.1, -0.2, 0.3), Vec3(1.0, 2.0, 0.5));
+  const Pose Z1 = test::pose_from(Vec3(0.05, 0.02, 0.4), Vec3(1.5, 0.3, -0.1));
+  const Pose Z2 = test::pose_from(Vec3(-0.03, 0.06, -0.7), Vec3(0.8, -1.2, 0.2));
+  const Mat6 C1 = random_cov(rng, 0.03, 0.01);
+  const Mat6 C2 = random_cov(rng, 0.05, 0.02);
+  const Pose truth[3] = {T0, T0 * Z1, T0 * Z1 * Z2};
+  for (KeyId k = 0; k < 3; ++k) {
+    NavState x;
+    x.t = common::Timestamp{static_cast<std::int64_t>(k) * 1'000'000'000};
+    x.T_w_b = truth[k];
+    g.add_keyframe(x.t, x);
+  }
+  g.add_lidar_factor(0, 1, Z1, C1, nullptr);
+  g.add_lidar_factor(1, 2, Z2, C2, nullptr);
+  ASSERT_TRUE(g.optimize().is_ok());
+  const common::Result<Mat6> r01 = g.relative_pose_cov(0, 1);
+  const common::Result<Mat6> r12 = g.relative_pose_cov(1, 2);
+  const common::Result<Mat6> r02 = g.relative_pose_cov(0, 2);
+  ASSERT_TRUE(r01.is_ok()) << r01.reason();
+  ASSERT_TRUE(r12.is_ok()) << r12.reason();
+  ASSERT_TRUE(r02.is_ok()) << r02.reason();
+  const Mat6 Ad = common::se3_adj(Z2.inverse());
+  const Mat6 expect02 = Ad * C1 * Ad.transpose() + C2;
+  EXPECT_LT((r01.value() - C1).norm(), 1e-6 * C1.norm());
+  EXPECT_LT((r12.value() - C2).norm(), 1e-6 * C2.norm());
+  EXPECT_LT((r02.value() - expect02).norm(), 1e-6 * expect02.norm());
+}
+
+// Loopy graph (B-02 square with its loop, noisy): two independent checks of the joint.
+//   1. Keyframe 0 pinned by a tight prior: cov(0, j) -> marginal_cov(j) (iSAM2's own
+//      single-variable marginal, a different code path).
+//   2. Inverse relation: T_ji = T_ij^-1, so cov(j, i) = Ad(T_ij) cov(i, j) Ad(T_ij)^T.
+TEST(BackendGraph, RelativePoseCovConsistentOnLoopGraph) {
+  BackendConfig cfg = default_backend_config();
+  cfg.prior_pos_sigma_m = 1e-6;
+  cfg.prior_rot_sigma_rad = 1e-6;
+  const test::Scenario s = test::square_loop(true, 3);
+  Graph g(cfg, default_imu_config(), Vec3::Zero());
+  run_square(g, s, 2);
+  for (KeyId j = 1; j < 5; ++j) {
+    const common::Result<Mat6> r = g.relative_pose_cov(0, j);
+    ASSERT_TRUE(r.is_ok()) << r.reason();
+    const Mat6 m = g.marginal_cov(j);
+    EXPECT_LT((r.value() - m).norm(), 1e-4 * m.norm()) << "keyframe " << j;
+  }
+  for (KeyId i = 1; i < 4; ++i) {
+    for (KeyId j = i + 1; j < 5; ++j) {
+      const common::Result<Mat6> rij = g.relative_pose_cov(i, j);
+      const common::Result<Mat6> rji = g.relative_pose_cov(j, i);
+      ASSERT_TRUE(rij.is_ok() && rji.is_ok());
+      const Pose T_ij = state_or_fail(g, i).T_w_b.inverse() * state_or_fail(g, j).T_w_b;
+      const Mat6 expect = common::transform_covariance(rij.value(), T_ij);
+      EXPECT_LT((rji.value() - expect).norm(), 1e-6 * expect.norm()) << i << " " << j;
+    }
+  }
+}
+
+TEST(BackendGraph, RelativePoseCovErrors) {
+  Graph g(default_backend_config(), default_imu_config(), Vec3::Zero());
+  EXPECT_FALSE(g.relative_pose_cov(0, 1).is_ok());  // unknown
+  NavState x0;
+  g.add_keyframe(x0.t, x0);
+  NavState x1;
+  x1.t = common::Timestamp{1'000'000'000};
+  g.add_keyframe(x1.t, x1);
+  EXPECT_FALSE(g.relative_pose_cov(0, 0).is_ok());  // i == j
+  EXPECT_FALSE(g.relative_pose_cov(0, 1).is_ok());  // not optimised
+  Mat6 C = Mat6::Identity() * 1e-4;
+  g.add_lidar_factor(0, 1, Pose{}, C, nullptr);
+  ASSERT_TRUE(g.optimize().is_ok());
+  EXPECT_TRUE(g.relative_pose_cov(0, 1).is_ok());
 }
 
 }  // namespace

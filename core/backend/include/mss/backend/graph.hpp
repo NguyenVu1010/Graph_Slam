@@ -239,6 +239,23 @@ class Graph {
   /// Hot path: no. Tests: B-02, B-04.
   common::PoseCovariance marginal_cov(common::KeyId k) const;
 
+  /// Marginal covariance of the relative pose T_bi_bj = T_w_bi^-1 * T_w_bj of keyframes `i`
+  /// and `j` as of the last successful optimize(): 6x6 [rho, phi] (mss order), right
+  /// perturbation of T_bi_bj (frame b_j), m^2 / rad^2 blocks. From the joint marginal P of
+  /// (X_i, X_j) (iSAM2 Bayes tree, BayesTree::joint): with right perturbations of both poses,
+  /// d(T_bi_bj) = -Ad(T_bj_bi) d_i + d_j, so
+  ///   cov = Ad P_ii Ad^T - Ad P_ij - P_ji Ad^T + P_jj,   Ad = Ad(T_bj_bi)
+  /// (docs/derivations/loop_closure.md section 9). Used by the loop-closure correction gate
+  /// (ADR-026 amendment). Additive API; no factor or estimate is changed.
+  /// Cost: one joint marginal on the Bayes tree, about the cost of the shortcut from the
+  ///   clique of `i` to the lowest common ancestor with `j` (j = the newest keyframe: near the
+  ///   root); no full re-factorisation (gtsam::Marginals is not used).
+  /// Errors (Result::error): "unknown keyframe"; "i == j"; "keyframe not optimised";
+  ///   "relative marginal failed: <GTSAM message>" (also for a non-finite or not positive
+  ///   definite result); "built without GTSAM" in the stub. Hot path: no.
+  /// Tests: BackendGraph.RelativePoseCovKnownAnswerChain, RelativePoseCovMatchesBatchMarginals.
+  common::Result<common::PoseCovariance> relative_pose_cov(common::KeyId i, common::KeyId j) const;
+
   /// State of keyframe `k` as of the last successful optimize(): T_w_b from the iSAM2
   /// estimate; v_w_b and bias from the estimate when those variables are in the graph
   /// (a keyframe with no IMU factor has none), else from the keyframe's initial guess
