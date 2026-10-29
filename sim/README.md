@@ -349,13 +349,15 @@ It chains the existing tools: `record_scenario.sh` (Gazebo, then the noise bridg
 (`bag_to_mssdata.py`, then `mss_bench ... --map-out run/E-01/map.pcd`, then ATE) into
 `<run-id>/run/`, then `python -m mss_eval map-png` (eval/README.md "Map picture") into
 `<run-id>/map.png`. `--bag <dir>` takes an earlier `record_scenario.sh` output of the same
-scenario (`bag/` + `gt.tum`) and skips the recording. `map_demo.json` holds the wall time per
+scenario (`bag/` + `gt.tum`) and skips the recording. `map_demo.json` holds the scenario id,
+the E-01 gate verdict (`gate`), the wall time per
 step, the E-01 ATE and bench counters, the bench's `map:` line and the map-png result. The
 bench output sits in `run/E-01/` for every scenario: that is the harness's test slot, not the
 scenario.
 The picture uses the scenario's `pipeline_config` (for E-04 the degeneracy-off one). The E-01
 gate inside `run_integration.py` compares against the synthetic baselines, so a Gazebo bag
-"fails" it; the demo reports that and still draws the map. Exit 0 = picture written, 2 = a
+"fails" it on the ATE; the demo records that in `map_demo.json` (`gate`) and still draws the
+map. A failed or timed-out bench (E-01 `bench_exit` not 0) is not accepted: exit 2. Exit 0 = picture written, 2 = a
 step failed (the message names its log). Wrap it in `flock ~/.mss-build.lock` when another
 heavy job may run.
 
