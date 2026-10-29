@@ -47,6 +47,11 @@ MssNode::MssNode(const rclcpp::NodeOptions& options)
   if (!cfg) {
     throw std::invalid_argument("config error (" + params_.config_path + "):\n" + cfg.reason());
   }
+  if (params_.frames.body.empty()) {
+    params_.frames.body = cfg.value().frames.body;  // the rig's b frame (ADR-024 section 3)
+  }
+  require(!params_.frames.body.empty() && params_.frames.body != params_.frames.world,
+          "tf.body_frame: empty in the parameter and in frames.body, or equal to tf.world_frame");
   est_ = std::make_unique<mss::pipeline::Estimator>(cfg.value());
   scan_.reserve(cfg.value().realtime.max_points_per_scan);
   gnss_sigma_.sigma_h_m = cfg.value().gnss.sigma_h_m;
@@ -151,8 +156,7 @@ NodeParams MssNode::read_params() {
   require(!p.topic_lidar.empty() && !p.topic_imu.empty() && !p.topic_gnss.empty() &&
               !p.topic_odom.empty(),
           "topics.*: must not be empty");
-  require(!p.frames.world.empty() && !p.frames.body.empty() && p.frames.world != p.frames.body,
-          "tf.world_frame / tf.body_frame: must be non-empty and different");
+  require(!p.frames.world.empty(), "tf.world_frame: must be non-empty");
   require(
       p.qos_depth_lidar > 0 && p.qos_depth_imu > 0 && p.qos_depth_gnss > 0 && p.qos_depth_odom > 0,
       "qos_depth.*: must be > 0");

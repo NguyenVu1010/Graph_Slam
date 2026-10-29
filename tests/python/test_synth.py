@@ -139,7 +139,7 @@ def test_joint_states_and_gt_circle(raw_bag: tuple[Path, SynthInfo]) -> None:
 def test_tf_static_identity(raw_bag: tuple[Path, SynthInfo]) -> None:
     ((_, msg),) = _read(raw_bag, "/tf_static")
     (tf,) = msg.transforms
-    assert (tf.header.frame_id, tf.child_frame_id) == ("base_link", "lidar_link")
+    assert (tf.header.frame_id, tf.child_frame_id) == ("imu_link", "lidar_link")
     assert (tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z) == (
         0,
         0,
@@ -272,7 +272,7 @@ def test_t_b_l_written_and_used(ramp_bag: tuple[Path, SynthInfo]) -> None:
     ((_, msg),) = _read(ramp_bag, "/tf_static")
     (tf,) = msg.transforms
     tr, rot = tf.transform.translation, tf.transform.rotation
-    assert (tf.header.frame_id, tf.child_frame_id) == ("base_link", "lidar_link")
+    assert (tf.header.frame_id, tf.child_frame_id) == ("imu_link", "lidar_link")
     assert (tr.x, tr.y, tr.z) == _T_B_L[0]
     assert (rot.w, rot.x, rot.y, rot.z) == _T_B_L[1]  # ROS fields x y z w, compared as w x y z
 

@@ -85,7 +85,7 @@ ros2 launch mss_ros2 mss.launch.py   # config:=<file> overrides the config path
 string parameter `config_path` (and an optional `config_overlay`) and logs `mss_node up; ...`
 once. It subscribes to `/lidar/points` (bridged PointCloud2 with per-point `t` and `ring`),
 `/imu/data`, `/gnss/fix` and `/wheel/odom`, and publishes `/mss/odometry`, `/mss/path`, TF
-`map -> base_link` and `/mss/map` (the global map from `Estimator::export_map()`, 1 Hz,
+`map -> <frames.body>` (`imu_link`, the IMU) and `/mss/map` (the global map from `Estimator::export_map()`, 1 Hz,
 transient local). Topics, frame names, QoS depths, timer periods and the GNSS ENU origin are
 ROS parameters of the node; design and parameter list: ADR-024.
 
@@ -98,16 +98,33 @@ ros2 launch mss_ros2 mss_bag.launch.py bag:=<run>/bag rviz:=true \
   origin_lla:="21.0278 105.8342 12.0"   # the scenario's origin_lla; omit to use the first fix
 ```
 
-Other arguments: `rate:=1.0`, `config_path:=<default.yaml>`, `body_frame:=base_link` (use
-`imu_link` on Gazebo bags so that their `/tf_static` hangs under the published TF),
+Other arguments: `rate:=1.0`, `config_path:=<default.yaml>`, `body_frame:=` (empty: the
+config's `frames.body`, `imu_link`, the parent of `lidar_link` in the sim bags' `/tf_static`),
 `delay_s:=5.0` (the node must have subscribed before play starts: with 2 s a Gazebo bag lost
 its first second on a loaded desktop), `exit_on_end:=true` (stop when the bag ends).
+
+Live from Gazebo instead of a bag (desktop with Gazebo Harmonic; `PYTHONPATH` must hold the
+`sim/` Python dependencies, see `sim/README.md` "Live"):
+
+```sh
+ros2 launch mss_ros2 mss_live.launch.py scenario:=sim/scenarios/E-01.yaml rviz:=true
+```
+
+It starts Gazebo paused with the raw sensor topics under `/sim/raw`, the online noise node
+(`mss_sim.live_node`, the offline bridge's models), `mss_node` with the scenario's overlay and
+ENU origin, and RViz, then unpauses once every consumer has subscribed. Arguments: `rtf:=1.0`
+(real-time factor), `headless:=true` (`false` opens the Gazebo GUI), `render_engine:=ogre2`,
+`seed:=` (default: the scenario's), `assets_dir:=` (default `results/live/<id>/assets`),
+`config_path:=`, `overlay:=` (default: the scenario's `pipeline_config`), `body_frame:=`,
+`exit_on_end:=true` (shut down at `duration_s` + 2 s of sim time; by default the world pauses
+there and everything stays up).
 
 Docker: `docker/Dockerfile` (usage in its header) builds the same three packages, runs the
 superbuild and `mss_ros2` tests (`colcon test --packages-select multi_sensor_slam mss_ros2`),
 and installs the bench at `/ws/install/multi_sensor_slam/bin/mss_bench`; the image's default
 command runs the launch file. CI then runs the launch check, which passes when the launch is
-still up after 15 s and the startup line was printed (`tools/ci/check_launch.sh [INSTALL_DIR]`
+still up after 15 s and the startup line was printed, and the bag and live launch files load
+(`--show-args`) (`tools/ci/check_launch.sh [INSTALL_DIR]`
 also works on any machine with ROS 2 Jazzy):
 
 ```sh

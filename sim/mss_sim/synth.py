@@ -32,7 +32,8 @@ _F32 = 7  # sensor_msgs/PointField FLOAT32
 _RAW_FIELDS = ("x", "y", "z", "intensity")
 _DEFAULT_PROFILE = Path(__file__).resolve().parents[1] / "noise" / "default.yaml"
 _N_SPAWN, _SPAWN_IMU = 5, 3  # SeedSequence children: [lidar, gnss, odom, imu, mutate]
-_FRAME_WORLD, _FRAME_BODY, _FRAME_LIDAR = "map", "base_link", "lidar_link"
+# Body frame b = the IMU, named as `frames.body` of config/default.yaml (ADR-024 section 3).
+_FRAME_WORLD, _FRAME_BODY, _FRAME_LIDAR = "map", "imu_link", "lidar_link"
 
 
 # (translation_m, quaternion_wxyz): T_b_l, LiDAR in body, Hamilton order (w, x, y, z).
