@@ -47,3 +47,9 @@ mss_add_test(test_gnss_corridor_study test_gnss_corridor_study.cpp)
 target_include_directories(test_gnss_corridor_study PRIVATE ${CMAKE_SOURCE_DIR}/core/pipeline/src)
 target_compile_definitions(test_gnss_corridor_study PRIVATE
   MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)
+
+# pipeline: global map export (Estimator::visit_map / export_map) on the box world and corridor.
+mss_add_test(test_map_export_component test_map_export_component.cpp)
+target_include_directories(test_map_export_component PRIVATE ${CMAKE_SOURCE_DIR}/core/pipeline/src)
+target_compile_definitions(test_map_export_component PRIVATE
+  MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)

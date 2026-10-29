@@ -16,6 +16,7 @@
 #include "mss/pipeline/merge_order.hpp"
 
 #include "estimator_core.hpp"
+#include "map_downsample.hpp"
 
 namespace mss::pipeline {
 namespace {
@@ -368,6 +369,35 @@ Estimator::Stats Estimator::stats() const {
     out.push_scan_us_p95 = nearest_rank(sorted, n, 95, 100);
   }
   return out;
+}
+
+common::Result<MapExportInfo> Estimator::visit_map(const MapKeyframeVisitor& visit) const {
+  const MapExportInfo info = impl_->core->visit_map(visit);
+  if (info.n_keyframes == 0 && info.n_no_pose > 0) {
+    return common::Result<MapExportInfo>::error(
+        "map export: no stored keyframe has a backend pose");
+  }
+  return common::Result<MapExportInfo>::ok(info);
+}
+
+common::Result<MapExportInfo> Estimator::export_map(std::vector<Eigen::Vector3f>& out) const {
+  out.clear();
+  common::Result<MapExportInfo> r = visit_map([&out](const MapKeyframe& kf) {
+    const common::Span<const float> xyz = kf.xyz_l;
+    const std::size_t n = xyz.size() / 3;
+    for (std::size_t i = 0; i < n; ++i) {
+      const common::Vec3 p_l(xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]);
+      const common::Vec3 p_w = kf.T_w_l * p_l;
+      out.emplace_back(p_w.cast<float>());
+    }
+  });
+  if (!r.is_ok()) {
+    out.clear();
+    return r;
+  }
+  detail::voxel_centroids(out, impl_->cfg.map_export.voxel_m);
+  r.value().n_points_out = out.size();
+  return r;
 }
 
 }  // namespace mss::pipeline
