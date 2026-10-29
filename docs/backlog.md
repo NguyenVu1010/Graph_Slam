@@ -54,13 +54,13 @@ Each item names where its numbers live.
 
 | # | Item | Severity |
 |---|------|----------|
-| M1 | Done in H1 (PR pending): `map_export.voxel_m` must be 0 (off) or >= 0.001 (1 mm), checked in `load_config` (a smaller edge overflows the int64 voxel index; 1 mm is far below any LiDAR map resolution). | Important |
+| M1 | Done in H1 (PR pending): `map_export.voxel_m` must be 0 (off) or >= 0.001 (1 mm), checked in `load_config` and guarded again in `voxel_centroids` (tiny edge unchanged, non-finite or huge points dropped) (a smaller edge overflows the int64 voxel index; 1 mm is far below any LiDAR map resolution). | Important |
 | M2 | Done in H1 (PR pending): `mss_bench` checks `--map-out` (not a directory, parent exists, a probe file can be created) before the replay and exits 2. | Important |
 | M3 | `FollowsBackendCorrection` has no independent truth for the moved map, so it passes even with stale poses. | Important |
 | M4 | Map export takes no lock. A 1 Hz export from the ROS node during `optimize()` becomes a data race once the ADR-005 threads exist. | Important |
 | M5 | No-GTSAM builds cannot export, because the stub backend has no keyframe poses (needs an ADR-016 amendment). | Minor |
 | M6 | Keyframes beyond `map.max_keyframes` are missing from the map; export cost at 1000 keyframes on the Pi 5 is not measured; export stats are not in `bench.json`. | Minor |
-| M7 | Done in H1 (PR pending): `write_pcd` writes `<path>.tmp` with `std::ofstream` (portable path) and renames; `MapExportInfo` counters are all `std::size_t`; doc comments name `test_map_export_component`. | Minor |
+| M7 | Done in H1 (PR pending): `write_pcd` writes `<path>.tmp` with `std::ofstream` (portable path), fsyncs (POSIX) and renames, with a documented guarantee and a fault-injection test of the cleanup; `MapExportInfo` counters are all `std::size_t`; doc comments name `test_map_export_component`. | Minor |
 
 ## Map demo (A2)
 
@@ -80,7 +80,7 @@ Each item names where its numbers live.
 | R1 | Done in H1 (PR pending): `origin_from_fix` also requires `abs(lat) <= 90` and `abs(lon) <= 180`; an impossible first fix is skipped and counted in `gnss before origin`. | Important |
 | R2 | `/mss/path` grows without bound and is republished in full on every estimate: about 18k poses (about 1.3 MB) at 10 Hz after 30 min, copied on the executor thread, delaying the IMU callbacks. Cap or decimate it, or publish a keyframe path at the map rate (review I-2). | Important |
 | R3 | With `use_sim_time` rclcpp's TimeSource spawns its own clock thread (`NodeOptions::use_clock_thread`, default true). It never touches the Estimator, but ADR-024 says "one thread": note it in the ADR or set `use_clock_thread(false)` (review I-4). | Important |
-| R4 | Done in H1 (PR pending): `StampGate` separates the check from the commit; `on_lidar` commits the stamp only after the cloud converted. | Important |
+| R4 | Done in H1 (PR pending): `StampGate` separates the check from the commit; `on_lidar` commits the stamp only after the cloud converted; `on_gnss` likewise commits only after the origin/range check. | Important |
 | R5 | Bag loop or clock reset: the node only skips (ADR-024) until the stamps pass the old maximum, so after `ros2 bag play --loop` it stays idle. Add an opt-in reset (rebuild the Estimator, clear the path) on a backward jump above a threshold. | Important |
 | R6 | No launch smoke test (play a tiny bag, check `/mss/path`): it needs the sim Python stack in the ROS image or a checked-in bag of about 3 s. clang-tidy was not run on the new files (the colcon build exports no `compile_commands.json`) (review M-7). | Important |
 | R7 | `ros2 bag play --delay` (5 s default) is a guess: with 2 s the node lost the first second of a Gazebo bag. Start the player paused and resume once the node has matched its four subscriptions. | Important |
@@ -97,8 +97,8 @@ Each item names where its numbers live.
 | R18 | The node is not bit-for-bit reproducible by design (processing depends on arrival time against the timer); it matched `mss_bench` to 1e-8 m here, but that is not guaranteed under load. | Minor |
 | R19 | The RViz screenshot from `xwd` has false colours (channel order of the XWD-to-PNG step); evidence quality only (review M-5). | Minor |
 | R20 | PR size: about 1650 lines, four times the 400-line target; it splits into conversions plus tests, then node plus launch (review M-6). | Minor |
-| R21 | Later GNSS fixes (after the origin) are not range-checked: `gnss_from_navsat` runs `lla_to_enu` on any latitude or longitude, so a garbage fix after a good origin gives a garbage ENU point (the estimator's gating may reject it). Found in H1 (R1). | Minor |
-| R22 | The `on_lidar` ordering fix (R4) is covered by a `StampGate` unit test only; no node-level test publishes a malformed then a good cloud (needs rclcpp in the test with the node's parameters). Found in H1. | Minor |
+| R21 | Done in H1 (PR pending): every GNSS fix is range-checked (`fix_in_range`), not only the origin; an impossible fix is skipped, counted in `convert_errors` and does not advance the stamp gate. | Minor |
+| R22 | Done in H1 (PR pending): `test_mss_node` feeds the node callbacks directly (malformed cloud with a later stamp then a good one; impossible first GNSS fix then a good one; later impossible fix). | Minor |
 
 ## Live sim (B3)
 
