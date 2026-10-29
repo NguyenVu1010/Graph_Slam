@@ -13,7 +13,7 @@ Mục 13.6, mục 1 đề xuất gắn chúng thành factor sau khi căn chỉnh
 
 ## Quyết định
 
-1. **Cờ** `gnss.attach_prealign_fixes` (mặc định `false`, hành vi cũ) và **giới hạn bộ đệm** `gnss.prealign_max_fixes` (fix, >= 1, mặc định 128 = 25,6 s ở 5 Hz), cả hai được kiểm tra khi khởi động. Khi cờ tắt không có gì thay đổi: không cấp phát thêm, cùng đường mã (`est.tum` của E-01..E-03 trùng md5 với main).
+1. **Cờ** `gnss.attach_prealign_fixes` (mặc định `false`, hành vi cũ) và **giới hạn bộ đệm** `gnss.prealign_max_fixes` (fix, >= 1, mặc định 128 = 25,6 s ở 5 Hz; ADR-023 nâng lên 320 vì thiết kế 2 có thể căn chỉnh muộn), cả hai được kiểm tra khi khởi động. Khi cờ tắt không có gì thay đổi: không cấp phát thêm, cùng đường mã (`est.tum` của E-01..E-03 trùng md5 với main).
 2. **Bộ đệm** (`GnssFusion`, nội bộ pipeline): `std::vector` dự trữ `prealign_max_fixes` phần tử một lần lúc khởi tạo, không bao giờ lớn hơn (không cấp phát sau khởi tạo; test `GnssFusionPrealign.BufferBoundedNoAllocation`, `PipelineComponent.PrealignBufferBoundedNoAllocation`). Bộ đệm chỉ mở trước lần căn chỉnh đầu tiên (một lần duy nhất).
    - Fix trước keyframe 0 (chưa có pose front-end) qua `gate_fix` rồi vào bộ đệm; đầy thì bỏ fix cũ nhất (nó xa cửa sổ tĩnh nhất).
    - Fix sau keyframe 0 mà aligner chưa căn chỉnh được đi như cũ (aligner vẫn nhận nó) và được giữ thêm cùng pose front-end tại thời điểm fix và hiệp phương sai `P` mới nhất; đầy thì bỏ fix mới, để các fix tĩnh ở đầu được giữ.

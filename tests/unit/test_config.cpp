@@ -267,12 +267,73 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
       << bad.reason();
   // ADR-022: off by default (previous behaviour), buffer bound >= 1.
   EXPECT_FALSE(cfg.value().gnss.attach_prealign_fixes);
-  EXPECT_EQ(cfg.value().gnss.prealign_max_fixes, 128);
+  EXPECT_EQ(cfg.value().gnss.prealign_max_fixes, 320);
   const auto bad_buf =
       parse_config(read_file(kDefault), overlay("    gnss:\n      prealign_max_fixes: 0\n"));
   ASSERT_FALSE(bad_buf.is_ok());
   EXPECT_TRUE(mentions(bad_buf.reason(), "gnss.prealign_max_fixes: must be >= 1 (got 0)"))
       << bad_buf.reason();
+  // ADR-023: off by default (previous behaviour); chunk >= 2, sigma (deg -> rad) and n > 0.
+  EXPECT_FALSE(cfg.value().gnss.align_yaw_from_track);
+  EXPECT_EQ(cfg.value().gnss.align_yaw_chunk_fixes, 10);
+  EXPECT_NEAR(cfg.value().gnss.align_yaw_max_sigma_rad, 3.0 * mss::gnss::kRadPerDegree, 1e-12);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_reverse_nsigma, 3.0);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_min_track_m, 5.0);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_min_coherence, 0.5);
+  EXPECT_NEAR(cfg.value().gnss.align_yaw_max_turn_rad, 45.0 * mss::gnss::kRadPerDegree, 1e-12);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_min_var_m2, 0.25);
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_min_wheel_travel_m, 0.2);
+  const auto bad_wheel = parse_config(
+      read_file(kDefault), overlay("    gnss:\n      align_yaw_min_wheel_travel_m: 0\n"));
+  ASSERT_FALSE(bad_wheel.is_ok());
+  EXPECT_TRUE(
+      mentions(bad_wheel.reason(), "gnss.align_yaw_min_wheel_travel_m: must be > 0 (got 0)"))
+      << bad_wheel.reason();
+  for (const char* v : {"0", "181"}) {
+    const auto bad_turn =
+        parse_config(read_file(kDefault),
+                     overlay(std::string("    gnss:\n      align_yaw_max_turn_deg: ") + v + "\n"));
+    ASSERT_FALSE(bad_turn.is_ok());
+    EXPECT_TRUE(
+        mentions(bad_turn.reason(),
+                 std::string("gnss.align_yaw_max_turn_deg: must be in (0, 180] (got ") + v + ")"))
+        << bad_turn.reason();
+  }
+  const auto bad_var =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_yaw_min_var_m2: 0\n"));
+  ASSERT_FALSE(bad_var.is_ok());
+  EXPECT_TRUE(mentions(bad_var.reason(), "gnss.align_yaw_min_var_m2: must be > 0 (got 0)"))
+      << bad_var.reason();
+  const auto bad_track =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_yaw_min_track_m: 0\n"));
+  ASSERT_FALSE(bad_track.is_ok());
+  EXPECT_TRUE(mentions(bad_track.reason(), "gnss.align_yaw_min_track_m: must be > 0 (got 0)"))
+      << bad_track.reason();
+  for (const char* v : {"0", "1.5"}) {
+    const auto bad_coh =
+        parse_config(read_file(kDefault),
+                     overlay(std::string("    gnss:\n      align_yaw_min_coherence: ") + v + "\n"));
+    ASSERT_FALSE(bad_coh.is_ok());
+    EXPECT_TRUE(
+        mentions(bad_coh.reason(),
+                 std::string("gnss.align_yaw_min_coherence: must be in (0, 1] (got ") + v + ")"))
+        << bad_coh.reason();
+  }
+  const auto bad_chunk =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_yaw_chunk_fixes: 1\n"));
+  ASSERT_FALSE(bad_chunk.is_ok());
+  EXPECT_TRUE(mentions(bad_chunk.reason(), "gnss.align_yaw_chunk_fixes: must be >= 2 (got 1)"))
+      << bad_chunk.reason();
+  const auto bad_sigma =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_yaw_max_sigma_deg: 0\n"));
+  ASSERT_FALSE(bad_sigma.is_ok());
+  EXPECT_TRUE(mentions(bad_sigma.reason(), "gnss.align_yaw_max_sigma_deg: must be > 0 (got 0)"))
+      << bad_sigma.reason();
+  const auto bad_n =
+      parse_config(read_file(kDefault), overlay("    gnss:\n      align_yaw_reverse_nsigma: -1\n"));
+  ASSERT_FALSE(bad_n.is_ok());
+  EXPECT_TRUE(mentions(bad_n.reason(), "gnss.align_yaw_reverse_nsigma: must be > 0 (got -1)"))
+      << bad_n.reason();
 }
 
 // Ruling on the static-init threshold: it must exceed the per-sample accelerometer noise

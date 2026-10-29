@@ -149,6 +149,19 @@ void EstimatorCore::on_wheel(const common::WheelSample& s) {
     }
     wheel_period_ns_ = s.t.ns - last_wheel_t_.ns;
   }
+  // ADR-023: signed odometer for the track-yaw direction of travel (trapezoid between finite
+  // samples). A non-finite speed is skipped and counted, so it cannot poison the odometer.
+  if (!std::isfinite(s.v_mps)) {
+    ++counters_.n_wheel_nonfinite;
+  } else {
+    if (have_odometer_) {
+      wheel_odometer_m_ += 0.5 * (last_odometer_v_mps_ + s.v_mps) *
+                           (static_cast<double>(s.t.ns - last_odometer_t_.ns) * 1e-9);
+    }
+    have_odometer_ = true;
+    last_odometer_v_mps_ = s.v_mps;
+    last_odometer_t_ = s.t;
+  }
   have_wheel_ = true;
   last_wheel_t_ = s.t;
   if (wheel_queue_.size() == wheel_queue_.capacity()) {
@@ -249,7 +262,17 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
   const common::NavState x =
       predict_state_at(imu_, pred_, pred_last_t_, front_, m.t, g_w_, scratch_);
   FixOutcome outcome = FixOutcome::kAccepted;
-  (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome);
+  // ADR-023: the absolute wheel odometer reading, when a finite wheel sample arrived since the
+  // previous fix (NaN otherwise). The track-yaw aligner differences the readings of the fixes
+  // it consumes, so the travel of a fix rejected before it is carried to the next one.
+  double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN();
+  if (cfg_.wheel_odom.enabled && have_odometer_ && have_fix_odometer_t_ &&
+      last_odometer_t_.ns > last_fix_odometer_t_.ns) {
+    wheel_odometer_m = wheel_odometer_m_;
+  }
+  have_fix_odometer_t_ = true;
+  last_fix_odometer_t_ = m.t;
+  (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome, wheel_odometer_m);
   if (early_out_ != nullptr) {
     sync_prealign_counters();
   }
@@ -258,6 +281,11 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
     common::log_warn(
         "gnss: chi-square rejected gnss.max_consecutive_rejects fixes in a row, "
         "aligner restarted");
+  }
+  if (observer() != nullptr && fusion_.n_alignments() != n_alignments_seen_) {
+    n_alignments_seen_ = fusion_.n_alignments();
+    observer()->on_alignment(
+        m.t, fusion_.T_e_w(), fusion_.align_yaw_sigma_rad(), fusion_.track_aligner());
   }
   if (observer() != nullptr && outcome == FixOutcome::kAccepted) {
     observer()->on_fix_accepted(m.t, fusion_.T_e_w());
