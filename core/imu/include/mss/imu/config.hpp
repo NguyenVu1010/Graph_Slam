@@ -21,6 +21,10 @@ struct ImuConfig {
   // and the whole window mean minus gravity is accelerometer bias. Off: roll and pitch from the
   // window mean, bias 0 (previous behaviour).
   bool init_level_start = false;
+  // m/s^2, > 0 (checked when init_level_start): largest horizontal norm of the window mean taken
+  // as bias. Above it the body is taken as tilted (ramp, mount) and the flag-off initialisation
+  // is used instead (InitState::level_start_fallback).
+  double init_level_max_bias_mps2 = 0.0;
 };
 
 }  // namespace mss::imu

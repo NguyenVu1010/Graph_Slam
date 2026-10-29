@@ -132,7 +132,11 @@ cause is in the estimator's initial split of `f`, not in the simulator.
 
 With the flag on, the initialiser takes the body as level at rest: `R_w_b = I`,
 `ba = mean(f) + g_w`. The keyframe-0 priors then centre on the true split. Its residual
-error is the floor slope and the IMU's mount tilt instead of `b / g`.
+error is the floor slope and the IMU's mount tilt instead of `b / g`. A horizontal mean
+above `imu.init_level_max_bias_mps2` (0.75 m/s^2, 2.5 bias sigma; a slope or mount tilt over
+4.4 deg with zero bias) is taken as a tilted start: the flag-off initialisation is used and a
+warning is logged (ADR-027 decision 4). The recordings' horizontal biases (0.61, 0.19, 0.63
+m/s^2 on seeds 42, 7, 2026) are below it, so the rows below are unchanged by the bound.
 
 | Run | end `ez` [m] off -> on | max abs `ez` [m] off -> on | tilt mean `(c_x, c_y)` [mrad] on | ATE (v) [m] off -> on |
 | --- | --- | --- | --- | --- |
@@ -187,11 +191,12 @@ Every interval contains 0. In these scenes the true tilt is 0 and the window mea
 from gravity only by noise (about 4 mm/s^2), so the two initialisations differ by about
 0.4 mrad of tilt against bias. What moves the per-seed numbers is the chaos of the degenerate
 corridors (lessons 1.12, 1.15), not a systematic effect. The fixed-seed component tests encode
-single outcomes of that chaos: run with the flag on as the default, four of them fail
-(`CorridorDriftCorrectedByGnss` seeds 43, 44; `PrealignFixesAnchorFrameAlongAxis` seed 42 by
-0.006 m over its 2-sigma bound; `TrackYawAlignsCorridorFlipSeeds`, whose seeds 51 and 52 no
-longer flip; `CorridorImuOnlyAlongAxisWithinDeadReckoning`). The box world, loop, map-export
-and GNSS component suites pass. A default change has to re-pick those seeds or bounds in the
+single outcomes of that chaos. Full ctest with the flag on as the default (GTSAM, 554 tests)
+fails exactly five: four of those corridor tests (`CorridorDriftCorrectedByGnss` seeds 43, 44;
+`PrealignFixesAnchorFrameAlongAxis` seed 42 by 0.006 m over its 2-sigma bound;
+`TrackYawAlignsCorridorFlipSeeds`, whose seeds 51 and 52 no longer flip;
+`CorridorImuOnlyAlongAxisWithinDeadReckoning`) and `Config.StaticGravityFactorKey`, which
+asserts the shipped default. A default change has to re-pick those seeds or bounds in the
 same baseline-update PR (backlog S5).
 
 ## 6. Not explained here (next to measure)

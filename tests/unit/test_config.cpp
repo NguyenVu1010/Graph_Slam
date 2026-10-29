@@ -526,6 +526,15 @@ TEST(Config, StaticGravityFactorKey) {
   const auto level_bad = parse_config(base, overlay("    imu:\n      init_level_start: 2.5\n"));
   ASSERT_FALSE(level_bad.is_ok());
   EXPECT_TRUE(mentions(level_bad.reason(), "imu.init_level_start")) << level_bad.reason();
+  // Its bound (review I-1): 0.75 m/s^2 shipped, > 0.
+  EXPECT_DOUBLE_EQ(cfg.value().imu.init_level_max_bias_mps2, 0.75);
+  for (const char* bad_bound : {"0", "-0.5"}) {
+    const auto b = parse_config(
+        base,
+        overlay(std::string("    imu:\n      init_level_max_bias_mps2: ") + bad_bound + "\n"));
+    ASSERT_FALSE(b.is_ok()) << bad_bound;
+    EXPECT_TRUE(mentions(b.reason(), "imu.init_level_max_bias_mps2")) << b.reason();
+  }
   // Consistency check shipped off (0); 0 and positive values parse, negative ones do not.
   EXPECT_EQ(cfg.value().backend.static_gravity_check_keyframes, 0);
   EXPECT_EQ(mss::backend::BackendConfig{}.static_gravity_check_keyframes, 0);

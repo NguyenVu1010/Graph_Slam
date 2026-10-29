@@ -20,6 +20,9 @@ struct InitState {
   /// s_k^2 the sample variance of axis k over the n samples (the believed white noise as a
   /// floor).
   common::Mat3 acc_mean_cov = common::Mat3::Zero();
+  /// True when imu.init_level_start is on but the window's horizontal mean exceeded
+  /// imu.init_level_max_bias_mps2, so R_w_b and ba come from the flag-off rule (ADR-027).
+  bool level_start_fallback = false;
 };
 
 /// Static-window initialisation of gravity direction, gyro bias and attitude.
@@ -31,7 +34,7 @@ class ImuInitializer {
   /// Validates `cfg`.
   /// Errors: throws std::invalid_argument when `init_window_s <= 0`,
   ///   `init_max_acc_std_mps2 <= 0`, `init_max_gyro_std_radps <= 0` or
-  ///   `gravity_mps2 <= 0`.
+  ///   `gravity_mps2 <= 0`, or `init_level_start` with `init_level_max_bias_mps2 <= 0`.
   /// Hot path: no. Tests: initializer unit tests (imu module).
   explicit ImuInitializer(const ImuConfig& cfg);
 
@@ -45,7 +48,10 @@ class ImuInitializer {
   /// `pitch = atan2(-a_x, hypot(a_y, a_z))`, so R_w_b * a points along +z of w
   /// (specific force at rest points up). With `cfg.init_level_start` (ADR-027) the body is
   /// taken as level instead: `R_w_b = I` and `bias.ba = a + g_w`, so the whole window mean
-  /// minus gravity is accelerometer bias (a floor slope theta enters ba as about g theta);
+  /// minus gravity is accelerometer bias (a floor slope theta enters ba as about g theta).
+  /// When `hypot(a_x, a_y) > cfg.init_level_max_bias_mps2` the level assumption is taken
+  /// as broken (ramp or tilted mount): the flag-off rule above is used and
+  /// `level_start_fallback` is set (the caller logs it);
   /// g_w = [0, 0, -cfg.gravity_mps2]; acc_mean_b = a and acc_mean_cov as documented in
   /// InitState (the window statistics for backend::Graph::add_static_gravity_factor).
   /// Frames: samples in b; result as documented in InitState (w gravity-aligned, z up).
@@ -62,7 +68,7 @@ class ImuInitializer {
   /// Hot path: no (runs until it first succeeds, a few times per second); no allocation
   /// on the success path and on error paths that use string literals.
   /// Tests: I-01 (static gravity-only input yields R_w_b * mean(acc_b) along +z), imu
-  ///   module unit tests (LevelStart* for ADR-027).
+  ///   module unit tests (LevelStart* for ADR-027, including both sides of the bound).
   common::Result<InitState> try_init(common::Span<const common::ImuSample> samples);
 
  private:

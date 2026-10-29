@@ -1764,7 +1764,9 @@ TEST(PipelineComponent, LevelStartRemovesBiasTilt) {
   p.acc_bias_b = Vec3(0.3, -0.1, 0.0);
   const fs::path dir = test_dir();
   ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
-  const TiltRun off = tilt_run(p, dir / "data", dir / "off", "");
+  // Both arms set the flag explicitly, so the test does not depend on the shipped default.
+  const TiltRun off =
+      tilt_run(p, dir / "data", dir / "off", "    imu:\n      init_level_start: false\n");
   const TiltRun on =
       tilt_run(p, dir / "data", dir / "on", "    imu:\n      init_level_start: true\n");
   ASSERT_GT(off.estimates, 100U);

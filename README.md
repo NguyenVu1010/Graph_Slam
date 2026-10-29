@@ -299,7 +299,9 @@ run never corrects. On Gazebo the map then climbs `|b| / g` per metre (E-04: 0.3
 end height error, about 0.03 m with the flag), and E-01's ATE is mostly vertical (0.035 to
 0.095 m, 0.014 to 0.016 m with the flag) (`docs/derivations/vertical_drift_study.md`). It
 assumes a level floor and a level IMU mount: a slope or mount tilt `theta` becomes the tilt
-error instead.
+error instead. `imu.init_level_max_bias_mps2` (default 0.75 m/s^2, 2.5 sigma of the bias, > 0)
+bounds the horizontal mean taken as bias: above it (a ramp or mount tilt over about 4.4 deg)
+the initialisation falls back to the flag-off rule and logs a warning.
 
 `backend.relative_factor` (default `decoupled`, ADR-021) selects the form of the LiDAR and
 loop relative-pose factors: `decoupled` (translation and rotation residuals separate, exact

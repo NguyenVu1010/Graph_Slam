@@ -1254,17 +1254,25 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
     seeds.push_back(s);
   }
   std::vector<SeedScores> scores(variants.size());
-  for (std::size_t vi = 0; vi < variants.size(); ++vi) {
-    if (vi != ref && (vi < v_first || vi > v_last)) {
-      continue;  // the reference always runs
+  // The reference runs first and writes the datasets the other variants replay (review M-2:
+  // a variant before it would read missing or stale data).
+  std::vector<std::size_t> order = {ref};
+  for (std::size_t vi = v_first; vi <= v_last && vi < variants.size(); ++vi) {
+    if (vi != ref) {
+      order.push_back(vi);
     }
+  }
+  ASSERT_EQ(order.front(), ref);
+  for (std::size_t k = 0; k < order.size(); ++k) {
+    const std::size_t vi = order[k];
     const Variant& v = variants[vi];
     SeedScores& sc = scores[vi];
     const FullResidualScope full(v.full);
     const PosteriorStatisticScope posterior(v.posterior);
+    const bool write_data = k == 0;  // the reference
     for (const std::uint32_t seed : seeds) {
       ASSERT_NO_FATAL_FAILURE(
-          score_seed(rep, v.yaml, seed, "v" + std::to_string(vi), vi == ref, sc));
+          score_seed(rep, v.yaml, seed, "v" + std::to_string(vi), write_data, sc));
     }
   }
   const SeedScores& m = scores[ref];

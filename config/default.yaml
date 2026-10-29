@@ -56,6 +56,13 @@ mss_node:
       # nothing corrects until the robot turns. Gazebo E-04, bias 0.59 m/s^2: tilt 59 -> ~0
       # mrad, end vertical error 0.95 -> ~0.03 m. Requires the IMU mounted level in b.
       init_level_start: false   # flag; off = roll/pitch from the window mean, bias 0
+      # Level-start bound, m/s^2, > 0: a window whose horizontal mean |(a_x, a_y)| exceeds it
+      # is a tilted start (ramp, mount), not bias; the flag-off initialisation is used and a
+      # warning is logged. 0.75 = 2.5 x the accelerometer bias sigma per axis (0.3 m/s^2, sim
+      # profile; MPU class): a level robot falls back with probability exp(-2.5^2 / 2) = 4.4 %
+      # (Rayleigh). It allows a floor slope or mount tilt of at most asin(0.75 / g) = 4.4 deg
+      # with zero bias (a 5 deg ramp, 0.85 m/s^2, falls back).
+      init_level_max_bias_mps2: 0.75
 
     gnss:
       # Off until multipath (E-06) and outage (E-05) are evaluated end to end (CLAUDE.md DoD 3);

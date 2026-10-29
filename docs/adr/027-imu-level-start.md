@@ -35,6 +35,18 @@ Backlog S2 / A4: trên bản ghi Gazebo, bản đồ E-04 leo khoảng 1,4 m tr�
    tại khởi tạo) và giữ nguyên.
 3. Cửa sổ có `a_z <= 0` (thân lộn ngược) trả lỗi "level start: body z not up" thay vì một bias
    cỡ 2 g.
+4. **Cận cho phần ngang** (review I-1): `imu.init_level_max_bias_mps2` (m/s^2, > 0, mặc định
+   0,75). Khi `hypot(a_x, a_y)` của trung bình cửa sổ vượt cận, giả thiết đứng bằng coi như
+   sai (dốc, IMU gắn nghiêng): bộ khởi tạo dùng cách cũ (nghiêng từ trung bình, `ba = 0`), đặt
+   `InitState::level_start_fallback` và pipeline ghi một cảnh báo (khởi tạo chỉ chạy một lần).
+   - 0,75 = 2,5 lần sigma bias gia tốc mỗi trục (0,3 m/s^2, hồ sơ sim, cỡ MPU). Robot đứng bằng
+     rơi vào nhánh cũ với xác suất `exp(-2,5^2 / 2)` = 4,4 % (Rayleigh). Khi bias bằng 0, cận
+     cho phép dốc hay nghiêng gắn tối đa `asin(0,75 / g)` = 4,4°; dốc 5° (0,85 m/s^2) rơi về
+     nhánh cũ.
+   - Vì sao quay về cách cũ mà không trả lỗi thứ 7: cửa sổ trên dốc lặp lại giống hệt ở mọi scan,
+     nên một lỗi sẽ chặn khởi tạo mãi và robot không có ước lượng. Cách cũ đúng với một độ nghiêng
+     thật và chỉ mất phần sửa bias, tức là hành vi trước cờ; cảnh báo cho người vận hành biết giả
+     thiết bị vi phạm.
 
 Giả thiết của cờ: robot đứng trên nền bằng khi khởi tạo và IMU gắn bằng trong `b`. Độ dốc nền
 hay độ nghiêng gắn IMU `theta` trở thành bias sai `g theta` và độ nghiêng sai `theta`, thay cho
@@ -64,8 +76,9 @@ Số đo: `docs/derivations/vertical_drift_study.md` mục 5.
   thành phần hành lang với seed cố định đổi kết quả khi cờ là mặc định (backlog S5): đó là
   hỗn loạn của hành lang suy biến, không phải tác động có hệ thống, nhưng PR đổi mặc định phải
   chọn lại seed hoặc ngưỡng của chúng.
-- Hợp đồng (chỉ thêm): `ImuConfig::init_level_start`, khoá YAML `imu.init_level_start`, lỗi
-  thứ 6 của `ImuInitializer::try_init`.
+- Hợp đồng (chỉ thêm): `ImuConfig::init_level_start`, `ImuConfig::init_level_max_bias_mps2`,
+  `InitState::level_start_fallback`, khoá YAML `imu.init_level_start` và
+  `imu.init_level_max_bias_mps2`, lỗi thứ 6 của `ImuInitializer::try_init`.
 - Mặc định của cờ do chủ dự án quyết; bật nó đổi đầu ra E-01..E-03 nên cần PR
   `baseline-update` riêng. Trên dữ liệu thật cần đo độ nghiêng gắn IMU trước khi bật.
 - Không sửa: độ nghiêng sau khởi tạo vẫn chỉ được neo bởi keyframe 0 (lessons 1.13); trôi
