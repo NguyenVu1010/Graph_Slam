@@ -1,15 +1,15 @@
 {
   "_comment": "Reference ATE/latency per integration test. Change only in a PR labelled baseline-update with before/after plots. A PR fails if ate_rmse_m gets more than 20% worse.",
   "E-01": {
-    "ate_rmse_m": 0.002184,
+    "ate_rmse_m": 0.00216,
     "p95_latency_ms": 8.04
   },
   "E-02": {
-    "ate_rmse_m": 0.002184,
+    "ate_rmse_m": 0.00216,
     "p95_latency_ms": 8.079
   },
   "E-03": {
-    "ate_rmse_m": 0.002181,
+    "ate_rmse_m": 0.002172,
     "p95_latency_ms": 8.253
   }
 }

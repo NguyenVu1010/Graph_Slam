@@ -16,7 +16,7 @@ Each item names where its numbers live.
 
 | # | Item | Source | Notes |
 |---|------|--------|-------|
-| G1 | The default `GnssAligner` (flags of designs 1/2 off) aligns E-01 about 21° off at 13 s and reports no yaw sigma | design-2 review (#34) | Diagnosed and fixed behind `gnss.align_check_yaw_sigma` (ADR-025, study §17): fix noise on a 1 m spread, 2.6σ draw. The sigma is now always reported. Default: G13. |
+| G1 | The default `GnssAligner` (flags of designs 1/2 off) aligns E-01 about 21° off at 13 s and reports no yaw sigma | design-2 review (#34) | Diagnosed and fixed behind `gnss.align_check_yaw_sigma` (ADR-025, study §17): fix noise on a 1 m spread, 2.6σ draw. The sigma is now always reported. Default: on, see G13. |
 | G2 | Design 3: inflate each fix's covariance by the shift uncertainty; then decide the defaults of the design 1/2/2b/3 flags | `gnss_fusion_study.md` §13.6 | Measure it against `prealign_trackyaw`. |
 | G3 | Design 2b: the front-end travel gate (number of scan-match constraints along the travel axis, at least 100) partly reverses ADR-023 decision 13 | ADR-023 amendment, study §16 | It needs the owner's confirmation and a check on a recorded Gazebo bag; compare it with the degeneracy module's flagged directions, and add a counter for blocked alignment (review F4). |
 | G4 | Design 2b: the residual limits outside LiDAR-observed scenes (the tolerance envelope) | ADR-023, lessons §1.18 | GNSS drift ≤ 0.15 m per fix with stuck wheels and ≤ 0.10 m per fix parked without wheels, skid ≤ 5°. |
@@ -25,7 +25,7 @@ Each item names where its numbers live.
 | G10 | 2b slow-segment extension: under realistic drift a slow robot aligns confidently wrong (0.05 m/s at 0.02 m/fix: 10 of 100 beyond 3σ) | 2b review F2 | Revert or gate it before turning the flag on. |
 | G11 | 2b limits 1 and 4b were classified as "sensor set" without an oracle run; the IMU sees spin-up and rest | 2b review F3 | |
 | G12 | 2b: four surviving mutants (`ext_path_ok`, carried `wheel_ok`, cross-chunk half mark, front-end position of `b` vs `o`) | 2b review F6 | |
-| G13 | Default of `gnss.align_check_yaw_sigma`, and its threshold (shared with designs 2/2b): at 6° E-01 still starts 15.4° off (2.6σ); a 10° first-factor target needs about 4.5° (18 s), 3° waits 34 s | ADR-025, study §17.4 | Owner decision; no E-01..E-03 change with the flag off. |
+| G13 | Resolved (owner decision 2026-10-29, baseline-update PR, `docs/baselines/2026-10-29/`): `gnss.align_check_yaw_sigma` is on by default at 6 deg, shared with designs 2/2b (`gnss.align_yaw_max_sigma_deg`). At 6 deg E-01 still starts 15.4 deg off (2.6σ); a 10° first-factor target would need about 4.5° (18 s), 3° waits 34 s. E-01..E-03 ATE changed, baselines updated. | ADR-025, study §17.4 | Set `gnss.align_check_yaw_sigma: false` for the previous behaviour. |
 | G14 | `GnssAligner`'s e-side spread check passes on fix noise alone (1.72 m against 1.01 m true on E-01); it only catches a frozen receiver | study §17.1 | Scale it by the declared sigma, or rely on the yaw check. |
 | G15 | `GnssAligner`'s yaw sigma takes the front end as exact: the corridor flip seeds 51/52 report 3.4° while 179°/132° off | ADR-025, study §17.5 | Add the front-end covariance `P_w_b` to the sigma, or leave it to design 2. |
 | G16 | The aligner's yaw sigma (both aligners) does not set the prior of `E` (30°) | ADR-025 decision 3, ADR-023 decision 7 | Needs a `graph.hpp` change and the owner's agreement. |

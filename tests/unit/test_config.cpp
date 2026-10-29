@@ -310,12 +310,13 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   ASSERT_FALSE(bad_buf.is_ok());
   EXPECT_TRUE(mentions(bad_buf.reason(), "gnss.prealign_max_fixes: must be >= 1 (got 0)"))
       << bad_buf.reason();
-  // Backlog G1: GnssAligner's yaw-sigma check, off by default (previous behaviour).
-  EXPECT_FALSE(cfg.value().gnss.align_check_yaw_sigma);
-  const auto check_on =
-      parse_config(read_file(kDefault), overlay("    gnss:\n      align_check_yaw_sigma: true\n"));
-  ASSERT_TRUE(check_on.is_ok()) << check_on.reason();
-  EXPECT_TRUE(check_on.value().gnss.align_check_yaw_sigma);
+  // Backlog G1 / G13: GnssAligner's yaw-sigma check, on by default (ADR-025); the overlay turns
+  // it off (the previous behaviour).
+  EXPECT_TRUE(cfg.value().gnss.align_check_yaw_sigma);
+  const auto check_off = parse_config(read_file(kDefault),
+                                      overlay("    gnss:\n      align_check_yaw_sigma: false\n"));
+  ASSERT_TRUE(check_off.is_ok()) << check_off.reason();
+  EXPECT_FALSE(check_off.value().gnss.align_check_yaw_sigma);
   // ADR-023: off by default (previous behaviour); chunk >= 2, sigma (deg -> rad) and n > 0.
   EXPECT_FALSE(cfg.value().gnss.align_yaw_from_track);
   EXPECT_EQ(cfg.value().gnss.align_yaw_chunk_fixes, 10);
