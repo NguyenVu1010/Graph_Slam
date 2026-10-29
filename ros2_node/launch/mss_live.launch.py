@@ -17,9 +17,12 @@ One process tree:
    ``exit_on_end:=true`` then shuts the launch down; otherwise everything stays up for viewing.
 6. RViz (``rviz:=true``).
 
-All nodes use sim time (Gazebo ``/clock``). The repo is the ancestor of the scenario file that
-holds ``sim/mss_sim``. Python needs the ``sim/`` dependencies (rosbags, shapely, scipy) on
-``PYTHONPATH`` as for the offline bridge (``sim/README.md``).
+All nodes use sim time (Gazebo ``/clock``). Gazebo transport runs in its own partition
+(``GZ_PARTITION=mss_live_<launch pid>``), so the world services and gz topics of this run never
+reach another Gazebo on the machine; ``sim.launch.py`` stops this run's gz processes on shutdown.
+The repo is the ancestor of the scenario file that holds ``sim/mss_sim``. Python needs the
+``sim/`` dependencies (rosbags, shapely, scipy) on ``PYTHONPATH`` as for the offline bridge
+(``sim/README.md``).
 """
 
 import os
@@ -36,6 +39,7 @@ from launch.actions import (
     IncludeLaunchDescription,
     OpaqueFunction,
     RegisterEventHandler,
+    SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
@@ -198,6 +202,8 @@ def generate_launch_description() -> LaunchDescription:
                 "body_frame", default_value="", description="default: frames.body of the config"
             ),
             DeclareLaunchArgument("exit_on_end", default_value="false"),
+            # One gz partition per launch: no cross-talk with other Gazebo servers.
+            SetEnvironmentVariable("GZ_PARTITION", f"mss_live_{os.getpid()}"),
             OpaqueFunction(function=_setup),
             Node(
                 package="rviz2",

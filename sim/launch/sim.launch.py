@@ -16,11 +16,17 @@ defaults to the scenario's world. Relative paths resolve against the current dir
 ``raw_prefix:=/sim/raw`` moves the raw sensor topics that share a name with the noisy ones
 (``RAW_SENSOR_TOPICS``) under that namespace, for the live noise node
 (``ros2_node/launch/mss_live.launch.py``); empty (default) keeps the recording names.
+
+On shutdown the gz processes of this launch (its own descendants whose command line holds
+``gz sim``) get SIGINT, then SIGKILL after ``GZ_STOP_TIMEOUT_S``: launch signals only the
+``ruby gz`` wrapper, and the real server it forks would otherwise outlive the launch.
 """
 
 from __future__ import annotations
 
 import os
+import signal
+import time
 from pathlib import Path
 
 import yaml
@@ -30,7 +36,9 @@ from launch.actions import (
     ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
+    RegisterEventHandler,
 )
+from launch.event_handlers import OnShutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -38,11 +46,65 @@ from launch_ros.substitutions import FindPackageShare
 
 REPO = Path(__file__).resolve().parents[2]
 SIM_TIME = {"use_sim_time": True}
+GZ_STOP_TIMEOUT_S = 5.0  # wall s between SIGINT and SIGKILL of this launch's gz processes
+GZ_STOP_POLL_S = 0.1  # wall s
 RAW_SENSOR_TOPICS = ("/lidar/points", "/imu/data", "/gnss/fix", "/joint_states")
 
 
 def _flag(context: LaunchContext, name: str) -> bool:
     return LaunchConfiguration(name).perform(context).strip().lower() in ("1", "true", "yes")
+
+
+def _descendants(root: int) -> list[int]:
+    """PIDs of every process below ``root`` (Linux ``/proc``)."""
+    children: dict[int, list[int]] = {}
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            stat = (d / "stat").read_text()
+        except OSError:
+            continue  # exited meanwhile
+        ppid = int(stat.rsplit(")", 1)[1].split()[1])  # field 4, after "(comm)"
+        children.setdefault(ppid, []).append(int(d.name))
+    out, todo = [], [root]
+    while todo:
+        for child in children.get(todo.pop(), []):
+            out.append(child)
+            todo.append(child)
+    return out
+
+
+def _cmdline(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
+    except OSError:
+        return ""
+
+
+def _alive(pid: int) -> bool:
+    """True while ``pid`` exists and is not a zombie (state Z in /proc/<pid>/stat)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def _stop_gz(_event: object, _context: LaunchContext) -> None:
+    """Stop the gz processes of THIS launch only (its descendants), never by name."""
+    pids = [p for p in _descendants(os.getpid()) if "gz sim" in _cmdline(p)]
+    for sig in (signal.SIGINT, signal.SIGKILL):
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + GZ_STOP_TIMEOUT_S
+        while (pids := [p for p in pids if _alive(p)]) and time.monotonic() < deadline:
+            time.sleep(GZ_STOP_POLL_S)
+        if not pids:
+            return
 
 
 def _setup(context: LaunchContext) -> list:
@@ -149,5 +211,6 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("driver", default_value="true"),
             DeclareLaunchArgument("raw_prefix", default_value="", description="e.g. /sim/raw"),
             OpaqueFunction(function=_setup),
+            RegisterEventHandler(OnShutdown(on_shutdown=_stop_gz)),
         ]
     )
