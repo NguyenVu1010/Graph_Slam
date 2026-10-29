@@ -750,12 +750,24 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
   }
   graph_.add_loop_factor(r.constraint);
   common::Result<common::Estimate> opt = graph_.optimize();
-  for (int k = 0; opt.is_ok() && k < cfg_.loop_closure.isam_extra_updates; ++k) {
-    opt = graph_.optimize();
-  }
   if (!opt.is_ok()) {
-    log_backend_failure(opt.reason());  // the loop factor was dropped with the update
+    log_backend_failure(opt.reason());  // the pending loop factor was dropped with the update
     return false;
+  }
+  // The loop factor is committed from here on: whatever the extra updates do, the loop counts,
+  // the front end re-syncs and the next keyframes skip the search (no duplicate loop). A
+  // failed extra update leaves the graph at the estimate of the last good update (graph.hpp),
+  // which `opt` holds.
+  for (int k = 0; k < cfg_.loop_closure.isam_extra_updates; ++k) {
+    const common::Result<common::Estimate> more =
+        (hooks_ != nullptr && hooks_->fail_loop_extra_updates)  // test-only seam
+            ? common::Result<common::Estimate>::error("test: injected extra-update failure")
+            : graph_.optimize();
+    if (!more.is_ok()) {
+      log_backend_failure(more.reason());
+      break;
+    }
+    opt = more;
   }
   ++counters_.n_loops_accepted;
   {

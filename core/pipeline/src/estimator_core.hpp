@@ -123,6 +123,9 @@ struct CoreTestHooks {
   /// the first GNSS alignment on is turned by this yaw (rad) about each fix
   /// (GnssFusion::set_first_alignment_yaw_offset).
   double gnss_first_align_yaw_offset_rad = 0.0;
+  /// ADR-026 failure path: every loop_closure.isam_extra_updates update after an accepted loop
+  /// reports a failure (the loop factor itself is already committed by the first update).
+  bool fail_loop_extra_updates = false;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).

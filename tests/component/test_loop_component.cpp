@@ -201,13 +201,15 @@ class LoopObserver : public detail::CoreObserver {
   void on_loop_search(common::Timestamp t, const loop::LoopResult& r) override {
     ++searches;
     if (r.outcome == loop::LoopOutcome::kAccepted) {
-      accepted.push_back({r.candidate_t, t, r.constraint.T_bi_bj});
+      accepted.push_back({r.candidate_t, t, r.constraint.T_bi_bj, r.constraint.i, r.constraint.j});
     }
   }
   struct Loop {
     common::Timestamp t_i;
     common::Timestamp t_j;
     Pose T_bi_bj;
+    KeyId i;
+    KeyId j;
   };
   int searches = 0;
   std::vector<Loop> accepted;
@@ -264,6 +266,195 @@ TEST(LoopComponent, BoxWorldEstimatorLoops) {
   EXPECT_EQ(r_on.stats.n_match_failures, r_off.stats.n_match_failures);
   // No drift to remove on the box world: the loops must not degrade it (1 mm slack).
   EXPECT_LE(e_on.ate_m, 1.2 * e_off.ate_m + 0.001);
+}
+
+// I-4 (review C1): every iSAM2 update after the one that adds the loop fails (injected). The
+// loop factor is committed by then, so the loop must count, the front end re-sync and the next
+// min_interval_keyframes keyframes skip the search: no loop is added twice.
+TEST(LoopComponent, ExtraUpdateFailureKeepsLoopCountedAndNotDuplicated) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  test::BoxWorldParams p;
+  p.motion_s = 55.0;
+  const std::filesystem::path dir = ct::test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  const Config on =
+      ct::box_config(p, false, false, dir / "on", "    loop_closure:\n      enabled: true\n");
+  ASSERT_GT(on.loop_closure.isam_extra_updates, 0);
+  LoopObserver obs;
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  hooks.fail_loop_extra_updates = true;
+  ct::ReplayResult r;
+  {
+    ct::HooksScope scope(&hooks);
+    r = ct::replay(dir / "data", on);
+  }
+  ASSERT_GT(obs.accepted.size(), 0U);
+  // Every verified loop was added once and counted once.
+  EXPECT_EQ(static_cast<std::size_t>(r.stats.n_loops_accepted), obs.accepted.size());
+  EXPECT_GE(r.stats.n_map_rebuilds, r.stats.n_loops_accepted);
+  for (std::size_t a = 1; a < obs.accepted.size(); ++a) {
+    // The search was skipped for min_interval_keyframes keyframes after each loop.
+    EXPECT_GT(obs.accepted[a].j - obs.accepted[a - 1].j,
+              static_cast<KeyId>(on.loop_closure.min_interval_keyframes));
+    for (std::size_t b = 0; b < a; ++b) {
+      EXPECT_FALSE(obs.accepted[a].i == obs.accepted[b].i &&
+                   obs.accepted[a].j == obs.accepted[b].j);
+    }
+  }
+  const ct::Errors e = ct::trajectory_errors(p, r.estimates);
+  EXPECT_LT(e.ate_m, 0.05);
+}
+
+// --- Known limits (review C1, I-1 and I-2): these tests pin the CURRENT behaviour ----------
+// They document limits stated in ADR-026; a fix (backlog C1-12, C1-13) changes them on purpose.
+
+// Closed lap of n keyframes on a circle (0.5 m steps), noise-free odometry with the given
+// sigmas, then a loop (0, n-1) whose measurement is truth * correction with covariance lcov.
+// Returns how far the last keyframe moved relative to keyframe 0 (the applied correction).
+double applied_correction(const Config& cfg,
+                          const Pose& correction,
+                          const common::PoseCovariance& lcov,
+                          double sig_m,
+                          double sig_rad) {
+  constexpr int kN = 61;
+  backend::Graph g(cfg.backend, cfg.imu, Vec3::Zero());
+  const double R = 0.5 * (kN - 1) / (2.0 * test::kLoopPi);
+  const auto truth = [&](int k) {
+    const double a = 2.0 * test::kLoopPi * k / (kN - 1);
+    return test::body_pose(R * std::sin(a), R * (1.0 - std::cos(a)), a);
+  };
+  common::PoseCovariance cov = common::PoseCovariance::Zero();
+  for (int a = 0; a < 3; ++a) {
+    cov(a, a) = sig_m * sig_m;
+    cov(a + 3, a + 3) = sig_rad * sig_rad;
+  }
+  for (int k = 0; k < kN; ++k) {
+    common::NavState x0;
+    x0.t = common::Timestamp{k * kNsPerS};
+    x0.T_w_b = truth(k);
+    g.add_keyframe(x0.t, x0);
+    if (k > 0) {
+      g.add_lidar_factor(static_cast<KeyId>(k - 1),
+                         static_cast<KeyId>(k),
+                         truth(k - 1).inverse() * truth(k),
+                         cov,
+                         nullptr);
+    }
+    EXPECT_TRUE(g.optimize().is_ok());
+  }
+  common::LoopConstraint lc;
+  lc.i = 0;
+  lc.j = static_cast<KeyId>(kN - 1);
+  lc.T_bi_bj = truth(0).inverse() * truth(kN - 1) * correction;
+  lc.cov = lcov;
+  g.add_loop_factor(lc);
+  for (int u = 0; u < 3; ++u) {
+    EXPECT_TRUE(g.optimize().is_ok());
+  }
+  const Pose T0 = g.keyframe_state(0).value().T_w_b;
+  const Pose Tn = g.keyframe_state(lc.j).value().T_w_b;
+  return ((T0.inverse() * Tn).p - (truth(0).inverse() * truth(kN - 1)).p).norm();
+}
+
+// I-1: repeated structure with period P (2 m). While the graph drift along the corridor is
+// below P/2 the loop is correct; above it ICP snaps to the neighbouring pillar pair and the
+// false loop passes every gate (error ~P). On a loose chain (2 cm / 0.15 deg per 0.5 m step)
+// it drags the graph by most of what it asks; on a stiff chain (5 mm) by centimetres.
+TEST(LoopKnownLimits, PeriodicStructureAliasingAboveHalfPeriod) {
+  Config cfg = shipped_config();
+  cfg.loop_closure.enabled = true;
+  constexpr double kPeriodM = 2.0;
+  const std::vector<Vec3> w = test::periodic_corridor_w(kPeriodM);
+  const Pose T_b_l = test::loop_T_b_l();
+  constexpr std::size_t kMaxPoints = 60000;
+  common::ScanFrame cc(kMaxPoints);
+  common::ScanFrame cq(kMaxPoints);
+  const Pose tc = test::body_pose(0.0, 0.0, 0.0);
+  const Pose tq = test::body_pose(0.1, 0.1, 3.0 * kDeg);
+  test::scan_at(w, tc * T_b_l, 15.0, cc);
+  test::scan_at(w, tq * T_b_l, 15.0, cq);
+  loop::LoopDetector det(cfg.loop_closure, cfg.scan_match, cfg.map, T_b_l, kMaxPoints);
+  const auto run = [&](double drift_m) {
+    std::vector<loop::KeyframeView> k(2);
+    k[0].id = 0;
+    k[0].t = common::Timestamp{0};
+    k[0].T_w_b = tc;
+    k[0].cloud_l = &cc;
+    k[1].id = 1;
+    k[1].t = common::Timestamp{100 * kNsPerS};
+    k[1].T_w_b = test::body_pose(0.1 + drift_m, 0.1, 3.0 * kDeg);
+    k[1].cloud_l = &cq;
+    return det.detect(k[1], common::Span<const loop::KeyframeView>(k));
+  };
+  const Pose truth = tc.inverse() * tq;
+  // Drift below P/2: correct.
+  const loop::LoopResult good = run(0.6);
+  ASSERT_EQ(good.outcome, loop::LoopOutcome::kAccepted);
+  EXPECT_LT((good.constraint.T_bi_bj.p - truth.p).norm(), kLoopTolM);
+  // Drift above P/2: accepted and wrong by about one period (the current limit).
+  const loop::LoopResult bad = run(1.3);
+  ASSERT_EQ(bad.outcome, loop::LoopOutcome::kAccepted);
+  const double err_m = (bad.constraint.T_bi_bj.p - truth.p).norm();
+  std::printf(
+      "[ aliasing ] P %.1f m, drift 1.3 m: accepted, error %.3f m, sc %.3f ratio %.3f "
+      "rms %.3f eig %.1f\n",
+      kPeriodM,
+      err_m,
+      bad.sc_distance,
+      bad.inlier_ratio,
+      bad.rms_m,
+      bad.min_eig);
+  EXPECT_GT(err_m, 0.8 * kPeriodM);
+  EXPECT_LT(err_m, 1.2 * kPeriodM);
+  if (!ct::kWithGtsam) {
+    return;
+  }
+  // Drag of that false loop on a closed 30 m lap.
+  const Pose asked = (tc.inverse() * test::body_pose(0.1 + 1.3, 0.1, 3.0 * kDeg)).inverse() *
+                     bad.constraint.T_bi_bj;
+  const double loose = applied_correction(cfg, asked, bad.constraint.cov, 0.02, 0.15 * kDeg);
+  const double stiff = applied_correction(cfg, asked, bad.constraint.cov, 0.005, 0.0375 * kDeg);
+  std::printf(
+      "[ aliasing ] drag of the false loop (asks %.3f m): loose chain %.3f m, stiff %.3f m\n",
+      asked.p.norm(),
+      loose,
+      stiff);
+  EXPECT_GT(loose, 0.25);  // most of the request goes through on a loose chain
+  EXPECT_LT(loose, 0.9);
+  EXPECT_LT(stiff, 0.1);  // a stiff chain holds it to centimetres
+}
+
+// I-2: the Cauchy kernel cannot tell a true large correction from a false one: with the
+// covariance at the floor (5 cm / 1 deg) a correct loop asking 2 m moves the lap end by under
+// 20 % of it on a loose chain, and a 0.5 m request by under 15 % on a stiff one. Loops only
+// close while the drift is small.
+TEST(LoopKnownLimits, RobustKernelAppliesLittleOfLargeCorrections) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM";
+  }
+  Config cfg = shipped_config();
+  common::PoseCovariance C = common::PoseCovariance::Zero();
+  for (int a = 0; a < 3; ++a) {
+    C(a, a) = cfg.loop_closure.cov_floor_m * cfg.loop_closure.cov_floor_m;
+    C(a + 3, a + 3) = cfg.loop_closure.cov_floor_rad * cfg.loop_closure.cov_floor_rad;
+  }
+  const auto frac = [&](double c_m, double sig_m) {
+    const Pose corr{common::Mat3::Identity(), Vec3(c_m, 0.0, 0.0)};
+    return applied_correction(cfg, corr, C, sig_m, sig_m * 0.15 * kDeg / 0.02) / c_m;
+  };
+  const double small_loose = frac(0.2, 0.02);
+  const double large_loose = frac(2.0, 0.02);
+  const double mid_stiff = frac(0.5, 0.005);
+  std::printf("[ kernel ] applied fraction: 0.2 m loose %.2f, 2 m loose %.2f, 0.5 m stiff %.2f\n",
+              small_loose,
+              large_loose,
+              mid_stiff);
+  EXPECT_GT(small_loose, 0.8);  // small corrections go through
+  EXPECT_LT(large_loose, 0.2);
+  EXPECT_LT(mid_stiff, 0.15);
 }
 
 }  // namespace
