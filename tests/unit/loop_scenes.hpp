@@ -136,6 +136,27 @@ inline pipeline::Config shipped_loop_config() {
   return c;
 }
 
+// Corridor along x, walls y = +-2 m, 3 m high, floor, with identical 0.6 x 0.6 x 2 m pillars
+// against both walls every `period_m`; no end wall in range, so the scene repeats along x with
+// that period (review C1, probe I-1: rack bays in a warehouse aisle).
+inline std::vector<common::Vec3> periodic_corridor_w(double period_m, double s = 0.25) {
+  std::vector<common::Vec3> p;
+  for (double x = -40.0; x <= 40.0 + 1e-9; x += s) {
+    for (double y = -2.0; y <= 2.0 + 1e-9; y += s) {
+      p.emplace_back(x, y, 0.0);
+    }
+    for (double z = s; z <= 3.0 + 1e-9; z += s) {
+      p.emplace_back(x, -2.0, z);
+      p.emplace_back(x, 2.0, z);
+    }
+  }
+  for (double x = -40.0; x <= 40.0 + 1e-9; x += period_m) {
+    add_box(p, common::Vec3(x - 0.3, -2.0, s), common::Vec3(x + 0.3, -1.4, 2.0), s);
+    add_box(p, common::Vec3(x - 0.3, 1.4, s), common::Vec3(x + 0.3, 2.0, 2.0), s);
+  }
+  return p;
+}
+
 // Corridor along x (walls y = +-1.5 m, 3 m high, floor), x in [-30, 30] m: no end wall within
 // a 15 m range, so translation along x is unobserved.
 inline std::vector<common::Vec3> corridor_w(double s = 0.25) {

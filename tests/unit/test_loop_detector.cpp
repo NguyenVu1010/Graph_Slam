@@ -272,6 +272,31 @@ TEST_F(LoopFixture, ScanContextShiftIsRelativeYaw) {
   EXPECT_LT(d, cfg_.loop_closure.sc_max_distance);
 }
 
+// B-1 (review C1): the placeholder contract's constructor stays: validate-only.
+TEST(LoopDetector, PlaceholderConstructorValidatesOnly) {
+  LoopConfig off;  // disabled: nothing validated
+  EXPECT_NO_THROW(LoopDetector{off});
+  pipeline::Config cfg = test::shipped_loop_config();
+  ASSERT_TRUE(cfg.loop_closure.enabled);
+  LoopConfig bad = cfg.loop_closure;
+  bad.search_radius_m = 0.0;
+  EXPECT_THROW(LoopDetector{bad}, std::invalid_argument);
+  bad = cfg.loop_closure;
+  bad.min_time_gap_s = -1.0;
+  EXPECT_THROW(LoopDetector{bad}, std::invalid_argument);
+  // Valid and enabled: constructs, but has no matcher, so it never finds a loop.
+  LoopDetector det(cfg.loop_closure);
+  ScanFrame cloud(16);
+  (void)cloud.push(1.0F, 0.0F, 0.0F, 0.0F, 0U, 0U);
+  std::vector<KeyframeView> kfs(2);
+  kfs[0].cloud_l = &cloud;
+  kfs[1] = kfs[0];
+  kfs[1].id = 1;
+  kfs[1].t = common::Timestamp{1000 * kNs};
+  EXPECT_EQ(det.detect(kfs[1], common::Span<const KeyframeView>(kfs)).outcome,
+            LoopOutcome::kNoCandidate);
+}
+
 TEST(LoopDetector, DisabledIsANoOpAndValidatesNothing) {
   LoopConfig lc;  // enabled = false, every value invalid
   scan_match::ScanMatchConfig sm;

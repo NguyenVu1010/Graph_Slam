@@ -103,6 +103,14 @@ class LoopDetector {
   /// Errors: throws std::invalid_argument when enabled and a LoopConfig value is out of the
   ///   range documented in config.hpp, or from the ScanMatcher / VoxelMap constructors.
   /// Hot path: no (allocates). Tests: L-01..L-03 construct it.
+  /// The placeholder contract's constructor, kept (additive change, ADR-026): validate-only.
+  /// Errors: throws std::invalid_argument when `cfg.enabled` and a LoopConfig value is out of
+  ///   range (including `search_radius_m <= 0` or `min_time_gap_s < 0`, the placeholder's
+  ///   checks). It reserves nothing and has no matcher, so detect() always returns
+  ///   kNoCandidate; searching needs the full constructor below.
+  /// Hot path: no. Tests: LoopDetector.PlaceholderConstructorValidatesOnly.
+  explicit LoopDetector(const LoopConfig& cfg);
+
   LoopDetector(const LoopConfig& cfg,
                const scan_match::ScanMatchConfig& sm,
                const map::MapConfig& map_cfg,

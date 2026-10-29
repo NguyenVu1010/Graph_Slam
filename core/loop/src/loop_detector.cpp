@@ -263,6 +263,13 @@ LoopDetector::LoopDetector(const LoopConfig& cfg,
   m.desc_c.assign(cells, 0.0F);
 }
 
+LoopDetector::LoopDetector(const LoopConfig& cfg) : impl_(std::make_unique<Impl>()) {
+  impl_->cfg = cfg;
+  if (cfg.enabled) {
+    validate(cfg);
+  }
+}
+
 LoopDetector::~LoopDetector() = default;
 LoopDetector::LoopDetector(LoopDetector&&) noexcept = default;
 LoopDetector& LoopDetector::operator=(LoopDetector&&) noexcept = default;
@@ -280,8 +287,8 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
                                 common::Span<const KeyframeView> keyframes) {
   Impl& m = *impl_;
   LoopResult res;
-  if (!m.cfg.enabled || query.cloud_l == nullptr || query.cloud_l->size() == 0 ||
-      !pose_finite(query.T_w_b)) {
+  if (!m.cfg.enabled || m.matcher == nullptr || query.cloud_l == nullptr ||
+      query.cloud_l->size() == 0 || !pose_finite(query.T_w_b)) {
     return res;
   }
   const LoopConfig& c = m.cfg;
