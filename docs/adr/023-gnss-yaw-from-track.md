@@ -1,7 +1,7 @@
 # ADR-023: Yaw của `T_e_w` lấy từ hướng vết GNSS so với hướng thân xe, chiều chạy từ bánh xe, không dùng vị trí front-end dọc trục
 
 - Trạng thái: đề xuất
-- Ngày: 2026-10-29
+- Ngày: 2026-10-29 (bổ sung thiết kế 2b cùng ngày, xem cuối tài liệu)
 - Bổ sung: ADR-019 (biến khung `E`, prior của nó), ADR-022 (thiết kế 1; mặc định `gnss.prealign_max_fixes` nâng từ 128 lên 320); thêm lớp `gnss::GnssTrackYawAligner` vào hợp đồng `gnss.hpp` (chỉ thêm)
 
 ## Bối cảnh
@@ -73,3 +73,39 @@ Số đo: `docs/derivations/gnss_fusion_study.md` mục 15 (GTSAM, desktop WSL).
 - Hợp đồng (chỉ thêm): lớp `gnss::GnssTrackYawAligner` trong `gnss.hpp`; hằng `gnss::kRadPerDegree` và chín trường `GnssConfig` (`align_yaw_from_track`, `_chunk_fixes`, `_max_sigma_rad`, `_min_track_m`, `_min_coherence`, `_reverse_nsigma`, `_max_turn_rad`, `_min_var_m2`, `_min_wheel_travel_m`) cùng khoá YAML tương ứng (`_deg` trong YAML). Nội bộ pipeline: `GnssFusion::on_fix` thêm đối số `wheel_odometer_m` (số đọc tuyệt đối, mặc định NaN), `track_aligner()`, `n_alignments()`, `align_yaw_sigma_rad()`, `CoreObserver::on_alignment`. Không đổi chữ ký hàm nào của main; `graph.hpp`, `estimator.hpp` không đổi.
 - Giới hạn còn lại: không có bánh xe và chuyển động lùi ròng trước khi tin cậy thì lật 180° (test ghim hành vi này); không có bánh xe và xe đỗ với GNSS trôi từ 0,1 m mỗi fix trở lên thì có thể căn chỉnh theo nhiễu (16/100 ở 0,2 m); có bánh xe thì xe chậm hơn khoảng 0,1 m/s không bao giờ căn chỉnh ở mặc định; sai số GNSS có màu chỉ được chặn bởi vết tối thiểu và độ nhất quán.
 - Đề xuất mặc định: giữ tắt dù hai điều kiện của brief (mục tiêu hành lang đạt, box world không đổi) đều thoả: một mình nó kém hơn GNSS thô có ý nghĩa và làm chậm căn chỉnh khi fix nhiễu so với quỹ đạo; lợi ích chỉ có khi đi cùng thiết kế 1, mà thiết kế 1 tắt đến thiết kế 3. Bật cả hai cùng thiết kế 3 sau khi đo lại cả bộ (bộ đệm 320 đã đủ cho E-01); thiết kế 3 đo với `prealign_trackyaw` làm baseline.
+
+## Bổ sung: thiết kế 2b, căn chỉnh với ít chuyển động hơn (2026-10-29)
+
+Bối cảnh. Chủ dự án thấy thiết kế 2 cần chạy thẳng quá lâu (vết tối thiểu 5 m, sigma 3°; E-01 chỉ có 35/223 factor GNSS, box world 6 đến 17 so với 38 đến 45). Phần cứng: GNSS thường (không RTK), 0,5 m mỗi trục trong mô phỏng; tay đòn ăng-ten 0,22 m theo phương ngang (`p_b_g_m` [-0,20, 0,10, 0,60]); robot có odometry bánh xe. Chờ căn chỉnh không ảnh hưởng điều hướng cục bộ: tư thế LiDAR-inertial trong w hợp lệ từ khung đầu, chỉ đầu ra ENU phải chờ `T_e_w`. Số đo: `gnss_fusion_study.md` mục 16; phương pháp và mô hình sai số: `gnss.md` mục 5.1.
+
+Đo trước khi thiết kế (mục 16.1). Trên đường thẳng `sigma_yaw = sqrt(2 v) / L`, nên với 0,5 m mỗi trục cần `L = 0,224 m / sigma_yaw` giữa tâm khối đầu và cuối: 4,3 m cho 3°, 2,1 m cho 6°. Ở 3° chính vết tối thiểu 5 m quyết định trên đường thẳng; trên vòng tròn là sigma. Vậy đòn bẩy theo thứ tự là ngưỡng sigma, vết tối thiểu, rồi các đoạn rẽ bị cổng bỏ đi.
+
+Quyết định:
+
+9. **Ngưỡng sigma 6°** (`gnss.align_yaw_max_sigma_deg`, từ 3°). Graph còn tinh chỉnh yaw của `E` sau căn chỉnh (prior 30°), còn cổng chi-square và phép dời fix dùng `T_e_w` của aligner, được ước lượng lại ở mỗi khối. Đo ở 3 / 4,5 / 6°: yaw lúc căn chỉnh đầu nằm trong sigma dự đoán ở mọi cảnh (NEES 0,66 đến 1,54 trên 15 seed, không seed nào quá 3 sigma), không lật `E`, số fix bị loại sau căn chỉnh không tăng, ATE hợp nhất không đổi hoặc tốt hơn. Chọn theo yêu cầu yaw và số fix bị loại, không theo ATE (hỗn loạn, bài học 1.15). Mục tiêu "dưới 10° ở factor đầu" của mục 13.6 là đại diện cho "không lật, không khoá"; ở 6° sai số tới 3 sigma (15 đến 18°) là chấp nhận được, đo được lớn nhất 10,8° (1,9 sigma, box world) và hội tụ.
+
+10. **Đoạn rẽ từ đường đi của bánh xe** (`gnss.align_yaw_wheel_turns`, bật; `gnss.align_yaw_wheel_slip_frac` 0,05). Đoạn bị cổng rẽ loại, khi mọi bước vào các fix của hai khối có dữ liệu bánh xe, lấy hướng từ độ dời ăng-ten trong w giữa hai trung bình khối, `g_k = Q_{k+1} - Q_k + l_k`, với `Q` là đường đi tích phân từ quãng bánh xe theo hướng unwrap (dây cung của cung tròn mỗi bước, đúng khi tốc độ và tốc độ quay không đổi giữa hai fix). Tay đòn nằm trong `g_k`, nên dạng đóng không đổi. Mô hình sai số: trượt và trượt ngang bằng `slip` lần quãng có trọng số `S_k`, tương quan hoàn toàn trong đoạn, độc lập giữa các đoạn; profile tốc độ chưa biết giữa hai fix, `(s dpsi)^2 / 12` mỗi bước; sai số hướng bỏ qua (dưới 0,05°). Chúng cộng `sigma_perp,k^2` vào tử số của `sigma_yaw`. Không có bánh xe, hoặc thiếu một số đọc trong đoạn: cổng rẽ như cũ (kết quả giống từng bit). Đoạn qua cổng giữ hướng thân xe. Giới hạn: trượt kéo dài qua nhiều đoạn (một vòng dài trên sàn trơn) tương quan giữa các đoạn, ngoài mô hình: NEES 1,63 ở 3°, 1,00 ở 6° (vòng 1 m, probe).
+
+11. **Vết tối thiểu khi có bánh xe** (`gnss.align_yaw_min_track_wheel_m`, 0). Khi mọi đoạn đang dùng lấy hướng từ bánh xe, vết tối thiểu là khoá này, ngược lại vẫn là `align_yaw_min_track_m` (5 m). Lý do: 5 m tồn tại cho xe đỗ không có bánh xe; có bánh xe thì xe đỗ được đồng hồ quãng phát hiện (0/100 ở 0,05 / 0,10 / 0,20 m mỗi fix khi không có vết tối thiểu), và vết tối thiểu không bảo vệ xe đang chạy khỏi sai số có màu (NEES lúc căn chỉnh đầu không tốt hơn với 5 m so với không có, vì chờ lâu thêm cũng thêm trôi).
+
+12. **Không dùng độ dời front-end ở nơi LiDAR không suy biến.** Đo trên hành lang: khi tắt phát hiện suy biến (mặc định phát hành) sigma dọc trục của scan matching là 1,5 đến 4,6 cm trong khi độ dời 2 s của front-end sai 1,0 m; khi bật với `unobserved_var_m2` phát hành (0,001) nó báo 3,2 cm trong khi sai tới 5,5 m. Chỉ thiết lập 1000 m^2 của nghiên cứu mới đánh dấu trục mù. Một phép thử theo hiệp phương sai sẽ tin đúng độ dời đã làm lật seed 51 và 52 trong cấu hình phát hành. Không có bánh xe thì chiều chạy vẫn là giả thiết chạy tới (giới hạn của quyết định 4 giữ nguyên).
+
+13. **Không dùng xoay tại chỗ.** Ăng-ten vẽ vòng bán kính `|l|` quanh gốc thân xe, nên `sigma_yaw = sigma / (|l| sqrt(N))`. Một vòng trong 10 s với 0,5 m: 12,9° ở 10 Hz, 19,5° ở 5 Hz; RTK 2 cm: 0,50°; sai số tương quan trong vài giây (0,4 m, hằng số thời gian 5 s, cộng 0,3 m trắng): 46° (Monte Carlo 2000 lượt, test `GnssTrackYaw2b.InPlaceRotationYawObservability`). Công thức của brief `sigma / (|l| sqrt(N / 2))` bi quan gấp sqrt(2).
+
+Phương án đã cân nhắc thêm:
+
+| Phương án | Điểm cộng | Vì sao không chọn |
+| --- | --- | --- |
+| Khớp hình dạng đã biết (mục 4 trên đường w chính xác) | Ngắn hơn khoảng 15 % trên đường thẳng, nhanh hơn khoảng 30 % trên vòng 2 m (cận đo được) | Cần đường w đúng dọc vết; hành lang suy biến không có bánh xe không có đường đó; ước lượng mới cần mô hình sai số trôi riêng |
+| Dùng đường bánh xe cho mọi đoạn có rẽ, kể cả đoạn qua cổng | Bỏ lệch dây cung nhỏ (0,02 đến 0,04° trên lối đi không nhiễu) | Số hạng trượt chỉ thêm phương sai ở đoạn mà hướng thân xe đã đúng trên cung đều |
+| Giữ 3° | Sai số ban đầu nhỏ hơn | Không có lợi đo được về lật, khoá hay số fix bị loại; chờ gấp đôi quãng đường |
+
+Hệ quả (mục 16):
+
+- Hành lang có bánh xe, 15 seed: căn chỉnh sau 3,0 m (7 s) thay vì 6,0 m (13 s), sớm bằng `GnssAligner` (3,1 m), sai số yaw trong sigma (NEES 1,01), không seed nào quá 10° ở factor đầu, không lật; ATE với thiết kế 1: 0,112 m so với 0,160 m, 12/3, CI [-0,048, -0,005]. Không có bánh xe: không đổi (5 m vẫn quyết định).
+- Box world 15 seed: có bánh xe 9,0 s / 4,0 m thay vì 15,0 s / 7,0 m (38 factor GNSS thay vì 8); không bánh xe 13,0 s / 6,0 m; ATE không đổi (CI trong khoảng ±0,00005 m).
+- E-01: căn chỉnh ở 24 s (9 m) thay vì 52 s (23 m), sai số 0,8° với sigma 5,6°; 170/223 factor thay vì 35; ATE 0,002196 m (E-03 0,002177 m). `GnssAligner` căn chỉnh ở 13 s nhưng lệch 21° mà không báo.
+- Lối đi có góc 90° (mức unit, 200 seed): ở 3° từ 2/200 lượt căn chỉnh lên 200/200 (trung vị 7,9 m); ở 6° từ 8,9 m xuống 2,6 m.
+- Khi cờ tắt: `est.tum` của E-01..E-03 trùng md5 với main. Không đổi mã chạy mỗi scan (aligner chạy mỗi fix), nên không đo lại bench.
+- Hợp đồng (chỉ thêm): `GnssTrackYawAligner::n_wheel_turn_segments()`; ba trường `GnssConfig` (`align_yaw_wheel_turns`, `align_yaw_wheel_slip_frac`, `align_yaw_min_track_wheel_m`) và khoá YAML tương ứng; mặc định YAML `align_yaw_max_sigma_deg` 3 -> 6. Giá trị mặc định của struct giữ hành vi thiết kế 2.
+- Đề xuất mặc định: `gnss.align_yaw_from_track` vẫn tắt như mục 15.4; khi bật thì dùng các mặc định mới.

@@ -112,6 +112,7 @@ enum class Range {
   kAtLeastTwo,
   kUnitHalfOpen,
   kUnitOpenClosed,
+  kUnitOpen,
   kHalfTurnDeg
 };
 
@@ -132,6 +133,8 @@ bool in_range(T value, Range range) {
       return value >= T{0} && value < T{1};
     case Range::kUnitOpenClosed:
       return value > T{0} && value <= T{1};
+    case Range::kUnitOpen:
+      return value > T{0} && value < T{1};
     case Range::kHalfTurnDeg:
       return value > T{0} && value <= T{180};
   }
@@ -154,6 +157,8 @@ const char* range_text(Range range) {
       return "must be in [0, 1)";
     case Range::kUnitOpenClosed:
       return "must be in (0, 1]";
+    case Range::kUnitOpen:
+      return "must be in (0, 1)";
     case Range::kHalfTurnDeg:
       return "must be in (0, 180]";
   }
@@ -455,6 +460,10 @@ Config read_config(Reader& r) {
   r.field(
       "gnss.align_yaw_min_wheel_travel_m", c.gnss.align_yaw_min_wheel_travel_m, Range::kPositive);
   r.field("gnss.align_yaw_reverse_nsigma", c.gnss.align_yaw_reverse_nsigma, Range::kPositive);
+  r.field("gnss.align_yaw_wheel_turns", c.gnss.align_yaw_wheel_turns);
+  r.field("gnss.align_yaw_wheel_slip_frac", c.gnss.align_yaw_wheel_slip_frac, Range::kUnitOpen);
+  r.field(
+      "gnss.align_yaw_min_track_wheel_m", c.gnss.align_yaw_min_track_wheel_m, Range::kNonNegative);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);

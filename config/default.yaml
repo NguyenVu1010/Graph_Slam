@@ -93,9 +93,10 @@ mss_node:
       # > 10 deg off 2 -> 0 (max 2.5 deg). Fused ATE alone: median 1.99 -> 4.66 m, CI against
       # the reference includes 0, worse than raw GNSS (CI excludes 0); with
       # attach_prealign_fixes 1.66 m, max 37 -> 3.17 m, CI against the reference excludes 0.
-      # Box world unchanged; E-01 0.002183 -> 0.002210 m (35 of 223 GNSS factors: later
-      # alignment). Direction of travel from the wheel speed when wheel_odom is enabled, else
-      # the forward-driving assumption: then net backward motion before the yaw is confident
+      # Box world unchanged; E-01 0.002183 -> 0.002210 m with the design-2 keys (35 of 223 GNSS
+      # factors), 0.002196 m with the design-2b defaults below (170). Direction of travel from the
+      # wheel speed when wheel_odom is enabled, else the forward-driving assumption: then net
+      # backward motion before the yaw is confident
       # aligns 180 deg off, and a parked robot whose GNSS wanders by 0.1 m per fix or more can
       # align on noise (0.2 m per fix: 16 of 100 runs). Assumes white, honestly declared fix
       # noise (floored below).
@@ -107,7 +108,12 @@ mss_node:
       align_yaw_chunk_fixes: 10
       # Predicted yaw 1-sigma needed before the track-yaw aligner returns T_e_w, deg (> 0).
       # Replaces align_min_pairs / align_min_spread_m when align_yaw_from_track is true.
-      align_yaw_max_sigma_deg: 3.0
+      # Design 2b (gnss_fusion_study.md section 16): 3 -> 6. The graph refines E's yaw after the
+      # alignment; at 3 / 4.5 / 6 deg the first yaw stayed within its sigma (no seed beyond 3
+      # sigma), no flip, no more rejections after it. With wheel data 6 deg aligns after 3 m
+      # instead of 6 m (corridor), 4 m instead of 7 m (box), 9 m instead of 23 m (E-01).
+      # Straight-track rule at 0.5 m fixes: 0.224 m / sigma between the first and last chunk.
+      align_yaw_max_sigma_deg: 6.0
       # Along-heading GNSS track needed before the track-yaw aligner returns T_e_w, m (> 0).
       # sigma_yaw assumes white, correctly declared fix noise; this bounds the effect of coloured
       # error (multipath, slow drift of a parked receiver): a 0.3 m common error over 5 m of
@@ -134,6 +140,19 @@ mss_node:
       # A segment whose along-heading motion is below -this x its sigma, once the yaw is within
       # the threshold above, is taken as reverse motion (> 0, sigmas).
       align_yaw_reverse_nsigma: 3.0
+      # ADR-023 amendment (design 2b): with wheel data, a segment the turn gate rejects takes its
+      # direction from the wheel travel integrated along the body heading (gnss.md section 5.1)
+      # instead of being skipped. false: skipped (design 2). Aisles with 90 deg corners: at 3 deg
+      # 2 of 200 runs aligned without it, all with it (7.9 m); never used without wheel data.
+      align_yaw_wheel_turns: true
+      # 1-sigma wheel travel error of such a segment, fraction of its path along and across the
+      # motion (slip, skid), fully correlated within the segment, in (0, 1).
+      align_yaw_wheel_slip_frac: 0.05
+      # Along-heading track needed to align when every segment used has its direction from
+      # wheel data, m (>= 0); else align_yaw_min_track_m applies. 0: the odometer detects a
+      # parked robot (0 of 100 aligned at 0.2 m per fix of GNSS drift), and a minimum track does
+      # not help a moving robot against coloured error (study section 16.3).
+      align_yaw_min_track_wheel_m: 0.0
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

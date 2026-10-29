@@ -176,7 +176,18 @@ class GnssAligner {
 /// Noise: sigma_yaw = sqrt(sum_k var_k |a_{k-1} - a_k|^2) / |Z| (|Z| = |r + L|), var_k the per-axis
 /// variance of chunk mean k from the declared fix variances floored at align_yaw_min_var_m2
 /// (fixes assumed white and independent), a_{-1} = a_K = 0.
-/// A transform is returned once confident: r >= align_yaw_min_track_m,
+/// Turns with wheel data (align_yaw_wheel_turns, gnss.md section 5.1): a segment the turn gate
+/// rejects, when every fix of both chunks came with wheel data, is used with the direction
+/// a_k = unit(g_k) of the antenna displacement in w between the two chunk means, g_k = Q_{k+1}
+/// - Q_k + l_k, where Q is the body path integrated from the wheel travel along the unwrapped
+/// heading (exact for constant speed and yaw rate between fixes). The lever arm is inside g_k,
+/// so the segment adds nothing to L. Its direction error (wheel slip and skid,
+/// align_yaw_wheel_slip_frac of the weighted path S_k along and across, fully correlated within
+/// the segment, plus the unknown speed profile between fixes, (s dpsi)^2 / 12 per step) adds
+/// sigma_perp_k^2 = (slip S_k)^2 + sum w^2 (s dpsi)^2 / 12 to the numerator of sigma_yaw
+/// (n_wheel_turn_segments()). A weighted path below align_yaw_min_wheel_travel_m is stationary.
+/// A transform is returned once confident: r >= the minimum track (align_yaw_min_track_wheel_m
+/// when every segment used has its direction from wheel data, else align_yaw_min_track_m),
 /// r >= align_yaw_min_coherence * sum |b_k| (segments used) and sigma_yaw <=
 /// align_yaw_max_sigma_rad.
 /// Not handled: without wheel data, net backward motion along the heading before the estimate
@@ -211,7 +222,9 @@ class GnssTrackYawAligner {
   ///      (fix NOT added);
   ///   4. "not enough track" until two chunks are complete and the closed form has a solution
   ///      with r > 0 (fix IS added);
-  ///   5. "track too short" while r < align_yaw_min_track_m (fix IS added);
+  ///   5. "track too short" while r < the minimum track (align_yaw_min_track_wheel_m when every
+  ///      segment used has its direction from wheel data, else align_yaw_min_track_m; fix IS
+  ///      added);
   ///   6. "track not coherent" while r < align_yaw_min_coherence * sum |b_k| (fix IS added);
   ///   7. "yaw sigma too large" while sigma_yaw > align_yaw_max_sigma_rad (fix IS added).
   /// The yaw is re-estimated when a chunk completes; between chunks the last yaw is returned with
@@ -236,6 +249,8 @@ class GnssTrackYawAligner {
   [[nodiscard]] int n_stationary_segments() const { return n_stationary_; }
   /// Segments whose direction came from the forward-driving assumption (no wheel data).
   [[nodiscard]] int n_no_wheel_segments() const { return n_no_wheel_segments_; }
+  /// Turn-gated segments used with their direction from the wheel path (align_yaw_wheel_turns).
+  [[nodiscard]] int n_wheel_turn_segments() const { return n_wheel_turns_; }
 
  private:
   struct Chunk {
@@ -248,10 +263,24 @@ class GnssTrackYawAligner {
     double wheel_second_m = 0.0;                  // m, signed wheel travel, second half
     bool wheel_first_ok = false;                  // every fix of the first half had wheel data
     bool wheel_second_ok = false;
+    // Wheel path (align_yaw_wheel_turns): mean body position Q of the wheel path, w (m); the
+    // path weighted as it enters Q_{k+1} - Q_k as the later chunk (fall) or the earlier one
+    // (rise), m; the same for the per-step speed-profile variance, m^2.
+    Eigen::Vector2d q = Eigen::Vector2d::Zero();
+    double path_rise_m = 0.0;
+    double path_fall_m = 0.0;
+    double prof_rise_m2 = 0.0;
+    double prof_fall_m2 = 0.0;
+    bool path_rise_ok = false;  // every step into fixes 1.. of this chunk had wheel data
+    bool path_fall_ok = false;  // every step into a fix of this chunk had wheel data
   };
   void close_chunk();
+  // The minimum track: the wheel one when every segment used has its direction from wheel data.
+  [[nodiscard]] double min_track() const {
+    return n_no_wheel_segments_ == 0 ? min_track_wheel_m_ : min_track_m_;
+  }
   [[nodiscard]] bool confident() const {
-    return have_yaw_ && track_m_ >= min_track_m_ && track_m_ >= min_coherence_ * sum_abs_b_m_ &&
+    return have_yaw_ && track_m_ >= min_track() && track_m_ >= min_coherence_ * sum_abs_b_m_ &&
            yaw_sigma_rad_ <= max_sigma_rad_;
   }
 
@@ -263,6 +292,9 @@ class GnssTrackYawAligner {
   double max_turn_rad_;        // rad, from GnssConfig
   double min_var_m2_;          // m^2, from GnssConfig
   double min_wheel_travel_m_;  // m, from GnssConfig
+  bool wheel_turns_;           // from GnssConfig
+  double slip_frac_;           // fraction of the path, from GnssConfig
+  double min_track_wheel_m_;   // m, from GnssConfig
   // Unwrapped heading of the last fix.
   bool have_psi_ = false;
   double psi_rad_ = 0.0;                                // rad, unwrapped
@@ -278,21 +310,33 @@ class GnssTrackYawAligner {
   std::array<double, 2> chunk_wheel_m_{0.0, 0.0};          // m, signed wheel travel per half
   double last_odometer_m_ = std::numeric_limits<double>::quiet_NaN();  // m, at the last fix added
   std::array<bool, 2> chunk_wheel_ok_{true, true};  // every fix of the half had wheel
+  // Wheel path of the body in w (align_yaw_wheel_turns), relative to its start, and the
+  // current chunk's sums (see Chunk).
+  Eigen::Vector2d path_q_ = Eigen::Vector2d::Zero();       // m
+  Eigen::Vector2d chunk_sum_q_ = Eigen::Vector2d::Zero();  // m
+  double chunk_path_rise_m_ = 0.0;                         // m
+  double chunk_path_fall_m_ = 0.0;                         // m
+  double chunk_prof_rise_m2_ = 0.0;                        // m^2
+  double chunk_prof_fall_m2_ = 0.0;                        // m^2
+  bool chunk_path_rise_ok_ = true;
+  bool chunk_path_fall_ok_ = true;
   // Previous complete chunk and the last segment direction.
   bool have_prev_ = false;
   Chunk prev_;
   Eigen::Vector2d prev_a_ = Eigen::Vector2d::Zero();  // last segment direction (0 before one)
   // Segment sums: Z = sum conj(a) b, L = sum conj(a) l (real part: dot, imaginary: cross).
-  double sum_dot_m_ = 0.0;       // m, sum a . b
-  double sum_cross_m_ = 0.0;     // m, sum a x b
-  double sum_al_dot_m_ = 0.0;    // m, sum a . l
-  double sum_al_cross_m_ = 0.0;  // m, sum a x l
-  double sum_abs_b_m_ = 0.0;     // m, sum |b| over the segments used
-  double noise_q_m2_ = 0.0;      // m^2, sum var_k |a_{k-1} - a_k|^2 over closed coefficients
+  double sum_dot_m_ = 0.0;         // m, sum a . b
+  double sum_cross_m_ = 0.0;       // m, sum a x b
+  double sum_al_dot_m_ = 0.0;      // m, sum a . l
+  double sum_al_cross_m_ = 0.0;    // m, sum a x l
+  double sum_abs_b_m_ = 0.0;       // m, sum |b| over the segments used
+  double noise_q_m2_ = 0.0;        // m^2, sum var_k |a_{k-1} - a_k|^2 over closed coefficients
+  double wheel_dir_var_m2_ = 0.0;  // m^2, sum sigma_perp_k^2 of the wheel-path segments
   int n_reversals_ = 0;
   int n_skipped_turns_ = 0;
   int n_no_wheel_segments_ = 0;
   int n_stationary_ = 0;
+  int n_wheel_turns_ = 0;
   double yaw_rad_ = 0.0;
   double yaw_sigma_rad_ = 0.0;  // set to +inf in the constructor
   double track_m_ = 0.0;        // m, r of the last solution

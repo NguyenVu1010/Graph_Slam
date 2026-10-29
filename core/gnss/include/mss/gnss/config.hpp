@@ -43,6 +43,18 @@ struct GnssConfig {
   // m, wheel travel below which a segment is stationary and skipped (> 0)
   double align_yaw_min_wheel_travel_m = 0.2;
   double align_yaw_min_var_m2 = 0.25;  // m^2, floor on the declared horizontal fix variance (> 0)
+  // ADR-023 amendment (design 2b, gnss.md section 5.1). With wheel data, a segment the turn
+  // gate rejects takes its direction from the wheel travel integrated along the body heading
+  // (antenna path shape in w) instead of being skipped. The struct defaults keep the previous
+  // behaviour (turns skipped, one minimum track); load_config overwrites them from YAML.
+  bool align_yaw_wheel_turns = false;
+  // 1-sigma wheel travel error of such a segment as a fraction of its path, along and across
+  // the motion (slip, skid), taken as fully correlated within the segment, in (0, 1).
+  double align_yaw_wheel_slip_frac = 0.05;
+  // m, along-heading track needed to align when every segment used has its direction from
+  // wheel data (a parked robot is then detected by the odometer), in place of
+  // align_yaw_min_track_m (>= 0).
+  double align_yaw_min_track_wheel_m = 5.0;
 };
 
 }  // namespace mss::gnss
