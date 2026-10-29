@@ -463,7 +463,42 @@ TEST(GnssFusionTrackYaw, FlagSelectsTrackAligner) {
       EXPECT_LE(f.align_yaw_sigma_rad(), c.align_yaw_max_sigma_rad);
     } else {
       EXPECT_GT(err, 3.0);  // about pi: the position fit flips
-      EXPECT_TRUE(std::isnan(f.align_yaw_sigma_rad()));
+      // GnssAligner's sigma (backlog G1) takes the front end as exact: small, though 180 deg off.
+      EXPECT_GT(f.align_yaw_sigma_rad(), 0.0);
+      EXPECT_LT(f.align_yaw_sigma_rad(), 0.1);
+    }
+  }
+}
+
+// Backlog G1: with gnss.align_check_yaw_sigma the fusion passes the declared fix covariance to
+// GnssAligner, which waits for its predicted yaw sigma: noise-free fixes on a 0.1 m-step line
+// declared at 1 m^2, threshold 2 deg. Off: aligned at the 1 m spread (n = 35); on: once
+// 1 / sqrt(0.01 (n^3 - n) / 12) <= 2 deg (n = 100), with that sigma reported.
+TEST(GnssFusion, CheckYawSigmaUsesDeclaredCovariance) {
+  for (const bool check : {false, true}) {
+    gnss::GnssConfig c = fusion_cfg();
+    c.align_check_yaw_sigma = check;
+    c.align_yaw_max_sigma_rad = 2.0 * gnss::kRadPerDegree;
+    GnssFusion f(c, kPbg);
+    int n_aligned = 0;
+    for (int k = 0; k < 200 && !f.aligned(); ++k) {
+      Pose truth;
+      truth.p = Vec3(0.1 * k, 0.0, 0.0);
+      GnssMeasurement m;
+      m.t = Timestamp{k * kSec / 5};
+      m.p_e_g = truth_T_e_w() * (truth * kPbg);
+      m.cov = Vec3(1.0, 1.0, 4.0).asDiagonal();
+      m.status = 0;
+      (void)f.on_fix(m, truth, kZeroP);
+      n_aligned = k + 1;
+    }
+    ASSERT_TRUE(f.aligned()) << check;
+    EXPECT_EQ(n_aligned, check ? 100 : 35) << check;
+    const double sigma = f.align_yaw_sigma_rad();
+    if (check) {
+      EXPECT_LE(sigma, c.align_yaw_max_sigma_rad);
+    } else {
+      EXPECT_GT(sigma, c.align_yaw_max_sigma_rad);
     }
   }
 }

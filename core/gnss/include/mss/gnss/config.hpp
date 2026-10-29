@@ -16,8 +16,12 @@ struct GnssConfig {
   // GnssAligner thresholds and the G-02 chi-square level. The defaults equal the former
   // header constants so value-initialised configs keep their behaviour; load_config
   // always overwrites them from YAML.
-  int align_min_pairs = 10;              // pairs needed before the aligner returns T_e_w (>= 1)
-  double align_min_spread_m = 1.0;       // m, min RMS horizontal spread of the pairs (> 0)
+  int align_min_pairs = 10;         // pairs needed before the aligner returns T_e_w (>= 1)
+  double align_min_spread_m = 1.0;  // m, min RMS horizontal spread of the pairs (> 0)
+  // Backlog G1: GnssAligner also waits until its predicted yaw 1-sigma (declared fix variance,
+  // floored at align_yaw_min_var_m2) is at most align_yaw_max_sigma_rad. The struct default
+  // keeps the previous behaviour (no yaw check); load_config overwrites it from YAML.
+  bool align_check_yaw_sigma = false;
   double chi2_gate = 7.814727903251178;  // NIS threshold, 3 DoF (chi-square q = 0.95) (> 0)
   // Consecutive chi-square rejections (fixes) after which the pipeline restarts the aligner
   // so a front end that drifted during an outage can be re-aligned (docs/derivations/
@@ -33,8 +37,9 @@ struct GnssConfig {
   // (GnssTrackYawAligner) instead of GnssAligner's fit of front-end positions. The struct
   // default keeps the previous behaviour; load_config overwrites all of them from YAML.
   bool align_yaw_from_track = false;
-  int align_yaw_chunk_fixes = 10;                        // fixes per chunk (>= 2)
-  double align_yaw_max_sigma_rad = 3.0 * kRadPerDegree;  // rad, yaw 1-sigma needed to align (> 0)
+  int align_yaw_chunk_fixes = 10;  // fixes per chunk (>= 2)
+  // rad, yaw 1-sigma needed to align (> 0); also GnssAligner's with align_check_yaw_sigma
+  double align_yaw_max_sigma_rad = 3.0 * kRadPerDegree;
   double align_yaw_min_track_m = 5.0;     // m, along-heading GNSS track needed to align (> 0)
   double align_yaw_min_coherence = 0.5;   // along-heading track / GNSS path length to align (0, 1]
   double align_yaw_reverse_nsigma = 3.0;  // sigmas: a segment this far backwards reverses (> 0)
@@ -42,7 +47,8 @@ struct GnssConfig {
   double align_yaw_max_turn_rad = 45.0 * kRadPerDegree;
   // m, wheel travel below which a segment is stationary and skipped (> 0)
   double align_yaw_min_wheel_travel_m = 0.2;
-  double align_yaw_min_var_m2 = 0.25;  // m^2, floor on the declared horizontal fix variance (> 0)
+  // m^2, floor on the declared horizontal fix variance (> 0), in both aligners' yaw sigma
+  double align_yaw_min_var_m2 = 0.25;
   // ADR-023 amendment (design 2b, gnss.md section 5.1). With wheel data, a segment the turn
   // gate rejects takes its direction from the wheel travel integrated along the body heading
   // (antenna path shape in w) instead of being skipped. The struct default keeps the previous

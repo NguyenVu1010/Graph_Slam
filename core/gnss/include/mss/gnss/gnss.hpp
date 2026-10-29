@@ -132,6 +132,27 @@ class GnssAligner {
                                       const common::Pose& T_w_b,
                                       const common::Vec3& p_b_g);
 
+  /// As update() above, with the declared fix covariance `cov_e` (3x3 in e, m^2) used for the
+  /// predicted yaw 1-sigma (yaw_sigma_rad(), docs/derivations/gnss.md section 4.1): each fix
+  /// counts with the larger eigenvalue of its horizontal 2x2 block, floored at
+  /// GnssConfig::align_yaw_min_var_m2. The 3-argument update() uses that floor for every fix.
+  /// With GnssConfig::align_check_yaw_sigma (backlog G1) one more error follows check 3:
+  ///   4. "yaw sigma above threshold" while yaw_sigma_rad() > GnssConfig::align_yaw_max_sigma_rad
+  ///      (the pair IS added).
+  /// Errors: also "non-finite input" when `cov_e` has a non-finite entry (pair NOT added).
+  /// Hot path: no (per fix); no allocation, no logging.
+  /// Tests: GnssAligner.YawSigma*, GnssAligner.E01Like*.
+  common::Result<common::Pose> update(const common::Vec3& p_e_g,
+                                      const common::Mat3& cov_e,
+                                      const common::Pose& T_w_b,
+                                      const common::Vec3& p_b_g);
+
+  /// Predicted yaw 1-sigma (rad) of the fit at the last update() that passed checks 2 and 3:
+  /// sqrt(sum_i var_i |a_c,i|^2) / sum_i |a_c,i|^2, with a_c,i the centred horizontal w-side
+  /// antenna positions and var_i the per-fix variance above. The w side (front end) is taken
+  /// as exact, so along a LiDAR-degenerate axis it is optimistic (ADR-023). NaN before that.
+  [[nodiscard]] double yaw_sigma_rad() const { return yaw_sigma_rad_; }
+
  private:
   // Running sums over all accepted pairs, shifted by the first pair for conditioning
   // (docs/derivations/gnss.md section 4). a = p_w_g - ref_w_, b = p_e_g - ref_e_.
@@ -145,6 +166,14 @@ class GnssAligner {
   Eigen::Matrix2d sum_we_ = Eigen::Matrix2d::Zero();  // m^2, sum a_h b_h^T
   double sum_w_h_sq_m2_ = 0.0;                        // m^2, sum |a_h|^2
   double sum_e_h_sq_m2_ = 0.0;                        // m^2, sum |b_h|^2
+  // Yaw sigma (G1): per-fix horizontal variance var_i (m^2) weighted sums of the w side.
+  bool check_yaw_sigma_ = false;                         // GnssConfig::align_check_yaw_sigma
+  double max_yaw_sigma_rad_ = 0.0;                       // rad, GnssConfig::align_yaw_max_sigma_rad
+  double min_var_m2_ = 0.0;                              // m^2, GnssConfig::align_yaw_min_var_m2
+  double sum_var_m2_ = 0.0;                              // m^2, sum var_i
+  Eigen::Vector2d sum_var_w_ = Eigen::Vector2d::Zero();  // m^3, sum var_i a_h
+  double sum_var_w_sq_m4_ = 0.0;                         // m^4, sum var_i |a_h|^2
+  double yaw_sigma_rad_ = std::numeric_limits<double>::quiet_NaN();  // rad
 };
 
 /// ADR-023: estimates `T_e_w` with its yaw taken from the direction of the GNSS track (e side)

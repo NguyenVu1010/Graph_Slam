@@ -58,8 +58,8 @@ class CoreObserver {
                               const common::GnssMeasurement& /*m*/,
                               const common::Pose& /*T_e_w*/) {}
   /// The GNSS fusion became aligned (first time or after a realign) with the fix at `t`:
-  /// `T_e_w` the aligner estimate, `yaw_sigma_rad` its predicted yaw 1-sigma (NaN for
-  /// GnssAligner; ADR-023 study) and `track` the track-yaw aligner (counters: segments without
+  /// `T_e_w` the aligner estimate, `yaw_sigma_rad` its predicted yaw 1-sigma (ADR-023 study,
+  /// backlog G1) and `track` the track-yaw aligner (counters: segments without
   /// wheel data, reversals, turn-gated segments; meaningful with gnss.align_yaw_from_track).
   virtual void on_alignment(common::Timestamp /*t*/,
                             const common::Pose& /*T_e_w*/,
