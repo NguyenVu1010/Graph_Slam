@@ -1,0 +1,8 @@
+# QoS overrides for `ros2 bag play` in mss_bag.launch.py. Bags written by the sim tools carry
+# no offered QoS, so the player would publish /tf_static as volatile and RViz, started later,
+# would miss it. Latch it as tf2's static broadcaster does.
+/tf_static:
+  history: keep_last
+  depth: 1
+  reliability: reliable
+  durability: transient_local
