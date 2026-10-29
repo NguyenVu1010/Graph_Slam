@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Launch check: `ros2 launch mss_ros2 mss.launch.py` starts mss_node and it keeps running.
+# Launch check: `ros2 launch mss_ros2 mss.launch.py` starts mss_node and it keeps running, and
+# the bag and live launch files are installed and parse (`--show-args`: they need a bag or
+# Gazebo to run, which the CI image does not have).
 # Passes when the launch is still up after the timeout (timeout exits 124) and the node's
 # startup line was printed; any other exit (crash, bad parameters, missing package) fails.
 # Usage: check_launch.sh [INSTALL_DIR]   (default /ws/install, the Docker image layout)
@@ -21,6 +23,10 @@ set +u
 set -u
 
 ros2 pkg executables mss_ros2
+for f in mss_bag.launch.py mss_live.launch.py; do
+  ros2 launch mss_ros2 "$f" --show-args > /dev/null \
+    || { echo "LAUNCH CHECK FAILED: $f does not load" >&2; exit 1; }
+done
 
 export RCUTILS_COLORIZED_OUTPUT=0  # plain CI log
 log="$(mktemp)"

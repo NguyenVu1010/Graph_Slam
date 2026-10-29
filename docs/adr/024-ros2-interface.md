@@ -31,7 +31,7 @@ QoS đăng ký: best effort, keep last, độ sâu theo tham số (`qos_depth.*`
 | --- | --- | --- | --- |
 | `/mss/odometry` | `nav_msgs/Odometry` | mỗi ước lượng mới (`latest_state().state.t` đổi) | reliable, volatile, sâu 10 |
 | `/mss/path` | `nav_msgs/Path` | như trên; thêm một pose rồi phát cả đường | reliable, transient local, sâu 1 |
-| `/tf` | `map → base_link` | như trên | của `tf2_ros::TransformBroadcaster` |
+| `/tf` | `map → imu_link` (`frames.body`) | như trên | của `tf2_ros::TransformBroadcaster` |
 | `/mss/map` | `sensor_msgs/PointCloud2` (`x y z` float32, khung `map`) | `Estimator::export_map()` ở tần số `map_rate_hz` (mặc định 1 Hz; 0 tắt) | reliable, transient local, sâu 1 |
 
 - `Odometry.pose` là `T_w_b`; quaternion dựng từ `R_w_b` theo Hamilton (w, x, y, z), ghi sang trường ROS `x y z w`. Covariance: lõi cho `[rho, phi]` với nhiễu phải (`T <- T * Exp(delta)`, delta trong `b`); ROS hiểu covariance pose quanh trục của `header.frame_id`. Bậc nhất, `p' = p + R rho` và `R' = Exp(R phi) R`, nên `Sigma_ros = J Sigma J^T` với `J = blkdiag(R_w_b, R_w_b)`. Thứ tự `[x y z rotx roty rotz]` trùng `[rho, phi]`. Đây là phép đổi ở biên I/O, không đổi quy ước của lõi.
@@ -41,9 +41,9 @@ QoS đăng ký: best effort, keep last, độ sâu theo tham số (`qos_depth.*`
 
 ### 3. Tên frame và cây TF
 
-- `w` → `map` (tham số `tf.world_frame`), `b` → `base_link` (tham số `tf.body_frame`, là thân IMU). TF phát `map → base_link` từ `T_w_b`: `translation = p_w_b`, `rotation = q(R_w_b)` Hamilton. `T_w_b` ánh xạ điểm từ `b` sang `w`, đúng nghĩa transform `parent = map`, `child = base_link` của tf2, nên không cần đảo.
+- `w` → `map` (tham số `tf.world_frame`), `b` → tên `frames.body` của config, `imu_link` (thân IMU; tham số `tf.body_frame`, rỗng theo mặc định = lấy từ config; sửa đổi 2026-10-29 bên dưới). TF phát `map → imu_link` từ `T_w_b`: `translation = p_w_b`, `rotation = q(R_w_b)` Hamilton. `T_w_b` ánh xạ điểm từ `b` sang `w`, đúng nghĩa transform `parent = map`, `child = imu_link` của tf2, nên không cần đảo.
 - **Không có frame `odom`.** REP-105 đặt `odom` giữa `map` và `base_link` để một nguồn odometry liên tục và một nguồn định vị có nhảy cùng tồn tại. Node là nguồn pose duy nhất và ước lượng của nó đã là pose trong `map`; một `odom` đồng nhất chỉ thêm một frame không mang thông tin, còn một `odom` thật (tích phân IMU/bánh xe tần số cao, liên tục) là việc của sau này. Khi có, cây thành `map → odom → base_link` với `T_map_odom = T_w_b * T_odom_b^-1`. Frame `odom` của `/wheel/odom` trong bag không được phát thành TF.
-- LiDAR và ăng-ten: node không phát; chúng đến từ `/tf_static` của nguồn dữ liệu (bag hoặc robot). Bag Gazebo treo `lidar_link` dưới `frames.body` của config (`imu_link`); bag tổng hợp dưới `base_link`. Muốn cây liền trên bag Gazebo thì đặt `body_frame:=imu_link` khi launch (trên robot thật `base_link == imu_link`).
+- LiDAR và ăng-ten: node không phát; chúng đến từ `/tf_static` của nguồn dữ liệu (bag hoặc robot). Mọi nguồn sim (bag Gazebo, bag tổng hợp, chạy live) treo `lidar_link` dưới `frames.body` (`imu_link`), nên cây liền mà không cần đối số (trên robot thật `base_link == imu_link`).
 
 ### 4. Luồng
 
@@ -83,3 +83,8 @@ Tham số ước lượng vẫn chỉ ở `config/default.yaml` + overlay (ADR-0
 - Đường đi phát lại toàn bộ mỗi lần có ước lượng: O(số pose); chạy dài cần giới hạn hoặc phát theo keyframe (tồn đọng).
 - Bản build không GTSAM không có bản đồ (`export_map()` báo lỗi, node log có điều tiết).
 - Thứ tự xử lý của node phụ thuộc thời điểm message đến so với timer, nên không tái lập bit-cho-bit như bench; `deterministic: true` vẫn là chế độ của bench và test.
+
+## Sửa đổi 2026-10-29: tên frame thân, chạy live (lát cắt B3)
+
+- **Một tên cho `b`.** Trước đây node phát `map → base_link` trong khi `config/default.yaml` gọi `b` là `imu_link`, bag Gazebo treo `lidar_link` dưới `imu_link` và bag tổng hợp dưới `base_link` (tồn đọng R11). Nay `tf.body_frame` mặc định rỗng và node lấy `frames.body` của config đã ghép overlay; `sim/mss_sim/synth.py` cũng đặt `imu_link`. Cả `mss_bag.launch.py` và `mss_live.launch.py` để `body_frame` rỗng theo mặc định, nên cây TF liền trên mọi nguồn sim. Lý do chọn tên của config thay vì đổi sim sang `base_link`: config là nguồn duy nhất của tên frame (ADR-008), và extrinsics `T_b_l` trong config được định nghĩa với `b` = IMU. Không đổi quy ước nào của lõi.
+- **Chạy live.** `ros2 launch mss_ros2 mss_live.launch.py scenario:=<sim/scenarios/*.yaml> [rviz:=true]` chạy Gazebo, lớp nhiễu online (ADR-011 sửa đổi 2026-10-29), node và RViz trong một launch; node nhận đúng các topic như khi phát bag. Đối số: README mục ROS 2.
