@@ -275,6 +275,7 @@ direction of the GNSS track against the body heading instead of fitting front-en
   wheel-sample gap (`Stats::n_wheel_gap_bounded` counts them).
   `gnss.align_yaw_drift_var_m2_per_s` (the receiver's coloured drift as a random-walk rate,
   m^2/s) enters the yaw sigma.
+  `gnss.align_yaw_path_min_turn_deg` sends gentle turns to the path of the odometry frame.
 - `gnss.align_yaw_sigma_frontend_cov` (off): `GnssAligner`'s yaw sigma also counts the
   front-end position covariance (`docs/derivations/gnss.md` section 4.1).
 `gnss.enabled` is off in `config/default.yaml` until multipath and outage are evaluated; the

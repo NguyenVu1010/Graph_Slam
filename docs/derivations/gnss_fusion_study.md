@@ -1547,8 +1547,8 @@ the antenna velocity in e with 0.05 m/s white noise per axis, and the yaw is
   Within the run-to-run spread (p95 5.38 to 5.77 ms). The information along the axis costs one
   3x3 product per scan, with the flag on only.
 
-**Known open issues (backlog).** This PR merges with the flag off, and main does not change. The
-details are in the review of 3e32aa3.
+**Known open issues (backlog), closed in section 18.** This PR merges with the flag off, and main
+does not change. The details are in the review of 3e32aa3.
 - **F1. Gap bridging.** The pipeline integrates wheel speed and interpolates across wheel-message
   gaps; there is no absolute odometer. Stop-and-go with a wheel driver that goes silent when
   stopped: 99 to 85 of 100 aligned (max 95 m).
@@ -1882,3 +1882,125 @@ section 16.13 a robot at 0.05 m/s or slower never aligned.
   `delta sigma^2 = q T / r^2` on a straight track; without fix times the term is off, bit for
   bit), `DriftTermKeepsSlowRobotsWithinSigma` (F2's case: 10 / 0 / 0 beyond 3 sigma with no
   term, 0.0017 and 0.002), `DriftTermKeepsTheSlowRobotAlignment`.
+
+### 18.6 G5: gentle turns on the path of o
+
+Noise-free S-jogs (0.5 m/s, 5 s left, 5 s right, 10 s straight), 20 seeds x 5 start phases; the
+largest first-yaw error over the phases (the H4 review's 6 phases, 2.0 to 3.8 s, give 0.129 deg
+at 0.1 rad/s on all three seed sets; noise-free, so the seed only sets the heading):
+
+| yaw rate | 2b | H4, wheel path | H4, front end observed |
+| --- | --- | --- | --- |
+| 0.1 rad/s | 0.74 deg | 0.11 deg (0.13 deg, review phases) | 0.11 deg |
+| 0.2 rad/s | 1.49 deg | 0.00 | 0.00 |
+| 0.3 rad/s | 2.28 deg | 0.00 | 0.00 |
+| 0.4 rad/s | 0.57 deg | 0.00 | 0.00 |
+| 0.6 rad/s | 0.00 deg (the gate trips) | 0.00 | 0.00 |
+
+The distance to the first alignment is unchanged (3.5 to 4.5 m) except at 0.6 rad/s with two
+start phases (+1 m). Without wheel data and without the front end there is no path: 0.78 deg at
+0.3 rad/s, as before. With noise (0.5 m white, 100 seeds) the mean first-yaw error drops from
+2.54 to 0.45 deg at 0.3 rad/s and 1.89 to 0.47 deg at 0.2 rad/s, NEES 1.33 / 1.25 to 0.75, no run
+beyond 3 sigma. Unit test: `GnssTrackYawHardening.GentleTurnsTakeThePath` (2.140 deg before,
+0.0000 after, same distance), `GentleTurnsWithNoiseWithinSigma`.
+
+### 18.7 G11: can IMU and wheels see spin-up and rest?
+
+Limits 1 (wheels turning on a still body) and 4b (parked without wheel data) where the LiDAR does
+not observe the travel axis were classified as sensor-set limits without an oracle (review F3).
+
+**Oracle in the aligner probe.** An ideal stillness signal (the front end observed and exact
+while the body is still, unobserved while it moves): none of 100 align on drift at any level
+(limit 1 up to 0.50 m per fix, 4b up to 0.30 m per fix), against, without it, 0 / 0 / 1 / 14 / 13
+of 100 at 0.10 / 0.15 / 0.20 / 0.30 / 0.50 m per fix (limit 1) and 0 / 1 / 14 / 31 at 0.05 /
+0.10 / 0.20 / 0.30 m per fix (4b). Most false alignments come early: limit 1 from 6 s after the
+wheels start (time since the start: median 10 s at 0.30 m per fix, but 122 s at 0.50), 4b from
+8 s after the start (median 20 to 26 s at 0.20 and 0.30 m per fix).
+
+**What the IMU sees, on the recorded Gazebo bags** (offline probe, not in the repo; the
+accelerometer along `x_b` = `x_o`, gravity-compensated with the attitude of the ground truth and
+the initialisation as shipped, which reads the horizontal accelerometer bias as tilt, or as with
+`imu.init_level_start`):
+
+| | E-01 | E-04 | E-07 |
+| --- | --- | --- | --- |
+| horizontal accelerometer bias (the static window) | 0.61 m/s^2 | 0.61 m/s^2 | 0.61 m/s^2 |
+| IMU / wheel / true delta-v over the first 1 s of motion | 0.455 / 0.463 / 0.455 m/s | 0.501 / 0.503 / 0.496 m/s | 0.455 / 0.462 / 0.454 m/s |
+| standard deviation of a 1 s IMU delta-v at rest | 0.0022 m/s | 0.0014 m/s | 0.0021 m/s |
+| speed error, IMU integrated from rest, shipped init, 10 / 30 / 60 s | 0.01 / 8.2 / 30 m/s | 0.05 / 0.30 / 1.1 m/s | 0.03 / 8.1 / 28 m/s |
+| the same with the level start | 0.01 / 0.18 / 0.83 m/s | 0.05 / 0.31 / 1.15 m/s | 0.03 / 0.24 / 1.0 m/s |
+| largest acceleration read while the true one is below 0.01 m/s^2: shipped / level start | 1.31 / 0.18 m/s^2 | 0.17 / 0.17 m/s^2 | 1.31 / 0.24 m/s^2 |
+| event-gated speed (integrated only while the 1 s mean exceeds 0.05 m/s^2), largest error over the run: shipped / level start | 30 / 0.03 m/s | 0.19 / 0.19 m/s | 84 / 5.7 m/s |
+
+- **Transitions are observable.** A spin-up of the wheels under a still body would be a
+  disagreement of about 200 standard deviations between the wheel and IMU velocity changes; a
+  stall of a moving robot is a deceleration of the same size.
+- **Steady state is not, beyond a latch.** After the transition the still state must be latched,
+  and the latch is valid only while the integrated IMU speed stays accurate. With the shipped
+  initialisation the absorbed bias reappears as up to 1.3 m/s^2 of phantom acceleration once the
+  body yaws, so the latch breaks at the first turn (E-01, E-07); on the straight E-04 it holds
+  0.3 m/s for 30 s. With the level start it holds about 0.2 to 0.3 m/s for 30 s everywhere, and
+  the event-gated integral is better still where the route has few accelerations.
+- **Classification** (`gnss.md` section 5.3): observable at the transition with IMU + wheels
+  (limit 1) or IMU (4b, from the rest at initialisation); a sensor-set limit only in steady state
+  beyond the latch horizon. The probe's failures fall inside such a horizon, so a detector would
+  remove most of them.
+- **Not implemented.** The detector needs the level start (owner decision S5) or an equivalent
+  bias estimate, a latch that ends when its integrated error exceeds the speeds it must tell
+  apart, and validation against drive vibration, which the simulator does not produce. It is the
+  shared stationarity detector of backlog G7 (also for a zero-velocity factor), a design for its
+  own ADR (backlog G20).
+
+### 18.8 Pipeline runs: flag off, flag on, corridor, box world, P11, bench
+
+- **Flag off** (shipped): `est.tum` md5 of E-01, E-02, E-03 equal to main e946ee9 (E-01 and E-02
+  `43ee8422...`, E-03 `fd658717...`); 214 / 214 / 216 GNSS factors; `tools/run_integration.py`
+  passes E-01..E-03 (ATE 0.002160 / 0.002160 / 0.002174 m).
+- **Track-yaw flag on** (`gnss.align_yaw_from_track: true` on the warehouse overlay):
+
+  | | e946ee9 | H4 |
+  | --- | --- | --- |
+  | E-01 first alignment | 24 s, 9 m, 0.76 deg off, sigma 5.57 deg | 24 s, 9 m, -0.32 deg off, sigma 5.73 deg, 9 segments on the path |
+  | E-01 factors / ATE | 170 / 0.002196 m | 170 / 0.002198 m |
+  | E-03 factors / ATE | 171 / 0.002175 m | 171 / 0.002172 m |
+
+  The circle of E-01 (0.3 rad/s) turns its segments by 34 deg, so they now take the wheel path
+  (G5); the drift term widens the sigma slightly.
+- **Corridor** (15 paired seeds, degeneracy 1000 m^2, wheel data): per-seed fused ATE identical
+  to e946ee9 for design 2b (0.313 m median, max 2.23) and design 1 + 2b (0.180 m, max 0.93);
+  first alignment 9.0 s / 4.0 m and yaw error 2.33 deg median (max 7.39) unchanged; the
+  predicted sigma 3.65 -> 4.12 deg (drift term), NEES 0.88 -> 0.69. (One replay of the H4 run
+  was cut by a short read of a lidar file on the Windows drive; rerun alone it equals the base.)
+- **Box world** (15 paired seeds, 2b at 6 deg): fused ATE unchanged (CI within +-0.0001 m).
+  GNSS only: 16 factors (min 8) against 17 (15), first alignment 13 s / 6 m, yaw error 2.11
+  deg median against 2.50, NEES 1.24 against 1.54. GNSS + wheel: 37 factors (min 26) against 37
+  (32), 9 s / 4 m (max 11 s / 5 m against 9 s / 4 m), error 1.87 against 1.53 deg, NEES 0.55
+  against 0.69. The design-2 keys (3 deg, 5 m, no wheel turns) align 2 s later with the drift
+  term (17 s against 15 s), which on this 20 s run leaves no GNSS factor (0 against 8).
+- **P11** (re-review 2's S-jog outage probe, aisles, 100 seeds, with heading readings): at most 1
+  of 100 beyond 3 sigma, NEES 0.65 to 1.71 (2b: 0.86 to 1.79). The alignment comes later in some
+  outages (10-20 s with wheel data: 10.5 m median against 3.6 m), from the drift term. Without
+  the heading readings (a caller that passes nothing, documented hole) the wheel/GNSS window used
+  to catch the 6-16 s S-jog by chance (0 beyond 3 sigma); with the drift term widening it, 17 of
+  100 are (wheel data); the pipeline always passes the readings.
+- **Bench** (E-01, median of 5 interleaved runs, p50 / p95 / CPU, the H4 fix round): main
+  e946ee9 5.23 / 7.54 ms / 3.33 s, H4 flag off 5.22 / 7.55 ms / 3.34 s, H4 track-yaw on (the
+  per-scan marginal-information gate) 5.29 / 7.67 ms / 3.40 s, main track-yaw on 5.22 / 7.49 ms /
+  3.30 s. Within the run-to-run spread (p50 5.15 to 5.52 ms, p95 7.15 to 9.03 ms over all runs).
+- The flag-off md5, the flag-on runs and the corridor and box-world studies were repeated on the
+  fix round with the same results (the gate's lever arm and the period-relative gap rule do not
+  change these runs: no scan is near the threshold, and the 50 Hz wheel data has no gap).
+
+### 18.9 Full mutation set
+
+`mut3.sh` then `mut4.sh` (private no-GTSAM copy; `test_gnss`, `test_pipeline_internals`, `test_pipeline_component`, `test_degeneracy`): 87 mutants, the 2b reviews' set adapted, the first H4 version's, the H4 review's 7, and 21 on the fix round (null space, non-finite eigenvalue, the lever arm and its wiring, `info > 0`, the odometer, the weighted split).
+- **First run:** 80 killed, 4 survived (a non-finite eigenvalue in a report, all of the bound on the rise, the bound's growth at a fix without a reading, a non-finite front-end covariance followed by finite ones), 2 did not build (unused variables) and 1 sed did not apply.
+- **Tests added:** `MarginalInformation.SingularNonFiniteAndZero` (a NaN eigenvalue on an eigenvector orthogonal to u), `GnssTrackYawHardening.GapBoundShortfallShowsInBothSegments`, `.GapBoundGoesWithTheBridgedReading`, `GnssAligner.FrontEndCovKnownValue` (NaN then finite covariances: sqrt 2.5); the three mutants rewritten. Re-run: all 7 killed.
+- **Total: 87 of 87 killed.**
+
+Previous run (first H4 version): 69 mutants, the rr2 / rr3 / rr4 sets and the root-cause study's
+adapted to the hardened code (42) plus 27 on the H4 changes; 60 killed in the first run, the
+eight survivors and one that did not apply got tests (`TravelAxisMarginalInfo`,
+`SingularNonFiniteAndZero`, `PipelineComponent.TrackYawReadingsCarryTimeAndGapBound`,
+`DriftTermOnlyOnUsedSegments`, `DriftTermIsRateTimesTime` with a chunk without times,
+`GentleTurnsTakeThePath` without a path, `SlowGentleTurnsAreExtended`), then 69 of 69.
