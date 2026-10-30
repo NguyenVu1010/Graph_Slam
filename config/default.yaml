@@ -230,6 +230,19 @@ mss_node:
       # in Stats::n_wheel_gap_bounded, periods (> 1). 3: +-10 ms of jitter at 10 Hz stays
       # regular. Stop-and-go with a silent driver: 85 -> 100 of 100 aligned.
       align_yaw_wheel_gap_periods: 3.0
+      # Coloured GNSS position error of THIS receiver as a random walk: per-axis variance rate,
+      # m^2/s (> 0, finite; owner ruling 2026-10-30, backlog G18: a per-receiver value). Drift d
+      # per fix at fix rate f gives d^2 f. Each segment adds rate x the time between its chunk
+      # centres to the yaw variance and the wheel/GNSS window, so a slow track waits until its
+      # displacement outgrows the drift. 0.0017: the simulator's Gauss-Markov drift (0.5 m,
+      # 300 s: 2 sigma^2 / tau), 0.018 m per fix at 5 Hz; with it a robot at 0.05 m/s under
+      # 0.02 m per fix of drift aligns within its sigma (before: 10 of 100 beyond 3 sigma).
+      # Choosing it for a real receiver: log the antenna standing still for tens of minutes, take
+      # the per-axis variance of the position change over a lag T well below the drift time
+      # constant and divide by T (or 2 sigma^2 / tau of a Gauss-Markov fit). Too low: a slow robot
+      # under more drift aligns with a confident wrong yaw. Too high: later alignment (slow
+      # robots much later). gnss.md section 5.3.
+      align_yaw_drift_var_m2_per_s: 0.0017
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

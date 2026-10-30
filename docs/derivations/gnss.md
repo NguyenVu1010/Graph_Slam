@@ -713,9 +713,9 @@ than `min_travel / (2 s (max_chunks + 1))`, about 0.01 m/s, still does not align
    median 10.9 m (max 21.9 m). Before, at 2 % missing, it was 36 m (max 311 m).
 3. **A slow robot with wheel data.** Algorithm, with two causes: the per-segment travel threshold,
    and the coherence test failing on short segments that noise dominates. Fixed down to about
-   0.01 m/s. What remains is noise: the coloured GNSS drift per metre of track, tolerable up to
-      about `0.02 m sqrt(v / 0.5 m/s)` per fix. Above it, a slow robot now aligns with a confident
-   wrong yaw instead of never aligning (backlog F2).
+   0.01 m/s. What remains is noise: the coloured GNSS drift per metre of track. With the drift
+   term of section 5.3 it is in the sigma up to the declared rate; above that rate a slow robot
+   can still align with a wrong yaw.
 4. **Without wheel data.**
    - Backward travel: a sensor-set limit, because the travel sign is not in the GNSS positions or
      the heading. GNSS Doppler does not give it either. Fixed where the LiDAR observes the axis.
@@ -735,7 +735,8 @@ alignment within 10 m. The two rows marked * use their own criterion, stated in 
 | GNSS drift while driving at speed `v` | about `0.02 m sqrt(v / 0.5 m/s)` per fix | the same |
 | white GNSS sigma (declared = true) | 1.0 m | 1.0 m |
 | missing wheel readings* (restart distance after a mismatch, which includes the 10 m window) | 20 %: median 10.9 m, max 21.9 m | the same |
-| speed with wheel data* (only with GNSS drift up to about 5 mm per fix at 0.03 m/s; see F2) | from 0.02 m/s (bound about 0.01 m/s) | the same |
+| speed with wheel data* (drift up to the declared rate, section 5.3) | from 0.02 m/s (bound about 0.01 m/s) | the same |
+| GNSS coloured drift rate while aligning (`gnss.align_yaw_drift_var_m2_per_s`, per receiver) | up to the declared rate: at most 1 of 100 beyond 3 sigma on three seed sets; above it (7x) up to 38 of 100 | the same |
 | persistent skid in a one-way turn | none up to 10 deg | 5 deg |
 | backward travel without wheel data | handled | not handled |
 
@@ -860,3 +861,31 @@ per fix of drift at each rate; aisles align after a median 4.5 m at each rate).
 (`GnssTrackYawRootCause.GapLongerThanTheBoundIsNotBridged`, case 27-31), and the front-end
 position of `b` instead of `o` (`GnssTrackYawHardening.FrontEndPositionIsOfTheOdometryFrame`).
 The mutants of each change of this section: study section 18.4.
+
+**Coloured GNSS drift (G10).** The fix error is taken as white plus a random walk with per-axis
+variance rate `q` (`gnss.align_yaw_drift_var_m2_per_s`; a drift of `d` per fix at rate `f` is
+`d^2 f`). The YAML value 0.0017 m^2/s is the simulator's Gauss-Markov drift (`2 sigma^2 / tau`,
+0.5 m and 300 s), about 0.018 m per fix at 5 Hz. Segment `k`, whose chunk centres are `dt_k`
+apart, gets a random-walk increment in `b_k` with per-axis variance `q dt_k`, independent of the
+other segments (increments over disjoint intervals). It enters `Z` with `|a_k|^2`:
+
+    var_Z += q sum_k dt_k |a_k|^2
+
+in the yaw sigma and in the noise of the consistency window. On a straight track the sum is `q T`,
+with `T` the time between the first and the last chunk centre; the true variance of the
+end-to-end displacement of two chunk means `D` long is `q (T - D / 3)`, so the term is a slight
+upper bound. Then `sigma_drift = sqrt(q / T) / v` and a slow track waits until its displacement
+outgrows the drift. The fix times come with each fix (`TrackYawReadings::t`); without them the
+term is 0. An extended segment spans many chunks and gets its full `q dt` (review F2: the
+extension had no drift term). Review F2's case, 0.05 m/s at 0.02 m per fix: 10 / 8 / 10 of 100
+beyond 3 sigma to 0 / 1 / 1 (three seed sets), every run aligned (median 4.5 m against 3.3 m).
+Within the declared rate no cell of the study grid has more than 1 of 100 beyond 3 sigma. White
+fixes only: a 0.03 m/s robot still aligns, after 6.0 m instead of 3.1 m. A drift above the
+declared rate is outside the model: at 0.05 m per fix (7x the rate) 1 to 38 of 100 runs from
+0.05 m/s up are beyond 3 sigma (2b: 4 to 52), and at 0.02 m/s 10 to 11 of the 26 to 35 that now
+align (2b: 1 to 4 of 2 to 5; the term widens the window, so more slow robots align, with a sigma
+too small for that drift); with the rate set to that drift at most 1 of 100 anywhere.
+
+**Choosing the drift rate** (owner ruling 2026-10-30, backlog G18). `q` is a per-receiver YAML
+value, > 0 and finite (checked at start-up); the default 0.0017 m^2/s is the simulator's
+receiver. How to choose it for a real receiver: log fixes of the antenna standing still for several drift time constants (tens of minutes), take the per-axis variance of the position change over a lag T well below the time constant, and divide by T (a random walk); or from a Gauss-Markov fit, 2 sigma^2 / tau. Too low: a slow robot under more drift aligns with a confident wrong yaw. Too high: the alignment waits longer (slow robots much longer).

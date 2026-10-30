@@ -448,7 +448,7 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
           .is_ok());
   // G15 flag off.
   EXPECT_FALSE(cfg.value().gnss.align_yaw_sigma_frontend_cov);
-  // Hardening of design 2b (gnss.md section 5.3): wheel gap > 1 period.
+  // Hardening of design 2b (gnss.md section 5.3): wheel gap > 1 period, drift rate > 0.
   EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_wheel_gap_periods, 3.0);
   const auto bad_wheel_gap = parse_config(
       read_file(kDefault), overlay("    gnss:\n      align_yaw_wheel_gap_periods: 1\n"));
@@ -456,6 +456,26 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   EXPECT_TRUE(
       mentions(bad_wheel_gap.reason(), "gnss.align_yaw_wheel_gap_periods: must be > 1 (got 1)"))
       << bad_wheel_gap.reason();
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_drift_var_m2_per_s, 0.0017);
+  // Backlog G18: a per-receiver value, > 0 and finite.
+  for (const char* v : {"-1", "0"}) {
+    const auto bad_drift = parse_config(
+        read_file(kDefault),
+        overlay(std::string("    gnss:\n      align_yaw_drift_var_m2_per_s: ") + v + "\n"));
+    ASSERT_FALSE(bad_drift.is_ok());
+    EXPECT_TRUE(
+        mentions(bad_drift.reason(),
+                 std::string("gnss.align_yaw_drift_var_m2_per_s: must be > 0 (got ") + v + ")"))
+        << bad_drift.reason();
+  }
+  for (const char* v : {".inf", ".nan"}) {
+    const auto bad_drift = parse_config(
+        read_file(kDefault),
+        overlay(std::string("    gnss:\n      align_yaw_drift_var_m2_per_s: ") + v + "\n"));
+    ASSERT_FALSE(bad_drift.is_ok());
+    EXPECT_TRUE(mentions(bad_drift.reason(), "gnss.align_yaw_drift_var_m2_per_s: expected"))
+        << bad_drift.reason();
+  }
   for (const char* v : {"0", "1"}) {
     const auto bad_slip = parse_config(
         read_file(kDefault),

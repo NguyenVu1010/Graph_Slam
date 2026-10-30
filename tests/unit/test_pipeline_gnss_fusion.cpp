@@ -535,6 +535,37 @@ TEST(GnssFusion, FrontEndCovReachesTheAligner) {
   }
 }
 
+// Backlog G10: on_fix passes the readings struct (the wheel-sample gap bounds and the fix
+// time) to the track aligner: the drift term needs the fix times, so the same noise-free line
+// reports a larger sigma with gnss.align_yaw_drift_var_m2_per_s when the time is passed, and the
+// same as without the rate when it is not.
+TEST(GnssFusionTrackYaw, ReadingsReachTheAligner) {
+  double sigma[3] = {0.0, 0.0, 0.0};
+  for (int variant = 0; variant < 3; ++variant) {
+    gnss::GnssConfig c = fusion_cfg();
+    c.align_yaw_from_track = true;
+    c.align_yaw_drift_var_m2_per_s = variant == 0 ? 0.0 : 0.01;
+    GnssFusion f(c, kPbg);
+    for (int k = 0; k < 120; ++k) {
+      Pose truth;
+      truth.p = Vec3(0.1 * k, 0.0, 0.0);
+      GnssMeasurement m;
+      m.t = Timestamp{k * kSec / 5};
+      m.p_e_g = truth_T_e_w() * (truth * kPbg);
+      m.cov = Vec3(0.01, 0.01, 0.04).asDiagonal();
+      m.status = 0;
+      gnss::TrackYawReadings in;
+      in.wheel_odometer_m = 0.1 * k;
+      in.t = m.t;
+      in.has_time = variant != 2;
+      (void)f.on_fix(m, truth, kZeroP, nullptr, in);
+    }
+    sigma[variant] = f.align_yaw_sigma_rad();
+  }
+  EXPECT_GT(sigma[1], 1.5 * sigma[0]);
+  EXPECT_EQ(sigma[2], sigma[0]);
+}
+
 // ADR-023 addendum: GnssFusion::on_fix passes the wheel travel to the track aligner. A body
 // driving backwards (x_b along +x, moving along -x) from the start: without wheel data the
 // forward assumption gives 180 deg; with the wheel travel the yaw is right.
