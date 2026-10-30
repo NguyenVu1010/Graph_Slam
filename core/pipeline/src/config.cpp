@@ -638,6 +638,9 @@ Config read_config(Reader& r) {
             c.loop_closure.pcm_odometry_sigma_scale >= 1.0,
             "must be >= 1");
   }
+  r.angle_deg("loop_closure.pcm_yaw_drift_deg_per_m",
+              c.loop_closure.pcm_yaw_drift_rad_per_m,
+              Range::kNonNegative);
   if (r.field("loop_closure.pcm_max_loops", c.loop_closure.pcm_max_loops, Range::kAtLeastOne)) {
     r.check("loop_closure.pcm_max_loops", c.loop_closure.pcm_max_loops <= 64, "must be <= 64");
   }

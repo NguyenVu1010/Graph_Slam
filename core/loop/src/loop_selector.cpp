@@ -92,13 +92,18 @@ LoopSelector::LoopSelector(const LoopConfig& cfg, std::size_t reserve_keyframes)
   if (!(cfg.pcm_odometry_sigma_scale >= 1.0) || !std::isfinite(cfg.pcm_odometry_sigma_scale)) {
     throw std::invalid_argument("loop_closure.pcm_odometry_sigma_scale must be >= 1 and finite");
   }
+  if (!(cfg.pcm_yaw_drift_rad_per_m >= 0.0) || !std::isfinite(cfg.pcm_yaw_drift_rad_per_m)) {
+    throw std::invalid_argument("loop_closure.pcm_yaw_drift_deg_per_m must be >= 0 and finite");
+  }
   if (cfg.pcm_max_clique_steps <= 0) {
     throw std::invalid_argument("loop_closure.pcm_max_clique_steps must be > 0");
   }
   T_0k_.reserve(reserve_keyframes);
   S_k_.reserve(reserve_keyframes);
+  G_k_.reserve(reserve_keyframes);
   T_0k_.emplace_back();  // keyframe 0: the origin of the chain
   S_k_.push_back(PoseCovariance::Zero());
+  G_k_.push_back(Vec6::Zero());
   to_add_.reserve(kMaxLoops);
   to_remove_.reserve(kMaxLoops);
 }
@@ -110,8 +115,15 @@ bool LoopSelector::add_odometry(common::KeyId k, const Pose& T_prev_k, const Pos
   const Pose T = T_0k_.back() * T_prev_k;
   const double s2 = cfg_.pcm_odometry_sigma_scale * cfg_.pcm_odometry_sigma_scale;
   const PoseCovariance left = common::transform_covariance(s2 * 0.5 * (cov + cov.transpose()), T);
+  // Yaw drift (loop_closure.md section 11b): the step adds b * d_k of yaw about its body z at
+  // its end (right perturbation of the increment); in the left tangent at the origin that is
+  // d_k * Ad(T_0k) e_yaw, summed over the chain.
+  Vec6 e_yaw = Vec6::Zero();
+  e_yaw(5) = 1.0;
+  const Vec6 g_step = T_prev_k.p.norm() * (common::se3_adj(T) * e_yaw);
   T_0k_.push_back(T);
   S_k_.push_back(S_k_.back() + left);
+  G_k_.push_back(G_k_.back() + g_step);
   return true;
 }
 
@@ -127,7 +139,13 @@ bool LoopSelector::odometry(common::KeyId a,
   Uncertain u;
   u.T = T_0k_[lo].inverse() * T_0k_[hi];
   const PoseCovariance d = S_k_[hi] - S_k_[lo];
-  u.C = common::transform_covariance(0.5 * (d + d.transpose()), T_0k_[hi].inverse());
+  // Yaw-drift term: an unknown constant yaw drift rate b ~ N(0, pcm_yaw_drift^2) (rad per metre
+  // travelled) over the segment, fully correlated along it: rank one, sigma_b^2 g g^T with g the
+  // derivative of the segment's right-perturbation tangent with respect to b.
+  const Vec6 g_left = G_k_[hi] - G_k_[lo];
+  const double sb = cfg_.pcm_yaw_drift_rad_per_m;
+  const PoseCovariance drift = (sb * sb) * (g_left * g_left.transpose());
+  u.C = common::transform_covariance(0.5 * (d + d.transpose()) + drift, T_0k_[hi].inverse());
   if (a > b) {
     u = inverse(u);
   }

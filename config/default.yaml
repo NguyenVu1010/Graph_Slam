@@ -422,7 +422,12 @@ mss_node:
       pcm_chi2_gate: 22.46           # pairwise cycle chi-square, 6 DoF (0.999 quantile)
       # >= 1. The odometry covariance is scaled by this squared in the pairwise test: the front
       # end may claim sigmas up to this factor too small (review H3: x0.5 still closes).
-      pcm_odometry_sigma_scale: 2.0
+      pcm_odometry_sigma_scale: 1.5
+      # >= 0. Unknown constant yaw drift rate of the odometry (1 sigma, per metre travelled), added
+      # to the odometry covariance of the pairwise test (ADR-028 amendment C): yaw error grows
+      # with the distance, lateral error with its square. 0.2 deg/m = the repo's synthetic
+      # odometry yaw bias (0.1 deg per 0.5 m step).
+      pcm_yaw_drift_deg_per_m: 0.2
       pcm_max_loops: 64              # loops held, [1, 64]; the oldest leaves (stays if selected)
       pcm_max_clique_steps: 100000   # max-clique search bound (Bron-Kerbosch calls)
 

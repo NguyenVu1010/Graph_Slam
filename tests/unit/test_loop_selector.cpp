@@ -2,7 +2,9 @@
 // sums against direct compounding, the pairwise cycle test under drift and aliasing, the
 // maximum-clique selection with late removal, ties, eviction, validation and allocation.
 // Known answers, fixed seeds only.
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <random>
 #include <stdexcept>
 #include <vector>
@@ -87,6 +89,8 @@ struct Lap {
 TEST(LoopSelector, OdometryPrefixSumsMatchDirectCompounding) {
   LoopConfig cfg = pcm_config();
   cfg.pcm_odometry_sigma_scale = 1.0;  // the covariance as given
+  cfg.pcm_yaw_drift_rad_per_m =
+      0.0;  // no drift term (YawDriftCovarianceMatchesNumericalDifference)
   LoopSelector sel(cfg, 10);
   std::mt19937 rng(3);
   std::normal_distribution<double> n01(0.0, 1.0);
@@ -315,12 +319,12 @@ TEST(LoopSelector, TruncatedCliqueSearchNeverMakesTheSelectionWorse) {
   }
 }
 
-// --- Review H3 B-1 (held for the owner's decision; prepared known answers) -----------------
-// Three laps of a circle (radius 6 to 20 m) with the repo's unmodelled yaw bias (0.1 deg per
-// 0.5 m step) and white noise of the claimed sigmas (x1, x0.5): 4 TRUE loops lap 2 -> lap 1,
-// then 5 TRUE loops lap 3 -> lap 1 (exact, 5 cm / 1 deg). Known answer: every loop stays
-// selected, none is removed. Today PCM removes 2 to 4 of the first revisit's loops (their cycles
-// with the second revisit's hold a whole lap of biased odometry). Enabled with the B-1 fix.
+// --- Review H3 B-1, fixed by the yaw-drift term (ADR-028 amendment C) -----------------------
+// Three laps of a circle (radius 6 to 20 m) with the repo's yaw bias (0.1 deg per 0.5 m step, not
+// in the claimed covariance) and white noise of the claimed sigmas (x1, x0.5): 4 TRUE loops
+// lap 2 -> lap 1, then 5 TRUE loops lap 3 -> lap 1 (exact, 5 cm / 1 deg). Known answer: every
+// loop stays selected, none is removed. Without the drift term PCM removed 2 to 4 of the first
+// revisit's loops (their cycles with the second revisit's hold a whole lap of biased odometry).
 struct Laps3 {
   std::vector<Pose> truth;
   LoopSelector sel;
@@ -356,7 +360,7 @@ struct Laps3 {
   }
 };
 
-TEST(LoopSelector, DISABLED_ThreeLapTrueLoopsAllStaySelected) {
+TEST(LoopSelector, ThreeLapTrueLoopsAllStaySelected) {
   const LoopConfig cfg = pcm_config();
   for (const double radius : {6.0, 9.0, 12.0, 20.0}) {
     for (const double claim : {1.0, 0.5}) {
@@ -364,6 +368,14 @@ TEST(LoopSelector, DISABLED_ThreeLapTrueLoopsAllStaySelected) {
       const int N = L.per_lap;
       int removed = 0;
       int rejected = 0;
+      double max_chi2 = 0.0;
+      for (int a = 0; a < 4; ++a) {
+        for (int b = 0; b < 5; ++b) {
+          max_chi2 = std::max(max_chi2,
+                              L.sel.pair_chi2(L.loop(5 + a * N / 5, N + 5 + a * N / 5),
+                                              L.loop(5 + b * N / 5, 2 * N + 5 + b * N / 5)));
+        }
+      }
       for (int q = 0; q < 4; ++q) {
         rejected += L.sel.propose(L.loop(5 + q * N / 5, N + 5 + q * N / 5)).selected ? 0 : 1;
         removed += static_cast<int>(L.sel.to_remove().size());
@@ -373,17 +385,104 @@ TEST(LoopSelector, DISABLED_ThreeLapTrueLoopsAllStaySelected) {
         removed += static_cast<int>(L.sel.to_remove().size());
       }
       std::printf(
-          "[ pcm three laps ] R %.0f m (%d kf/lap) claim x%.2f: %d removed, %d not "
-          "selected, %zu of 9 selected\n",
+          "[ pcm three laps ] R %.0f m (%d kf/lap) claim x%.2f: max cross-revisit chi2 %.1f, %d "
+          "removed, %d not selected, %zu of 9 selected\n",
           radius,
           N,
           claim,
+          max_chi2,
           removed,
           rejected,
           L.sel.n_selected());
       EXPECT_EQ(removed, 0) << radius << " " << claim;
       EXPECT_EQ(rejected, 0) << radius << " " << claim;
       EXPECT_EQ(L.sel.n_selected(), 9U) << radius << " " << claim;
+    }
+  }
+}
+
+// The yaw-drift covariance against numerical differentiation (ADR-028 amendment C,
+// loop_closure.md 11b). Residual: the right-perturbation tangent of the segment O(a -> b);
+// variable: the drift rate b (rad/m), applied to every step as Z_k Exp(b |p_k| e_yaw). With the
+// step covariances zero and no inflation the selector's segment covariance must be
+// sigma_b^2 g g^T with g = d tangent / d b, here by central differences (h = 1e-6 rad/m) on the
+// re-composed chain. Relative error < 1e-6, both directions (a < b and a > b).
+TEST(LoopSelector, YawDriftCovarianceMatchesNumericalDifference) {
+  LoopConfig cfg = pcm_config();
+  cfg.pcm_odometry_sigma_scale = 1.0;
+  cfg.pcm_yaw_drift_rad_per_m = 0.01;
+  LoopSelector sel(cfg, 40);
+  std::mt19937 rng(5);
+  std::normal_distribution<double> n01(0.0, 1.0);
+  std::vector<Pose> inc(1);
+  for (int k = 1; k <= 30; ++k) {
+    Vec6 xi;
+    xi << 0.5 + 0.1 * n01(rng), 0.05 * n01(rng), 0.02 * n01(rng), 0.02 * n01(rng), 0.02 * n01(rng),
+        0.1 * n01(rng);
+    inc.push_back(common::se3_exp(xi));
+    ASSERT_TRUE(sel.add_odometry(static_cast<KeyId>(k), inc.back(), PoseCovariance::Zero()));
+  }
+  const auto segment = [&](int a, int b, double drift) {
+    const int lo = std::min(a, b);
+    const int hi = std::max(a, b);
+    Pose T;
+    for (int k = lo + 1; k <= hi; ++k) {
+      Vec6 e = Vec6::Zero();
+      e(5) = drift * inc[static_cast<std::size_t>(k)].p.norm();
+      T = T * inc[static_cast<std::size_t>(k)] * common::se3_exp(e);
+    }
+    return a < b ? T : T.inverse();
+  };
+  constexpr double kH = 1e-6;
+  for (const auto& ab : {std::pair<int, int>{0, 30}, {4, 21}, {25, 3}, {10, 11}}) {
+    const Pose T0 = segment(ab.first, ab.second, 0.0);
+    const Vec6 g = (common::boxminus(segment(ab.first, ab.second, kH), T0) -
+                    common::boxminus(segment(ab.first, ab.second, -kH), T0)) /
+                   (2.0 * kH);
+    const PoseCovariance expect =
+        cfg.pcm_yaw_drift_rad_per_m * cfg.pcm_yaw_drift_rad_per_m * (g * g.transpose());
+    Pose T_s;
+    PoseCovariance C_s;
+    ASSERT_TRUE(
+        sel.odometry(static_cast<KeyId>(ab.first), static_cast<KeyId>(ab.second), T_s, C_s));
+    EXPECT_LT(common::se3_log(T_s.inverse() * T0).norm(), 1e-9);
+    EXPECT_LT((C_s - expect).norm(), 1e-6 * expect.norm()) << ab.first << " " << ab.second;
+    // The dominant cross term: lateral error ~ distance x yaw error (yaw-lateral correlation).
+    std::printf("[ yaw drift ] segment %d -> %d: g = [%.3f %.3f %.3f | %.4f %.4f %.4f]\n",
+                ab.first,
+                ab.second,
+                g(0),
+                g(1),
+                g(2),
+                g(3),
+                g(4),
+                g(5));
+  }
+}
+
+// How much the drift term weakens the aliasing rejection: chi2 of a loop aliased by one 2 m
+// period against true loops at increasing distance along the lap, with and without the term
+// (scale 1). The near ones (segments of 7 to 13 keyframes) stay far above the gate.
+TEST(LoopSelector, YawDriftTermKeepsNearAliasesInconsistent) {
+  LoopConfig with = pcm_config();
+  LoopConfig without = with;
+  without.pcm_yaw_drift_rad_per_m = 0.0;
+  const Lap lw(with, 1.0, 151);
+  const Lap lo(without, 1.0, 151);
+  const LoopConstraint f = lw.loop(10, 85, 2.0);
+  for (const int i : {0, 23, 40, 60}) {
+    const LoopConstraint t = lw.loop(i, i + 75);
+    const double cw = lw.sel.pair_chi2(t, f);
+    const double co = lo.sel.pair_chi2(t, f);
+    std::printf(
+        "[ yaw drift ] aliased (10, 85) against true (%d, %d): chi2 %.1f with the drift "
+        "term, %.1f without\n",
+        i,
+        i + 75,
+        cw,
+        co);
+    if (std::abs(i - 10) <= 13) {
+      EXPECT_GT(cw, with.pcm_chi2_gate) << i;
     }
   }
 }

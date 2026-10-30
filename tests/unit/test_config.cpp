@@ -128,7 +128,8 @@ TEST(Config, LoopClosureKeys) {
   // ADR-028: PCM on.
   EXPECT_TRUE(l.pcm_enabled);
   EXPECT_DOUBLE_EQ(l.pcm_chi2_gate, 22.46);
-  EXPECT_DOUBLE_EQ(l.pcm_odometry_sigma_scale, 2.0);
+  EXPECT_DOUBLE_EQ(l.pcm_odometry_sigma_scale, 1.5);
+  EXPECT_NEAR(l.pcm_yaw_drift_rad_per_m, 0.2 * kRadPerDeg, 1e-12);
   EXPECT_EQ(l.pcm_max_loops, 64);
   EXPECT_EQ(l.pcm_max_clique_steps, 100000);
   const std::string base = read_file(kDefault);

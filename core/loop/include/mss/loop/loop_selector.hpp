@@ -28,7 +28,10 @@ namespace mss::loop {
 ///
 /// Odometry: O(a -> b) for a < b from prefix sums in O(1): T_0k and the left-tangent
 /// covariance S_k = S_{k-1} + Ad(T_0k) C_k Ad(T_0k)^T, so T_ab = T_0a^-1 T_0b and
-/// C_ab = Ad(T_0b^-1) (S_b - S_a) Ad(T_0b^-1)^T; O(b -> a) is its inverse.
+/// C_ab = Ad(T_0b^-1) (S_b - S_a + sigma_b^2 g g^T) Ad(T_0b^-1)^T, with the yaw-drift term of an
+/// unknown constant yaw drift rate (sigma_b = pcm_yaw_drift_deg_per_m, per metre travelled) and
+/// g = G_b - G_a, G_k = sum over steps of |p_step| Ad(T_0k) e_yaw (loop_closure.md section 11b);
+/// O(b -> a) is its inverse.
 ///
 /// Ownership/threading: single-threaded, owned by the pipeline's EstimatorCore and called at
 /// keyframe time (ADR-028). No GTSAM.
@@ -45,7 +48,8 @@ class LoopSelector {
   };
 
   /// When `cfg.enabled && cfg.pcm_enabled`: validates pcm_chi2_gate (> 0), pcm_max_loops
-  /// ([1, kMaxLoops]), pcm_odometry_sigma_scale (>= 1) and pcm_max_clique_steps (> 0) and
+  /// ([1, kMaxLoops]), pcm_odometry_sigma_scale (>= 1), pcm_yaw_drift_rad_per_m (>= 0) and
+  /// pcm_max_clique_steps (> 0) and
   /// reserves the odometry chain for
   /// `reserve_keyframes` keyframes (it grows past that, per keyframe) and the loop lists.
   /// Errors: throws std::invalid_argument on an invalid value. Hot path: no.
@@ -98,6 +102,7 @@ class LoopSelector {
   LoopConfig cfg_;
   std::vector<common::Pose> T_0k_;           // odometry prefix poses, index = KeyId
   std::vector<common::PoseCovariance> S_k_;  // left-tangent prefix covariance sums
+  std::vector<common::Vec6> G_k_;            // left-tangent prefix yaw-drift derivatives
   std::array<common::LoopConstraint, kMaxLoops> loops_{};
   std::array<std::uint64_t, kMaxLoops> age_{};  // insertion counter per slot (older = smaller)
   std::array<std::uint64_t, kMaxLoops> adj_{};  // consistency bitsets
