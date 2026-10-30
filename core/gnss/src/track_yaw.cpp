@@ -48,6 +48,7 @@ GnssTrackYawAligner::GnssTrackYawAligner(const GnssConfig& cfg, const common::Po
       min_track_wheel_m_(cfg.align_yaw_min_track_wheel_m),
       wheel_restart_m_(cfg.align_yaw_wheel_restart_m),
       drift_var_m2_per_s_(cfg.align_yaw_drift_var_m2_per_s),
+      path_min_turn_rad_(cfg.align_yaw_path_min_turn_rad),
       T_b_o_(T_b_o),
       yaw_sigma_rad_(std::numeric_limits<double>::infinity()) {}
 
@@ -217,6 +218,14 @@ void GnssTrackYawAligner::close_chunk() {
   if (fe_still && wheel_ok && std::abs(travel_m) - fe_disp.norm() > min_wheel_travel_m_) {
     ++n_fe_wheel_disagree_;
   }
+  // Turn of the segment: the turn gate's measure. Above align_yaw_path_min_turn_rad (a gentle
+  // turn) the path of o gives the direction when it exists (gnss.md section 5.3): the chord
+  // between the centroids bends away from the mean heading on a turn.
+  const double seg_turn_rad = std::max({turn_between_rad, prev_.span, k.span});
+  const bool hard_turn = seg_turn_rad > max_turn_rad_;
+  const bool wheel_path_ok = wheel_turns_ && prev_.path_rise_ok && k.path_fall_ok;
+  const bool gentle_turn =
+      !hard_turn && seg_turn_rad > path_min_turn_rad_ && (fe_ok || wheel_path_ok);
   double seg_gap_m = 0.0;  // gap bounds of a segment used with its wheel travel
   bool stationary = false;
 
@@ -254,11 +263,12 @@ void GnssTrackYawAligner::close_chunk() {
       a.setZero();
       ++n_skipped_turns_;
     }
-  } else if (turn_between_rad > max_turn_rad_ || prev_.span > max_turn_rad_ ||
-             k.span > max_turn_rad_) {
+  } else if (hard_turn || gentle_turn) {
     // Turn gate: course over ground along the mean heading is only used on near-straight
     // segments. With the wheel path the direction is the antenna displacement in w instead
-    // (gnss.md section 5.1): the odometry-frame path plus R_w_b (p_b_g - p_b_o).
+    // (gnss.md section 5.1): the odometry-frame path plus R_w_b (p_b_g - p_b_o). A gentle turn
+    // comes here only when one of the paths exists; when still, it is stationary as below (and
+    // may be extended).
     const Eigen::Vector2d g = k.q - prev_.q + l;
     const double path_m = prev_.path_rise_m + k.path_fall_m;
     const Eigen::Vector2d g_fe = fe_disp + l;  // the same from the front-end path of o
@@ -266,20 +276,28 @@ void GnssTrackYawAligner::close_chunk() {
       // The LiDAR observed the travel axis (study section 16.13): the front-end path is the true
       // one (a skid included) up to the scan-matching error, so it adds no direction error.
       if (fe_still || !(g_fe.squaredNorm() > 0.0)) {
-        a.setZero();
-        ++n_stationary_;
+        if (gentle_turn) {
+          stationary = true;
+        } else {
+          a.setZero();
+          ++n_stationary_;
+        }
       } else {
         a = g_fe / g_fe.norm();
         l.setZero();
         wheel_disp_m = g_fe.norm();
         ++n_wheel_turns_;
       }
-    } else if (!(wheel_turns_ && prev_.path_rise_ok && k.path_fall_ok)) {
+    } else if (!wheel_path_ok) {
       a.setZero();  // skipped: contributes nothing; both chunks keep only their other coefficient
       ++n_skipped_turns_;
     } else if (path_m < min_wheel_travel_m_ || !(g.squaredNorm() > 0.0)) {
-      a.setZero();  // stationary (turning in place): no direction of travel
-      ++n_stationary_;
+      if (gentle_turn) {
+        stationary = true;
+      } else {
+        a.setZero();  // stationary (turning in place): no direction of travel
+        ++n_stationary_;
+      }
     } else {
       a = g / g.norm();
       a_wheel_path = a;

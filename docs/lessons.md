@@ -411,8 +411,12 @@ Format of an entry: **symptom** → cause → fix → rule.
       Doppler does not give it either. The front end gives it where the LiDAR observes the axis.
     - Where the LiDAR is blind along the axis, a still body with spinning wheels or a parked
       robot cannot be told from GNSS drift in steady state: the IMU sees the same signal at rest
-      and at constant speed. The onset is observable, though (wheel delta-v against IMU delta-v),
-      and no oracle tested it (open issue F3).
+      and at constant speed. The transitions are observable, though: on Gazebo recordings the
+      IMU velocity change over the first second of motion matched the wheels within 0.01 m/s,
+      against a 0.002 m/s spread at rest. A detector must latch the still state from there, and
+      the latch lasts only while the integrated IMU speed stays accurate: with the bias read as
+      tilt it breaks at the first yaw (8 m/s in 30 s), with the level start it holds tens of
+      seconds. Not a sensor-set limit at the transition; a shared stationarity detector (G7).
     - The tolerance there is 0.15 m per fix with spinning wheels and 0.10 m per fix when parked
       without wheel data. Above 0.15 m per fix the rate depends on the seeds, 0 to 14 of 100.
     - GNSS Doppler velocity would remove these everywhere. That is a study-only estimate:
@@ -427,6 +431,12 @@ Format of an entry: **symptom** → cause → fix → rule.
     - GNSS Doppler velocity for the heading (GVINS; a receiver's course over ground);
     - Mahalanobis gating against the fused state (robot_localization, Autoware
       `ekf_localizer`).
+- **Hardening before enabling** (`derivations/gnss.md` section 5.3, study section 18). The review
+  of the root-cause work found that each fix had a premise to check: the odometer is not
+  absolute, the extension needs a drift term, a "sensor-set" label needs an oracle, a gate needs
+  the same observability definition as the module that owns it, and a gated sensor that wins
+  needs a counter when it overrides another one (a frozen front end blocked the alignment
+  silently). Check the premise of every fix against the pipeline, not only the study driver.
 - **Rule.** Before proposing a manoeuvre or a source for an observability problem, compute its
   information from the sensor noise and the geometry (here `sigma / (|l| sqrt(N))` against
   `sigma sqrt(2 / n) / L`), and check that the signal you would trust is calibrated in the

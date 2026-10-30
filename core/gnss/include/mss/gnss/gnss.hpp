@@ -293,6 +293,8 @@ struct TrackYawReadings {
 /// wheel/GNSS consistency tolerance, and a step with one is not in the wheel path.
 /// With align_yaw_drift_var_m2_per_s and fix times, each used segment adds rate x dt to the
 /// numerator of sigma_yaw (coloured drift between its chunk centres).
+/// A segment turning by more than align_yaw_path_min_turn_rad (below the turn gate) also takes
+/// the path of o when it exists, since the chord of a turn is not along the mean heading.
 /// A transform is returned once confident: r >= the minimum track (align_yaw_min_track_wheel_m
 /// when every segment used has its direction from wheel data, else align_yaw_min_track_m),
 /// r >= align_yaw_min_coherence * sum |b_k| over the segments used, no wheel/GNSS mismatch
@@ -514,6 +516,7 @@ class GnssTrackYawAligner {
   double min_track_wheel_m_;   // m, from GnssConfig
   double wheel_restart_m_;     // m, from GnssConfig
   double drift_var_m2_per_s_;  // m^2/s, from GnssConfig
+  double path_min_turn_rad_;   // rad, from GnssConfig
   common::Pose T_b_o_;         // odometry frame o in b (frames.T_b_o): travel axis x_o, p_b_o
   // Unwrapped heading of the last fix.
   bool have_psi_ = false;

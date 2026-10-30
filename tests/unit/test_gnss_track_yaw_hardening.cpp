@@ -73,6 +73,7 @@ GnssConfig cfg_gap() {
 GnssConfig cfg_hardened() {
   GnssConfig c = cfg_gap();
   c.align_yaw_drift_var_m2_per_s = 0.0017;
+  c.align_yaw_path_min_turn_rad = 10.0 * kDeg;
   return c;
 }
 
@@ -642,6 +643,102 @@ TEST(GnssTrackYawHardening, DriftTermKeepsTheSlowRobotAlignment) {
   EXPECT_EQ(s.aligned, kRuns);
   EXPECT_LT(s.median_driven(), 10.0);
   EXPECT_LE(s.beyond_3s, 1);
+}
+
+// ---------------------------------------------------------------------------------------------
+// G5: gentle turns on the path of o.
+
+// Review F5: S-jogs at 0.5 m/s turning 0.3 rad/s (86 deg each way, the turn of a 2 s segment
+// below the 45 deg gate) biased the first yaw by 2.1 deg with no noise: the mean heading against
+// the chord between the centroids. Through the wheel path (turns above 10 deg), or the front-end
+// path where observed: below 0.01 deg, at the same distance.
+TEST(GnssTrackYawHardening, GentleTurnsTakeThePath) {
+  Scene sc;
+  sc.shape = Shape::kSlowS;
+  sc.yaw_rate_radps = 0.3;
+  sc.white_m = 0.0;
+  sc.time = false;
+  const RunResult before = run_scene(sc, cfg_2b(), 1);
+  const RunResult wheel = run_scene(sc, cfg_hardened(), 1);
+  sc.frontend = true;
+  const RunResult fe = run_scene(sc, cfg_hardened(), 1);
+  std::printf(
+      "[ hardening ] noise-free S-jogs at 0.3 rad/s: first yaw %.3f deg off before, %.4f "
+      "through the wheel path, %.4f through the front end (%.1f / %.1f / %.1f m)\n",
+      before.err_rad / kDeg,
+      wheel.err_rad / kDeg,
+      fe.err_rad / kDeg,
+      before.driven_m,
+      wheel.driven_m,
+      fe.driven_m);
+  ASSERT_TRUE(before.aligned && wheel.aligned && fe.aligned);
+  EXPECT_GT(std::abs(before.err_rad), 1.0 * kDeg);  // negative control
+  EXPECT_LT(std::abs(wheel.err_rad), 0.01 * kDeg);
+  EXPECT_LT(std::abs(fe.err_rad), 0.01 * kDeg);
+  EXPECT_LE(wheel.driven_m, before.driven_m + 1e-9);
+  // Without wheel data and without the front end there is no path: the gentle turns keep the
+  // mean heading, exactly as with the routing off.
+  sc.frontend = false;
+  sc.wheel = false;
+  GnssConfig no_routing = cfg_hardened();
+  no_routing.align_yaw_path_min_turn_rad = kPi;
+  const RunResult no_path = run_scene(sc, cfg_hardened(), 1);
+  const RunResult control = run_scene(sc, no_routing, 1);
+  ASSERT_TRUE(no_path.aligned);
+  EXPECT_EQ(no_path.err_rad, control.err_rad);
+  EXPECT_EQ(no_path.driven_m, control.driven_m);
+}
+
+// A slow robot on gentle turns: its still segments are extended as on a straight track, so it
+// aligns, through the wheel path or the front end, with the yaw exact (S-jogs at 0.03 m/s and 0.1
+// rad/s, 11 deg per chunk, noise-free fixes declared at 0.1 m).
+TEST(GnssTrackYawHardening, SlowGentleTurnsAreExtended) {
+  for (const bool frontend : {false, true}) {
+    Scene sc;
+    sc.shape = Shape::kSlowS;
+    sc.speed_mps = 0.03;
+    sc.yaw_rate_radps = 0.1;
+    sc.white_m = 0.0;
+    sc.declared_m = 0.1;
+    sc.time = false;
+    sc.tmax_s = 600.0;
+    sc.frontend = frontend;
+    GnssConfig c = cfg_hardened();
+    c.align_yaw_min_var_m2 = 0.01;
+    const RunResult r = run_scene(sc, c, 1);
+    std::printf(
+        "[ hardening ] slow gentle S-jogs, front end %d: aligned %d after %.2f m, %.4f deg\n",
+        frontend ? 1 : 0,
+        r.aligned ? 1 : 0,
+        r.driven_m,
+        r.err_rad / kDeg);
+    ASSERT_TRUE(r.aligned) << frontend;
+    EXPECT_LT(std::abs(r.err_rad), 0.01 * kDeg) << frontend;
+    EXPECT_LT(r.driven_m, 5.0) << frontend;
+  }
+}
+
+// With noise the gentle-turn segments stay consistent: S-jogs 0.2 rad/s, 0.5 m white, 100 seeds:
+// NEES below 1.2, at most 1 beyond 3 sigma, mean error below 0.5 deg (before: 1.9 deg).
+TEST(GnssTrackYawHardening, GentleTurnsWithNoiseWithinSigma) {
+  Scene sc;
+  sc.shape = Shape::kSlowS;
+  sc.yaw_rate_radps = 0.2;
+  const Stats before = sweep(sc, cfg_2b());
+  const Stats after = sweep(sc, cfg_hardened());
+  std::printf(
+      "[ hardening ] S-jogs 0.2 rad/s, 0.5 m white: mean error %.2f -> %.2f deg, NEES %.2f -> "
+      "%.2f, beyond 3 sigma %d -> %d\n",
+      before.mean_err_deg,
+      after.mean_err_deg,
+      before.nees,
+      after.nees,
+      before.beyond_3s,
+      after.beyond_3s);
+  EXPECT_EQ(after.aligned, kRuns);
+  EXPECT_LT(after.nees, 1.2);
+  EXPECT_LE(after.beyond_3s, 1);
+  EXPECT_LT(std::abs(after.mean_err_deg), 0.5);
 }
 
 // ---------------------------------------------------------------------------------------------

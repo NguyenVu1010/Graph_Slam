@@ -703,10 +703,10 @@ than `min_travel / (2 s (max_chunks + 1))`, about 0.01 m/s, still does not align
 
 **Classification of the limits:**
 1. **Wheels turning on a still body, with GNSS drift.** Algorithm where the LiDAR observes the
-   travel axis (fixed: none of 100 up to 0.50 m per fix). Sensor set where it does not: the
-      wheels say the robot moves, the GNSS drift looks like motion, and in steady state the IMU
-   cannot tell constant speed from rest. The onset is observable (backlog F3). There the
-   tolerance is 0.15 m per fix; above it the rate depends on the seeds, 0 to 14 of 100.
+   travel axis (fixed: none of 100 up to 0.50 m per fix). Where it does not, reclassified in
+   section 5.3 (backlog G11): observable at the spin-up with IMU + wheels, a sensor-set limit only
+   in steady state beyond the IMU's latch horizon. There the tolerance is 0.15 m per fix; above
+   it the rate depends on the seeds, 0 to 14 of 100.
 2. **Missing wheel readings after a mismatch.** Algorithm: the window break threw away travel
    that the next reading still gives (in the pipeline, interpolated across the gap, bounded in
    section 5.3). Fixed: up to 20 % missing, the robot aligns after a
@@ -719,7 +719,8 @@ than `min_travel / (2 s (max_chunks + 1))`, about 0.01 m/s, still does not align
 4. **Without wheel data.**
    - Backward travel: a sensor-set limit, because the travel sign is not in the GNSS positions or
      the heading. GNSS Doppler does not give it either. Fixed where the LiDAR observes the axis.
-   - Parked with drift: as 1, with a tolerance of 0.10 m per fix where the axis is not observed.
+   - Parked with drift: as 1 (observable from the rest of the initialisation with the IMU, section
+     5.3), with a tolerance of 0.10 m per fix where the axis is not observed.
 5. **A skid held through a one-way turn.** Noise (physics) for wheels plus gyro: the sideslip is
    the angle between the velocity and `x_o`, and neither sensor measures it. Fixed where the
    LiDAR observes the axis, through the front-end path. Elsewhere the tolerance is 5 deg.
@@ -741,8 +742,7 @@ alignment within 10 m. The two rows marked * use their own criterion, stated in 
 | backward travel without wheel data | handled | not handled |
 
 These values are hardware requirements for the GNSS receiver, the odometer and the drive train,
-not bugs. Known open issues F1 to F6 are listed at the end of `gnss_fusion_study.md` section
-16.13 and in ADR-023.
+not bugs. The open issues F1 to F6 of that study are closed in section 5.3.
 
 **GNSS Doppler velocity** (study only; a future ADR). At 0.05 m/s per axis, a still body is seen
 from the velocity in every environment, and the yaw reaches a 6 deg sigma within 0.4 to 2.1 m at
@@ -860,7 +860,7 @@ per fix of drift at each rate; aisles align after a median 4.5 m at each rate).
 `ExtendedSegmentKeepsItsMissingReading`), the half marking of a gap that crosses a chunk boundary
 (`GnssTrackYawRootCause.GapLongerThanTheBoundIsNotBridged`, case 27-31), and the front-end
 position of `b` instead of `o` (`GnssTrackYawHardening.FrontEndPositionIsOfTheOdometryFrame`).
-The mutants of each change of this section: study section 18.4.
+The mutants of each change of this section: study section 18.4; the full set: study section 18.9.
 
 **Coloured GNSS drift (G10).** The fix error is taken as white plus a random walk with per-axis
 variance rate `q` (`gnss.align_yaw_drift_var_m2_per_s`; a drift of `d` per fix at rate `f` is
@@ -889,3 +889,47 @@ too small for that drift); with the rate set to that drift at most 1 of 100 anyw
 **Choosing the drift rate** (owner ruling 2026-10-30, backlog G18). `q` is a per-receiver YAML
 value, > 0 and finite (checked at start-up); the default 0.0017 m^2/s is the simulator's
 receiver. How to choose it for a real receiver: log fixes of the antenna standing still for several drift time constants (tens of minutes), take the per-axis variance of the position change over a lag T well below the time constant, and divide by T (a random walk); or from a Gauss-Markov fit, 2 sigma^2 / tau. Too low: a slow robot under more drift aligns with a confident wrong yaw. Too high: the alignment waits longer (slow robots much longer).
+
+**Gentle turns on the path (G5).** A segment whose turn (the turn gate's measure) exceeds
+`gnss.align_yaw_path_min_turn_deg` (10 deg) but not `align_yaw_max_turn_deg` takes its
+direction from the path of `o` when it exists: the front end where it observes the travel axis,
+else the wheel path, exactly as a turn-gated segment. A still one is stationary (and may be
+extended). Without either path the mean heading is used as before. Reason: the chord between
+two chunk centroids lies along the mean heading only for a symmetric arc at constant speed; on
+an S-jog or a speed change inside the segment it bends by up to half the turn. Review F5
+measured 1.4 to 2.3 deg of first-yaw bias on noise-free S-jogs (0.52 deg on main); through the
+path it is below 0.01 deg at the same distance, and with 0.5 m noise the mean error goes from
+1.3 to 0.1 deg (NEES 1.05 to 0.68).
+
+**Spin-up and rest from the IMU (G11).** Where the LiDAR does not observe the travel axis, limits
+1 (wheels turning on a still body) and 4b (parked without wheel data) were classified as
+sensor-set limits without an oracle. Run on the recorded Gazebo bags (E-01, E-04, E-07, offline
+probe; study section 18.7):
+- **Transitions are observable.** Over the first second of motion the IMU velocity change along
+  `x_o` (gravity-compensated with the shipped initialisation) is 0.455 / 0.501 / 0.455 m/s
+  against 0.463 / 0.503 / 0.462 m/s from the wheels and 0.455 / 0.496 / 0.454 m/s true; at rest
+  the same 1 s integral has a 0.0014 to 0.0022 m/s standard deviation. A spin-up of the wheels
+  under a still body would be a disagreement of about 200 standard deviations; a stall of a moving
+  robot is a deceleration of the same size.
+- **Steady state needs a latch, whose horizon is short.** The IMU speed integrated from the rest
+  of the initialisation drifts: with the shipped initialisation (the accelerometer's horizontal
+  bias, 0.61 m/s^2 on these bags, read as tilt, backlog S2) 0.01 to 0.05 m/s after 10 s, but 8
+  m/s after 30 s on E-01 and E-07, because once the body yaws the absorbed bias reappears as up
+  to 1.3 m/s^2 of phantom acceleration (0.17 on the straight E-04). With the level start
+  (`imu.init_level_start`, ADR-027, off) 0.18 to 0.31 m/s after 30 s and 0.8 to 1.2 m/s after
+  60 s; an event-gated integral (only while the 1 s mean exceeds 0.05 m/s^2) stays within 0.03 /
+  0.19 / 5.7 m/s over the whole runs.
+- **Most of the aligner's failures are early.** In the probe the still body aligns on drift a
+  median 10 s after the start at 0.30 m per fix (limit 1; 122 s at 0.50) and 20 to 26 s (limit
+  4b), mostly inside a horizon of some tens of seconds; with an ideal stillness oracle none of
+  100 align at any drift.
+- **Classification.** Limits 1 and 4b where the axis is not observed: observable at the
+  transition with IMU + wheels (1) or IMU (4b, from the rest at initialisation); a sensor-set
+  limit only in steady state beyond the latch horizon, which the IMU's bias handling sets.
+- **Not implemented here.** A detector that fixes them must latch the still state from the
+  transition, end the latch when its integrated error exceeds the speeds it tells apart, and
+  needs the level start or an equivalent bias estimate (with the shipped initialisation the latch
+  breaks at the first yaw: 8 m/s of error in 30 s). That is the shared stationarity detector of
+  backlog G7 (also for a zero-velocity factor), a design that needs an ADR, and it depends on the
+  owner's decision S5 (level start). The simulator has no drive vibration, the usual rest cue
+  of real robots, so its false-still rate cannot be measured here either.
