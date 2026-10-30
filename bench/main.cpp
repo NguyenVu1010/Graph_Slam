@@ -506,6 +506,46 @@ class Replayer {
   std::uint64_t n_scans_seen_ = 0;       // Stats::n_scans at the last read
 };
 
+// --map-out is checked before the replay (a bad path used to show only after the whole run):
+// FILE is not a directory, its parent directory exists, and a new file can be created there.
+// The probe file is removed. Returns false (reason on stderr) when the map could not be written.
+bool check_map_out(const fs::path& path) {
+  std::error_code ec;
+  if (path.empty() || fs::is_directory(path, ec)) {
+    std::fprintf(
+        stderr, "mss_bench: --map-out %s is empty or a directory\n", path.string().c_str());
+    return false;
+  }
+  const fs::path parent = path.parent_path();
+  if (!parent.empty() && !fs::is_directory(parent, ec)) {
+    std::fprintf(stderr,
+                 "mss_bench: --map-out %s: directory %s does not exist\n",
+                 path.string().c_str(),
+                 parent.string().c_str());
+    return false;
+  }
+  // Probe in the target directory under a name that does not exist ("wx" = exclusive create),
+  // so a user file is never truncated or deleted.
+  constexpr int kProbeTries = 8;
+  for (int attempt = 0; attempt < kProbeTries; ++attempt) {
+    const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path probe =
+        parent / (".mss_bench_probe_" + std::to_string(ticks) + "_" + std::to_string(attempt));
+    std::FILE* f = std::fopen(probe.string().c_str(), "wx");
+    if (f != nullptr) {
+      std::fclose(f);
+      fs::remove(probe, ec);
+      return true;
+    }
+    if (!fs::exists(probe, ec)) {
+      break;  // not a name clash: the directory is not writable
+    }
+  }
+  std::fprintf(
+      stderr, "mss_bench: --map-out %s: directory is not writable\n", path.string().c_str());
+  return false;
+}
+
 // --map-out: exports the global map and writes it as PCD. Returns false (reason on stderr)
 // on an export or write error.
 bool write_map(const mss::pipeline::Estimator& est, const fs::path& path) {
@@ -526,7 +566,7 @@ bool write_map(const mss::pipeline::Estimator& est, const fs::path& path) {
   const std::uintmax_t bytes = fs::file_size(path, ec);
   std::printf(
       "map: %zu points (%zu before map_export.voxel_m) from %zu keyframes (%zu without a "
-      "backend pose, %" PRIu64 " evicted), export %.3f ms, %s %ju bytes\n",
+      "backend pose, %zu evicted), export %.3f ms, %s %ju bytes\n",
       info.value().n_points_out,
       info.value().n_points_in,
       info.value().n_keyframes,
@@ -548,6 +588,9 @@ int main(int argc, char** argv) {
   const std::optional<Args> args = parse_args(argc, argv);
   if (!args) {
     usage(argv[0]);
+    return kExitError;
+  }
+  if (args->map_out && !check_map_out(*args->map_out)) {
     return kExitError;
   }
 

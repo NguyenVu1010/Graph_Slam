@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from conftest import _ORIGIN_LLA, _REPO
+from conftest import _ORIGIN_LLA, _REPO, cli_env
 
 from bag_to_mssdata import (
     GNSS_DTYPE,
@@ -196,6 +196,7 @@ def test_cli_prints_json_report(bridged_bag: tuple[Path, BridgeReport], tmp_path
         capture_output=True,
         text=True,
         check=False,
+        env=cli_env(),
     )
     assert proc.returncode == 0, proc.stderr
     report = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -210,6 +211,7 @@ def test_cli_error_exit_code(raw_bag: tuple[Path, SynthInfo], tmp_path: Path) ->
         capture_output=True,
         text=True,
         check=False,
+        env=cli_env(),
     )
     assert proc.returncode == 2
     assert "run the bridge first" in proc.stderr

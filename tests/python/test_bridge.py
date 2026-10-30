@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from conftest import _REPO, copy_bag_without, e01_scenario
+from conftest import _REPO, cli_env, copy_bag_without, e01_scenario
 
 from mss_sim.bag_io import BagReader, cloud_to_arrays, stamp_ns
 from mss_sim.bridge import BridgeReport, run_bridge
@@ -142,7 +142,7 @@ def test_cli_smoke(raw_bag: Fixture, tmp_path: Path) -> None:
         [sys.executable, "-m", "mss_sim", "bridge", str(raw),
          str(_REPO / "sim/scenarios/E-01.yaml"), str(out_dir), "--seed", "3"],
         capture_output=True, text=True, check=False,
-        env={**__import__("os").environ, "PYTHONPATH": str(_REPO / "sim")},
+        env=cli_env(),
     )  # fmt: skip
     assert proc.returncode == 0, proc.stderr
     assert "n_msgs" in json.loads(proc.stdout.strip().splitlines()[-1])
@@ -150,7 +150,7 @@ def test_cli_smoke(raw_bag: Fixture, tmp_path: Path) -> None:
     proc = subprocess.run(
         [sys.executable, "-m", "mss_sim", "gt-to-tum", str(out_dir / "bag"), str(tum)],
         capture_output=True, text=True, check=False,
-        env={**__import__("os").environ, "PYTHONPATH": str(_REPO / "sim")},
+        env=cli_env(),
     )  # fmt: skip
     assert proc.returncode == 0, proc.stderr
     assert tum.exists()

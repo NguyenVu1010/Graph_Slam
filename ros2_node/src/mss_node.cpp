@@ -179,19 +179,25 @@ NodeParams MssNode::read_params() {
   return p;
 }
 
-bool MssNode::accept_stamp(Topic topic, mss::common::Timestamp t) {
+bool MssNode::check_stamp(Topic topic, mss::common::Timestamp t) {
   TopicCounters& c = counters_[topic];
-  if (c.has_last_stamp && t <= c.last_stamp) {
+  if (!c.stamp_gate.is_new(t)) {
     ++c.time_skipped;
-    const double back_s = mss::common::seconds_between(t, c.last_stamp);
+    const double back_s = mss::common::seconds_between(t, c.stamp_gate.last());
     const char* what = back_s > params_.time_jump_back_warn_s
                            ? "time jumped back (bag loop or clock reset), skipped"
                            : "stamp not increasing, skipped";
     report(topic, what, [back_s] { return std::to_string(back_s) + " s back"; });
     return false;
   }
-  c.has_last_stamp = true;
-  c.last_stamp = t;
+  return true;
+}
+
+bool MssNode::accept_stamp(Topic topic, mss::common::Timestamp t) {
+  if (!check_stamp(topic, t)) {
+    return false;
+  }
+  commit_stamp(topic, t);
   return true;
 }
 
@@ -223,7 +229,8 @@ void MssNode::log_report(Topic topic, const char* what, const std::string& reaso
 void MssNode::on_lidar(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg) {
   TopicCounters& c = counters_[kLidar];
   ++c.received;
-  if (!accept_stamp(kLidar, to_timestamp(msg->header.stamp))) {
+  const mss::common::Timestamp stamp = to_timestamp(msg->header.stamp);
+  if (!check_stamp(kLidar, stamp)) {
     return;
   }
   const mss::common::Status conv = scan_from_cloud(*msg, scan_);
@@ -232,6 +239,8 @@ void MssNode::on_lidar(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg)
     report(kLidar, "conversion failed, scan dropped", [&conv] { return conv.reason(); });
     return;
   }
+  // Only a cloud that converted advances the stamp gate (R4).
+  commit_stamp(kLidar, stamp);
   const mss::common::Status st = est_->push_scan(scan_);
   if (!st) {
     ++c.push_errors;
@@ -256,9 +265,12 @@ void MssNode::on_imu(const sensor_msgs::msg::Imu::ConstSharedPtr& msg) {
 void MssNode::on_gnss(const sensor_msgs::msg::NavSatFix::ConstSharedPtr& msg) {
   TopicCounters& c = counters_[kGnss];
   ++c.received;
-  if (!accept_stamp(kGnss, to_timestamp(msg->header.stamp))) {
+  const mss::common::Timestamp stamp = to_timestamp(msg->header.stamp);
+  if (!check_stamp(kGnss, stamp)) {
     return;
   }
+  // A fix that is skipped below must not advance the stamp gate (as R4 for the lidar): a garbage
+  // fix with a late stamp would otherwise block the real publisher's fixes.
   if (!has_origin_) {
     if (!origin_from_fix(*msg, origin_)) {
       ++n_gnss_before_origin_;
@@ -271,6 +283,14 @@ void MssNode::on_gnss(const sensor_msgs::msg::NavSatFix::ConstSharedPtr& msg) {
                 origin_.lon_deg,
                 origin_.alt_m);
   }
+  if (!fix_in_range(*msg)) {  // R21: every fix, not only the origin
+    ++c.convert_errors;
+    report(kGnss, "fix outside the WGS-84 range or not finite, skipped", [msg] {
+      return std::to_string(msg->latitude) + " deg, " + std::to_string(msg->longitude) + " deg";
+    });
+    return;
+  }
+  commit_stamp(kGnss, stamp);
   const mss::common::Status st = est_->push_gnss(gnss_from_navsat(*msg, origin_, gnss_sigma_));
   if (!st) {
     ++c.push_errors;

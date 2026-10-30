@@ -113,7 +113,8 @@ enum class Range {
   kUnitHalfOpen,
   kUnitOpenClosed,
   kUnitOpen,
-  kHalfTurnDeg
+  kHalfTurnDeg,
+  kOffOrAtLeastMillimetre
 };
 
 template <typename T>
@@ -137,6 +138,9 @@ bool in_range(T value, Range range) {
       return value > T{0} && value < T{1};
     case Range::kHalfTurnDeg:
       return value > T{0} && value <= T{180};
+    case Range::kOffOrAtLeastMillimetre:
+      // 0 = off; otherwise >= 1 mm (a smaller cell overflows the int64 voxel index).
+      return value == T{0} || value >= static_cast<T>(0.001);
   }
   return false;
 }
@@ -161,6 +165,8 @@ const char* range_text(Range range) {
       return "must be in (0, 1)";
     case Range::kHalfTurnDeg:
       return "must be in (0, 180]";
+    case Range::kOffOrAtLeastMillimetre:
+      return "must be 0 (off) or >= 0.001 (1 mm)";
   }
   return "";
 }
@@ -511,7 +517,7 @@ Config read_config(Reader& r) {
   r.field("map.window_keyframes", c.map.window_keyframes, Range::kPositive);
   r.field("map.rebuild_trans_m", c.map.rebuild_trans_m, Range::kPositive);
   r.angle_deg("map.rebuild_rot_deg", c.map.rebuild_rot_rad, Range::kPositive);
-  r.field("map_export.voxel_m", c.map_export.voxel_m, Range::kNonNegative);  // 0 = off
+  r.field("map_export.voxel_m", c.map_export.voxel_m, Range::kOffOrAtLeastMillimetre);
 
   r.field("scan_match.max_iterations", c.scan_match.max_iterations, Range::kPositive);
   r.field("scan_match.rot_tol_rad", c.scan_match.rot_tol_rad);

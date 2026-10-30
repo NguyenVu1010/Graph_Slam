@@ -1,5 +1,6 @@
 """Shared fixtures."""
 
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -50,3 +51,12 @@ def copy_bag_without(src: Path, dst: Path, drop_topic: str) -> Path:
         for topic, t_ns, raw in r.raw_messages(list(types)):
             w.write_raw(topic, t_ns, raw)
     return dst
+
+
+def cli_env() -> dict[str, str]:
+    """Environment for a CLI subprocess: sim/, eval/ and tools/ first on PYTHONPATH, then the
+    caller's own PYTHONPATH (it may hold the dependencies, e.g. rosbags)."""
+    paths = [str(_REPO / d) for d in ("sim", "eval", "tools")]
+    if os.environ.get("PYTHONPATH"):
+        paths.append(os.environ["PYTHONPATH"])
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(paths)}
