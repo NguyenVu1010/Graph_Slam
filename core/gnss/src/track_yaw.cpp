@@ -74,7 +74,8 @@ void GnssTrackYawAligner::add_segment(Segments& s,
                                       const Eigen::Vector2d& a,
                                       const Eigen::Vector2d& a_wheel_path,
                                       double wheel_disp_m,
-                                      bool no_wheel) const {
+                                      bool no_wheel,
+                                      double wheel_gap_m) const {
   s.noise_q_m2 += prev_.var * (s.prev_a - a).squaredNorm();
   s.wheel_dir_var_m2 += chunk_dir_var_m2(prev_, s.prev_a_wheel_path, a_wheel_path);
   s.prev_a_wheel_path = a_wheel_path;
@@ -86,6 +87,7 @@ void GnssTrackYawAligner::add_segment(Segments& s,
   s.al_cross_m += cross2(a, l);
   s.prev_a = a;
   s.n_no_wheel += no_wheel ? 1 : 0;
+  s.wheel_gap_m += wheel_gap_m;
 }
 
 // Closed form (gnss.md section 5): Z = e^{i yaw} (r + L), r > 0, so
@@ -151,6 +153,10 @@ void GnssTrackYawAligner::close_chunk() {
   k.fe_ok = chunk_fe_ok_;
   chunk_sum_po_.setZero();
   chunk_fe_ok_ = true;
+  k.gap_rise_m = chunk_gap_rise_m_;
+  k.gap_fall_m = chunk_gap_fall_m_;
+  chunk_gap_rise_m_ = 0.0;
+  chunk_gap_fall_m_ = 0.0;
   ++chunk_seq_;
   chunk_turn_rad_[0] = 0.0;
   chunk_turn_rad_[1] = 0.0;
@@ -189,6 +195,9 @@ void GnssTrackYawAligner::close_chunk() {
   const double travel_m = carry_.travel_m + near.wheel_second_m + k.wheel_first_m;
   const double wtravel_m = prev_.wtravel_rise_m + k.wtravel_fall_m;  // used when not extended
   const bool wheel_ok = carry_.wheel_ok && near.wheel_second_ok && k.wheel_first_ok;
+  // Bound of the wheel-sample gaps on the wheel travel between the centres, weighted as the
+  // steps enter it (wtravel_m; gnss.md section 5.3).
+  const double gap_m = carry_.gap_m + near.gap_rise_m + k.gap_fall_m;
   const bool fe_steps_ok = carry_.fe_ok && prev_.fe_ok && k.fe_ok;
   const bool fe_ok = frontend_travel_ && fe_steps_ok;
   const Eigen::Vector2d fe_disp = k.po - prev_.po;
@@ -199,6 +208,7 @@ void GnssTrackYawAligner::close_chunk() {
   if (fe_still && wheel_ok && std::abs(travel_m) - fe_disp.norm() > min_wheel_travel_m_) {
     ++n_fe_wheel_disagree_;
   }
+  double seg_gap_m = 0.0;  // gap bounds of a segment used with its wheel travel
   bool stationary = false;
 
   if (carry_.chunks > 0) {
@@ -279,6 +289,7 @@ void GnssTrackYawAligner::close_chunk() {
       stationary = true;
     } else {
       wheel_disp_m = std::abs(wtravel_m);
+      seg_gap_m = gap_m;
       if (travel_m < 0.0) {
         a = -a;
         ++n_reversals_;
@@ -323,13 +334,14 @@ void GnssTrackYawAligner::close_chunk() {
       carry_.wheel_ok = wheel_ok;
       carry_.fe_ok = fe_steps_ok;
       carry_.path_ok = carry_.path_ok && k.path_rise_ok && k.path_fall_ok;
+      carry_.gap_m = gap_m;
       near_ = k;
       return;
     }
     a.setZero();
   }
-  add_segment(all_, b, l, a, a_wheel_path, wheel_disp_m, no_wheel);
-  add_segment(recent_, b, l, a, a_wheel_path, wheel_disp_m, no_wheel);
+  add_segment(all_, b, l, a, a_wheel_path, wheel_disp_m, no_wheel, seg_gap_m);
+  add_segment(recent_, b, l, a, a_wheel_path, wheel_disp_m, no_wheel, seg_gap_m);
   if (no_wheel) {
     // A segment without wheel data cannot be checked against the wheels: it breaks the window,
     // which starts again at the next segment (a pending restart stays pending). Keeping it would
@@ -349,8 +361,9 @@ void GnssTrackYawAligner::close_chunk() {
   // the alignment by the spun distance nor stays in Z.
   if (recent_.wheel_disp_m > 0.0 && recent_.n_no_wheel == 0) {
     const Solution rec = solve(recent_);
-    const double tol_m =
-        reverse_nsigma_ * std::sqrt(rec.var_m2) + slip_frac_ * recent_.wheel_disp_m;
+    // The wheel-sample gaps the odometer interpolated across widen it by their bound (G9).
+    const double tol_m = reverse_nsigma_ * std::sqrt(rec.var_m2) +
+                         slip_frac_ * recent_.wheel_disp_m + recent_.wheel_gap_m;
     if (std::abs(std::max(rec.r_m, 0.0) - recent_.wheel_disp_m) > tol_m) {
       ++n_wheel_mismatches_;
       recent_ = Segments{};
@@ -384,10 +397,25 @@ common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e
                                                          double wheel_odometer_m,
                                                          double heading_variation_rad,
                                                          double travel_unobserved_scans) {
+  TrackYawReadings in;
+  in.wheel_odometer_m = wheel_odometer_m;
+  in.heading_variation_rad = heading_variation_rad;
+  in.travel_unobserved_scans = travel_unobserved_scans;
+  return update(p_e_g, cov_e, T_w_b, p_b_g, in);
+}
+
+common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e_g,
+                                                         const common::Mat3& cov_e,
+                                                         const common::Pose& T_w_b,
+                                                         const common::Vec3& p_b_g,
+                                                         const TrackYawReadings& in) {
   using ResultPose = common::Result<common::Pose>;
+  const double wheel_odometer_m = in.wheel_odometer_m;
+  const double heading_variation_rad = in.heading_variation_rad;
+  const double travel_unobserved_scans = in.travel_unobserved_scans;
   if (!p_e_g.allFinite() || !cov_e.allFinite() || !T_w_b.R.allFinite() || !T_w_b.p.allFinite() ||
       !p_b_g.allFinite() || std::isinf(wheel_odometer_m) || std::isinf(heading_variation_rad) ||
-      std::isinf(travel_unobserved_scans)) {
+      std::isinf(travel_unobserved_scans) || std::isinf(in.wheel_gap_bound_m)) {
     return ResultPose::error("non-finite input");
   }
   if (!(cov_e(0, 0) > 0.0) || !(cov_e(1, 1) > 0.0)) {
@@ -438,9 +466,19 @@ common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e
   } else {
     chunk_turn_rad_[half] += turn_rad;
   }
-  // The odometer is absolute, so a run of at most align_yaw_wheel_max_gap_fixes fixes without a
-  // reading is bridged by the next reading, whose travel lands on this fix (study section
-  // 16.13); a longer run leaves every half it touched without wheel data.
+  // A run of at most align_yaw_wheel_max_gap_fixes fixes without a reading is bridged by the
+  // next reading, whose travel lands on this fix (study section 16.13); a longer run leaves every
+  // half it touched without wheel data. The pipeline's odometer interpolates across wheel-sample
+  // gaps; the growth of their bound (wheel_gap_bound_m) since the last reading bounds the error of
+  // this reading's step (a bridged one included), so it enters the two segments around this chunk
+  // with the step's weights (below) and widens their consistency tolerance (gnss.md section 5.3).
+  double step_gap_m = 0.0;
+  if (!std::isnan(in.wheel_gap_bound_m) && !std::isnan(wheel_odometer_m)) {
+    if (!std::isnan(last_gap_bound_m_)) {
+      step_gap_m = std::max(in.wheel_gap_bound_m - last_gap_bound_m_, 0.0);
+    }
+    last_gap_bound_m_ = in.wheel_gap_bound_m;
+  }
   const bool reading = !std::isnan(wheel_odometer_m);
   const bool bridged = reading && odo_missing_ > 0;
   const bool step_ok = reading && !std::isnan(last_odometer_m_) && odo_missing_ <= max_gap_fixes_;
@@ -466,6 +504,8 @@ common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e
     const double w_r = static_cast<double>(n_chunk_) / static_cast<double>(chunk_fixes_);
     chunk_wtravel_rise_m_ += w_r * step_m;
     chunk_wtravel_fall_m_ += (1.0 - w_r) * step_m;
+    chunk_gap_rise_m_ += w_r * step_gap_m;
+    chunk_gap_fall_m_ += (1.0 - w_r) * step_gap_m;
   } else {
     chunk_wheel_ok_[half] = false;
   }
@@ -483,7 +523,7 @@ common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e
     // wheel path.
     const double w_rise = static_cast<double>(n_chunk_) / static_cast<double>(chunk_fixes_);
     const double w_fall = 1.0 - w_rise;
-    if (step_ok && !bridged && had_psi && turn_rad <= max_turn_rad_) {
+    if (step_ok && !bridged && !(step_gap_m > 0.0) && had_psi && turn_rad <= max_turn_rad_) {
       const double h_rad = 0.5 * dpsi_rad;
       const double sinc = std::abs(h_rad) > kSincSmallRad ? std::sin(h_rad) / h_rad : 1.0;
       const double mid_rad = psi_prev_rad + h_rad;

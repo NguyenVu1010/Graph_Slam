@@ -15,8 +15,10 @@ mss_add_test(test_imu test_imu_preintegrator.cpp test_imu_covariance.cpp test_im
              alloc_counter_impl.cpp)
 mss_add_test(test_gnss test_gnss_geodesy.cpp test_gnss_gate.cpp test_gnss_aligner.cpp
   test_gnss_track_yaw.cpp test_gnss_track_yaw_2b.cpp test_gnss_track_yaw_study.cpp
-  alloc_counter_impl.cpp)
-target_include_directories(test_gnss PRIVATE ${CMAKE_SOURCE_DIR}/core/gnss/src)
+  test_gnss_track_yaw_hardening.cpp alloc_counter_impl.cpp)
+# core/pipeline/src: the hardening tests feed the aligner through the pipeline's WheelOdometer.
+target_include_directories(test_gnss PRIVATE ${CMAKE_SOURCE_DIR}/core/gnss/src
+  ${CMAKE_SOURCE_DIR}/core/pipeline/src)
 mss_add_test(test_scan_match test_scan_match.cpp)
 mss_add_test(test_loop test_loop_detector.cpp)
 target_include_directories(test_scan_match PRIVATE ${CMAKE_SOURCE_DIR}/core/scan_match/src)
@@ -27,6 +29,6 @@ if(NOT MSS_WITH_GTSAM)
 endif()
 # pipeline internals (core/pipeline/src helpers, not installed).
 mss_add_test(test_pipeline_internals test_pipeline_internals.cpp test_pipeline_gnss_fusion.cpp
-  test_map_downsample.cpp
+  test_map_downsample.cpp test_pipeline_wheel_odometer.cpp
   alloc_counter_impl.cpp)
 target_include_directories(test_pipeline_internals PRIVATE ${CMAKE_SOURCE_DIR}/core/pipeline/src)

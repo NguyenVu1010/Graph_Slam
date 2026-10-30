@@ -7,6 +7,7 @@
 #include <Eigen/Core>
 
 #include "mss/common/result.hpp"
+#include "mss/common/timestamp.hpp"
 #include "mss/common/types.hpp"
 #include "mss/gnss/config.hpp"
 
@@ -194,6 +195,29 @@ class GnssAligner {
   double yaw_sigma_rad_ = std::numeric_limits<double>::quiet_NaN();  // rad
 };
 
+/// Optional per-fix readings of GnssTrackYawAligner::update (gnss.md sections 5.1 to 5.3). Each
+/// absolute reading is differenced against the one of the last fix added to the aligner, so what
+/// happened during fixes rejected before the aligner is carried to the next fix.
+struct TrackYawReadings {
+  /// m, absolute signed wheel odometer reading (increasing when driving forward); NaN when no
+  /// wheel data covers the interval since the previous fix.
+  double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN();
+  /// rad, absolute total heading variation of the front end (sum of |heading change|,
+  /// non-decreasing); NaN when unknown.
+  double heading_variation_rad = std::numeric_limits<double>::quiet_NaN();
+  /// Absolute count of front-end scans that did not observe the travel axis (non-decreasing);
+  /// NaN when unknown.
+  double travel_unobserved_scans = std::numeric_limits<double>::quiet_NaN();
+  /// m, absolute sum of the travel-error bounds of the wheel-sample gaps the odometer interpolated
+  /// across (non-decreasing; GnssConfig::align_yaw_wheel_gap_periods); NaN when unknown (taken as
+  /// 0).
+  double wheel_gap_bound_m = std::numeric_limits<double>::quiet_NaN();
+  /// Fix time (sensor clock), used only for time differences (terms that grow with time, such as
+  /// the coloured GNSS drift); `has_time` false: unknown (such terms are 0).
+  common::Timestamp t{};
+  bool has_time = false;
+};
+
 /// ADR-023: estimates `T_e_w` with its yaw taken from the direction of the GNSS track (e side)
 /// against the body heading in w, without the front end's along-track positions
 /// (docs/derivations/gnss.md section 5).
@@ -265,6 +289,8 @@ class GnssAligner {
 /// displacement along a_k is the direction of travel.
 /// Hardening (gnss.md section 5.3): a segment whose observed front end holds it still while the
 /// wheels moved is counted in n_frontend_wheel_disagreements().
+/// The wheel-sample gap bounds (TrackYawReadings::wheel_gap_bound_m) of the window widen the
+/// wheel/GNSS consistency tolerance, and a step with one is not in the wheel path.
 /// A transform is returned once confident: r >= the minimum track (align_yaw_min_track_wheel_m
 /// when every segment used has its direction from wheel data, else align_yaw_min_track_m),
 /// r >= align_yaw_min_coherence * sum |b_k| over the segments used, no wheel/GNSS mismatch
@@ -338,6 +364,13 @@ class GnssTrackYawAligner {
       double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN(),
       double heading_variation_rad = std::numeric_limits<double>::quiet_NaN(),
       double travel_unobserved_scans = std::numeric_limits<double>::quiet_NaN());
+  /// As above, with every optional reading in `in` (gnss.md section 5.3): also the wheel-sample
+  /// gap bounds and the fix time. Errors, hot path and allocation as above.
+  common::Result<common::Pose> update(const common::Vec3& p_e_g,
+                                      const common::Mat3& cov_e,
+                                      const common::Pose& T_w_b,
+                                      const common::Vec3& p_b_g,
+                                      const TrackYawReadings& in);
 
   /// Predicted 1-sigma of the yaw (rad) at the last chunk boundary; +inf before it is defined.
   [[nodiscard]] double yaw_sigma_rad() const { return yaw_sigma_rad_; }
@@ -397,7 +430,9 @@ class GnssTrackYawAligner {
     bool path_rise_ok = false;    // every step into fixes 1.. of this chunk had wheel data
     bool path_fall_ok = false;    // every step into a fix of this chunk had wheel data
     Eigen::Vector2d po = Eigen::Vector2d::Zero();  // m, mean front-end position of o, w
-    bool fe_ok = false;  // every step into a fix of this chunk observed the travel axis
+    bool fe_ok = false;       // every step into a fix of this chunk observed the travel axis
+    double gap_rise_m = 0.0;  // m, wheel-sample gap bounds weighted as for wtravel_rise_m
+    double gap_fall_m = 0.0;  // m, the same as for wtravel_fall_m
   };
   // A stationary segment being extended (align_yaw_merge_max_chunks): its totals from the
   // centre of prev_ to the centre of near_, the last chunk it was extended over.
@@ -407,6 +442,7 @@ class GnssTrackYawAligner {
     bool wheel_ok = true;   // every step had wheel data
     bool fe_ok = true;      // every step observed the travel axis
     bool path_ok = true;    // every step of the chunks extended over is in the wheel path
+    double gap_m = 0.0;     // m, wheel-sample gap bounds
   };
   // Sums over a run of consecutive segments (gnss.md sections 5 and 5.1): Z = sum conj(a) b and
   // L = sum conj(a) l (real part: dot, imaginary: cross), the path and wheel lengths, the noise
@@ -422,7 +458,8 @@ class GnssTrackYawAligner {
     double wheel_dir_var_m2 = 0.0;  // m^2, wheel-path direction error of the closed chunks
     Eigen::Vector2d prev_a = Eigen::Vector2d::Zero();  // last segment direction (0 before one)
     Eigen::Vector2d prev_a_wheel_path = Eigen::Vector2d::Zero();  // last a if from the wheel path
-    int n_no_wheel = 0;  // segments with the forward-driving assumption
+    int n_no_wheel = 0;        // segments with the forward-driving assumption
+    double wheel_gap_m = 0.0;  // m, wheel-sample gap bounds of the wheel segments used
   };
   // Closed-form solution of a run of segments: r (m), yaw (rad), |Z|^2 (m^2) and the variance
   // across Z (m^2), with the pending terms of the last chunk prev_.
@@ -440,7 +477,8 @@ class GnssTrackYawAligner {
                    const Eigen::Vector2d& a,
                    const Eigen::Vector2d& a_wheel_path,
                    double wheel_disp_m,
-                   bool no_wheel) const;
+                   bool no_wheel,
+                   double wheel_gap_m) const;
   [[nodiscard]] Solution solve(const Segments& s) const;
   // The minimum track: the wheel one when every segment used has its direction from wheel data.
   [[nodiscard]] double min_track() const {
@@ -490,6 +528,10 @@ class GnssTrackYawAligner {
   // Fixes without an odometer reading since the last one, and where that run started (chunk
   // sequence number and half) (align_yaw_wheel_max_gap_fixes).
   int odo_missing_ = 0;
+  // Wheel-sample gap bounds: the last reading, and the current chunk's weighted sums.
+  double last_gap_bound_m_ = std::numeric_limits<double>::quiet_NaN();
+  double chunk_gap_rise_m_ = 0.0;  // m
+  double chunk_gap_fall_m_ = 0.0;  // m
   int gap_seq_ = 0;
   std::size_t gap_half_ = 0;
   int chunk_seq_ = 0;  // chunks closed so far
