@@ -140,6 +140,9 @@ struct CoreTestHooks {
   /// drop the pending loop factors (as a failed optimize() does); the selector must forget them.
   /// Decremented by the core (the hooks object is mutable test state).
   mutable int drop_loop_updates = 0;
+  /// ADR-028 tests: called with the backend graph after every loop search that changed it (after
+  /// the extra updates and the front-end re-sync), to check which loop factors it holds.
+  std::function<void(const backend::Graph&)> inspect_graph;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).

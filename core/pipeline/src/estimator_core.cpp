@@ -937,6 +937,9 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
     fusion_.set_keyframe_reference(j, t, ref_);  // ADR-022: target of backward shifts
   }
   loop_skip_ = selected ? cfg_.loop_closure.min_interval_keyframes : 0;
+  if (hooks_ != nullptr && hooks_->inspect_graph) {  // test-only seam
+    hooks_->inspect_graph(graph_);
+  }
   return true;
 }
 

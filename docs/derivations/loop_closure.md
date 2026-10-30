@@ -511,9 +511,9 @@ and re-syncs the front end as after a new loop (section 5).
 | two-lap drift, seeds 42 / 1 / 7 / 2024, claimed sigma x1 | as without PCM | the same loops as without PCM, end-to-start equal (0.082 / 0.125 / 1.199 / 0.454 m), none removed |
 | two-lap drift, seeds 42 / 1 / 7 / 2024, claimed sigma x0.5 (review I-1) | 1.207 m at seed 42, 0 loops, 43 gated | as without PCM: 0.548 / 1.156 / 1.129 / 0.299 m, none rejected or removed (before the drift term seed 7 lost a true loop: 1.350 m) |
 | the same, claimed sigma x0.25 | 1.207 m, 0 loops | as without PCM: 1.123 / 1.399 / 1.698 / 0.511 m (before the drift term seed 2024 lost a true loop: 0.576 m) |
-| three laps, radius 6 / 9 / 12 / 20 m, claimed sigma x1 and x0.5 (review B-1) | n/a | 9 of 9 true loops selected, none removed (before the drift term: 2 to 4 removed) |
+| three laps, 12 true loops, 7 seeds: radius 6 to 40 m at claim x1, 6 to 20 m at x0.5 (review B-1) | n/a | all true loops selected, none removed (before the drift term: 2 to 4 removed); claim x0.5 at radius 40 m loses 1 to 3 at 3 of 7 seeds (section 11b, known limit) |
 | known loops + 3 aliased, one before any true loop | n/a | aliased one removed, others never selected, end-to-start 0.055 m (0.051 m without them; Cauchy only 0.077 m) |
-| whole estimator, injected wrong loop then two true ones | n/a | wrong loop removed, first true one re-added, run ends as with the true loops only (`PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne`) |
+| whole estimator, injected wrong loop (0.8 m, loosened chain) then two true ones | n/a | wrong loop removed (`has_loop_factor` false), the true ones in the graph, final pose 3 mm from the true-only run against 6.0 cm when the wrong loop is kept; a mutant that skips `remove_loop_factor` fails (4.5 cm) (`PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne`) |
 | aliasing probe, P = 2 / 2.5 m, drift 0 to 2.5 m | false loops at large drift on the loose chain (drag 0.34 to 0.64 m) | every case ambiguous, nothing added (drag 0); the graph's covariance is not used, so chain stiffness plays no part |
 | B-03 outlier loop | Cauchy: drag < 0.1 m | removed: drag < 1e-6 m (backend); PCM removes it once two true loops agree |
 

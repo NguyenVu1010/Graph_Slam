@@ -566,18 +566,23 @@ TEST(LoopComponent, BoxWorldEstimatorLoops) {
 // The whole Estimator on the box world (two laps of the 2 m circle, lap period 2 pi / 0.25 s),
 // the detector replaced by CoreTestHooks::loop_inject: at three moments of lap 2 a verified
 // loop to the keyframe one lap earlier, from the truth with the floor covariance (5 cm / 1 deg).
-// The first is wrong by 0.5 m along x of b_i (inside the Cauchy core: it drags), the next two are
-// true. Known answer through EstimatorCore::try_loop_closure: the wrong loop enters first, the
-// first true one ties and is left out, the second true one outvotes the wrong one, which is
-// removed from iSAM2 while the first true one is added back; counters, map rebuilds and the
-// front-end re-sync follow, and the trajectory ends as the run that only ever had the two
-// true loops.
+// The first is wrong (along x of b_i: 0.5 m in the forget test, 0.8 m on a loosened chain in
+// the removal test, where it drags the result by centimetres), the next two are true. Known answer
+// through EstimatorCore::try_loop_closure: the wrong loop enters first, the first true one ties and
+// is left out, the second true one outvotes the wrong one, which is removed from iSAM2 while the
+// first true one is added back; counters, map rebuilds and the front-end re-sync follow, the graph
+// holds the two true loops only, and the trajectory ends as the run that only ever had the two true
+// loops.
 struct InjectPlan {
   test::BoxWorldParams p;
   std::vector<double> at_s;     // s after t0: inject at the first keyframe at or after it
   std::vector<double> wrong_m;  // offset along x of b_i, m (0: true loop)
   std::vector<bool> done;
   double lap_s = 0.0;
+  double wrong_yaw_rad = 0.0;                     // extra yaw of the wrong loop (rad)
+  double sigma_m = 0.05;                          // loop covariance, position sigma (m)
+  double sigma_rad = 1.0 * kDeg;                  // loop covariance, rotation sigma (rad)
+  std::vector<std::pair<KeyId, KeyId>> injected;  // (i, j) of each injection, in order
 };
 
 std::optional<common::LoopConstraint> inject(InjectPlan& plan,
@@ -605,8 +610,14 @@ std::optional<common::LoopConstraint> inject(InjectPlan& plan,
     lc.T_bi_bj =
         test::box_truth(plan.p, views[best].t).T_w_b.inverse() * test::box_truth(plan.p, q.t).T_w_b;
     lc.T_bi_bj.p.x() += plan.wrong_m[n];
+    if (plan.wrong_m[n] != 0.0) {  // the wrong loop also turned by wrong_yaw_rad about z of b_j
+      lc.T_bi_bj.R = lc.T_bi_bj.R * test::loop_rz(plan.wrong_yaw_rad);
+    }
     lc.cov.setZero();
-    lc.cov.diagonal() << 0.0025, 0.0025, 0.0025, 3.05e-4, 3.05e-4, 3.05e-4;
+    const double vm = plan.sigma_m * plan.sigma_m;
+    const double vr = plan.sigma_rad * plan.sigma_rad;
+    lc.cov.diagonal() << vm, vm, vm, vr, vr, vr;
+    plan.injected.emplace_back(lc.i, lc.j);
     return lc;
   }
   return std::nullopt;
@@ -615,14 +626,23 @@ std::optional<common::LoopConstraint> inject(InjectPlan& plan,
 struct InjectRun {
   ct::ReplayResult r;
   ct::Errors e;
+  std::vector<std::pair<KeyId, KeyId>> injected;  // (i, j) of each injection, in order
+  std::vector<bool> in_graph;  // Graph::has_loop_factor of each, after the last graph change
 };
 
 InjectRun run_injected(const std::string& name,
                        std::vector<double> at_s,
                        std::vector<double> wrong_m,
                        bool pcm,
-                       int drop_updates) {
+                       int drop_updates,
+                       double sigma_m = 0.05,
+                       double sigma_rad = 1.0 * kDeg,
+                       double wrong_yaw_rad = 0.0,
+                       double lidar_var_scale = 1.0) {
   InjectPlan plan;
+  plan.wrong_yaw_rad = wrong_yaw_rad;
+  plan.sigma_m = sigma_m;
+  plan.sigma_rad = sigma_rad;
   plan.p.motion_s = 55.0;
   plan.lap_s = 2.0 * test::kLoopPi / plan.p.yaw_rate_radps;
   plan.at_s = std::move(at_s);
@@ -649,7 +669,19 @@ InjectRun run_injected(const std::string& name,
     return r;
   };
   hooks.drop_loop_updates = drop_updates;
+  if (lidar_var_scale != 1.0) {
+    hooks.lidar_cov = [lidar_var_scale](common::Timestamp /*t*/, const common::PoseCovariance& c) {
+      const common::PoseCovariance scaled = lidar_var_scale * c;
+      return scaled;
+    };
+  }
   InjectRun out;
+  hooks.inspect_graph = [&plan, &out](const backend::Graph& g) {
+    out.in_graph.clear();
+    for (const auto& ij : plan.injected) {
+      out.in_graph.push_back(g.has_loop_factor(ij.first, ij.second));
+    }
+  };
   {
     ct::HooksScope scope(&hooks);
     out.r = ct::replay(dir / "data", cfg);
@@ -658,6 +690,7 @@ InjectRun run_injected(const std::string& name,
   for (std::size_t n = 0; n < plan.done.size(); ++n) {
     EXPECT_TRUE(plan.done[n]) << name << ": injection " << n << " never happened";
   }
+  out.injected = plan.injected;
   return out;
 }
 
@@ -667,22 +700,33 @@ TEST(LoopComponent, PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne) {
   }
   const double t_lap2 = 3.0 + 2.0 + 2.0 * test::kLoopPi / 0.25;  // static + ramp + one lap
   const std::vector<double> at = {t_lap2 + 2.0, t_lap2 + 8.0, t_lap2 + 14.0};
-  const InjectRun a = run_injected("wrong_then_true", at, {0.5, 0.0, 0.0}, true, 0);
-  const InjectRun b = run_injected("true_only", {at[1], at[2]}, {0.0, 0.0}, true, 0);
-  const InjectRun c = run_injected("wrong_kept", {at[0]}, {0.5}, false, 0);
+  // A loose LiDAR chain (its covariance x100 through the lidar_cov seam) so that the wrong loop,
+  // 0.8 m off, drags the graph by centimetres while it is in (review H3 round 2, I-2); on the
+  // shipped stiff chain it moved the result by millimetres, too little to see a removal.
+  constexpr double kLoose = 100.0;
+  constexpr double kWrongM = 0.8;
+  const InjectRun a =
+      run_injected("wrong_then_true", at, {kWrongM, 0.0, 0.0}, true, 0, 0.05, kDeg, 0.0, kLoose);
+  const InjectRun b =
+      run_injected("true_only", {at[1], at[2]}, {0.0, 0.0}, true, 0, 0.05, kDeg, 0.0, kLoose);
+  const InjectRun c =
+      run_injected("wrong_kept", {at[0]}, {kWrongM}, false, 0, 0.05, kDeg, 0.0, kLoose);
+  ASSERT_FALSE(a.r.estimates.empty());
+  ASSERT_FALSE(b.r.estimates.empty());
+  ASSERT_FALSE(c.r.estimates.empty());
+  const Pose ea = a.r.estimates.back().state.T_w_b;
+  const Pose eb = b.r.estimates.back().state.T_w_b;
+  const Pose ec = c.r.estimates.back().state.T_w_b;
   std::printf(
-      "[ loop pcm pipeline ] wrong then true: ATE %.4f m, %llu accepted, %llu removed, "
-      "%llu PCM-rejected, %llu rebuilds; true only: ATE %.4f m, %llu accepted, %llu "
-      "rebuilds; wrong kept (no PCM): ATE %.4f m\n",
-      a.e.ate_m,
+      "[ loop pcm pipeline ] wrong then true: %llu accepted, %llu removed, %llu "
+      "PCM-rejected, %llu rebuilds; final pose against true only: %.4f m; wrong kept (no "
+      "PCM) against true only: %.4f m\n",
       static_cast<unsigned long long>(a.r.stats.n_loops_accepted),
       static_cast<unsigned long long>(a.r.stats.n_loops_removed),
       static_cast<unsigned long long>(a.r.stats.n_loops_pcm_rejected),
       static_cast<unsigned long long>(a.r.stats.n_map_rebuilds),
-      b.e.ate_m,
-      static_cast<unsigned long long>(b.r.stats.n_loops_accepted),
-      static_cast<unsigned long long>(b.r.stats.n_map_rebuilds),
-      c.e.ate_m);
+      (ea.p - eb.p).norm(),
+      (ec.p - eb.p).norm());
   // Counters: wrong in (1), first true left out, second true in with the first true back (2).
   EXPECT_EQ(a.r.stats.n_loops_accepted, 3U);
   EXPECT_EQ(a.r.stats.n_loops_removed, 1U);
@@ -692,43 +736,20 @@ TEST(LoopComponent, PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne) {
   // A forced map rebuild for each graph change (2 here: the wrong loop, then the swap).
   EXPECT_GE(a.r.stats.n_map_rebuilds, b.r.stats.n_map_rebuilds);
   EXPECT_GE(a.r.stats.n_map_rebuilds, 2U);
-  // After the swap the graph holds the two true loops, as in run b; the front end re-synced to
-  // it, so the run ends as b.
-  ASSERT_FALSE(a.r.estimates.empty());
-  ASSERT_FALSE(b.r.estimates.empty());
-  const Pose ea = a.r.estimates.back().state.T_w_b;
-  const Pose eb = b.r.estimates.back().state.T_w_b;
-  EXPECT_LT((ea.p - eb.p).norm(), 2e-3);
-  EXPECT_LT(std::abs(a.e.ate_m - b.e.ate_m), 1e-3);
-  // While the wrong loop was in the graph the front end followed it (the trajectory differs
-  // from b), after the swap it is back with b.
-  double during = 0.0;
-  double tail = 0.0;
-  const std::int64_t t_wrong = 1'000'000'000 + static_cast<std::int64_t>(at[0] * 1e9);
-  const std::int64_t t_swap = 1'000'000'000 + static_cast<std::int64_t>(at[2] * 1e9);
-  const std::int64_t t_end = a.r.estimates.back().state.t.ns;
-  std::size_t kb = 0;
-  for (const common::Estimate& ea_k : a.r.estimates) {
-    while (kb < b.r.estimates.size() && b.r.estimates[kb].state.t.ns < ea_k.state.t.ns) {
-      ++kb;
-    }
-    if (kb == b.r.estimates.size() || b.r.estimates[kb].state.t != ea_k.state.t) {
-      continue;
-    }
-    const double d = (ea_k.state.T_w_b.p - b.r.estimates[kb].state.T_w_b.p).norm();
-    if (ea_k.state.t.ns >= t_wrong && ea_k.state.t.ns < t_swap) {
-      during = std::max(during, d);
-    } else if (ea_k.state.t.ns > t_end - 2'000'000'000) {
-      tail = std::max(tail, d);
-    }
-  }
-  std::printf(
-      "[ loop pcm pipeline ] a against b: max %.4f m while the wrong loop was in, %.4f m "
-      "over the last 2 s; wrong kept (c): ATE %.4f m\n",
-      during,
-      tail,
-      c.e.ate_m);
-  EXPECT_GT(during, 2.0 * tail);
+  // The graph after the last change holds the two true loops and not the wrong one
+  // (Graph::has_loop_factor through CoreTestHooks::inspect_graph).
+  ASSERT_EQ(a.injected.size(), 3U);
+  ASSERT_EQ(a.in_graph.size(), 3U);
+  EXPECT_FALSE(a.in_graph[0]);
+  EXPECT_TRUE(a.in_graph[1]);
+  EXPECT_TRUE(a.in_graph[2]);
+  ASSERT_EQ(c.in_graph.size(), 1U);
+  EXPECT_TRUE(c.in_graph[0]);
+  // The wrong loop moves the result by centimetres when it stays (measured 6.0 cm); removed, the
+  // run ends as the run that only ever had the two true loops (measured 3 mm), the front end
+  // re-synced to it.
+  EXPECT_GT((ec.p - eb.p).norm(), 0.03);
+  EXPECT_LT((ea.p - eb.p).norm(), 0.01);
 }
 
 // Review H3 I-2: in repeated structure every search is ambiguous; after a kAmbiguous result
