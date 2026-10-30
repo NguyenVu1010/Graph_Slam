@@ -47,6 +47,7 @@ GnssTrackYawAligner::GnssTrackYawAligner(const GnssConfig& cfg, const common::Po
       slip_frac_(cfg.align_yaw_wheel_slip_frac),
       min_track_wheel_m_(cfg.align_yaw_min_track_wheel_m),
       wheel_restart_m_(cfg.align_yaw_wheel_restart_m),
+      drift_var_m2_per_s_(cfg.align_yaw_drift_var_m2_per_s),
       T_b_o_(T_b_o),
       yaw_sigma_rad_(std::numeric_limits<double>::infinity()) {}
 
@@ -75,6 +76,7 @@ void GnssTrackYawAligner::add_segment(Segments& s,
                                       const Eigen::Vector2d& a_wheel_path,
                                       double wheel_disp_m,
                                       bool no_wheel,
+                                      double drift_var_m2,
                                       double wheel_gap_m) const {
   s.noise_q_m2 += prev_.var * (s.prev_a - a).squaredNorm();
   s.wheel_dir_var_m2 += chunk_dir_var_m2(prev_, s.prev_a_wheel_path, a_wheel_path);
@@ -87,6 +89,7 @@ void GnssTrackYawAligner::add_segment(Segments& s,
   s.al_cross_m += cross2(a, l);
   s.prev_a = a;
   s.n_no_wheel += no_wheel ? 1 : 0;
+  s.drift_var_m2 += drift_var_m2;
   s.wheel_gap_m += wheel_gap_m;
 }
 
@@ -104,8 +107,10 @@ GnssTrackYawAligner::Solution GnssTrackYawAligner::solve(const Segments& s) cons
   out.yaw_rad = std::atan2(std::sin(yaw), std::cos(yaw));
   // The last chunk's coefficient is a_K = 0, so it adds var_K |a_{K-1}|^2. The wheel-path
   // segments add their direction error across the motion (gnss.md section 5.1).
+  // The coloured drift between the chunk centres of each segment (gnss.md section 5.3).
   out.var_m2 = s.noise_q_m2 + prev_.var * s.prev_a.squaredNorm() + s.wheel_dir_var_m2 +
-               chunk_dir_var_m2(prev_, s.prev_a_wheel_path, Eigen::Vector2d::Zero());
+               chunk_dir_var_m2(prev_, s.prev_a_wheel_path, Eigen::Vector2d::Zero()) +
+               s.drift_var_m2;
   return out;
 }
 
@@ -157,6 +162,10 @@ void GnssTrackYawAligner::close_chunk() {
   k.gap_fall_m = chunk_gap_fall_m_;
   chunk_gap_rise_m_ = 0.0;
   chunk_gap_fall_m_ = 0.0;
+  k.t_s = chunk_sum_t_s_ / n;
+  k.t_ok = chunk_t_ok_;
+  chunk_sum_t_s_ = 0.0;
+  chunk_t_ok_ = true;
   ++chunk_seq_;
   chunk_turn_rad_[0] = 0.0;
   chunk_turn_rad_[1] = 0.0;
@@ -340,8 +349,12 @@ void GnssTrackYawAligner::close_chunk() {
     }
     a.setZero();
   }
-  add_segment(all_, b, l, a, a_wheel_path, wheel_disp_m, no_wheel, seg_gap_m);
-  add_segment(recent_, b, l, a, a_wheel_path, wheel_disp_m, no_wheel, seg_gap_m);
+  // Coloured GNSS drift between the chunk centres (gnss.md section 5.3): a random walk adds
+  // rate x dt per axis to b, independent between segments; 0 without fix times.
+  const double dt_s = prev_.t_ok && k.t_ok ? std::max(k.t_s - prev_.t_s, 0.0) : 0.0;
+  const double drift_var_m2 = drift_var_m2_per_s_ * dt_s * a.squaredNorm();
+  add_segment(all_, b, l, a, a_wheel_path, wheel_disp_m, no_wheel, drift_var_m2, seg_gap_m);
+  add_segment(recent_, b, l, a, a_wheel_path, wheel_disp_m, no_wheel, drift_var_m2, seg_gap_m);
   if (no_wheel) {
     // A segment without wheel data cannot be checked against the wheels: it breaks the window,
     // which starts again at the next segment (a pending restart stays pending). Keeping it would
@@ -557,6 +570,15 @@ common::Result<common::Pose> GnssTrackYawAligner::update(const common::Vec3& p_e
                  !(travel_unobserved_scans > last_unobserved_scans_);
   last_unobserved_scans_ = travel_unobserved_scans;
   chunk_sum_var_m2_ += std::max(declared_m2, min_var_m2_);  // variance floor
+  if (in.has_time) {
+    if (!have_t0_) {
+      have_t0_ = true;
+      t0_ = in.t;
+    }
+    chunk_sum_t_s_ += common::seconds_between(t0_, in.t);
+  } else {
+    chunk_t_ok_ = false;
+  }
   ++n_chunk_;
   if (n_chunk_ >= chunk_fixes_) {
     close_chunk();

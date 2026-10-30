@@ -400,9 +400,11 @@ Format of an entry: **symptom** → cause → fix → rule.
     What remains after the algorithm fixes, with its own criteria:
     - Missing wheel readings, up to 20 %. This is restart distance, not the 10 m criterion: after
       a mismatch the 10 m restart window comes first, then a median 10.9 m and a max 21.9 m.
-    - Speed with wheel data, from 0.02 m/s. This holds only with GNSS drift of about 5 mm per fix
-      or less at 0.03 m/s. Under more drift, a slow robot now aligns with a confident wrong yaw
-      instead of never aligning (open issue F2).
+    - Speed with wheel data, from 0.02 m/s. Extending a slow robot's segments made it align
+      with a confident wrong yaw under coloured drift (0.05 m/s at 0.02 m per fix: 10 of 100
+      beyond 3 sigma), because the sigma had no drift term. A coloured error needs a term in the
+      sigma, not only guards: with the GNSS drift rate as a hardware number in the yaw variance
+      (rate x the time a segment spans) none of 100 are, and the robot still aligns, later.
   - **Sensor-set limits.** The quantity is not observable with these sensors. State it as such,
     with the sensor that would observe it.
     - The travel sign without wheel data is not in the GNSS positions or the heading, and GNSS

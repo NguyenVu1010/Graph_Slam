@@ -69,6 +69,13 @@ GnssConfig cfg_gap() {
   return c;
 }
 
+// With every hardening key of config/default.yaml.
+GnssConfig cfg_hardened() {
+  GnssConfig c = cfg_gap();
+  c.align_yaw_drift_var_m2_per_s = 0.0017;
+  return c;
+}
+
 // kAisles: 4 s straight at speed_mps, then a 90 deg turn in 1.6 s at 0.3 m/s, alternately left
 // and right (the review probe's warehouse aisles). kStuck: the body never moves while its wheels
 // turn at speed_mps (a robot against a kerb).
@@ -476,6 +483,165 @@ TEST(GnssTrackYawHardening, GapStepIsNotInTheWheelPath) {
       EXPECT_GT(err, 1e-4);  // negative control: the phantom step bends the path
     }
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// G10: the coloured-drift term.
+
+// Known answer: on a noise-free straight track (lever arm fixed in w, so |Z| = r) every segment
+// adds rate x dt, so sigma^2 grows by rate x (time between the first and last chunk centres) /
+// r^2. Without fix times the term is off.
+TEST(GnssTrackYawHardening, DriftTermIsRateTimesTime) {
+  constexpr double kRate = 0.003;  // m^2/s
+  GnssConfig off = cfg_hardened();
+  off.align_yaw_drift_var_m2_per_s = 0.0;
+  GnssConfig on = cfg_hardened();
+  on.align_yaw_drift_var_m2_per_s = kRate;
+  const auto timed = [](int k) {
+    TrackYawReadings in;
+    in.wheel_odometer_m = 0.1 * k;
+    in.t = Timestamp{static_cast<std::int64_t>(k) * 200'000'000};  // 5 Hz
+    in.has_time = true;
+    return in;
+  };
+  constexpr int kFixes = 100;  // 10 chunks: centres from 0.9 s to 18.9 s
+  const auto x = [](int k) { return 0.1 * k; };
+  const GnssTrackYawAligner a_off = straight(off, kFixes, x, timed);
+  const GnssTrackYawAligner a_on = straight(on, kFixes, x, timed);
+  const double r = a_on.track_m();
+  ASSERT_GT(r, 5.0);
+  EXPECT_NEAR(a_on.track_m(), a_off.track_m(), 1e-12);
+  const double expected = kRate * 18.0 / (r * r);
+  EXPECT_NEAR(
+      a_on.yaw_sigma_rad() * a_on.yaw_sigma_rad() - a_off.yaw_sigma_rad() * a_off.yaw_sigma_rad(),
+      expected,
+      1e-9 * expected + 1e-15);
+  // No fix times: identical to the rate 0 bit for bit.
+  const auto untimed = [](int k) {
+    TrackYawReadings in;
+    in.wheel_odometer_m = 0.1 * k;
+    return in;
+  };
+  const GnssTrackYawAligner b_on = straight(on, kFixes, x, untimed);
+  EXPECT_EQ(b_on.yaw_sigma_rad(), a_off.yaw_sigma_rad());
+  // A chunk without fix times (chunk 3) takes no drift for the two segments that touch it: 14 s of
+  // the 18 s.
+  const auto gap3 = [&timed](int k) {
+    TrackYawReadings in = timed(k);
+    in.has_time = k < 30 || k >= 40;
+    return in;
+  };
+  const GnssTrackYawAligner c_on = straight(on, kFixes, x, gap3);
+  const double expected_14 = kRate * 14.0 / (r * r);
+  EXPECT_NEAR(
+      c_on.yaw_sigma_rad() * c_on.yaw_sigma_rad() - a_off.yaw_sigma_rad() * a_off.yaw_sigma_rad(),
+      expected_14,
+      1e-9 * expected_14 + 1e-15);
+}
+
+// The stop-and-go scene of SilentWheelDriverStopsAreBounded with the drift term as well: 100 of
+// 100, median 3.3 m, none beyond 3 sigma (NEES 0.93, against 2 beyond and 1.2 with the bound
+// alone). The term widens the window too: without the bound 99 of 100 align.
+TEST(GnssTrackYawHardening, DriftTermWithTheGapBound) {
+  Scene sc;
+  sc.stall_every_s = 4.0;
+  sc.stall_s = 0.7;
+  const Stats with = sweep(sc, cfg_hardened());
+  std::printf(
+      "[ hardening ] stop-and-go with the drift term: %d of 100 aligned (median %.1f m, NEES "
+      "%.2f, %d beyond 3 sigma)\n",
+      with.aligned,
+      with.median_driven(),
+      with.nees,
+      with.beyond_3s);
+  EXPECT_GE(with.aligned, 99);
+  EXPECT_GE(with.within_10m, 98);
+  EXPECT_LE(with.beyond_3s, 1);
+}
+
+// Only the segments that are used take the drift term: 5 moving chunks, a 30 s rest (15 chunks,
+// no extension), 5 moving chunks. The 10 moving segments (both edges of the rest included) add
+// rate x 2 s each; the 14 stationary ones (a_k = 0) add nothing.
+TEST(GnssTrackYawHardening, DriftTermOnlyOnUsedSegments) {
+  constexpr double kRate = 0.003;  // m^2/s
+  GnssConfig off = cfg_hardened();
+  off.align_yaw_merge_max_chunks = 0;
+  off.align_yaw_drift_var_m2_per_s = 0.0;
+  GnssConfig on = off;
+  on.align_yaw_drift_var_m2_per_s = kRate;
+  const auto x = [](int k) { return 0.1 * (k < 50 ? k : (k < 200 ? 50 : k - 150)); };
+  const auto timed = [&x](int k) {
+    TrackYawReadings in;
+    in.wheel_odometer_m = x(k);
+    in.t = Timestamp{static_cast<std::int64_t>(k) * 200'000'000};
+    in.has_time = true;
+    return in;
+  };
+  const GnssTrackYawAligner a_off = straight(off, 250, x, timed);
+  const GnssTrackYawAligner a_on = straight(on, 250, x, timed);
+  const double r = a_on.track_m();
+  ASSERT_GT(r, 5.0);
+  EXPECT_GE(a_on.n_stationary_segments(), 14);
+  const double expected = kRate * 20.0 / (r * r);
+  EXPECT_NEAR(
+      a_on.yaw_sigma_rad() * a_on.yaw_sigma_rad() - a_off.yaw_sigma_rad() * a_off.yaw_sigma_rad(),
+      expected,
+      1e-9 * expected + 1e-15);
+}
+
+// Review F2: the slow-segment extension aligned a slow robot under coloured drift confidently
+// wrong (0.05 m/s at 0.02 m per fix: 10 of 100 beyond 3 sigma on the review's seeds; 0.30 m white,
+// declared 0.5 m). With the drift term at the drift's rate (0.02^2 x 5 Hz = 0.002 m^2/s) the
+// sigma covers it: none beyond 3 sigma, every run aligned, within 10 m; at the simulator rate
+// (0.0017) the same. Without it (control): 10 beyond 3 sigma.
+TEST(GnssTrackYawHardening, DriftTermKeepsSlowRobotsWithinSigma) {
+  Scene sc;
+  sc.speed_mps = 0.05;
+  sc.white_m = 0.3;
+  sc.drift_m = 0.02;
+  sc.tmax_s = 600.0;
+  GnssConfig matched = cfg_hardened();
+  matched.align_yaw_drift_var_m2_per_s = 0.002;
+  GnssConfig none = cfg_hardened();
+  none.align_yaw_drift_var_m2_per_s = 0.0;
+  const Stats s_matched = sweep(sc, matched);
+  const Stats s_default = sweep(sc, cfg_hardened());
+  const Stats s_none = sweep(sc, none);
+  std::printf(
+      "[ hardening ] 0.05 m/s, 0.02 m per fix of drift: beyond 3 sigma %d (no drift term), %d "
+      "(rate 0.0017), %d (rate 0.002); aligned %d / %d / %d; median %.1f / %.1f / %.1f m\n",
+      s_none.beyond_3s,
+      s_default.beyond_3s,
+      s_matched.beyond_3s,
+      s_none.aligned,
+      s_default.aligned,
+      s_matched.aligned,
+      s_none.median_driven(),
+      s_default.median_driven(),
+      s_matched.median_driven());
+  for (const Stats* s : {&s_matched, &s_default}) {
+    EXPECT_EQ(s->aligned, kRuns);
+    EXPECT_LE(s->beyond_3s, 1);
+    EXPECT_GE(s->within_10m, 95);
+  }
+  EXPECT_GE(s_none.beyond_3s, 5);  // negative control
+}
+
+// The term keeps the alignment the extension bought: white fixes only (0.5 m), 0.03 m/s with
+// wheel data, the simulator rate: every run aligns, later (median 6.0 m instead of 3.1 m) and
+// within its sigma.
+TEST(GnssTrackYawHardening, DriftTermKeepsTheSlowRobotAlignment) {
+  Scene sc;
+  sc.speed_mps = 0.03;
+  sc.tmax_s = 900.0;
+  const Stats s = sweep(sc, cfg_hardened());
+  std::printf("[ hardening ] 0.03 m/s, white fixes: %d aligned, median %.1f m, NEES %.2f\n",
+              s.aligned,
+              s.median_driven(),
+              s.nees);
+  EXPECT_EQ(s.aligned, kRuns);
+  EXPECT_LT(s.median_driven(), 10.0);
+  EXPECT_LE(s.beyond_3s, 1);
 }
 
 // ---------------------------------------------------------------------------------------------
