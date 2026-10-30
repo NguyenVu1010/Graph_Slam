@@ -245,6 +245,8 @@ class GnssAligner {
 /// of o between the chunk means below align_yaw_min_wheel_travel_m makes the segment stationary
 /// (wheels turning on a still body, a parked robot), and without wheel data the sign of that
 /// displacement along a_k is the direction of travel.
+/// Hardening (gnss.md section 5.3): a segment whose observed front end holds it still while the
+/// wheels moved is counted in n_frontend_wheel_disagreements().
 /// A transform is returned once confident: r >= the minimum track (align_yaw_min_track_wheel_m
 /// when every segment used has its direction from wheel data, else align_yaw_min_track_m),
 /// r >= align_yaw_min_coherence * sum |b_k| over the segments used, no wheel/GNSS mismatch
@@ -290,7 +292,7 @@ class GnssTrackYawAligner {
   ///   variation is the difference to the last fix added here, at least the net heading change
   ///   (the net change alone when NaN). It lets the turn gate see turns hidden between fixes.
   /// `travel_unobserved_scans`: absolute count of the front-end scans whose matching did not
-  ///   observe the travel axis (fewer than align_yaw_frontend_min_info constraints along it, or
+  ///   observe the travel axis (marginal information along it below degeneracy.eig_threshold, or
   ///   no match; non-decreasing), or NaN when unknown; a step is observed when the count did not
   ///   change since the last fix added here (align_yaw_frontend_travel).
   /// Errors (Result::error), first failure returned:
@@ -341,6 +343,12 @@ class GnssTrackYawAligner {
   /// as a whole had fallen behind the wheel travel while the recent ones agree with it (the robot
   /// drives again after its wheels turned on a still body).
   [[nodiscard]] int n_wheel_restarts() const { return n_wheel_restarts_; }
+  /// Chunks at which the front end, observing the travel axis, held a segment still (displacement
+  /// of o below align_yaw_min_wheel_travel_m) while every step had wheel data and the wheels moved
+  /// by more than that much beyond it (backlog G3). The front end decides: right for wheels
+  /// turning on a still body, wrong for a LiDAR that sees surroundings moving with the robot (a
+  /// lift, a pushed cart), which blocks the alignment; the counter shows either.
+  [[nodiscard]] int n_frontend_wheel_disagreements() const { return n_fe_wheel_disagree_; }
 
  private:
   struct Chunk {
@@ -504,6 +512,7 @@ class GnssTrackYawAligner {
   int n_wheel_turns_ = 0;
   int n_wheel_restarts_ = 0;
   int n_wheel_mismatches_ = 0;
+  int n_fe_wheel_disagree_ = 0;
   double yaw_rad_ = 0.0;
   double yaw_sigma_rad_ = 0.0;  // set to +inf in the constructor
   double track_m_ = 0.0;        // m, r of the last solution

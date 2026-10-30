@@ -34,6 +34,26 @@ namespace mss::degeneracy {
 ///   not flagged).
 common::DegeneracyReport analyze(const common::Mat6& H, const DegeneracyConfig& cfg);
 
+/// Marginal information of the pose along the tangent direction `u` (backlog G3,
+/// docs/derivations/degeneracy.md section 8): the inverse of the variance `u^T H^-1 u`, that is
+/// the information along `u` once every other direction, the rotation included, is
+/// marginalised (the Schur complement of H onto u), computed from the eigen-decomposition in
+/// `report` as `1 / sum_k (v_k . u)^2 / lambda_k`. For a unit `u` along an eigenvector it is that
+/// eigenvalue, so `>= cfg.eig_threshold` is analyze()'s test that the direction is not degenerate;
+/// a direction mixed with a degenerate one (a robot driving at an angle along a corridor) gets
+/// at most `lambda_k / (v_k . u)^2` of the degenerate one's. Unlike `u^T H u` (the raw count of
+/// constraints along u) it does not count information that a coupled rotation absorbs.
+/// Returns 0 when a null direction (an eigenvalue at or below 1e-9 of the largest: zero up to
+/// round-off) has a component along `u` above 1e-9 of `|u|^2`, when an eigenvalue is non-finite,
+/// or when `u = 0` or H has no positive eigenvalue. A smaller component along the null space is
+/// round-off and ignored (a rank-deficient H whose null space is orthogonal to `u`).
+/// Frames: `u` in the tangent of H ([rho, phi] of T_w_l for scan matching). Units: those of H
+///   for a unit `u` (m^-2 scaled by the residual weights for a translation).
+/// Errors: none. Hot path: yes (per scan when the pipeline's track-yaw gate is on); fixed-size,
+///   no allocation, logging or exceptions.
+/// Tests: Degeneracy.MarginalInformation*.
+double marginal_information(const common::DegeneracyReport& report, const common::Vec6& u);
+
 /// Removes the components of a Gauss-Newton update along degenerate directions:
 /// `delta' = V * diag(m) * V^T * delta`, `m_k = 0` if `report.degenerate[k]` else 1,
 /// `V = report.eigvecs`. With no flags the result equals `delta` exactly.

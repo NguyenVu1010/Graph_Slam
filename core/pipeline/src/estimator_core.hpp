@@ -150,6 +150,7 @@ struct CoreCounters {
   std::uint64_t n_gnss_realign = 0;      ///< aligner restarts (gnss.max_consecutive_rejects)
   /// Design 2b: chunks with a GNSS track / wheel travel mismatch in the track-yaw aligner.
   std::uint64_t n_gnss_wheel_mismatch = 0;
+  std::uint64_t n_gnss_frontend_wheel_disagree = 0;  ///< backlog G3, see Estimator::Stats
   std::uint64_t n_wheel_nonfinite =
       0;  ///< wheel samples with a non-finite speed (ADR-023 odometer)
   // ADR-022, see Estimator::Stats.
@@ -328,8 +329,9 @@ class EstimatorCore {
   bool backend_failure_streak_ = false;
   bool imu_nonfinite_streak_ = false;
   bool gnss_reject_streak_ = false;
-  bool track_restart_logged_ = false;    // one log line until the next alignment
-  std::uint64_t n_alignments_seen_ = 0;  // observer only: alignments reported so far
+  bool track_restart_logged_ = false;      // one log line until the next alignment
+  bool track_fe_disagree_logged_ = false;  // one log line per run (backlog G3)
+  std::uint64_t n_alignments_seen_ = 0;    // observer only: alignments reported so far
   bool gnss_late_streak_ = false;
   bool uncovered_streak_ = false;
 

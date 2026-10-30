@@ -936,6 +936,39 @@ TEST(GnssTrackYawRootCause, FrontEndNeedsBothChunksObserved) {
   EXPECT_EQ(a.n_stationary_segments(), 3);
 }
 
+// Backlog G3 (review F4): a front end that observes the travel axis but does not move (its LiDAR
+// sees surroundings moving with the robot) holds every segment still, so a robot driving at
+// 0.5 m/s with wheel data never aligns; each such segment is counted in
+// n_frontend_wheel_disagreements(). The exact front end at 0.5 m/s, and at 0.06 m/s where its
+// displacement between chunk centres sits at the 0.2 m threshold, is never counted.
+TEST(GnssTrackYawRootCause, FrontEndWheelDisagreementCounted) {
+  struct Case {
+    double step_m;  // m per fix
+    bool frozen;
+  };
+  for (const Case c : {Case{0.1, true}, Case{0.1, false}, Case{0.012, false}}) {
+    GnssTrackYawAligner a(cfg_after(true));
+    int aligned = 0;
+    for (int k = 0; k < 400; ++k) {
+      const Pose b =
+          yaw_pose(0.4, Vec3(c.step_m * k * std::cos(0.4), c.step_m * k * std::sin(0.4), 0.0));
+      const Pose fe = c.frozen ? yaw_pose(0.4, Vec3::Zero()) : b;
+      aligned +=
+          a.update(kTew * (b * kPbg), Mat3::Identity() * 0.25, fe, kPbg, c.step_m * k, 0.0, 0.0)
+                  .is_ok()
+              ? 1
+              : 0;
+    }
+    if (c.frozen) {
+      EXPECT_EQ(aligned, 0);
+      EXPECT_GT(a.n_frontend_wheel_disagreements(), 10);
+    } else {
+      EXPECT_GT(aligned, 0) << c.step_m;
+      EXPECT_EQ(a.n_frontend_wheel_disagreements(), 0) << c.step_m;
+    }
+  }
+}
+
 // Turning in place with the travel axis observed: the front-end displacement of o stays below
 // the travel threshold, so the segments are stationary although the antenna circles the body
 // (its displacement is the lever-arm change only). Never aligns.
