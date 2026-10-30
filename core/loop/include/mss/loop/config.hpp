@@ -46,6 +46,37 @@ struct LoopConfig {
   double max_correction_rad = 0.0;  // rad (> 0; YAML: max_correction_deg)
   // Extra iSAM2 updates after the update that adds an accepted loop (>= 0).
   int isam_extra_updates = 0;
+  // Correction gate from the graph's uncertainty (ADR-026 amendment, loop_closure.md section 9).
+  // Optional, off by default (ADR-028: it drops every true loop once the graph is moderately
+  // overconfident). When true and detect() is given a RelativeCovarianceSource: a converged
+  // fit is kept only when
+  // e^T S^-1 e <= correction_chi2_gate, with e = Log(T_graph_ij^-1 T_fit_ij) in [rho, phi]
+  // (all six axes, roll and pitch included) and S = the graph's marginal covariance of the
+  // relative pose (i, j) + the floored loop covariance. Chi-square threshold, 6 DoF (> 0).
+  double correction_chi2_gate = 0.0;
+  bool graph_covariance_gate = false;  // the gate above, and graph arbitration below
+  // Ambiguity check (loop_closure.md section 10): ICP is re-run from the best fit shifted by
+  // +-k * ambiguity_seed_step_m, k = 1..ambiguity_seeds_per_side, along the least-constrained
+  // horizontal direction of the ICP Hessian. A second converged fit within the fixed
+  // correction gates and the RMS gate, more than ambiguity_min_separation_m (or
+  // ambiguity_min_separation_rad) from the best, with an inlier ratio >= ambiguity_max_ratio
+  // x the best one makes the loop ambiguous: rejected. Only with graph_covariance_gate (and
+  // a RelativeCovarianceSource) the graph may rule the competitor out: it fails
+  // correction_chi2_gate AND its chi-square exceeds the best one's by at least
+  // ambiguity_chi2_margin; seeds the graph already rules out are then skipped.
+  int ambiguity_seeds_per_side = 0;           // >= 0; 0 turns the check off
+  double ambiguity_seed_step_m = 0.0;         // m (> 0)
+  double ambiguity_min_separation_m = 0.0;    // m (> 0)
+  double ambiguity_min_separation_rad = 0.0;  // rad (> 0; YAML: ambiguity_min_separation_deg)
+  double ambiguity_max_ratio = 0.0;           // second-best / best inlier ratio, in (0, 1]
+  double ambiguity_chi2_margin = 0.0;         // chi-square difference (> 0)
+  // Latency bounds of the ambiguity check (review H3, I-2): keyframes not searched after a
+  // kAmbiguous result (the pipeline; >= 0), ICP iterations of a shifted seed (> 0), and the
+  // fitness pre-screen: ICP from a shifted seed only when one fitness pass there reaches this x
+  // the best fit's inlier ratio ([0, 1]; 0 turns the pre-screen off).
+  int ambiguity_backoff_keyframes = 0;
+  int ambiguity_icp_max_iterations = 1;
+  double ambiguity_prescreen_ratio = 0.0;
 };
 
 }  // namespace mss::loop
