@@ -1823,3 +1823,62 @@ carried `wheel_ok` (`ExtendedSegmentKeepsItsMissingReading`), the cross-chunk ha
 (`GapLongerThanTheBoundIsNotBridged`, case 27-31), the front-end position of `b`
 (`FrontEndPositionIsOfTheOdometryFrame`). On the gap bound (private no-GTSAM copy, `test_gnss`,
 `test_pipeline_internals`, `test_pipeline_component`): 16 mutants of the gap bound, all killed: in the pipeline odometer the whole interval bounded, the mean end speed, a one-period threshold, a gap before any regular interval, the last interval as the nominal period, the counter, the bound not passed; in the aligner the tolerance, the wheel path, the segment, the rise part, the fall part, rise and fall swapped, all of it on the rise (the review's `rv_gap_half0`, killed by `GapBoundShortfallShowsInBothSegments`), half of it (`rv_seg_gap_half`, killed by `GapBoundWidensTheToleranceByItsSize` and `GapBoundEntersTheSegmentsAsItsStep`), and the growth taken at a fix without a reading (`GapBoundGoesWithTheBridgedReading`).
+
+### 18.5 G10: the coloured-drift term
+
+Review F2's grid, wheel data, straight, 0.3 m white (declared 0.5 m), GNSS random walk per fix,
+900 s, 100 seeds; beyond 3 sigma / aligned, and the median distance to the alignment:
+
+| speed | drift per fix | 2b | H4 (0.0017 m^2/s) | H4 median distance | H4, rate = drift (d^2 x 5 Hz) |
+| --- | --- | --- | --- | --- | --- |
+| 0.02 m/s | 0.005 m | 0 / 0 / 0 of 100 | 0 / 0 / 0 of 100 | 8.2 to 8.5 m | 0 / 0 / 0 of 100, 3.0 to 3.2 m |
+| 0.02 m/s | 0.01 m | 4 / 1 / 6 of 100 | 0 / 0 / 0 of 100 | 8.2 to 8.5 m | 0 / 0 / 0, 3.6 to 3.8 m |
+| 0.02 m/s | 0.02 m | 27 / 24 / 31 (of 93 / 88 / 89) | 0 / 0 / 0 (of 100 / 99 / 100) | 8.2 to 8.5 m | 0 / 0 / 1, 9.4 to 9.9 m |
+| 0.02 m/s | 0.05 m | 4 / 1 / 3 (of 5 / 2 / 5) | **11 / 10 / 10 (of 35 / 26 / 33)** | 9.2 to 11.4 m | none aligns |
+| 0.03 m/s | 0.02 m | 20 / 23 / 26 (of 100 / 98 / 99) | 0 / 0 / 0 of 100 | 6.0 to 6.2 m | 0 / 0 / 0, 6.7 to 7.0 m |
+| 0.03 m/s | 0.05 m | 26 / 19 / 19 (of 33 / 27 / 27) | 18 / 13 / 30 (of 90 / 86 / 92) | 9.8 to 11.8 m | 0 / 0 / 0 (of 15 / 7 / 7), 21 to 26 m |
+| 0.05 m/s | 0.01 m | 0 / 1 / 1 of 100 | 0 / 0 / 0 of 100 | 4.5 m | 0 / 0 / 0, 3.3 m |
+| 0.05 m/s | 0.02 m | **10 / 8 / 10** of 100 | **0 / 1 / 1** of 100 | 4.5 m | 0 / 0 / 0, 4.8 m |
+| 0.05 m/s | 0.05 m | 45 / 43 / 52 (of 80 / 76 / 84) | 22 / 27 / 38 (of 99 / 100 / 100) | 4.8 to 6.0 m | 0 / 0 / 0, 22 to 24 m |
+| 0.10 m/s | 0.02 m | 0 / 1 / 4 of 100 | 0 / 0 / 0 of 100 | 3.2 to 3.4 m | 0 / 0 / 0, 3.4 to 3.6 m |
+| 0.10 m/s | 0.05 m | 43 / 46 / 46 of 100 | 18 / 19 / 22 of 100 | 3.2 to 3.6 m | 1 / 0 / 1, 11.8 to 12.6 m |
+| 0.15 m/s | 0.05 m | 30 / 32 / 24 of 100 | 7 / 16 / 12 of 100 | 3.3 to 3.6 m | 0 / 1 / 1, 8.4 to 8.7 m |
+| 0.20 m/s | 0.05 m | 15 / 16 / 17 of 100 | 4 / 6 / 6 of 100 | 3.2 to 3.6 m | 0 / 0 / 1, 6.8 to 7.2 m |
+| 0.50 m/s | 0.05 m | 4 / 6 / 4 of 100 | 1 / 4 / 2 of 100 | 3.9 m | 0 / 0 / 0, 4.9 m |
+
+Beyond 3 sigma (of the runs that aligned; "of 100" when all did), seed sets 31 / 52 / 73. Before
+section 16.13 a robot at 0.05 m/s or slower never aligned.
+
+- Within the declared rate (0.0017 m^2/s is 0.018 m per fix; the 0.02 m rows are 1.2x it) at
+  most 1 of 100 runs is beyond 3 sigma in any cell on any of the three seed sets (the review's
+  cell, 0.05 m/s at 0.02 m per fix: 0 / 1 / 1, against 10 / 8 / 10 with the 2b keys), and every
+  slow robot still aligns (white fixes only: 0.02 / 0.03 / 0.05 m/s after 8.5 / 6.0 / 4.5 m
+  instead of 3.2 / 3.1 / 3.3 m).
+- **The 0.02 m/s row at 0.05 m per fix is worse in count** (H4 review m-5): 11 / 10 / 10 beyond 3
+  sigma against 4 / 1 / 3. Root cause: that drift is 7x the declared rate. With the 2b keys the
+  wheel/GNSS window kept mismatching on it, so only 5 / 2 / 5 runs aligned, most of them wrong
+  (4 / 1 / 3); the drift term widens the window by `q dt` per segment, so 35 / 26 / 33 runs now
+  align, a third of them beyond 3 sigma because `q` is 7x too small for their sigma. The fraction
+  of aligned runs beyond 3 sigma falls (80 / 50 / 60 % to 31 / 38 / 30 %), the count rises.
+  The bound: with `q` at or above the true drift rate no cell has more than 1 of 100 beyond 3
+  sigma on any seed set (last column; at 0.02 m/s the aligner then waits for good). A variant that
+  keeps the term out of the window (only in the sigma) removes this row (0 aligned) but brings
+  back the review's cell (2 / 3 / 2 beyond 3 sigma) and doubles the 0.05 m per fix rows at
+  0.05 to 0.15 m/s (38 / 42 / 45, 34 / 41 / 34, 20 / 24 / 14), so the window keeps the term.
+- With the gap bound of section 18.3 (stop-and-go, silent driver, 0.7 s every 4 s): 100 of 100,
+  none beyond 3 sigma, NEES 0.78 (0.93 and 0 beyond in `SilentWheelDriverStopsAreBounded`); the
+  term widens the window too, so without the bound 99 of 100 align. Missing readings after a
+  mismatch: max 13.9 to 17.9 m instead of 17.9 to 21.9 m.
+- Stuck wheels for ever at 0.20 m per fix of drift (the protection, review probe): 1 / 7 / 4 of
+  100 align on drift against 0 / 7 / 3 with the 2b keys; the term widens the window there too.
+  With the rate matched to that drift: 2 / 2 / 2.
+- The other 0.05 m per fix rows are better than 2b on every seed set, but still far from 1 of 100:
+  outside the model. The rate is the receiver's number: a per-receiver YAML value, > 0 and finite,
+  default 0.0017 m^2/s (owner ruling 2026-10-30, backlog G18; how to choose it: `gnss.md` 5.3).
+  A matched rate makes slow robots align much later (0.05 m/s: 22 to 24 m) or not at all
+  (0.02 m/s).
+- The term costs nothing at 0.5 m/s (3.9 m in every row).
+- Unit tests: `GnssTrackYawHardening.DriftTermIsRateTimesTime` (known answer
+  `delta sigma^2 = q T / r^2` on a straight track; without fix times the term is off, bit for
+  bit), `DriftTermKeepsSlowRobotsWithinSigma` (F2's case: 10 / 0 / 0 beyond 3 sigma with no
+  term, 0.0017 and 0.002), `DriftTermKeepsTheSlowRobotAlignment`.

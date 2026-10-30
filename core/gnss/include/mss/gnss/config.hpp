@@ -97,6 +97,12 @@ struct GnssConfig {
   // by the larger end speed x that excess, which the pipeline sums and passes to the aligner to
   // widen the wheel/GNSS consistency tolerance (+inf: never) (> 1).
   double align_yaw_wheel_gap_periods = std::numeric_limits<double>::infinity();
+  // m^2/s, per-axis variance rate of the coloured GNSS position error (a random walk: drift d per
+  // fix at rate f gives d^2 f). A segment whose chunk centres are dt apart adds rate x dt to the
+  // numerator of the yaw variance, so a slow track waits for enough displacement instead of
+  // aligning on drift (0: white fixes only, the struct default; load_config requires > 0 and
+  // finite: a per-receiver value, backlog G18).
+  double align_yaw_drift_var_m2_per_s = 0.0;
 };
 
 }  // namespace mss::gnss

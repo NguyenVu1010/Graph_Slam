@@ -510,6 +510,8 @@ Config read_config(Reader& r) {
       "gnss.align_yaw_merge_max_chunks", c.gnss.align_yaw_merge_max_chunks, Range::kNonNegative);
   r.field("gnss.align_yaw_frontend_travel", c.gnss.align_yaw_frontend_travel);
   r.field("gnss.align_yaw_wheel_gap_periods", c.gnss.align_yaw_wheel_gap_periods, Range::kAboveOne);
+  r.field(
+      "gnss.align_yaw_drift_var_m2_per_s", c.gnss.align_yaw_drift_var_m2_per_s, Range::kPositive);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);
