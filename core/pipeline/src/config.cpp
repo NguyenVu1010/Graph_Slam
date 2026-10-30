@@ -600,6 +600,37 @@ Config read_config(Reader& r) {
       "loop_closure.max_correction_deg", c.loop_closure.max_correction_rad, Range::kPositive);
   r.field(
       "loop_closure.isam_extra_updates", c.loop_closure.isam_extra_updates, Range::kNonNegative);
+  r.field(
+      "loop_closure.correction_chi2_gate", c.loop_closure.correction_chi2_gate, Range::kPositive);
+  r.field("loop_closure.ambiguity_seeds_per_side",
+          c.loop_closure.ambiguity_seeds_per_side,
+          Range::kNonNegative);
+  r.field(
+      "loop_closure.ambiguity_seed_step_m", c.loop_closure.ambiguity_seed_step_m, Range::kPositive);
+  r.field("loop_closure.ambiguity_min_separation_m",
+          c.loop_closure.ambiguity_min_separation_m,
+          Range::kPositive);
+  r.angle_deg("loop_closure.ambiguity_min_separation_deg",
+              c.loop_closure.ambiguity_min_separation_rad,
+              Range::kPositive);
+  r.field("loop_closure.ambiguity_max_ratio",
+          c.loop_closure.ambiguity_max_ratio,
+          Range::kUnitOpenClosed);
+  r.field(
+      "loop_closure.ambiguity_chi2_margin", c.loop_closure.ambiguity_chi2_margin, Range::kPositive);
+  r.field("loop_closure.ambiguity_backoff_keyframes",
+          c.loop_closure.ambiguity_backoff_keyframes,
+          Range::kNonNegative);
+  r.field("loop_closure.ambiguity_icp_max_iterations",
+          c.loop_closure.ambiguity_icp_max_iterations,
+          Range::kPositive);
+  if (r.field("loop_closure.ambiguity_prescreen_ratio", c.loop_closure.ambiguity_prescreen_ratio)) {
+    r.check("loop_closure.ambiguity_prescreen_ratio",
+            c.loop_closure.ambiguity_prescreen_ratio >= 0.0 &&
+                c.loop_closure.ambiguity_prescreen_ratio <= 1.0,
+            "must be in [0, 1]");
+  }
+  r.field("loop_closure.graph_covariance_gate", c.loop_closure.graph_covariance_gate);
 
   r.field("backend.keyframe_dist_m", c.backend.keyframe_dist_m, Range::kPositive);
   r.angle_deg("backend.keyframe_rot_deg", c.backend.keyframe_rot_rad);

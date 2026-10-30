@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 
 #include "mss/common/lie.hpp"
@@ -63,6 +64,24 @@ void validate(const LoopConfig& c) {
   require(c.max_correction_m > 0.0, "max_correction_m", "must be > 0");
   require(c.max_correction_rad > 0.0, "max_correction_deg", "must be > 0");
   require(c.isam_extra_updates >= 0, "isam_extra_updates", "must be >= 0");
+  require(c.correction_chi2_gate > 0.0 && std::isfinite(c.correction_chi2_gate),
+          "correction_chi2_gate",
+          "must be > 0 and finite");
+  require(c.ambiguity_seeds_per_side >= 0, "ambiguity_seeds_per_side", "must be >= 0");
+  require(c.ambiguity_seed_step_m > 0.0 && std::isfinite(c.ambiguity_seed_step_m),
+          "ambiguity_seed_step_m",
+          "must be > 0 and finite");
+  require(c.ambiguity_min_separation_m > 0.0, "ambiguity_min_separation_m", "must be > 0");
+  require(c.ambiguity_min_separation_rad > 0.0, "ambiguity_min_separation_deg", "must be > 0");
+  require(c.ambiguity_max_ratio > 0.0 && c.ambiguity_max_ratio <= 1.0,
+          "ambiguity_max_ratio",
+          "must be in (0, 1]");
+  require(c.ambiguity_chi2_margin > 0.0, "ambiguity_chi2_margin", "must be > 0");
+  require(c.ambiguity_backoff_keyframes >= 0, "ambiguity_backoff_keyframes", "must be >= 0");
+  require(c.ambiguity_icp_max_iterations > 0, "ambiguity_icp_max_iterations", "must be > 0");
+  require(c.ambiguity_prescreen_ratio >= 0.0 && c.ambiguity_prescreen_ratio <= 1.0,
+          "ambiguity_prescreen_ratio",
+          "must be in [0, 1]");
 }
 
 bool pose_finite(const common::Pose& T) {
@@ -232,6 +251,231 @@ struct LoopDetector::Impl {
     rms = n_in > 0 ? std::sqrt(sum_r2 / static_cast<double>(n_in))
                    : std::numeric_limits<double>::infinity();
   }
+
+  // One converged ICP fit of the query within the fixed correction gates (section 9: it may
+  // still fail the chi-square gate, then plausible = false).
+  struct Fit {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    common::MatchResult mr;
+    common::Pose T_w_bq;                                    // fitted body pose of q
+    common::PoseCovariance cov = common::Mat6::Identity();  // floored, b_q (section 4)
+    double ratio = 0.0;
+    double rms = 0.0;
+    double chi2 = std::numeric_limits<double>::quiet_NaN();  // NaN without a source
+    bool plausible = true;  // chi2 <= correction_chi2_gate (true without a source)
+  };
+  enum class GateOutcome : std::uint8_t { kOk, kFailed, kTooFar, kNoMarginal };
+
+  // Correction gates of one candidate (loop_closure.md sections 3 and 9). The graph's relative
+  // covariance is asked for at most once per candidate, when a fit first needs it.
+  struct Gate {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    Gate(const Impl& impl,
+         const KeyframeView& cand,
+         const KeyframeView& query,
+         const RelativeCovarianceSource* source)
+        : m(impl),
+          c(cand),
+          q(query),
+          rel(source),
+          T_c_q_graph(cand.T_w_b.inverse() * query.T_w_b),
+          yaw_q(yaw_of(query.T_w_b.R)) {}
+
+    // The fixed gates (kTooFar), then e^T S^-1 e: fills f.cov, f.chi2 and f.plausible. A fit
+    // that fails only the chi-square gate is kOk with plausible = false: it cannot be the loop
+    // but it can still compete with one (ambiguity check).
+    GateOutcome check(Fit& f) {
+      const LoopConfig& cf = m.cfg;
+      if (!((f.T_w_bq.p - q.T_w_b.p).norm() <= cf.max_correction_m) ||
+          !(std::abs(wrap_pi(yaw_of(f.T_w_bq.R) - yaw_q)) <= cf.max_correction_rad)) {
+        return GateOutcome::kTooFar;
+      }
+      const common::PoseCovariance cov_b = common::transform_covariance(f.mr.cov, m.T_b_l);
+      f.cov = floor_covariance(cov_b, cf.cov_floor_m, cf.cov_floor_rad);
+      f.chi2 = std::numeric_limits<double>::quiet_NaN();
+      f.plausible = true;
+      if (rel == nullptr) {
+        return GateOutcome::kOk;
+      }
+      if (!asked) {
+        asked = true;
+        const common::Result<common::PoseCovariance> r = rel->relative_cov(c.id, q.id);
+        have_rel = r.is_ok() && r.value().allFinite();
+        if (have_rel) {
+          sigma_rel = r.value();
+        }
+      }
+      if (!have_rel) {
+        return GateOutcome::kNoMarginal;
+      }
+      // e: the fitted relative pose against the graph's, right perturbation of T_c_q (b_q).
+      const common::Pose T_c_q_fit = c.T_w_b.inverse() * f.T_w_bq;
+      const common::Vec6 e = common::boxminus(T_c_q_fit, T_c_q_graph);
+      const common::Mat6 S = 0.5 * (sigma_rel + sigma_rel.transpose()) + f.cov;
+      const Eigen::LDLT<common::Mat6> ldlt(S);
+      f.chi2 = std::numeric_limits<double>::infinity();
+      if (ldlt.info() == Eigen::Success && ldlt.isPositive()) {
+        const common::Vec6 S_inv_e = ldlt.solve(e);
+        f.chi2 = e.dot(S_inv_e);
+      }
+      f.plausible = f.chi2 <= cf.correction_chi2_gate;
+      return GateOutcome::kOk;
+    }
+
+    // chi2 of a fit at body pose T_w_bq with the covariance `cov` (no ICP): the value the
+    // chi-square gate would give it. +inf when S is not positive definite. Precondition: the
+    // marginal is available (have_rel).
+    double predicted_chi2(const common::Pose& T_w_bq, const common::PoseCovariance& cov) const {
+      const common::Vec6 e = common::boxminus(c.T_w_b.inverse() * T_w_bq, T_c_q_graph);
+      const common::Mat6 S = 0.5 * (sigma_rel + sigma_rel.transpose()) + cov;
+      const Eigen::LDLT<common::Mat6> ldlt(S);
+      if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
+        return std::numeric_limits<double>::infinity();
+      }
+      const common::Vec6 S_inv_e = ldlt.solve(e);
+      return e.dot(S_inv_e);
+    }
+
+    const Impl& m;
+    const KeyframeView& c;
+    const KeyframeView& q;
+    const RelativeCovarianceSource* rel;
+    const common::Pose T_c_q_graph;
+    const double yaw_q;
+    bool asked = false;
+    bool have_rel = false;
+    common::PoseCovariance sigma_rel = common::PoseCovariance::Zero();
+  };
+
+  // ICP (with `mt`) from the body seed `seed_w_b`, then the correction gates and the fitness.
+  // `need_converged` false: a fit that ran out of iterations is still judged by its fitness
+  // (ambiguity seeds, ambiguity_icp_max_iterations: a competitor only has to reach a basin).
+  GateOutcome fit_from(scan_match::ScanMatcher& mt,
+                       bool need_converged,
+                       const common::ScanFrame& cloud_l,
+                       const common::Pose& T_h_l,
+                       const common::Pose& seed_w_b,
+                       Gate& gate,
+                       Fit& f,
+                       LoopResult& res) {
+    ++res.n_icp_runs;
+    const common::Result<common::MatchResult> mr = mt.align(cloud_l, *submap, seed_w_b * T_b_l);
+    if (!mr.is_ok() || (need_converged && !mr.value().converged)) {
+      return GateOutcome::kFailed;
+    }
+    f.mr = mr.value();
+    f.T_w_bq = f.mr.T_w_l * T_l_b;
+    const GateOutcome g = gate.check(f);
+    if (g != GateOutcome::kOk) {
+      return g;
+    }
+    fitness(cloud_l, T_h_l, f.mr.T_w_l, f.ratio, f.rms);
+    return GateOutcome::kOk;
+  }
+
+  // Inlier ratio of `other` over that of `best` when `other` competes with it, else 0. It
+  // competes when it is separated from `best` by more than ambiguity_min_separation_m or _rad,
+  // its inlier RMS is within max_rms_m, and the graph does not rule it out. With a
+  // RelativeCovarianceSource the graph rules it out only when both hold: `other` fails the
+  // chi-square gate (other.chi2 > correction_chi2_gate) and is at least
+  // ambiguity_chi2_margin less likely than `best` in chi-square (likelihood ratio
+  // exp(margin / 2)). So a fit the graph finds plausible always competes: while the true drift
+  // is within the gate, a false fit cannot win against the true one (section 10).
+  double competitor_ratio(const Fit& best, const Fit& other) const {
+    const common::Pose d = best.T_w_bq.inverse() * other.T_w_bq;
+    const bool separated = d.p.norm() > cfg.ambiguity_min_separation_m ||
+                           common::so3_log(d.R).norm() > cfg.ambiguity_min_separation_rad;
+    if (!separated || !(other.rms <= cfg.max_rms_m) || !(best.ratio > 0.0)) {
+      return 0.0;
+    }
+    if (std::isfinite(best.chi2) && !(other.chi2 <= cfg.correction_chi2_gate) &&
+        !(other.chi2 - best.chi2 < cfg.ambiguity_chi2_margin)) {
+      return 0.0;  // the graph rules `other` out
+    }
+    return other.ratio / best.ratio;
+  }
+
+  // Ambiguity search (loop_closure.md section 10): ICP from the best fit shifted by
+  // +-k * ambiguity_seed_step_m, k = 1..ambiguity_seeds_per_side, nearest first, along u: the
+  // horizontal direction (in w) with the least translation information in the best fit's
+  // Hessian, rotation marginalised out (Schur complement). Seeds farther than max_correction_m
+  // from the graph pose of q are skipped, and so are seeds the graph rules out (above).
+  // Returns the largest competitor ratio; stops at the first one >= ambiguity_max_ratio.
+  double ambiguity_search(const common::ScanFrame& cloud_l,
+                          const common::Pose& T_h_l,
+                          const KeyframeView& query,
+                          const Fit& best,
+                          Gate& gate,
+                          LoopResult& res) {
+    if (cfg.ambiguity_seeds_per_side <= 0) {
+      return 0.0;
+    }
+    const common::Mat6 H = 0.5 * (best.mr.H + best.mr.H.transpose());
+    const common::Mat3 H_tt = H.topLeftCorner<3, 3>();
+    const common::Mat3 H_tr = H.topRightCorner<3, 3>();
+    const common::Mat3 H_rr = H.bottomRightCorner<3, 3>();
+    const Eigen::LDLT<common::Mat3> ldlt_rr(H_rr);
+    const common::Mat3 H_rt_solved = ldlt_rr.solve(H_tr.transpose());
+    const common::Mat3 H_t_l = H_tt - H_tr * H_rt_solved;  // translation information, in l
+    const common::Mat3& R_w_l = best.mr.T_w_l.R;
+    const common::Mat3 H_t_w = R_w_l * H_t_l * R_w_l.transpose();
+    const Eigen::Matrix2d H_xy_raw = H_t_w.topLeftCorner<2, 2>();
+    const Eigen::Matrix2d H_xy = 0.5 * (H_xy_raw + H_xy_raw.transpose());
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> eig(H_xy);
+    const Eigen::Vector2d u2 = eig.eigenvectors().col(0);  // smallest eigenvalue first
+    const common::Vec3 u(u2.x(), u2.y(), 0.0);
+    if (!u.allFinite()) {
+      return 0.0;
+    }
+    double amb = 0.0;
+    for (int k = 1; k <= cfg.ambiguity_seeds_per_side; ++k) {
+      for (const double sign : {1.0, -1.0}) {
+        const common::Vec3 p = best.T_w_bq.p + (sign * k * cfg.ambiguity_seed_step_m) * u;
+        if (!((p - query.T_w_b.p).norm() <= cfg.max_correction_m)) {
+          continue;
+        }
+        // With the graph's covariance: a seed whose whole reach (its offset minus half a step,
+        // towards the best fit) the graph already rules out (chi2 above the gate and
+        // ambiguity_chi2_margin above the best fit's) cannot give a competitor: skipped.
+        if (gate.have_rel && std::isfinite(best.chi2)) {
+          const common::Vec3 p_in =
+              best.T_w_bq.p + (sign * (k - 0.5) * cfg.ambiguity_seed_step_m) * u;
+          const double chi2_in = gate.predicted_chi2(common::Pose{best.T_w_bq.R, p_in}, best.cov);
+          if (chi2_in > cfg.correction_chi2_gate &&
+              chi2_in - best.chi2 >= cfg.ambiguity_chi2_margin) {
+            continue;
+          }
+        }
+        // Cheap pre-screen (review H3, I-2): one fitness pass at the shifted pose, no ICP. A seed
+        // whose raw inlier ratio is below ambiguity_prescreen_ratio x the best fit's is not near
+        // a copy that fits as well: no ICP for it.
+        const common::Pose seed{best.T_w_bq.R, p};
+        if (cfg.ambiguity_prescreen_ratio > 0.0) {
+          double pre_ratio = 0.0;
+          double pre_rms = 0.0;
+          fitness(cloud_l, T_h_l, seed * T_b_l, pre_ratio, pre_rms);
+          if (!(pre_ratio >= cfg.ambiguity_prescreen_ratio * best.ratio)) {
+            ++res.n_prescreen_skips;
+            continue;
+          }
+        }
+        if (fit_from(*amb_matcher, false, cloud_l, T_h_l, seed, gate, amb_fit, res) !=
+            GateOutcome::kOk) {
+          continue;
+        }
+        amb = std::max(amb, competitor_ratio(best, amb_fit));
+        if (amb >= cfg.ambiguity_max_ratio) {
+          return amb;
+        }
+      }
+    }
+    return amb;
+  }
+
+  // ICP of the ambiguity seeds: max_iterations = ambiguity_icp_max_iterations.
+  std::unique_ptr<scan_match::ScanMatcher> amb_matcher;
+  std::array<Fit, 2> fits;  // the step-3 seeds' fits of one candidate
+  Fit amb_fit;              // scratch of ambiguity_search
 };
 
 LoopDetector::LoopDetector(const LoopConfig& cfg,
@@ -254,6 +498,9 @@ LoopDetector::LoopDetector(const LoopConfig& cfg,
   degeneracy::DegeneracyConfig no_deg;  // the acceptance gate reads H; no projected update
   no_deg.enabled = false;
   m.matcher = std::make_unique<scan_match::ScanMatcher>(icp, no_deg, max_points);
+  scan_match::ScanMatchConfig amb_icp = icp;
+  amb_icp.max_iterations = cfg.ambiguity_icp_max_iterations;
+  m.amb_matcher = std::make_unique<scan_match::ScanMatcher>(amb_icp, no_deg, max_points);
   map::MapConfig sub = map_cfg;
   sub.max_voxels = cfg.submap_max_voxels;
   m.submap = std::make_unique<map::VoxelMap>(sub);
@@ -285,6 +532,12 @@ void LoopDetector::descriptor(const common::ScanFrame& cloud_l,
 
 LoopResult LoopDetector::detect(const KeyframeView& query,
                                 common::Span<const KeyframeView> keyframes) {
+  return detect(query, keyframes, nullptr);
+}
+
+LoopResult LoopDetector::detect(const KeyframeView& query,
+                                common::Span<const KeyframeView> keyframes,
+                                const RelativeCovarianceSource* rel) {
   Impl& m = *impl_;
   LoopResult res;
   if (!m.cfg.enabled || m.matcher == nullptr || query.cloud_l == nullptr ||
@@ -360,6 +613,8 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
       m.submap->insert(*kv.cloud_l, kv.T_w_b * m.T_b_l);
     }
     ++res.n_verified;
+    // ADR-028: the graph's covariance is used only with graph_covariance_gate (default off).
+    Impl::Gate gate(m, cand, query, c.graph_covariance_gate ? rel : nullptr);
     // Seeds: the graph pose of q, and q with the Scan Context yaw when that differs from
     // the graph yaw by more than one sector.
     const double yaw_seed = wrap_pi(yaw_of(cand.T_w_b.R) + sc_yaw);
@@ -370,49 +625,62 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
       seeds[1] = common::Pose{rot_z(yaw_seed) * R_tilt_q, query.T_w_b.p};
       n_seeds = 2;
     }
+    // Every fit within the fixed gates is kept (a competitor); the best is the plausible one
+    // (chi-square gate) with the highest inlier ratio.
+    std::size_t n_fits = 0;
+    std::size_t best = 0;
     bool have = false;
     bool too_far = false;
-    common::MatchResult best;
-    double best_ratio = -1.0;
-    double best_rms = 0.0;
+    bool no_marginal = false;
     for (std::size_t s = 0; s < n_seeds; ++s) {
-      const common::Result<common::MatchResult> mr =
-          m.matcher->align(*query.cloud_l, *m.submap, seeds[s] * m.T_b_l);
-      if (!mr.is_ok() || !mr.value().converged) {
-        continue;
-      }
-      // Correction gate: the ICP pose of q against its graph pose (the drift since c).
-      const common::Pose T_w_bq_icp = mr.value().T_w_l * m.T_l_b;
-      if (!((T_w_bq_icp.p - query.T_w_b.p).norm() <= c.max_correction_m) ||
-          !(std::abs(wrap_pi(yaw_of(T_w_bq_icp.R) - yaw_q)) <= c.max_correction_rad)) {
+      Impl::Fit& f = m.fits[n_fits];
+      const Impl::GateOutcome g =
+          m.fit_from(*m.matcher, true, *query.cloud_l, T_h_l_q, seeds[s], gate, f, res);
+      if (g == Impl::GateOutcome::kTooFar) {
         too_far = true;
-        continue;
-      }
-      double ratio = 0.0;
-      double rms = 0.0;
-      m.fitness(*query.cloud_l, T_h_l_q, mr.value().T_w_l, ratio, rms);
-      if (ratio > best_ratio) {
-        best_ratio = ratio;
-        best_rms = rms;
-        best = mr.value();
-        have = true;
+      } else if (g == Impl::GateOutcome::kNoMarginal) {
+        no_marginal = true;
+      } else if (g == Impl::GateOutcome::kOk) {
+        if (!f.plausible) {
+          too_far = true;
+        } else if (!have || f.ratio > m.fits[best].ratio) {
+          best = n_fits;
+          have = true;
+        }
+        ++n_fits;
       }
     }
-    // 4. Acceptance gates.
-    LoopOutcome out = too_far ? LoopOutcome::kCorrection : LoopOutcome::kIcpFailed;
+    // 4. Acceptance gates, then the ambiguity check.
+    LoopOutcome out = LoopOutcome::kIcpFailed;
+    if (no_marginal) {
+      out = LoopOutcome::kNoMarginal;
+    } else if (too_far) {
+      out = LoopOutcome::kCorrection;
+    }
     double min_eig = 0.0;
+    double amb = 0.0;
+    const Impl::Fit& b = m.fits[best];
     if (have) {
-      const common::Mat6 H_sym = 0.5 * (best.H + best.H.transpose());
+      const common::Mat6 H_sym = 0.5 * (b.mr.H + b.mr.H.transpose());
       const Eigen::SelfAdjointEigenSolver<common::Mat6> eig(H_sym, Eigen::EigenvaluesOnly);
       min_eig = eig.eigenvalues()(0);
-      if (best_ratio < c.min_inlier_ratio) {
+      if (b.ratio < c.min_inlier_ratio) {
         out = LoopOutcome::kInliers;
-      } else if (!(best_rms <= c.max_rms_m)) {
+      } else if (!(b.rms <= c.max_rms_m)) {
         out = LoopOutcome::kRms;
       } else if (!(min_eig >= c.min_hessian_eig)) {
         out = LoopOutcome::kDegenerate;
       } else {
-        out = LoopOutcome::kAccepted;
+        // The other step-3 fit first, then the fits from the shifted seeds.
+        for (std::size_t s = 0; s < n_fits; ++s) {
+          if (s != best) {
+            amb = std::max(amb, m.competitor_ratio(b, m.fits[s]));
+          }
+        }
+        if (amb < c.ambiguity_max_ratio) {
+          amb = std::max(amb, m.ambiguity_search(*query.cloud_l, T_h_l_q, query, b, gate, res));
+        }
+        out = amb >= c.ambiguity_max_ratio ? LoopOutcome::kAmbiguous : LoopOutcome::kAccepted;
       }
     }
     verified_any = true;
@@ -421,19 +689,21 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
     res.sc_distance = sc_d;
     res.sc_yaw_rad = sc_yaw;
     res.outcome = out;
-    res.inlier_ratio = have ? best_ratio : 0.0;
-    res.rms_m = have ? best_rms : 0.0;
+    res.inlier_ratio = have ? b.ratio : 0.0;
+    res.rms_m = have ? b.rms : 0.0;
     res.min_eig = min_eig;
+    res.correction_chi2 = have         ? b.chi2
+                          : n_fits > 0 ? m.fits[0].chi2
+                                       : std::numeric_limits<double>::quiet_NaN();
+    res.ambiguity_ratio = amb;
     if (out != LoopOutcome::kAccepted) {
       continue;
     }
-    // 5. Measurement T_bc_bq and its covariance in b_q, floored.
-    const common::Pose T_w_bq = best.T_w_l * m.T_l_b;
+    // 5. Measurement T_bc_bq and its covariance in b_q, floored (computed by the gate).
     res.constraint.i = cand.id;
     res.constraint.j = query.id;
-    res.constraint.T_bi_bj = cand.T_w_b.inverse() * T_w_bq;
-    const common::PoseCovariance cov_b = common::transform_covariance(best.cov, m.T_b_l);
-    res.constraint.cov = floor_covariance(cov_b, c.cov_floor_m, c.cov_floor_rad);
+    res.constraint.T_bi_bj = cand.T_w_b.inverse() * b.T_w_bq;
+    res.constraint.cov = b.cov;
     if (!pose_finite(res.constraint.T_bi_bj) || !res.constraint.cov.allFinite()) {
       res.outcome = LoopOutcome::kIcpFailed;
       continue;

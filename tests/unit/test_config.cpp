@@ -112,17 +112,38 @@ TEST(Config, LoopClosureKeys) {
   EXPECT_EQ(l.submap_max_voxels, 20000U);
   EXPECT_NEAR(l.cov_floor_rad, 1.0 * kRadPerDeg, 1e-12);
   EXPECT_NEAR(l.max_correction_rad, 30.0 * kRadPerDeg, 1e-12);
+  // ADR-026 amendment (C1-12): correction gate and ambiguity check.
+  EXPECT_DOUBLE_EQ(l.correction_chi2_gate, 22.46);
+  EXPECT_EQ(l.ambiguity_seeds_per_side, 2);
+  EXPECT_DOUBLE_EQ(l.ambiguity_seed_step_m, 1.0);
+  EXPECT_DOUBLE_EQ(l.ambiguity_min_separation_m, 0.5);
+  EXPECT_NEAR(l.ambiguity_min_separation_rad, 5.0 * kRadPerDeg, 1e-12);
+  EXPECT_DOUBLE_EQ(l.ambiguity_max_ratio, 0.9);
+  EXPECT_DOUBLE_EQ(l.ambiguity_chi2_margin, 13.8);
+  // ADR-028: the graph gate optional and off; latency bounds of the ambiguity check.
+  EXPECT_FALSE(l.graph_covariance_gate);
+  EXPECT_EQ(l.ambiguity_backoff_keyframes, 5);
+  EXPECT_EQ(l.ambiguity_icp_max_iterations, 10);
+  EXPECT_DOUBLE_EQ(l.ambiguity_prescreen_ratio, 0.8);
   const std::string base = read_file(kDefault);
   const auto bad = parse_config(base,
                                 overlay("    loop_closure:\n      sc_sectors: 3\n"
                                         "      min_inlier_ratio: 1.5\n"
                                         "      cov_floor_deg: 0.0\n"
-                                        "      search_radius_m: -1.0\n"));
+                                        "      search_radius_m: -1.0\n"
+                                        "      correction_chi2_gate: 0.0\n"
+                                        "      ambiguity_seeds_per_side: -1\n"
+                                        "      ambiguity_max_ratio: 1.5\n"
+                                        "      ambiguity_prescreen_ratio: 1.5\n"));
   ASSERT_FALSE(bad.is_ok());
   EXPECT_TRUE(mentions(bad.reason(), "loop_closure.sc_sectors")) << bad.reason();
   EXPECT_TRUE(mentions(bad.reason(), "loop_closure.min_inlier_ratio")) << bad.reason();
   EXPECT_TRUE(mentions(bad.reason(), "loop_closure.cov_floor_deg")) << bad.reason();
   EXPECT_TRUE(mentions(bad.reason(), "loop_closure.search_radius_m")) << bad.reason();
+  EXPECT_TRUE(mentions(bad.reason(), "loop_closure.correction_chi2_gate")) << bad.reason();
+  EXPECT_TRUE(mentions(bad.reason(), "loop_closure.ambiguity_seeds_per_side")) << bad.reason();
+  EXPECT_TRUE(mentions(bad.reason(), "loop_closure.ambiguity_max_ratio")) << bad.reason();
+  EXPECT_TRUE(mentions(bad.reason(), "loop_closure.ambiguity_prescreen_ratio")) << bad.reason();
 }
 
 TEST(Config, OverlayWarehouse) {
