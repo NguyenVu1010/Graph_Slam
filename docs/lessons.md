@@ -425,6 +425,26 @@ Format of an entry: **symptom** → cause → fix → rule.
   before accepting it. Fix an algorithm cause. Publish a noise cause as a tolerance envelope (a
   hardware requirement). State a sensor-set limit together with the sensor that would remove it.
 
+### 1.19 A horizontal accelerometer bias becomes a tilt, and a straight run builds it into the map (H2, ADR-027, `derivations/vertical_drift_study.md`)
+
+- **Symptom.** On Gazebo, the corridor map climbed by about a metre over 50 m, and the warehouse
+  lap's ATE was almost all vertical (9 cm against 1 to 2 cm horizontal). SE(3)-aligned ATE
+  hid the climb: a straight climb is a rigid rotation (0.95 m end error, 0.036 m vertical RMS).
+- **Cause.** The static window measures `f = ba - R^T g` and the initialiser put all of it into
+  the tilt (`ba = 0`). The simulated IMU had a 0.2 to 0.6 m/s^2 horizontal bias (the profile's
+  0.3 m/s^2 sigma, the size of an uncalibrated MEMS part), so the tilt error was `b / g`, 19 to
+  60 mrad, matched within 3.5 mrad on six recordings. On a straight run nothing separates a tilt
+  from a horizontal bias. Keyframe 0 built the map tilted, and the LiDAR then held the robot on
+  that tilted floor. The first turn fixes the tilt but not the map built before it. The
+  LiDAR render, the extrinsic, the z bias and the gravity magnitude were each ruled out with an
+  oracle (true pose, true bias) on the same bags.
+- **Fix.** A flag that takes the body as level at rest (`imu.init_level_start`, off by default):
+  the window mean minus gravity is bias. On the recordings this matches subtracting the true bias.
+- **Rule.** Decide where the horizontal accelerometer bias comes from (a level start, a
+  calibration, a turn), because the static window cannot supply it. Report the vertical error
+  without SE(3) alignment (anchored at the start) and the tilt error against truth. Give the
+  simulator the bias the real part has, so the estimator meets this before the hardware does.
+
 ## 2. Simulation and evaluation
 
 ### 2.1 Coupled calibration errors (PR #21, ADR-011 §3)
