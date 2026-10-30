@@ -239,8 +239,9 @@ mss_node:
     map_export:
       # Global map export (Estimator::export_map, mss_bench --map-out; ADR-016 amendment
       # 2026-10-29): every stored keyframe cloud at its optimised pose, in w. Edge of the
-      # centroid voxel grid applied to the exported points, m (>= 0); 0 = no extra
-      # downsampling (the store already holds clouds at map.keyframe_voxel_m). Off the hot path.
+      # centroid voxel grid applied to the exported points, m: 0 = off (no extra downsampling;
+      # the store already holds clouds at map.keyframe_voxel_m), otherwise >= 0.001 (1 mm).
+      # Off the hot path.
       voxel_m: 0.0
 
     scan_match:

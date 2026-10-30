@@ -19,9 +19,12 @@
 #   4. python -m mss_eval map-png <map.pcd> --est est.tum --gt gt.tum --out <out>/map.png
 #
 # Writes only under <out_dir>: record/ (unless --bag), run/ (run_integration output), map.png,
-# map_demo.json (wall time per step, map-png and E-01 results) and logs/.
+# map_demo.json (scenario id, E-01 gate verdict, wall time per step, map-png and E-01 results)
+# and logs/.
 # The E-01 gate of run_integration compares against eval/baselines.json (synthetic data), so a
-# Gazebo bag usually "fails" it; that is reported, not an error here.
+# Gazebo bag usually fails it on the ATE; that exit 1 is accepted and recorded in map_demo.json
+# ("gate"). An exit 1 from a bench failure or timeout (bench_exit != 0) is an error here, as the
+# map would be partial (tools/map_demo_verdict.py tells the two apart from integration.json).
 # Exit: 0 picture written; 2 a step failed (see the log it names).
 # Env: PYTHON (default python3; needs the pyproject.toml deps and matplotlib), MSS_BENCH_CMD,
 #      and record_scenario.sh's own variables.
@@ -99,7 +102,11 @@ run_status=$?
 set -e
 run_s=$(since "$t0")
 cat "$out/logs/run.log"
-[ "$run_status" -le 1 ] || fail "run_integration.py failed (exit $run_status), see $out/logs/run.log"
+# run_integration.py exits 1 for a failed gate, which on a Gazebo bag is expected (synthetic
+# baselines), but also for a failed or timed-out bench (partial map): tell them apart.
+verdict_json="$("$PYTHON" "$repo/tools/map_demo_verdict.py" "$out/run/integration.json" \
+  "$run_status" "$sc_id" 2> "$out/logs/verdict.err")" \
+  || fail "run_integration.py result not usable: $(cat "$out/logs/verdict.err"), see $out/logs/run.log"
 [ -f "$out/run/E-01/map.pcd" ] || fail "no map.pcd, see $out/run/E-01/bench.log"
 
 # 4. Picture.
@@ -110,16 +117,23 @@ t0=$(now)
   || fail "map-png failed: $(cat "$out/logs/map_png.err")"
 png_s=$(since "$t0")
 
-"$PYTHON" - "$out" "$bag" "$record_s" "$record_status" "$run_s" "$run_status" "$png_s" <<'EOF'
+"$PYTHON" - "$out" "$bag" "$record_s" "$record_status" "$run_s" "$run_status" "$png_s" \
+  "$verdict_json" <<'EOF'
 import json, re, sys
 from pathlib import Path
 out, bag = Path(sys.argv[1]), sys.argv[2]
 record_s, record_status, run_s, run_status, png_s = (json.loads(a) for a in sys.argv[3:8])
+verdict = json.loads(sys.argv[8])
 e01 = json.loads((out / "run/integration.json").read_text())["E-01"]
 log = (out / "run/E-01/bench.log").read_text(errors="replace")
 m = re.search(r"^map: .*$", log, re.M)
 doc = {
+    "scenario": verdict["scenario"],
     "bag": bag,
+    "gate": {
+        k: verdict[k]
+        for k in ("gate_passed", "gate_note", "pf01_passed", "pf01_note", "reason")
+    },
     "wall_s": {"record": record_s, "convert_and_bench": run_s, "map_png": png_s},
     "record_exit": record_status,
     "run_integration_exit": run_status,

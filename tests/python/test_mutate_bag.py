@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from conftest import _REPO
+from conftest import _REPO, cli_env
 
 from mss_sim.bag_io import BagReader, BagWriter, stamp_ns
 from mss_sim.bridge import BridgeReport
@@ -83,7 +83,7 @@ def test_cli_smoke(bridged_bag: tuple[Path, BridgeReport], tmp_path: Path) -> No
         [sys.executable, str(_REPO / "tools/mutate_bag.py"), str(bridged_bag[0] / "bag"),
          str(tmp_path / "cli"), "--seed", "1"],
         capture_output=True, text=True, check=False,
-        env={**__import__("os").environ, "PYTHONPATH": str(_REPO / "sim")},
+        env=cli_env(),
     )  # fmt: skip
     assert proc.returncode == 0, proc.stderr
     rep = json.loads(proc.stdout.strip().splitlines()[-1])

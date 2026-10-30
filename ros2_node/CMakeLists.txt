@@ -24,12 +24,17 @@ target_link_libraries(mss_ros2_conversions PUBLIC mss::common mss::gnss)
 ament_target_dependencies(mss_ros2_conversions SYSTEM PUBLIC
   builtin_interfaces sensor_msgs nav_msgs geometry_msgs)
 
-add_executable(mss_node src/main.cpp src/mss_node.cpp src/rclcpp_logger.cpp)
-mss_set_target_defaults(mss_node)
-target_include_directories(mss_node PRIVATE include)
-target_link_libraries(mss_node PRIVATE mss_ros2_conversions mss::pipeline)
-ament_target_dependencies(mss_node SYSTEM PUBLIC
+# The node class as a static library so the node-level tests can link it.
+add_library(mss_ros2_node STATIC src/mss_node.cpp src/rclcpp_logger.cpp)
+mss_set_target_defaults(mss_ros2_node)
+target_include_directories(mss_ros2_node PUBLIC include)
+target_link_libraries(mss_ros2_node PUBLIC mss_ros2_conversions mss::pipeline)
+ament_target_dependencies(mss_ros2_node SYSTEM PUBLIC
   ament_index_cpp rclcpp sensor_msgs nav_msgs geometry_msgs tf2_ros)
+
+add_executable(mss_node src/main.cpp)
+mss_set_target_defaults(mss_node)
+target_link_libraries(mss_node PRIVATE mss_ros2_node)
 
 install(TARGETS mss_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch rviz DESTINATION share/${PROJECT_NAME})
@@ -42,6 +47,14 @@ if(BUILD_TESTING)
   ament_add_gtest(test_conversions test/test_conversions.cpp)
   mss_set_target_defaults(test_conversions)
   target_link_libraries(test_conversions mss_ros2_conversions)
+  ament_add_gtest(test_stamp_gate test/test_stamp_gate.cpp)
+  mss_set_target_defaults(test_stamp_gate)
+  target_include_directories(test_stamp_gate PRIVATE include)
+  target_link_libraries(test_stamp_gate mss::common)
+  ament_add_gtest(test_mss_node test/test_mss_node.cpp)
+  mss_set_target_defaults(test_mss_node)
+  target_compile_definitions(test_mss_node PRIVATE MSS_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
+  target_link_libraries(test_mss_node mss_ros2_node)
 endif()
 
 ament_package()
