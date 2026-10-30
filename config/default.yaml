@@ -415,7 +415,23 @@ mss_node:
       # [0, 1]; ICP from a shifted seed only when one fitness pass there reaches this x the best
       # fit's inlier ratio (0: off).
       ambiguity_prescreen_ratio: 0.8
-
+      # Loop selection by pairwise consistency (PCM, ADR-028): a loop stays in the graph while it
+      # belongs to a maximum set of loops consistent in pairs (cycle through the odometry);
+      # a loop that leaves the set is removed from the graph.
+      pcm_enabled: true
+      pcm_chi2_gate: 22.46           # pairwise cycle chi-square, 6 DoF (0.999 quantile)
+      # >= 1. The odometry covariance (white part) is scaled by this squared in the pairwise
+      # test. 1.5 covers claimed step sigmas 1.5 x too small; claimed x0.5 (2 x too small) holds
+      # only for cycles up to about 125 m: on a 250 m lap 1 to 3 true loops are lost (review H3
+      # I-1; the owner decides 1.5 or 2 after a manual test).
+      pcm_odometry_sigma_scale: 1.5
+      # >= 0. Unknown constant yaw drift rate of the odometry (1 sigma, per metre travelled), added
+      # to the odometry covariance of the pairwise test (ADR-028 amendment C): yaw error grows
+      # with the distance, lateral error with its square. 0.2 deg/m = the repo's synthetic
+      # odometry yaw bias (0.1 deg per 0.5 m step).
+      pcm_yaw_drift_deg_per_m: 0.2
+      pcm_max_loops: 64              # loops held, [1, 64]; the oldest leaves (stays if selected)
+      pcm_max_clique_steps: 100000   # max-clique search bound (Bron-Kerbosch calls)
 
     backend:
       keyframe_dist_m: 1.0           # new keyframe after this translation, m (ADR-004)
