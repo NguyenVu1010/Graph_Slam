@@ -6,7 +6,14 @@ Implemented in `core/loop/src/loop_detector.cpp` (contract:
 ADR-026. Tests: `tests/unit/test_loop_detector.cpp` (L-01..L-03, gates, contract),
 `tests/component/test_loop_component.cpp` (two laps with drift, whole estimator),
 `tests/unit/backend/test_backend_graph.cpp` (B-02), `test_backend_isam.cpp` (B-03),
-`test_backend_factors.cpp` (Jacobians of the robust loop factor).
+`test_backend_factors.cpp` (Jacobians of the robust loop factor). Sections 9 to 12 (optional
+correction gate from the graph's uncertainty, ambiguity check, PCM loop selection; ADR-026
+amendment, ADR-028, backlog C1-12 / C1-16): `LoopFixture.CorrectionGate*`,
+`LoopFixture.Ambiguity*`, `LoopSelector.*` (`tests/unit/test_loop_selector.cpp`),
+`LoopAliasing.*`, `LoopComponent.TwoLapPcmNoWorseThanWithoutAcrossSeeds`,
+`LoopComponent.PipelinePcm*`, `LoopComponent.AmbiguousResultBacksOffTheSearch`,
+`LoopComponent.PcmRemovesAliasedLoopsKnownLoops`, `BackendGraph.RelativePoseCov*`,
+`BackendGraph.RemoveLoopFactor*`, `BackendIsam.B03_OutlierLoopRemovedLeavesNoDrag`.
 
 Conventions: right perturbation, tangent `[rho, phi]` (translation first) everywhere outside
 `backend` (`lie_conventions.md`). Frames: `w` world, `b` body, `l` LiDAR; `h` is the
@@ -64,7 +71,10 @@ when the Scan Context yaw `psi_c + s* 2pi/S` differs from the graph yaw `psi_q` 
 one sector, the same pose with that yaw (`Rz(psi_c + s* 2pi/S) R_tilt_q`). Each converged seed
 whose result differs from `T_w_bq` by more than `max_correction_m` in position or
 `max_correction_deg` in yaw is discarded (a rectangular box matched 180 deg off fitted
-perfectly on E-01 data); of the rest, the higher inlier ratio wins.
+perfectly on E-01 data). When the pipeline passes the graph's relative covariance, a fit must
+also pass the chi-square correction gate (section 9); a fit that fails only that gate is kept
+as a possible competitor (section 10) but cannot be the loop. Of the fits that can, the higher
+inlier ratio wins.
 
 Fitness, over the query's structure points only (`z_h + sc_height_offset_m > 0`, the set the
 descriptor sees; ground fits any place and raised the ratio of a false pair 6 m apart to 0.83):
@@ -78,7 +88,8 @@ Nearest-point distances are not used as the residual: the stored clouds are spac
 
 Acceptance: converged, `ratio >= min_inlier_ratio`, `rms <= max_rms_m`, and the smallest
 eigenvalue of the final ICP Hessian `H` (tangent of `T_w_l`) `>= min_hessian_eig` (a corridor
-without end walls in range is rejected here: `CorridorRejectedAsDegenerate`).
+without end walls in range is rejected here: `CorridorRejectedAsDegenerate`). A fit that passes
+all of these then goes through the ambiguity check (section 10).
 
 ## 4. Measurement and covariance
 
@@ -129,20 +140,30 @@ accepted loop costs an iSAM2 update plus a map rebuild).
 
 Candidate search: one `keyframe_state` lookup per stored keyframe and a distance. Per verified
 candidate: two descriptors (`O(points)`), the shift search (`S^2 R` = 72k products), a submap
-of up to `2 submap_keyframes + 1` stored clouds, at most two ICP runs and one fitness pass. The
-bench numbers are in ADR-026.
+of up to `2 submap_keyframes + 1` stored clouds, at most two ICP runs and one fitness pass per
+run. A candidate with a converged fit also asks the graph for one relative marginal (section
+9); a candidate that passes every gate also runs up to `2 ambiguity_seeds_per_side` more ICP
+runs (section 10). The bench numbers are in ADR-026.
 
 ## 7. Known limits (review C1; pinned by `LoopKnownLimits.*`)
 
-**Aliasing.** With structure repeating every `P` along a direction the scan cannot otherwise
-resolve (identical pillar pairs in a corridor without end walls in range), ICP from the graph
-seed converges to the copy nearest the seed. Once the graph drift along that direction exceeds
-`P/2` (and stays inside the correction gate), the loop is wrong by about `P` and passes every
-gate (P = 2 m, drift 1.3 m: error 1.98 m; Scan Context 0.13, ratio 0.93, RMS 3.7 cm, smallest
-eigenvalue above 300). On a loose chain (2 cm / 0.15 deg per 0.5 m step) such a loop drags the
-lap by 0.34 to 0.64 m; on a stiff chain (5 mm) by centimetres. The fixed 3 m / 30 deg
-correction gate cannot reject it; a gate on the graph's relative covariance of `(i, j)`
-(Mahalanobis on the joint marginal) and a second-best-fit check can (backlog C1-12).
+**Aliasing (sections 10 and 11).** With structure repeating every `P` along a
+direction the scan cannot otherwise resolve (identical pillar pairs in a corridor without end
+walls in range), ICP from the graph seed converges to the copy nearest the seed. Before the
+amendment, once the graph drift along that direction exceeded `P/2` (and stayed inside the fixed
+3 m / 30 deg gate) the loop was wrong by about `P` and passed every gate (P = 2 m, drift 1.3 m:
+error 1.98 m; Scan Context 0.13, ratio 0.93 to 0.94, RMS 3.7 cm, smallest eigenvalue above 300),
+and dragged a loose chain (2 cm / 0.15 deg per 0.5 m step) by 0.34 to 0.64 m. With the
+shipped configuration (ADR-028) the ambiguity check finds the true fit as a competitor and
+rejects the loop at every drift (the gate is off, so the chain stiffness plays no part)
+(`LoopAliasing.NoFalseLoopAtAnyDrift`): nothing false enters the graph, at the
+price of no loop at all in an exactly periodic corridor. A false loop that still gets through
+(one the ambiguity search misses) is removed by PCM as soon as true loops outnumber it
+(section 11). With the optional graph gate on, the graph may rule the true fit out when the drift
+is far outside its covariance, and the false loop is accepted: on the loose chain at drifts of
+1.3 to 2.5 m (both periods) such loops drag the lap by 0.34 to 0.64 m, on the stiff chain only the
+drift of exactly one period passes (drag about 1.4 cm)
+(`LoopKnownLimits.GraphGateAliasingWhenDriftExceedsGraphCovariance`).
 
 **Kernel against large true corrections.** With `C'` at the floor (5 cm / 1 deg) a correction
 `c` is `c / 0.05` whitened sigmas; the Cauchy weight `1 / (1 + (e/k)^2)` at `e = 20` (1 m) is
@@ -157,3 +178,155 @@ wider kernel or switchable constraints / GNC, and a floor calibrated by NEES).
 The stub backend has no keyframe pose (`keyframe_state` returns an error), so no keyframe view
 is built, no search runs and `n_loop_searches` stays 0: loop closure is a no-op there
 (`LoopComponent.BoxWorldEstimatorLoops`, stub branch).
+
+## 9. Optional correction gate from the graph's uncertainty (ADR-026 amendment, ADR-028)
+
+Off by default (`loop_closure.graph_covariance_gate: false`, ADR-028): it trusts the graph's
+absolute covariance, and with a moderately overconfident graph it rejects every true loop
+(below). The formulas stay for when the covariance is calibrated (C1-3).
+
+The fixed gates (`max_correction_m`, `max_correction_deg`) ask "is this correction small?",
+which is the wrong question: 1 m is plausible after a long loose excursion and implausible
+after ten stiff keyframes. The right one is "is this correction consistent with how uncertain
+the graph is about the relative pose of `c` and `q`?".
+
+**Relative marginal.** `Graph::relative_pose_cov(i, j)` returns the covariance of
+`T_bi_bj = T_w_bi^-1 T_w_bj` in the loop's own tangent (right perturbation, `[rho, phi]`,
+frame `b_j`). With right perturbations of both poses, `T_w_bi Exp(d_i)` and `T_w_bj Exp(d_j)`:
+
+    (T_w_bi Exp(d_i))^-1 T_w_bj Exp(d_j) = Exp(-d_i) T_bi_bj Exp(d_j)
+                                          = T_bi_bj Exp(-Ad(T_bj_bi) d_i) Exp(d_j)
+                                          ~ T_bi_bj Exp(d_j - Ad(T_bj_bi) d_i)
+
+so with `J = [-Ad(T_bj_bi), I]` and `P` the 12x12 joint marginal of `(X_i, X_j)`:
+
+    Sigma_ij = J P J^T = Ad P_ii Ad^T - Ad P_ij - P_ji Ad^T + P_jj,     Ad = Ad(T_bj_bi)
+
+`P` comes from the iSAM2 Bayes tree (`backend_factors.md` section 8b, with its tests: known
+answer on a chain, dense information solve and Monte Carlo on a 75-keyframe loopy graph).
+
+**Cost** (`backend_factors.md` section 8b): it grows with the depth of `X_i` in the Bayes tree.
+On a pose + velocity + bias graph with IMU, LiDAR and loop factors: 1.5 / 3.9 / 12.2 ms mean and
+3.5 / 9.4 / 29 ms max at 61 / 300 / 1000 keyframes on the desktop, one to four `optimize()`
+calls; several times that on a Pi 5 (not measured). It is called at most once per loop search,
+and not at all with the gate off.
+
+**Gate.** For a fit `T_w_bq^fit` and the graph pose `T_w_bq`, with `Z_g = T_w_bc^-1 T_w_bq` and
+`Z_f = T_w_bc^-1 T_w_bq^fit`:
+
+    e = Log(Z_g^-1 Z_f)  in [rho, phi],     S = Sigma_cq + C'_fit,     chi2 = e^T S^-1 e
+
+`C'_fit` is the floored loop covariance of that fit (section 4): `Z_f = Z_g Exp(e)` with both
+uncertainties in the same tangent, independent to first order, so `S` is the covariance of the
+innovation `e` and `chi2` is chi-square with 6 DoF when the loop is true and both covariances
+are consistent. A fit with `chi2 > correction_chi2_gate` (22.46, the 0.999 quantile) cannot be
+the loop. All six axes enter, so a converged fit with a large roll or pitch correction is
+caught here (C1-16: 6 deg of roll against a confident graph gives `chi2` above 30, the fixed
+gates let it through, `CorrectionGateCoversRollAndPitch`). The fixed gates stay as a coarse
+bound that needs no marginal.
+
+**Why it is off (review H3, I-1).** With a stiff chain (`Sigma_cq` at the millimetre level, as
+the pipeline's LiDAR factors are) `S` is dominated by the 5 cm / 1 deg floor and the gate admits
+about `sqrt(22.46) * 5 cm` ~ 0.24 m along one axis, so a graph that is only moderately
+overconfident loses every true loop. Two-lap drift test with the claimed odometry sigma halved
+(noise unchanged): without the gate the 4 loops bring the end-to-start error from 1.21 m to
+0.55 m; with it 43 searches are correction-gated, no loop is accepted and the error stays
+1.21 m (`LoopKnownLimits.GraphGateDropsTrueLoopsOnAnOverconfidentGraph`). In the pillar hall on
+the stiff chain a correct loop with 0.4 m of drift gives chi2 33 and is rejected. The pipeline's
+box NEES is already 7.5 to 8.6 against 6, so the graph is overconfident in practice; the gate
+needs the covariance calibrated first (C1-3), and a wider kernel (C1-13) cannot help large
+corrections while it is on. With the gate on, if the graph cannot give the marginal the
+candidate is rejected (`kNoMarginal`, fail closed; the pipeline logs the reason and counts
+`n_loops_no_marginal`).
+
+## 10. Ambiguity check: a second, separated fit (C1-12)
+
+A false loop in repeated structure is a fit that is geometrically as good as the true one.
+Gates on the fit alone (ratio, RMS, Hessian) cannot reject it, and the correction gate alone
+cannot either when the copy happens to be closer to the drifted graph pose than the truth. The
+check looks for a second fit and rejects the loop when two well separated fits are about
+equally good.
+
+Two options were weighed:
+- compare the Scan Context distance of the best and second-best column shift, or the fitness at
+  translated poses without ICP: cheap, but the descriptor is coarse (0.5 to 2 m rings) and the
+  fitness with a 0.5 m inlier tolerance is flat in a corridor (walls fit at any shift), so
+  both separate badly;
+- **run ICP again from shifted seeds and compare converged fits** (chosen): each alternative is
+  refined to its own optimum and judged by the same fitness as the acceptance, so a seed that
+  falls back into the best fit's basin is recognised (same pose), and one that finds a copy
+  gives a fit as good as the best. It costs ICP runs, bounded below.
+
+**Direction.** Aliasing happens along the direction the scan constrains least. From the best
+fit's Hessian `H` (tangent `[rho, phi]` of `T_w_l`) the translation information with rotation
+marginalised out is the Schur complement `H_t = H_rr - H_rf H_ff^-1 H_fr` (in `l`);
+`R_w_l H_t R_w_l^T` in `w`, its horizontal 2x2 block, and the eigenvector `u` of its smallest
+eigenvalue is the search direction (the corridor axis in the pillar corridor).
+
+**Seeds.** `T_w_bq^best` shifted by `+-k * ambiguity_seed_step_m * u`, `k = 1..ambiguity_seeds_per_side`
+(1 m, 2: offsets +-1 and +-2 m), nearest first; a seed farther than `max_correction_m` from the
+graph pose is skipped. ICP from a seed converges into the basin of whatever copy is nearest it,
+so with 1 m steps every copy within about 2.5 m of the best fit is reached (pillar periods of
+2 and 2.5 m: `AmbiguityRejectsPeriodicStructure`). The other step-3 seed's fit, when there is
+one, is a competitor too.
+
+**Competitor.** A converged fit that passes the fixed gates, has `rms <= max_rms_m`, and lies
+more than `ambiguity_min_separation_m` (0.5 m) or `ambiguity_min_separation_deg` (5 deg) from the
+best. Its weight is `ratio_other / ratio_best`; when it reaches `ambiguity_max_ratio` (0.9) the
+loop is rejected (`kAmbiguous`). In the pillar corridor the copy one period away fits at 0.93
+to 0.94 of the true fit; in the irregular hall no competitor reaches the gate
+(`AmbiguityCheckKeepsUniquePlaces`, L-01..L-03).
+
+**The graph decides only when it is clear (optional gate on).** With the graph's covariance
+(section 9, `graph_covariance_gate` true) a
+competitor is ruled out only when both hold: it fails the chi-square gate itself
+(`chi2_other > correction_chi2_gate`) and it is at least `ambiguity_chi2_margin` (13.8, a
+likelihood ratio of `exp(13.8 / 2)` = 1000) worse than the best in `chi2`. So:
+- a competitor the graph finds plausible always competes. While the true drift is within the
+  gate, the true fit is such a competitor whenever ICP snapped to a copy, and the false loop is
+  rejected. With a covariance consistent with metre-level drift (relative sigma ~0.6 m) no false
+  loop is accepted for any drift up to 2 m at either period (`LoopAliasing.*`);
+- a copy far outside the gate while the best fit is near the graph is ignored: the true loop is
+  accepted (review's loose chain, relative sigma ~0.2 m, drift 0 to 0.6 m: accepted, error
+  7 to 8 mm), where without the graph it would be ambiguous;
+- what the graph cannot fix: drift far beyond its covariance. The copy is then the plausible fit
+  and the truth the implausible one, and the graph picks the copy (loose chain, drift 1.3 to
+  2.5 m; section 7). The symmetric case shows why no rule can do better from this data: drift 0
+  with the copy 2 m away and drift 2 m with the truth 2 m away give the detector the same two
+  fits and the same graph covariance.
+
+With the gate off (shipped) every competitor counts, so in an exactly periodic corridor no
+loop is accepted (`AmbiguityRejectsPeriodicStructure`, `NoFalseLoopAtAnyDrift`):
+recall is given up where the place cannot be told apart.
+
+**Cost.** Only a candidate that passes every other gate runs the check: up to
+`2 * ambiguity_seeds_per_side` (4) more ICP runs, stopping at the first competitor. With the
+optional gate on, a seed is skipped when the graph already rules out everything it can reach:
+the chi2 the gate would give the best fit shifted to the inner edge of the seed's reach
+(offset `(k - 1/2) * ambiguity_seed_step_m`, same rotation and covariance) is above the gate
+and `ambiguity_chi2_margin` above the best fit's. ICP from a seed converges to a copy within
+about half a step of it, so such a seed cannot produce a competitor that counts (first order:
+the actual fit's covariance and rotation differ slightly from the prediction). On a stiff graph
+(the pipeline's: millimetre LiDAR factors, `S` at the 5 cm floor) every 1 m seed is skipped and
+the check costs nothing; on the loose and consistent chains of the tests it runs.
+
+**Latency bounds without the graph (review H3, I-2).** With the gate off (shipped) the graph
+prunes nothing, and the 4 ICP runs doubled the loop keyframe's scan time on E-01 (max 35 to
+61 ms) while changing nothing. Three bounds, none needing the graph's covariance:
+- **Fitness pre-screen.** Before a shifted seed's ICP, one fitness pass (one kNN query per
+  structure point, about one ICP iteration) at the best fit shifted to the seed; ICP runs only
+  when that raw inlier ratio reaches `ambiguity_prescreen_ratio` (0.8) x the best fit's. A seed
+  that lands on a copy of the scene scores like the copy; a seed in a unique place scores low (the
+  structure that fitted is now displaced by 1 or 2 m). In the pillar hall 2 to 4 of the 4 seeds
+  per place stop here (`AmbiguityCheckKeepsUniquePlaces`); the periodic corridor stays ambiguous
+  at every drift (`AmbiguityRejectsPeriodicStructure`, `NoFalseLoopAtAnyDrift`).
+- **ICP iteration cap.** A shifted seed's ICP stops after `ambiguity_icp_max_iterations` (10, a
+  second `ScanMatcher` with that limit) and an unconverged fit is still judged by its fitness: a
+  competitor only has to reach the copy's basin, not converge in it.
+- **Back-off.** After a `kAmbiguous` result the pipeline skips `ambiguity_backoff_keyframes` (5)
+  keyframes: in a periodic aisle every search is ambiguous, so without it every keyframe paid one
+  detection plus 4 ICP runs (`LoopComponent.AmbiguousResultBacksOffTheSearch`: 43 searches
+  without back-off, 8 with 5).
+Measured on the synthetic scenes (dense clouds, 40k to 60k points): 25 to 40 ms per full ICP;
+with the whole estimator see section 12.
+

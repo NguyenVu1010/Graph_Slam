@@ -10,7 +10,7 @@
 //   DIR/est.tum     one line per scan that produced an estimate, from latest_state(); none
 //                   before the IMU static initialisation (imu.init_window_s of still data)
 //   DIR/bench.json  Estimator::Stats, replay wall time, record counts per stream and the
-//                   per-scan processing latency (scan_process_ms_p50/p95, PF-01, from
+//                   per-scan processing latency (scan_process_ms_p50/p95/p99/max, PF-01, from
 //                   n_latency_samples samples; n_latency_dropped did not fit the buffer)
 // and prints a summary table on stdout. With --map-out FILE, after the replay it also writes
 // the global map (Estimator::export_map: every stored keyframe cloud at its optimised pose,
@@ -125,6 +125,8 @@ struct Counts {
 struct ScanLatency {
   double p50_ms = 0.0;
   double p95_ms = 0.0;
+  double p99_ms = 0.0;  // the loop-keyframe spikes (ADR-026: an accepted loop adds ICP runs,
+  double max_ms = 0.0;  // iSAM2 updates and a map rebuild on one scan; backlog C1-15)
   std::uint64_t n_samples = 0;  // samples behind the percentiles
   std::uint64_t n_dropped = 0;  // samples discarded past the reserved capacity
 };
@@ -244,6 +246,8 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"n_loops_rejected\": %" PRIu64
                ",\n"
+               "  \"n_loops_no_marginal\": %" PRIu64
+               ",\n"
                "  \"n_map_points\": %" PRIu64
                ",\n"
                "  \"n_map_spacing_replaced\": %" PRIu64
@@ -252,6 +256,8 @@ bool write_json(const fs::path& path,
                "  \"push_scan_us_p95\": %.3f,\n"
                "  \"scan_process_ms_p50\": %.6f,\n"
                "  \"scan_process_ms_p95\": %.6f,\n"
+               "  \"scan_process_ms_p99\": %.6f,\n"
+               "  \"scan_process_ms_max\": %.6f,\n"
                "  \"n_latency_samples\": %" PRIu64
                ",\n"
                "  \"n_latency_dropped\": %" PRIu64
@@ -306,12 +312,15 @@ bool write_json(const fs::path& path,
                st.n_loop_searches,
                st.n_loops_accepted,
                st.n_loops_rejected,
+               st.n_loops_no_marginal,
                st.n_map_points,
                st.n_map_spacing_replaced,
                st.push_scan_us_p50,
                st.push_scan_us_p95,
                lat.p50_ms,
                lat.p95_ms,
+               lat.p99_ms,
+               lat.max_ms,
                lat.n_samples,
                lat.n_dropped,
                replay_wall_s,
@@ -342,7 +351,11 @@ void print_table(const fs::path& dataset,
               st.n_dropped_aux,
               st.n_rejected_imu);
   std::printf("push_scan p50 %.3f us, p95 %.3f us\n", st.push_scan_us_p50, st.push_scan_us_p95);
-  std::printf("scan processing p50 %.3f ms, p95 %.3f ms\n", lat.p50_ms, lat.p95_ms);
+  std::printf("scan processing p50 %.3f ms, p95 %.3f ms, p99 %.3f ms, max %.3f ms\n",
+              lat.p50_ms,
+              lat.p95_ms,
+              lat.p99_ms,
+              lat.max_ms);
   std::printf("replay wall time %.3f s\n", replay_wall_s);
 }
 
@@ -430,7 +443,8 @@ class Replayer {
 
   const Counts& counts() const { return counts_; }
 
-  // Nearest-rank p50 / p95 of the per-scan samples; zeros when no scan was processed.
+  // Nearest-rank p50 / p95 / p99 and the max of the per-scan samples; zeros when no scan was
+  // processed.
   [[nodiscard]] ScanLatency latency() const {
     ScanLatency out;
     out.n_samples = scan_ms_.size();
@@ -442,6 +456,8 @@ class Replayer {
     std::sort(sorted.begin(), sorted.end());
     out.p50_ms = nearest_rank(sorted, 50, 100);
     out.p95_ms = nearest_rank(sorted, 95, 100);
+    out.p99_ms = nearest_rank(sorted, 99, 100);
+    out.max_ms = sorted.back();
     return out;
   }
 

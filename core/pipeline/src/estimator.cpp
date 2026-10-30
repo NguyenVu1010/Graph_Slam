@@ -362,6 +362,7 @@ Estimator::Stats Estimator::stats() const {
   out.n_loop_searches = c.n_loop_searches;
   out.n_loops_accepted = c.n_loops_accepted;
   out.n_loops_rejected = c.n_loops_rejected;
+  out.n_loops_no_marginal = c.n_loops_no_marginal;
   const map::VoxelMap& m = s.core->voxel_map();
   out.n_map_points = m.num_points();
   out.n_map_spacing_replaced = c.n_map_spacing_replaced_cleared + m.num_spacing_replaced();

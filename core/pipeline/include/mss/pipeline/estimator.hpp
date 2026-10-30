@@ -111,11 +111,14 @@ class Estimator {
     std::uint64_t n_gravity_factor_unchecked = 0;
     /// Loop closure (ADR-026, loop_closure.enabled; all 0 when off): keyframes searched;
     /// loops verified and added to the graph; searches whose verified candidate failed the
-    /// ICP acceptance gates (a candidate that failed only the Scan Context gate is not
-    /// counted).
+    /// ICP acceptance gates or the ambiguity check (a candidate that failed only the Scan
+    /// Context gate is not counted).
     std::uint64_t n_loop_searches = 0;
     std::uint64_t n_loops_accepted = 0;
     std::uint64_t n_loops_rejected = 0;
+    /// ADR-028: candidates rejected because the graph could not give the relative marginal
+    /// (loop_closure.graph_covariance_gate).
+    std::uint64_t n_loops_no_marginal = 0;
     std::uint64_t n_map_points = 0;  ///< points in the VoxelMap cache now (ADR-007)
     /// map points refreshed in place by map.min_point_dist_m since construction (summed
     /// over map rebuilds; ADR-007 amendment)
