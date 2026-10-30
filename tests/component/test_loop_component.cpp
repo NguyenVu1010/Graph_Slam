@@ -573,15 +573,15 @@ TEST(LoopComponent, BoxWorldEstimatorLoops) {
 // first true one is added back; counters, map rebuilds and the front-end re-sync follow, the graph
 // holds the two true loops only, and the trajectory ends as the run that only ever had the two true
 // loops.
+constexpr double kInjectSigmaM = 0.05;          // injected loop covariance, position sigma (m)
+constexpr double kInjectSigmaRad = 1.0 * kDeg;  // injected loop covariance, rotation sigma (rad)
+
 struct InjectPlan {
   test::BoxWorldParams p;
   std::vector<double> at_s;     // s after t0: inject at the first keyframe at or after it
   std::vector<double> wrong_m;  // offset along x of b_i, m (0: true loop)
   std::vector<bool> done;
   double lap_s = 0.0;
-  double wrong_yaw_rad = 0.0;                     // extra yaw of the wrong loop (rad)
-  double sigma_m = 0.05;                          // loop covariance, position sigma (m)
-  double sigma_rad = 1.0 * kDeg;                  // loop covariance, rotation sigma (rad)
   std::vector<std::pair<KeyId, KeyId>> injected;  // (i, j) of each injection, in order
 };
 
@@ -610,12 +610,9 @@ std::optional<common::LoopConstraint> inject(InjectPlan& plan,
     lc.T_bi_bj =
         test::box_truth(plan.p, views[best].t).T_w_b.inverse() * test::box_truth(plan.p, q.t).T_w_b;
     lc.T_bi_bj.p.x() += plan.wrong_m[n];
-    if (plan.wrong_m[n] != 0.0) {  // the wrong loop also turned by wrong_yaw_rad about z of b_j
-      lc.T_bi_bj.R = lc.T_bi_bj.R * test::loop_rz(plan.wrong_yaw_rad);
-    }
     lc.cov.setZero();
-    const double vm = plan.sigma_m * plan.sigma_m;
-    const double vr = plan.sigma_rad * plan.sigma_rad;
+    const double vm = kInjectSigmaM * kInjectSigmaM;
+    const double vr = kInjectSigmaRad * kInjectSigmaRad;
     lc.cov.diagonal() << vm, vm, vm, vr, vr, vr;
     plan.injected.emplace_back(lc.i, lc.j);
     return lc;
@@ -635,14 +632,8 @@ InjectRun run_injected(const std::string& name,
                        std::vector<double> wrong_m,
                        bool pcm,
                        int drop_updates,
-                       double sigma_m = 0.05,
-                       double sigma_rad = 1.0 * kDeg,
-                       double wrong_yaw_rad = 0.0,
                        double lidar_var_scale = 1.0) {
   InjectPlan plan;
-  plan.wrong_yaw_rad = wrong_yaw_rad;
-  plan.sigma_m = sigma_m;
-  plan.sigma_rad = sigma_rad;
   plan.p.motion_s = 55.0;
   plan.lap_s = 2.0 * test::kLoopPi / plan.p.yaw_rate_radps;
   plan.at_s = std::move(at_s);
@@ -705,12 +696,9 @@ TEST(LoopComponent, PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne) {
   // shipped stiff chain it moved the result by millimetres, too little to see a removal.
   constexpr double kLoose = 100.0;
   constexpr double kWrongM = 0.8;
-  const InjectRun a =
-      run_injected("wrong_then_true", at, {kWrongM, 0.0, 0.0}, true, 0, 0.05, kDeg, 0.0, kLoose);
-  const InjectRun b =
-      run_injected("true_only", {at[1], at[2]}, {0.0, 0.0}, true, 0, 0.05, kDeg, 0.0, kLoose);
-  const InjectRun c =
-      run_injected("wrong_kept", {at[0]}, {kWrongM}, false, 0, 0.05, kDeg, 0.0, kLoose);
+  const InjectRun a = run_injected("wrong_then_true", at, {kWrongM, 0.0, 0.0}, true, 0, kLoose);
+  const InjectRun b = run_injected("true_only", {at[1], at[2]}, {0.0, 0.0}, true, 0, kLoose);
+  const InjectRun c = run_injected("wrong_kept", {at[0]}, {kWrongM}, false, 0, kLoose);
   ASSERT_FALSE(a.r.estimates.empty());
   ASSERT_FALSE(b.r.estimates.empty());
   ASSERT_FALSE(c.r.estimates.empty());
