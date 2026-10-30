@@ -446,6 +446,8 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   EXPECT_TRUE(
       parse_config(read_file(kDefault), overlay("    degeneracy:\n      eig_threshold: 0.0\n"))
           .is_ok());
+  // G15 flag off.
+  EXPECT_FALSE(cfg.value().gnss.align_yaw_sigma_frontend_cov);
   for (const char* v : {"0", "1"}) {
     const auto bad_slip = parse_config(
         read_file(kDefault),

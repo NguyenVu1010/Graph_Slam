@@ -38,3 +38,28 @@ Số đo: `docs/derivations/gnss_fusion_study.md` mục 17.
 - Mặc định của cờ và ngưỡng (dùng chung với thiết kế 2/2b) do chủ dự án quyết (backlog G13, 2026-10-29): cờ **bật mặc định** với ngưỡng 6°, cả trong `config/default.yaml` lẫn mặc định của struct `GnssConfig`. Đầu ra E-01..E-03 đổi, nên baseline đổi trong PR `baseline-update` riêng (`docs/baselines/2026-10-29/`). Đặt `gnss.align_check_yaw_sigma: false` để về hành vi cũ. Mục tiêu 10° ở factor đầu cần khoảng 4,5° trên E-01.
 - Hợp đồng (chỉ thêm): overload `GnssAligner::update(p_e_g, cov_e, T_w_b, p_b_g)`, `GnssAligner::yaw_sigma_rad()`, trường `GnssConfig::align_check_yaw_sigma` và khoá YAML `gnss.align_check_yaw_sigma`. Overload 3 đối số giữ nguyên; nó dùng sàn phương sai cho mọi fix.
 - Giới hạn: phía w coi là đúng, nên dọc trục mà LiDAR không quan sát, sigma lạc quan. Cờ không chặn được hai lần khởi đầu lệch của hành lang: seed 51 lệch 178,9° với sigma 3,36°, seed 52 lệch 131,8° với sigma 3,35°. Việc đó thuộc thiết kế 2. Nhiễu fix được giả thiết trắng và khai báo đúng.
+
+## Bổ sung: hiệp phương sai front-end trong sigma yaw (backlog G15, 2026-10-30)
+
+Trạng thái: đề xuất; mặc định của cờ: tắt cho tới khi bật thiết kế 2 (phán quyết của chủ dự án 2026-10-30, backlog G19).
+
+Bối cảnh. Giới hạn ghi ở trên: phía w được coi là đúng, nên dọc trục mà LiDAR không quan sát sigma lạc quan; hai seed lật của hành lang báo khoảng 3,4° trong khi lệch 132 đến 179°.
+
+Quyết định:
+
+5. **Cờ** `gnss.align_yaw_sigma_frontend_cov` (mặc định `false`, hành vi cũ, cả trong YAML lẫn struct). Khi bật, `GnssAligner` nhận hiệp phương sai tư thế front-end `P_w_b` (đúng cái mà cổng chi-square dùng; không hữu hạn thì coi bằng 0) qua overload `update(p_e_g, cov_e, T_w_b, p_b_g, P_w_b)`, và phương sai yaw cộng thêm `tổng s_i^2 / tổng |a_c,i|^2`, với `s_i^2` là trị riêng lớn của khối ngang của `J P_w_b J^T`, `J = [R_w_b, -R_w_b skew(p_b_g)]` (`gnss.md` mục 4.1).
+6. **Chặn cho mọi tương quan.** Sai số front-end dọc trục suy biến là dead reckoning: một sai số tương quan (front-end hành lang chạy lùi, hệ số tỷ lệ -1 dọc trục), không phải nhiễu độc lập. `Var(tổng u_i . e_i) <= (tổng |u_i| s_i)^2 <= tổng |u_i|^2 tổng s_i^2` đúng với mọi tương quan, nên số hạng không giảm theo số fix. Coi `s_i` độc lập như nhiễu fix thì nó bị trung bình hoá: với 1000 m^2 dọc một trục chạy lùi, bản đó căn chỉnh lệch 180° với sigma 6° sau 96 s (`GnssAligner.FrontEndCovCatchesADeadReckonedAxis`). `P_w_b` là tuyệt đối (gồm phần chung mà phép trừ trọng tâm loại bỏ), nên số hạng là cận trên.
+
+Phương án đã cân nhắc thêm:
+
+| Phương án | Điểm cộng | Vì sao không chọn |
+| --- | --- | --- |
+| Cộng `s_i^2` vào phương sai từng fix (độc lập) | Cùng dạng với nhiễu fix | Bị trung bình hoá theo số fix; sai số dead reckoning tương quan; căn chỉnh lệch 180° sau 96 s |
+| Mô hình bước ngẫu nhiên từ phần tăng của `P_w_b` | Đúng cho dead reckoning | `P_w_b` của pipeline là hiệp phương sai scan matching ở scan thường và marginal của backend ở keyframe; phần tăng giữa hai loại vô nghĩa |
+| Bật mặc định ngay | Sigma trung thực | Đổi đầu ra E-01..E-03 và hành lang không còn căn chỉnh bằng `GnssAligner`; quyết định của chủ dự án cùng PR baseline-update |
+
+Hệ quả (`gnss_fusion_study.md` mục 18.2):
+- Khi cờ tắt: đầu ra không đổi (md5 E-01..E-03 trùng main e946ee9).
+- Khi cờ bật: E-01 không đổi (`est.tum` trùng; sigma 5,968 -> 5,969°); E-03 căn chỉnh muộn hơn một fix (15,0 s, lệch 14,1° với sigma 5,94°), 215 factor thay vì 216, ATE 0,002163 m thay vì 0,002174 m; box world 15 seed không đổi trên mọi seed. Hành lang 15 seed (degeneracy 1000 m^2): front-end dọc trục mang phương sai không quan sát, nên sigma không bao giờ xuống dưới 6° và `GnssAligner` không căn chỉnh (0/15, ATE hợp nhất trung vị 24 m so với 2,0 m): seed 51 và 52 không còn báo 3,4° khi lệch 132 đến 179°, nhưng cũng không có GNSS nào vào graph. Ở đó cần bộ căn chỉnh theo vết (thiết kế 2).
+- Hợp đồng (chỉ thêm): overload `GnssAligner::update(p_e_g, cov_e, T_w_b, p_b_g, P_w_b)`, trường `GnssConfig::align_yaw_sigma_frontend_cov` và khoá YAML. `GnssFusion` (nội bộ pipeline) truyền `P_w_b` của mỗi fix.
+- Mặc định: tắt cho tới khi bật thiết kế 2 (chủ dự án quyết 2026-10-30, backlog G19); bật thì E-03 đổi và hành lang mất GNSS khi không dùng thiết kế 2.

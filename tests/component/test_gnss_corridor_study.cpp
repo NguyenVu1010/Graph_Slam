@@ -548,6 +548,9 @@ TEST(GnssCorridorStudy, Diagnosis) {
                       deg_on, "", "      align_check_yaw_sigma: true\n", false, "on"});
   variants.push_back({"prealign_wheel", "prealign + wheel odometry", deg_on, "", pre, false,
                       "on_wheel", false, true});
+  // Backlog G15: GnssAligner's yaw sigma with the front-end covariance (gnss.md section 4.1).
+  variants.push_back({"fecov", "ref + gnss.align_yaw_sigma_frontend_cov (G15)", deg_on, "",
+                      "      align_yaw_sigma_frontend_cov: true\n", false, "on"});
   variants.push_back({"trackyaw_wheel", "wheel + trackyaw (design-2 keys)", deg_on, "", d2 + sig("3.0"), false,
                       "on_wheel", false, true});
   variants.push_back({"prealign_trackyaw_wheel", "wheel + prealign + trackyaw (design-2 keys)",
@@ -962,6 +965,20 @@ TEST(GnssCorridorStudy, BoxWorldAlignCheckPairs) {
                   "      align_check_yaw_sigma: true\n",
                   "gnss_box_aligncheck.md",
                   "gnss-box-aligncheck");
+}
+
+// gnss.align_yaw_sigma_frontend_cov (backlog G15, gnss.md section 4.1): GnssAligner's yaw sigma
+// with the front-end covariance. Skipped unless MSS_GNSS_BOX_FECOV=1 (GTSAM build). Writes
+// results/<MSS_GNSS_CORRIDOR_RUN_ID or "gnss-box-fecov">/gnss_box_fecov.md.
+TEST(GnssCorridorStudy, BoxWorldFrontEndCovPairs) {
+  const char* on = std::getenv("MSS_GNSS_BOX_FECOV");
+  if (on == nullptr || std::string(on) != "1" || !kWithGtsam) {
+    GTEST_SKIP() << "set MSS_GNSS_BOX_FECOV=1 (GTSAM build)";
+  }
+  box_world_pairs("gnss.align_yaw_sigma_frontend_cov",
+                  "      align_yaw_sigma_frontend_cov: true\n",
+                  "gnss_box_fecov.md",
+                  "gnss-box-fecov");
 }
 
 // Section 16 (design 2b): the first alignment of a replay (time, predicted yaw sigma, aligner

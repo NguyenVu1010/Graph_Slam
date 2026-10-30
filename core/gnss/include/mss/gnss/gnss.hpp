@@ -147,10 +147,26 @@ class GnssAligner {
                                       const common::Pose& T_w_b,
                                       const common::Vec3& p_b_g);
 
+  /// As update() above, with the front-end pose covariance `P_w_b` (6x6, [rho, phi] right
+  /// perturbation of T_w_b, m^2 / rad^2). With GnssConfig::align_yaw_sigma_frontend_cov (backlog
+  /// G15, gnss.md section 4.1) the yaw variance also counts the front-end antenna position error:
+  /// s_i^2, the larger eigenvalue of the horizontal 2x2 block of J P_w_b J^T with
+  /// J = [R_w_b, -R_w_b skew(p_b_g)], enters as sum s_i^2 / sum |a_c,i|^2, the bound for errors
+  /// of any correlation (dead reckoning is correlated); a non-finite `P_w_b` counts as zero (as the
+  /// chi-square gate). Without the flag it equals the 4-argument update(). Errors, hot path: as
+  /// above. Tests: GnssAligner.FrontEndCov*.
+  common::Result<common::Pose> update(const common::Vec3& p_e_g,
+                                      const common::Mat3& cov_e,
+                                      const common::Pose& T_w_b,
+                                      const common::Vec3& p_b_g,
+                                      const common::PoseCovariance& P_w_b);
+
   /// Predicted yaw 1-sigma (rad) of the fit at the last update() that passed checks 2 and 3:
   /// sqrt(sum_i var_i |a_c,i|^2) / sum_i |a_c,i|^2, with a_c,i the centred horizontal w-side
-  /// antenna positions and var_i the per-fix variance above. The w side (front end) is taken
-  /// as exact, so along a LiDAR-degenerate axis it is optimistic (ADR-023). NaN before that.
+  /// antenna positions and var_i the per-fix variance above (plus sum s_i^2 / sum |a_c,i|^2 under
+  /// the variance with the front-end covariance, see the 5-argument update()). Without
+  /// GnssConfig::align_yaw_sigma_frontend_cov the w side (front end) is taken as exact, so along a
+  /// LiDAR-degenerate axis it is optimistic (ADR-023). NaN before that.
   [[nodiscard]] double yaw_sigma_rad() const { return yaw_sigma_rad_; }
 
  private:
@@ -167,12 +183,14 @@ class GnssAligner {
   double sum_w_h_sq_m2_ = 0.0;                        // m^2, sum |a_h|^2
   double sum_e_h_sq_m2_ = 0.0;                        // m^2, sum |b_h|^2
   // Yaw sigma (G1): per-fix horizontal variance var_i (m^2) weighted sums of the w side.
-  bool check_yaw_sigma_ = false;                         // GnssConfig::align_check_yaw_sigma
-  double max_yaw_sigma_rad_ = 0.0;                       // rad, GnssConfig::align_yaw_max_sigma_rad
-  double min_var_m2_ = 0.0;                              // m^2, GnssConfig::align_yaw_min_var_m2
-  double sum_var_m2_ = 0.0;                              // m^2, sum var_i
-  Eigen::Vector2d sum_var_w_ = Eigen::Vector2d::Zero();  // m^3, sum var_i a_h
-  double sum_var_w_sq_m4_ = 0.0;                         // m^4, sum var_i |a_h|^2
+  bool check_yaw_sigma_ = false;    // GnssConfig::align_check_yaw_sigma
+  bool frontend_cov_ = false;       // GnssConfig::align_yaw_sigma_frontend_cov
+  double sum_front_var_m2_ = 0.0;   // m^2, sum of the front-end variances s_i^2 (G15)
+  double max_yaw_sigma_rad_ = 0.0;  // rad, GnssConfig::align_yaw_max_sigma_rad
+  double min_var_m2_ = 0.0;         // m^2, GnssConfig::align_yaw_min_var_m2
+  double sum_var_m2_ = 0.0;         // m^2, sum var_i
+  Eigen::Vector2d sum_var_w_ = Eigen::Vector2d::Zero();              // m^3, sum var_i a_h
+  double sum_var_w_sq_m4_ = 0.0;                                     // m^4, sum var_i |a_h|^2
   double yaw_sigma_rad_ = std::numeric_limits<double>::quiet_NaN();  // rad
 };
 

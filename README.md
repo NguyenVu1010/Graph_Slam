@@ -271,6 +271,8 @@ direction of the GNSS track against the body heading instead of fitting front-en
 - Hardening of design 2b (`docs/derivations/gnss.md` section 5.3):
   `Stats::n_gnss_frontend_wheel_disagree` counts the segments where the front end held the
   robot still while the wheels moved.
+- `gnss.align_yaw_sigma_frontend_cov` (off): `GnssAligner`'s yaw sigma also counts the
+  front-end position covariance (`docs/derivations/gnss.md` section 4.1).
 `gnss.enabled` is off in `config/default.yaml` until multipath and outage are evaluated; the
 sim scenarios turn it on by overlay. `backend.gnss_frame_variable` (ADR-019, default on)
 estimates `T_e_w` as one graph variable shared by all GNSS factors, with a prior from
