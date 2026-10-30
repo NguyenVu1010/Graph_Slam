@@ -68,6 +68,19 @@ common::PoseCovariance Graph::marginal_cov(common::KeyId /*k*/) const {
   return common::PoseCovariance::Constant(std::numeric_limits<double>::quiet_NaN());
 }
 
+bool Graph::remove_loop_factor(common::KeyId /*i*/, common::KeyId /*j*/) {
+  return false;
+}
+
+bool Graph::has_loop_factor(common::KeyId /*i*/, common::KeyId /*j*/) const {
+  return false;
+}
+
+common::Result<common::PoseCovariance> Graph::relative_pose_cov(common::KeyId /*i*/,
+                                                                common::KeyId /*j*/) const {
+  return common::Result<common::PoseCovariance>::error("built without GTSAM");
+}
+
 common::Result<common::NavState> Graph::keyframe_state(common::KeyId /*k*/) const {
   return common::Result<common::NavState>::error("built without GTSAM");
 }
