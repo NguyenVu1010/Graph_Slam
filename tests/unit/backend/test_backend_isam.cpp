@@ -117,6 +117,29 @@ TEST(BackendIsam, B03_OutlierLoopDragsLessThanTenCm) {
   EXPECT_LT(drag, kDragLimitM);
 }
 
+// B-03 with ADR-028: the outlier loop is removed after it was committed (remove_loop_factor,
+// as a loop selector does when it finds the loop inconsistent), then the pipeline's 3 updates:
+// the graph returns to the one without the outlier, so no drag is left (tolerance 1e-6 m).
+TEST(BackendIsam, B03_OutlierLoopRemovedLeavesNoDrag) {
+  const test::Scenario s = test::square_loop(true, 42);
+  Graph g1(default_backend_config(), default_imu_config(), Vec3::Zero());
+  run_square(g1, s, Outlier::kNone, nullptr);
+  Graph g2(default_backend_config(), default_imu_config(), Vec3::Zero());
+  run_square(g2, s, Outlier::kLoop, nullptr);
+  const double before = max_position_drag(g1, g2);
+  ASSERT_TRUE(g2.remove_loop_factor(1, 3));
+  for (int n = 0; n < 3; ++n) {  // as the pipeline: 1 + isam_extra_updates
+    ASSERT_TRUE(g2.optimize().is_ok());
+  }
+  const double after = max_position_drag(g1, g2);
+  RecordProperty("drag_before_m", std::to_string(before));
+  RecordProperty("drag_after_m", std::to_string(after));
+  EXPECT_GT(before, 1e-4);  // the kernel leaves a small drag (B03_OutlierLoopDragsLessThanTenCm)
+  EXPECT_LT(after, 1e-6);
+  EXPECT_FALSE(g2.remove_loop_factor(1, 3));  // already removed
+  EXPECT_TRUE(g2.remove_loop_factor(0, 4));   // the true loop is still there
+}
+
 TEST(BackendIsam, B03_ControlNonRobustOutlierDragsMoreThanTenCm) {
   const test::Scenario s = test::square_loop(true, 42);
   Graph g1(default_backend_config(), default_imu_config(), Vec3::Zero());

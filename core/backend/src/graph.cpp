@@ -23,6 +23,7 @@
 #include <Eigen/Cholesky>
 #include <Eigen/Eigenvalues>
 #include <gtsam/inference/Symbol.h>
+#include <gtsam/linear/GaussianFactorGraph.h>
 #include <gtsam/linear/JacobianFactor.h>
 #include <gtsam/linear/LossFunctions.h>
 #include <gtsam/linear/NoiseModel.h>
@@ -37,6 +38,7 @@
 #include <tbb/global_control.h>
 #endif
 
+#include "mss/common/lie.hpp"
 #include "mss/common/logger.hpp"
 
 #include "constants.hpp"
@@ -210,6 +212,16 @@ struct Graph::Impl {
   // the consistency check (static_gravity_chi2 / remove_static_gravity_factor).
   gtsam::NonlinearFactor::shared_ptr gravity_factor;
   std::optional<gtsam::FactorIndex> gravity_index;
+  // Loop factors added by add_loop_factor (pending or committed), for remove_loop_factor.
+  struct LoopFactor {
+    KeyId i = 0;
+    KeyId j = 0;
+    gtsam::NonlinearFactor::shared_ptr factor;
+  };
+  std::vector<LoopFactor> loop_factors;
+  // iSAM2 slots of committed loop factors removed since the last update (remove_loop_factor),
+  // passed as removeFactorIndices to the next one; invalid after a rebuild (cleared there).
+  gtsam::FactorIndices pending_removals;
 
   // Records the iSAM2 slot of the gravity factor when `added` (given to update() as `r`)
   // holds it.
@@ -314,6 +326,7 @@ struct Graph::Impl {
   // committed factor is queued again (as pending priors) for the next optimize().
   void rebuild() {
     isam = std::make_unique<gtsam::ISAM2>(params);
+    pending_removals.clear();  // slots of the old instance; committed_factors no longer hold them
     if (committed_factors.empty()) {
       return;
     }
@@ -810,8 +823,75 @@ void Graph::add_loop_factor(const common::LoopConstraint& lc) {
   const gtsam::SharedNoiseModel noise = gtsam::noiseModel::Robust::Create(
       gtsam::noiseModel::mEstimator::Cauchy::Create(kLoopCauchyK),
       gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(symmetrised<6>(lc.cov))));
-  m.pending_factors.push_back(relative_pose_factor(
-      m.cfg.relative_factor, detail::pose_key(lc.i), detail::pose_key(lc.j), lc.T_bi_bj, noise));
+  const gtsam::NonlinearFactor::shared_ptr f = relative_pose_factor(
+      m.cfg.relative_factor, detail::pose_key(lc.i), detail::pose_key(lc.j), lc.T_bi_bj, noise);
+  m.pending_factors.push_back(f);
+  m.loop_factors.push_back(Impl::LoopFactor{lc.i, lc.j, f});
+}
+
+// ADR-028: a committed loop factor is found by pointer among the iSAM2 factors (rare call,
+// O(number of factors)) and its slot is queued for the next update (removeFactorIndices), so
+// the removal costs no update of its own; it leaves committed_factors at once, so a rebuild
+// never brings it back.
+bool Graph::remove_loop_factor(common::KeyId i, common::KeyId j) {
+  Impl& m = *impl_;
+  std::size_t e = m.loop_factors.size();
+  for (std::size_t k = m.loop_factors.size(); k > 0; --k) {
+    if (m.loop_factors[k - 1].i == i && m.loop_factors[k - 1].j == j) {
+      e = k - 1;
+      break;
+    }
+  }
+  if (e == m.loop_factors.size()) {
+    return false;
+  }
+  const gtsam::NonlinearFactor::shared_ptr f = m.loop_factors[e].factor;
+  m.loop_factors.erase(m.loop_factors.begin() + static_cast<std::ptrdiff_t>(e));
+  const auto holds = [&f](const gtsam::NonlinearFactorGraph& g) {
+    for (const auto& x : g) {
+      if (x == f) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const auto without = [&f](const gtsam::NonlinearFactorGraph& g) {
+    gtsam::NonlinearFactorGraph out;
+    for (const auto& x : g) {
+      if (x != f) {
+        out.push_back(x);
+      }
+    }
+    return out;
+  };
+  // Pending: since the last optimize(), or re-queued with the priors by a failed rebuild.
+  if (holds(m.pending_factors)) {
+    m.pending_factors = without(m.pending_factors);
+    return true;
+  }
+  if (holds(m.pending_priors)) {
+    m.pending_priors = without(m.pending_priors);
+    return true;
+  }
+  const gtsam::NonlinearFactorGraph& held = m.isam->getFactorsUnsafe();
+  for (std::size_t k = 0; k < held.size(); ++k) {
+    if (held[k] == f) {
+      m.pending_removals.push_back(k);
+      m.committed_factors = without(m.committed_factors);
+      return true;
+    }
+  }
+  return false;  // dropped with a failed optimize()
+}
+
+bool Graph::has_loop_factor(common::KeyId i, common::KeyId j) const {
+  const Impl& m = *impl_;
+  for (const Impl::LoopFactor& l : m.loop_factors) {
+    if (l.i == i && l.j == j) {
+      return true;
+    }
+  }
+  return false;
 }
 
 common::Result<common::Estimate> Graph::optimize() {
@@ -834,7 +914,7 @@ common::Result<common::Estimate> Graph::optimize() {
   gtsam::Values estimate;
   if (!graph.empty() || !held.empty()) {
     try {
-      const gtsam::ISAM2Result r = m.isam->update(graph, new_values);
+      const gtsam::ISAM2Result r = m.isam->update(graph, new_values, m.pending_removals);
       m.note_gravity_index(graph, r);
       estimate = m.isam->calculateEstimate();
       if (!values_finite(estimate)) {
@@ -845,6 +925,15 @@ common::Result<common::Estimate> Graph::optimize() {
     }
   }
   if (!failure.empty()) {
+    // Loop factors dropped with the pending set are no longer in the graph.
+    for (std::size_t k = m.loop_factors.size(); k > 0; --k) {
+      for (const auto& x : m.pending_factors) {
+        if (x == m.loop_factors[k - 1].factor) {
+          m.loop_factors.erase(m.loop_factors.begin() + static_cast<std::ptrdiff_t>(k - 1));
+          break;
+        }
+      }
+    }
     m.pending_factors = gtsam::NonlinearFactorGraph();
     m.imu_end_pending.clear();
     m.imu_start_pending.clear();
@@ -859,6 +948,7 @@ common::Result<common::Estimate> Graph::optimize() {
   }
 
   m.committed_factors.push_back(graph);
+  m.pending_removals.clear();
   m.pending_priors = gtsam::NonlinearFactorGraph();
   m.pending_factors = gtsam::NonlinearFactorGraph();
   for (const KeyId e : m.imu_end_pending) {
@@ -899,6 +989,57 @@ common::PoseCovariance Graph::marginal_cov(common::KeyId k) const {
     common::log_warn(std::string("backend: marginal_cov failed: ") + e.what());
     return nan;
   }
+}
+
+// Joint marginal of (X_i, X_j) from the iSAM2 Bayes tree (BayesTree::joint: shortcuts to the
+// lowest common ancestor clique, then a dense 12x12 information matrix), inverted, each 6x6
+// block permuted to [rho, phi], then mapped to the relative pose (loop_closure.md section 9).
+common::Result<common::PoseCovariance> Graph::relative_pose_cov(common::KeyId i,
+                                                                common::KeyId j) const {
+  using R = common::Result<common::PoseCovariance>;
+  const Impl& m = *impl_;
+  if (!m.known(i) || !m.known(j)) {
+    return R::error("unknown keyframe");
+  }
+  if (i == j) {
+    return R::error("i == j");
+  }
+  const gtsam::Key x_i = detail::pose_key(i);
+  const gtsam::Key x_j = detail::pose_key(j);
+  if (!m.last_estimate.exists(x_i) || !m.last_estimate.exists(x_j)) {
+    return R::error("keyframe not optimised");
+  }
+  Eigen::Matrix<double, 12, 12> P_g;
+  try {
+    const gtsam::GaussianFactorGraph::shared_ptr joint = m.isam->joint(x_i, x_j);
+    const gtsam::Ordering order{x_i, x_j};
+    const Eigen::MatrixXd info = joint->hessian(order).first;
+    if (info.rows() != 12 || info.cols() != 12) {
+      return R::error("relative marginal failed: joint is not 12x12");
+    }
+    const Eigen::Matrix<double, 12, 12> info12 = info;
+    const Eigen::Matrix<double, 12, 12> info_sym = 0.5 * (info12 + info12.transpose());
+    const Eigen::LLT<Eigen::Matrix<double, 12, 12>> llt(info_sym);
+    if (llt.info() != Eigen::Success) {
+      return R::error("relative marginal failed: joint information not positive definite");
+    }
+    P_g = llt.solve(Eigen::Matrix<double, 12, 12>::Identity());
+  } catch (const std::exception& e) {
+    return R::error(std::string("relative marginal failed: ") + e.what());
+  }
+  const Mat6 P_ii = detail::permute_cov(Mat6(P_g.topLeftCorner<6, 6>()));
+  const Mat6 P_jj = detail::permute_cov(Mat6(P_g.bottomRightCorner<6, 6>()));
+  const Mat6 P_ij = detail::permute_cov(Mat6(P_g.topRightCorner<6, 6>()));
+  const common::Pose T_w_bi = detail::from_gtsam(m.last_estimate.at<gtsam::Pose3>(x_i));
+  const common::Pose T_w_bj = detail::from_gtsam(m.last_estimate.at<gtsam::Pose3>(x_j));
+  const Mat6 Ad = common::se3_adj(T_w_bj.inverse() * T_w_bi);  // Ad(T_bj_bi)
+  const Mat6 cov =
+      Ad * P_ii * Ad.transpose() - Ad * P_ij - P_ij.transpose() * Ad.transpose() + P_jj;
+  const Mat6 sym = 0.5 * (cov + cov.transpose());
+  if (!is_spd<6>(sym)) {
+    return R::error("relative marginal failed: result not positive definite");
+  }
+  return R::ok(sym);
 }
 
 common::Result<common::NavState> Graph::keyframe_state(common::KeyId k) const {
