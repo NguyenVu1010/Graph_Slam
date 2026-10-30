@@ -503,3 +503,25 @@ and re-syncs the front end as after a new loop (section 5).
   (x0.25). With the drift term every true loop stays (`ThreeLapTrueLoopsAllStaySelected`,
   `LoopComponent.TwoLapOverconfidentPcmNoWorseThanWithoutAcrossSeeds`).
 
+## 12. Results with the shipped configuration (PCM on, graph gate off)
+
+| test | before ADR-028 (graph gate on) | after |
+| --- | --- | --- |
+| two-lap drift, claimed sigma x1 | 1.207 -> 0.082 m, 4 loops | 1.207 -> 0.082 m, 4 loops |
+| two-lap drift, seeds 42 / 1 / 7 / 2024, claimed sigma x1 | as without PCM | the same loops as without PCM, end-to-start equal (0.082 / 0.125 / 1.199 / 0.454 m), none removed |
+| two-lap drift, claimed sigma x0.5 (review I-1) | 1.207 m, 0 loops, 43 gated | 0.548 m, 4 loops (seed 42; seed 7 rejects one true loop: B-1, held) |
+| two-lap drift, claimed sigma x0.25 | 1.207 m, 0 loops | 1.123 m, 3 loops (the 4th is not verified, as without any gate) |
+| known loops + 3 aliased, one before any true loop | n/a | aliased one removed, others never selected, end-to-start 0.055 m (0.051 m without them; Cauchy only 0.077 m) |
+| whole estimator, injected wrong loop then two true ones | n/a | wrong loop removed, first true one re-added, run ends as with the true loops only (`PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne`) |
+| aliasing probe, P = 2 / 2.5 m, drift 0 to 2.5 m | false loops at large drift on the loose chain (drag 0.34 to 0.64 m) | every case ambiguous, nothing added (drag 0); the graph's covariance is not used, so chain stiffness plays no part |
+| B-03 outlier loop | Cauchy: drag < 0.1 m | removed: drag < 1e-6 m (backend); PCM removes it once two true loops agree |
+
+Whole estimator (desktop WSL, median of 5 interleaved runs, loops on; ADR-026 amendment for the
+table): E-01 and E-07 (re-recorded after #41) give the same `est.tum` as before ADR-028 (PCM
+selects every loop: 6 and 16, none removed, no false loop). With the latency bounds of section 10
+the ambiguity check costs nothing measurable: max per scan on the loop keyframes 44.8 ms against
+43.3 ms with the check off (E-01) and 66.5 against 73.8 ms (E-07); before the bounds it was 73 and
+106 ms. Loops-on max against loops-off max: 1.37 x (E-01) and 1.29 x (E-07), as at e946ee9 (1.37,
+1.37): the rest is the loop's own cost (map rebuild, iSAM2 updates; C1-15). PCM itself costs 0.08
+to 0.12 ms per proposed loop (at most 0.28 ms with 64 loops held, 61 to 1000 keyframes), the
+odometry prefix update 0.2 to 0.3 us per keyframe.

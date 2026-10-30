@@ -119,6 +119,7 @@ EstimatorCore::EstimatorCore(const Config& cfg)
             cfg.map,
             cfg.frames.T_b_l,
             cfg.realtime.max_points_per_scan),
+      selector_(cfg.loop_closure, cfg.map.max_keyframes),
       init_window_(std::make_unique<std::array<common::ImuSample, kMaxImuQueue>>()),
       traj_(std::make_unique<imu::ImuTrajectory>()),
       gnss_out_(std::make_unique<std::array<common::GnssMeasurement, kMaxAuxQueue>>()),
@@ -685,6 +686,10 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   if (observer() != nullptr) {
     observer()->on_lidar_factor(last_kf_t_, t, T_bi_bj, cov_f);
   }
+  if (cfg_.loop_closure.enabled && cfg_.loop_closure.pcm_enabled &&
+      !selector_.add_odometry(j, T_bi_bj, cov_f)) {
+    common::log_warn("loop selector: odometry chain not extended (keyframe out of order)");
+  }
   if (cfg_.degeneracy.enabled) {
     const common::DegeneracyReport report_l = degeneracy::analyze(match.H, cfg_.degeneracy);
     const common::DegeneracyReport report_b = degeneracy_in_body(report_l, T_b_l_);
@@ -813,16 +818,74 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
     counters_.n_loops_rejected += r.n_verified > 0 ? 1U : 0U;
     return false;
   }
-  graph_.add_loop_factor(r.constraint);
-  common::Result<common::Estimate> opt = graph_.optimize();
+  // ADR-028: PCM decides which verified loops are in the graph; it may also take out loops
+  // committed earlier that the new one contradicts, or bring back loops it had left out.
+  const auto keyframe_t = [this](common::KeyId id) {
+    for (const loop::KeyframeView& v : loop_views_) {
+      if (v.id == id) {
+        return v.t;
+      }
+    }
+    return common::Timestamp{};
+  };
+  bool selected = true;
+  bool pcm_changed = false;
+  if (cfg_.loop_closure.pcm_enabled) {
+    const loop::LoopSelector::Decision d = selector_.propose(r.constraint);
+    selected = d.selected;
+    for (const auto& ij : selector_.to_remove()) {
+      char buf[160];
+      if (graph_.remove_loop_factor(ij.first, ij.second)) {
+        ++counters_.n_loops_removed;
+        std::snprintf(buf,
+                      sizeof(buf),
+                      "loop closure removed: j %llu i %llu (inconsistent with the selected loops)",
+                      static_cast<unsigned long long>(ij.second),
+                      static_cast<unsigned long long>(ij.first));
+        common::log_info(buf);
+      } else {
+        std::snprintf(buf,
+                      sizeof(buf),
+                      "loop closure: unselected loop j %llu i %llu was not in the graph (dropped "
+                      "with a failed update)",
+                      static_cast<unsigned long long>(ij.second),
+                      static_cast<unsigned long long>(ij.first));
+        common::log_info(buf);
+      }
+    }
+    for (const common::LoopConstraint& lc : selector_.to_add()) {
+      graph_.add_loop_factor(lc);
+    }
+    if (!selected) {
+      ++counters_.n_loops_pcm_rejected;
+    }
+    pcm_changed = !selector_.to_add().empty() || !selector_.to_remove().empty();
+    if (!pcm_changed) {
+      return false;  // nothing changed in the graph
+    }
+  } else {
+    graph_.add_loop_factor(r.constraint);
+  }
+  common::Result<common::Estimate> opt =
+      (hooks_ != nullptr && hooks_->drop_loop_updates > 0)  // test-only seam
+          ? drop_pending_loops_for_test()
+          : graph_.optimize();
   if (!opt.is_ok()) {
-    log_backend_failure(opt.reason());  // the pending loop factor was dropped with the update
+    log_backend_failure(opt.reason());  // the pending loop factors were dropped with the update
+    if (cfg_.loop_closure.pcm_enabled) {
+      // Review H3 m-1: the selector forgets the loops that did not make it into the graph.
+      for (const common::LoopConstraint& lc : selector_.to_add()) {
+        if (!graph_.has_loop_factor(lc.i, lc.j)) {
+          (void)selector_.forget(lc.i, lc.j);
+        }
+      }
+    }
     return false;
   }
-  // The loop factor is committed from here on: whatever the extra updates do, the loop counts,
-  // the front end re-syncs and the next keyframes skip the search (no duplicate loop). A
-  // failed extra update leaves the graph at the estimate of the last good update (graph.hpp),
-  // which `opt` holds.
+  // The loop factors are committed from here on: whatever the extra updates do, the loops
+  // count, the front end re-syncs and the next keyframes skip the search (no duplicate loop).
+  // A failed extra update leaves the graph at the estimate of the last good update
+  // (graph.hpp), which `opt` holds.
   for (int k = 0; k < cfg_.loop_closure.isam_extra_updates; ++k) {
     const common::Result<common::Estimate> more =
         (hooks_ != nullptr && hooks_->fail_loop_extra_updates)  // test-only seam
@@ -834,25 +897,33 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
     }
     opt = more;
   }
-  ++counters_.n_loops_accepted;
-  {
-    // One line per accepted loop (off the hot path), parsed by the E-07 evaluation: the two
-    // keyframes with their times and the measured T_bi_bj (translation in b_i, yaw).
-    const common::Pose& Z = r.constraint.T_bi_bj;
+  // One line and one count per loop factor that entered the graph (review H3 m-4: with PCM a
+  // loop may enter later than its detection), parsed by the E-07 evaluation: the two
+  // keyframes with their times and the measured T_bi_bj (translation in b_i, yaw).
+  const auto log_entered = [&](const common::LoopConstraint& lc) {
+    ++counters_.n_loops_accepted;
+    const common::Pose& Z = lc.T_bi_bj;
     char buf[256];
     std::snprintf(buf,
                   sizeof(buf),
                   "loop closure accepted: j %llu t_ns %lld i %llu t_ns %lld dp_m %.4f %.4f %.4f "
                   "dyaw_rad %.5f",
-                  static_cast<unsigned long long>(r.constraint.j),
-                  static_cast<long long>(t.ns),
-                  static_cast<unsigned long long>(r.constraint.i),
-                  static_cast<long long>(r.candidate_t.ns),
+                  static_cast<unsigned long long>(lc.j),
+                  static_cast<long long>(keyframe_t(lc.j).ns),
+                  static_cast<unsigned long long>(lc.i),
+                  static_cast<long long>(keyframe_t(lc.i).ns),
                   Z.p.x(),
                   Z.p.y(),
                   Z.p.z(),
                   std::atan2(Z.R(1, 0), Z.R(0, 0)));
     common::log_info(buf);
+  };
+  if (cfg_.loop_closure.pcm_enabled) {
+    for (const common::LoopConstraint& lc : selector_.to_add()) {
+      log_entered(lc);
+    }
+  } else {
+    log_entered(r.constraint);
   }
   if (hooks_ == nullptr || !hooks_->frontend_keeps_own_state) {  // test-only seam
     front_ = opt.value().state;
@@ -865,8 +936,18 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
   if (early_out_ != nullptr) {
     fusion_.set_keyframe_reference(j, t, ref_);  // ADR-022: target of backward shifts
   }
-  loop_skip_ = cfg_.loop_closure.min_interval_keyframes;
+  loop_skip_ = selected ? cfg_.loop_closure.min_interval_keyframes : 0;
   return true;
+}
+
+// Test-only (CoreTestHooks::drop_loop_updates): an update that fails and drops the pending loop
+// factors, as a failed optimize() does (graph.hpp).
+common::Result<common::Estimate> EstimatorCore::drop_pending_loops_for_test() {
+  --hooks_->drop_loop_updates;
+  for (const common::LoopConstraint& lc : selector_.to_add()) {
+    (void)graph_.remove_loop_factor(lc.i, lc.j);
+  }
+  return common::Result<common::Estimate>::error("test: injected loop update failure");
 }
 
 void EstimatorCore::check_gravity_factor(common::KeyId j) {
