@@ -330,3 +330,98 @@ prunes nothing, and the 4 ICP runs doubled the loop keyframe's scan time on E-01
 Measured on the synthetic scenes (dense clouds, 40k to 60k points): 25 to 40 ms per full ICP;
 with the whole estimator see section 12.
 
+## 11. Loop selection by pairwise consistency (PCM, ADR-028)
+
+Mangelson, Dominic, Eustice and Vasudevan (2018): a set of loops is trustworthy when its loops
+agree with each other; the largest set of pairwise consistent loops is selected (maximum clique).
+This needs no trust in the graph's absolute covariance: the drift accumulated between the two
+passes is common to both loops of a pair and cancels in their cycle.
+
+**Odometry chain** (`loop::LoopSelector`, no GTSAM). The pipeline gives each keyframe's LiDAR
+factor measurement `Z_k = T_{k-1,k}` with its covariance `C_k` (`[rho, phi]`, frame `b_k`),
+exactly what entered the graph. Prefix sums: `T_0k = T_0,k-1 Z_k` and, in the left tangent at
+the origin, `S_k = S_{k-1} + Ad(T_0k) (s^2 C_k) Ad(T_0k)^T` with `s` = `pcm_odometry_sigma_scale`.
+With `T_0a` fixed and right perturbations `d_m` on the increments `m = a+1..b`,
+
+    T_0a prod_m (Z_m Exp(d_m)) ~ Exp(sum_m Ad(T_0m) d_m) T_0b
+
+so the left-tangent covariance of `T_0b` given `T_0a` is `S_b - S_a`, and the right
+perturbation of `T_ab = T_0a^-1 T_0b` follows from `T_0a^-1 Exp(eta) T_0b = T_ab Exp(Ad(T_0b^-1) eta)`:
+
+    O(a -> b):  T_ab = T_0a^-1 T_0b,   C_ab = Ad(T_0b^-1) (S_b - S_a) Ad(T_0b^-1)^T
+
+O(1) per query (`OdometryPrefixSumsMatchDirectCompounding`: equal to compounding the increments
+one by one, `C <- Ad(Z^-1) C Ad(Z^-1)^T + C_m`, to 1e-9). `O(b -> a)` is the inverse,
+`(A, C)^-1 = (A^-1, Ad(A) C Ad(A)^T)`. The graph's marginal is not used: it already holds the
+loops being judged.
+
+**Pairwise test.** Loops `a = (i_a, j_a, Z_a, C_a)` and `b`. Around the cycle
+`b_ja -> b_ia -> b_ib -> b_jb -> b_ja`:
+
+    X = Z_a^-1 * O(i_a -> i_b) * Z_b * O(j_b -> j_a),     e = Log(X)
+
+with right-perturbation composition `(A, Ca)(B, Cb) = (A B, Ad(B^-1) Ca Ad(B^-1)^T + Cb)` of the
+four pieces taken independent (the two odometry segments overlap only when the loops overlap in
+time; ignored). Consistent when `e^T Sigma_X^-1 e <= pcm_chi2_gate` (22.46).
+
+**Scale of the odometry covariance.** `s = pcm_odometry_sigma_scale` (2.0) inflates the odometry
+covariance in the test only (the graph is unchanged): the front end may claim sigmas up to `s`
+times too small. Two-lap test, pairs of true loops (seed 42, chi2 with `s = 1`):
+
+| claimed sigma | pairs one lap apart | pairs with the two-lap loop (0, 150) |
+| --- | --- | --- |
+| x1 | 0.2 to 1.2 | 17.7 to 19.6 |
+| x0.5 | 0.3 to 3.4 | 33.6 to 41.3 |
+| x0.25 | 0.3 to 6.5 | 51.8 to 79.4 |
+
+The pair with `(0, 150)` has segments of 0 and 78 keyframes, so the lap's yaw bias (0.1 deg per
+step, 7.8 deg) is not common to both and does not cancel. With `s = 2` the x0.5 claim behaves like
+x1 and every true loop is consistent. Aliased loops one period (2 m) off stay inconsistent with the
+true loops near them (segments of 7 to 13 keyframes); against a true loop 30 or more keyframes
+away the inflated covariance can hide 2 m (`PairTestIgnoresCommonDriftAndCatchesAliasing`). The
+maximum clique still drops them. Two loops aliased by the same world shift are consistent with
+each other: aliasing that is consistent along a whole aisle is not PCM's to catch, and is left to
+the ambiguity check (section 10).
+
+**Selection.** Up to `pcm_max_loops` (64) loops, one bit each: consistency bitsets, maximum
+clique by Bron-Kerbosch with pivoting (bounded by `pcm_max_clique_steps`). Ties keep the most
+currently selected loops (no flip-flop on equal evidence), then the oldest. The difference with
+the previous selection gives the loops to add to the graph (oldest first; a loop that left and
+comes back is added again) and to remove (`Graph::remove_loop_factor`, one iSAM2 update,
+`backend_factors.md` section 8c). The pipeline then runs the extra updates, rebuilds the map
+and re-syncs the front end as after a new loop (section 5).
+
+- **First loop and few loops.** The first loop forms a clique of one and is added at once (as
+  before ADR-028, with Cauchy around it). A second loop inconsistent with it ties and is not
+  selected; a third that agrees with one of them decides
+  (`LargestConsistentSetWinsAndRemovesLaterInconsistentLoops`,
+  `B03_OutlierLoopRemovedWhenTwoTrueLoopsAgree`). Two inconsistent loops and no third: the
+  earlier one stays.
+- **Full.** When `pcm_max_loops` are held the oldest leaves PCM: frozen in the graph if it is
+  selected (no longer reconsidered), dropped otherwise (`OldestLoopLeavesWhenFull`).
+- **Truncated search.** The Bron-Kerbosch search starts from the current selection (still a
+  clique: adjacency among held loops never changes, an evicted slot is cleared from it), so a
+  search cut short by `pcm_max_clique_steps` never makes the selection worse
+  (`TruncatedCliqueSearchNeverMakesTheSelectionWorse`).
+- **Re-sync after a failure.** A failed `optimize()` right after PCM changed the graph drops the
+  pending loop factors; the pipeline asks `Graph::has_loop_factor` for each loop it just added and
+  calls `LoopSelector::forget` for the lost ones, so the selector never counts a loop that is not
+  in the graph (`ForgetDropsAHeldLoopSilently`, `LoopComponent.PipelinePcmForgetsALoopDroppedByAFailedUpdate`).
+  A removal cannot fail any more: it is queued into the next update and survives a failed one
+  (`backend_factors.md` section 8c).
+- **Accounting.** Each loop factor that enters the graph is logged and counted
+  (`n_loops_accepted`), including a loop that enters after its detection or comes back; each
+  removal is logged and counted (`n_loops_removed`).
+- **Cost.** Per proposed loop: up to 64 pairwise tests (four 6x6 compositions and an LDLT each)
+  and one maximum clique on at most 64 vertices; no allocation (`ProposeDoesNotAllocate`). Per
+  keyframe: one prefix update (one 6x6 adjoint product). A removal costs no update of its own: it
+  rides in the next `optimize()`, only when PCM changes its mind.
+- **Long cycles (review H3, B-1; held for the owner).** The pair test still trusts the odometry
+  covariance (times `pcm_odometry_sigma_scale`). When a cycle holds a long stretch of odometry
+  that does not cancel (a loop `(i, i+N)` against a loop `(i, i+2N)`: a whole lap), an
+  unmodelled odometry bias makes true loops look inconsistent: three laps with the 0.1 deg per
+  step yaw bias remove 2 to 4 true loops of the first revisit, and the two-lap test rejects one
+  true loop at seed 7 (claimed sigma x0.5) and seed 2024 (x0.25). Prepared known-answer tests,
+  disabled until the fix: `LoopSelector.DISABLED_ThreeLapTrueLoopsAllStaySelected`,
+  `LoopComponent.DISABLED_TwoLapOverconfidentPcmNoWorseThanWithoutAcrossSeeds`.
+
