@@ -448,6 +448,14 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
           .is_ok());
   // G15 flag off.
   EXPECT_FALSE(cfg.value().gnss.align_yaw_sigma_frontend_cov);
+  // Hardening of design 2b (gnss.md section 5.3): wheel gap > 1 period.
+  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_wheel_gap_periods, 3.0);
+  const auto bad_wheel_gap = parse_config(
+      read_file(kDefault), overlay("    gnss:\n      align_yaw_wheel_gap_periods: 1\n"));
+  ASSERT_FALSE(bad_wheel_gap.is_ok());
+  EXPECT_TRUE(
+      mentions(bad_wheel_gap.reason(), "gnss.align_yaw_wheel_gap_periods: must be > 1 (got 1)"))
+      << bad_wheel_gap.reason();
   for (const char* v : {"0", "1"}) {
     const auto bad_slip = parse_config(
         read_file(kDefault),

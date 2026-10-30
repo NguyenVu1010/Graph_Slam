@@ -205,9 +205,10 @@ mss_node:
             # A run of at most this many fixes without an odometer reading is bridged by the next
       # reading instead of leaving the chunk half without wheel data, fixes (>= 0,
       # < align_yaw_chunk_fixes / 2; 0: never bridged). The pipeline integrates wheel speed and
-      # interpolates across a wheel-message gap, so a bridged step is an estimate (backlog F1). 4: after wheels spun on a
-      # still body, with 2 % / 10 % / 20 % of readings missing the robot aligns after a median
-      # 10.9 m (max 16.9 / 15.9 / 21.9 m) instead of 36 m (max 311 m) / never / never.
+      # interpolates across a wheel-message gap; align_yaw_wheel_gap_periods bounds it. 4:
+      # after wheels spun on a still body, with 2 % / 10 % / 20 % of readings missing the robot
+      # aligns after a median 10.9 m (max 16.9 / 15.9 / 21.9 m) instead of 36 m (max 311 m) /
+      # never / never.
       align_yaw_wheel_max_gap_fixes: 4
       # A stationary segment (less than align_yaw_min_wheel_travel_m of travel) is extended over
       # up to this many more chunks, so a slow robot's travel adds up, chunks (>= 0; 0: never).
@@ -221,6 +222,14 @@ mss_node:
       # and the other axes marginalised) reaches degeneracy.eig_threshold, the degeneracy
       # module's test (backlog G3, gnss.md section 5.3).
       align_yaw_frontend_travel: true
+      # Hardening of design 2b (gnss.md section 5.3, study section 18).
+      # A wheel-sample interval longer than this many nominal sample periods (the mean regular
+      # interval, measured, so any wheel rate) makes the odometer an interpolation (a driver
+      # silent while the robot stops); the travel over its excess beyond one period, at most the
+      # larger end speed x the excess, widens the wheel/GNSS consistency tolerance and is counted
+      # in Stats::n_wheel_gap_bounded, periods (> 1). 3: +-10 ms of jitter at 10 Hz stays
+      # regular. Stop-and-go with a silent driver: 85 -> 100 of 100 aligned.
+      align_yaw_wheel_gap_periods: 3.0
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

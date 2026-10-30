@@ -126,7 +126,8 @@ enum class Range {
   kUnitOpenClosed,
   kUnitOpen,
   kHalfTurnDeg,
-  kOffOrAtLeastMillimetre
+  kOffOrAtLeastMillimetre,
+  kAboveOne
 };
 
 template <typename T>
@@ -153,6 +154,8 @@ bool in_range(T value, Range range) {
     case Range::kOffOrAtLeastMillimetre:
       // 0 = off; otherwise >= 1 mm (a smaller cell overflows the int64 voxel index).
       return value == T{0} || value >= static_cast<T>(0.001);
+    case Range::kAboveOne:
+      return value > T{1};
   }
   return false;
 }
@@ -179,6 +182,8 @@ const char* range_text(Range range) {
       return "must be in (0, 180]";
     case Range::kOffOrAtLeastMillimetre:
       return "must be 0 (off) or >= 0.001 (1 mm)";
+    case Range::kAboveOne:
+      return "must be > 1";
   }
   return "";
 }
@@ -504,6 +509,7 @@ Config read_config(Reader& r) {
   r.field(
       "gnss.align_yaw_merge_max_chunks", c.gnss.align_yaw_merge_max_chunks, Range::kNonNegative);
   r.field("gnss.align_yaw_frontend_travel", c.gnss.align_yaw_frontend_travel);
+  r.field("gnss.align_yaw_wheel_gap_periods", c.gnss.align_yaw_wheel_gap_periods, Range::kAboveOne);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);

@@ -126,7 +126,11 @@ from scan to scan, kept only while the flag is on), and `GnssFusion` builds the 
 not observe the travel axis: the match failed, or the marginal information of the scan match
 along the horizontal `x_o` (`degeneracy::marginal_information`, one 6x6 eigen-solve per scan
 while the flag is on) was below `degeneracy.eig_threshold` (backlog G3, `gnss.md` section 5.3).
-Chunks
+It also passes the fix time and the sum of the travel bounds of the
+wheel-sample gaps the odometer (`detail::WheelOdometer`) interpolated across: an interval
+between two finite samples longer than `gnss.align_yaw_wheel_gap_periods` nominal periods (the
+measured mean regular interval) adds `max(|v0|, |v1|)` times its excess over one period, and is
+counted in `Stats::n_wheel_gap_bounded` (bench.json, one log line; backlog G9). Chunks
 where the GNSS track and the wheel travel disagree are counted in `Stats::n_gnss_wheel_mismatch`
 (bench.json `n_gnss_wheel_mismatch`), one warning until the next alignment; a count that keeps
 growing while driving means wheels that slip or an odometer scale that is wrong by 2x or more.

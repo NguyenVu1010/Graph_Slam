@@ -167,13 +167,18 @@ void EstimatorCore::on_wheel(const common::WheelSample& s) {
   if (!std::isfinite(s.v_mps)) {
     ++counters_.n_wheel_nonfinite;
   } else {
-    if (have_odometer_) {
-      wheel_odometer_m_ += 0.5 * (last_odometer_v_mps_ + s.v_mps) *
-                           (static_cast<double>(s.t.ns - last_odometer_t_.ns) * 1e-9);
+    // Backlog G9: across a gap of more than gnss.align_yaw_wheel_gap_periods nominal periods
+    // the trapezoid is an interpolation (a driver that goes silent while the robot stops); its
+    // excess over one period is bounded and counted.
+    if (odometer_.push(s.t, s.v_mps)) {
+      ++counters_.n_wheel_gap_bounded;
+      if (!wheel_gap_logged_) {
+        common::log_warn(
+            "wheel odometry: a sample gap longer than gnss.align_yaw_wheel_gap_periods nominal "
+            "periods; the odometer interpolates across it (see Stats::n_wheel_gap_bounded)");
+        wheel_gap_logged_ = true;
+      }
     }
-    have_odometer_ = true;
-    last_odometer_v_mps_ = s.v_mps;
-    last_odometer_t_ = s.t;
   }
   have_wheel_ = true;
   last_wheel_t_ = s.t;
@@ -278,27 +283,31 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
   // ADR-023: the absolute wheel odometer reading, when a finite wheel sample arrived since the
   // previous fix (NaN otherwise). The track-yaw aligner differences the readings of the fixes
   // it consumes, so the travel of a fix rejected before it is carried to the next one.
-  double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN();
-  if (cfg_.wheel_odom.enabled && have_odometer_ && have_fix_odometer_t_ &&
-      last_odometer_t_.ns > last_fix_odometer_t_.ns) {
-    wheel_odometer_m = wheel_odometer_m_;
+  gnss::TrackYawReadings readings;
+  if (cfg_.wheel_odom.enabled && odometer_.has_reading() && have_fix_odometer_t_ &&
+      odometer_.last_t().ns > last_fix_odometer_t_.ns) {
+    readings.wheel_odometer_m = odometer_.reading_m();
   }
   have_fix_odometer_t_ = true;
   last_fix_odometer_t_ = m.t;
+  // Backlog G9: the bounds of the gaps the odometer interpolated across (with wheel data).
+  if (cfg_.wheel_odom.enabled && odometer_.has_reading()) {
+    readings.wheel_gap_bound_m = odometer_.gap_bound_m();
+  }
   // Design 2b: the heading variation up to the last scan (NaN before the first one).
-  const double heading_variation_rad =
-      have_scan_heading_ ? heading_variation_rad_ : std::numeric_limits<double>::quiet_NaN();
+  if (have_scan_heading_) {
+    readings.heading_variation_rad = heading_variation_rad_;
+  }
   // Root-cause study: the count of scans that did not observe the travel axis (NaN when off).
-  const double travel_unobserved_scans = have_scan_heading_ && cfg_.gnss.align_yaw_frontend_travel
-                                             ? travel_unobserved_scans_
-                                             : std::numeric_limits<double>::quiet_NaN();
-  (void)fusion_.on_fix(m,
-                       x.T_w_b,
-                       latest_.cov,
-                       &outcome,
-                       wheel_odometer_m,
-                       heading_variation_rad,
-                       travel_unobserved_scans);
+  if (have_scan_heading_ && cfg_.gnss.align_yaw_frontend_travel) {
+    readings.travel_unobserved_scans = travel_unobserved_scans_;
+  }
+  readings.t = m.t;  // the fix time (sensor clock)
+  readings.has_time = true;
+  if (observer() != nullptr) {
+    observer()->on_track_readings(m.t, readings);
+  }
+  (void)fusion_.on_fix(m, x.T_w_b, latest_.cov, &outcome, readings);
   if (fusion_.n_track_wheel_mismatches() != counters_.n_gnss_wheel_mismatch) {
     counters_.n_gnss_wheel_mismatch = fusion_.n_track_wheel_mismatches();
     if (!track_restart_logged_) {

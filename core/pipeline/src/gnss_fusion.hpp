@@ -167,6 +167,14 @@ class GnssFusion {
                         double wheel_odometer_m = std::numeric_limits<double>::quiet_NaN(),
                         double heading_variation_rad = std::numeric_limits<double>::quiet_NaN(),
                         double travel_unobserved_scans = std::numeric_limits<double>::quiet_NaN());
+  /// As above, with the track-yaw aligner's readings in `readings` (gnss.md section 5.3: also the
+  /// wheel-sample gap bounds and the fix time). GnssAligner gets `P_w_b` as its front-end
+  /// covariance (gnss.align_yaw_sigma_frontend_cov, backlog G15).
+  common::Status on_fix(const common::GnssMeasurement& m,
+                        const common::Pose& T_w_b_fix,
+                        const common::PoseCovariance& P_w_b,
+                        FixOutcome* outcome,
+                        const gnss::TrackYawReadings& readings);
 
   /// Moves every queued fix with `t <= t_k` into `out[0, n)`, shifted to the keyframe
   /// pose `T_w_bk` (pipeline.md section 5), and returns n. Later fixes stay queued.

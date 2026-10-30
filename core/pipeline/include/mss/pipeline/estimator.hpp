@@ -86,6 +86,11 @@ class Estimator {
     /// right for wheels spinning on a still robot; wrong when the LiDAR sees surroundings that
     /// move with the robot (a lift, a pushed cart), and then the alignment waits while it grows.
     std::uint64_t n_gnss_frontend_wheel_disagree = 0;
+    /// Backlog G9 (wheel_odom.enabled): wheel-sample gaps longer than
+    /// gnss.align_yaw_wheel_gap_periods nominal periods, across which the track-yaw odometer
+    /// interpolates (and bounds the error). A count that grows while driving means a wheel
+    /// driver that drops messages or stops publishing at standstill.
+    std::uint64_t n_wheel_gap_bounded = 0;
     /// gnss.attach_prealign_fixes (ADR-022), fixes received before the first alignment:
     /// added as factors; of those, static-window fixes on keyframe 0; dropped because the
     /// buffer (gnss.prealign_max_fixes) was full; received before keyframe 0 but outside its
