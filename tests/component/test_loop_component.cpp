@@ -26,6 +26,7 @@
 #include "mss/common/lie.hpp"
 #include "mss/common/scan_frame.hpp"
 #include "mss/loop/loop_detector.hpp"
+#include "mss/loop/loop_selector.hpp"
 #include "mss/pipeline/config.hpp"
 #include "mss/pipeline/estimator.hpp"
 
@@ -84,8 +85,10 @@ struct LapRun {
   double max_err_m = 0.0;
   double max_err_rad = 0.0;
   int searches = 0;
-  int ambiguous = 0;   // rejected by the ambiguity check
-  int correction = 0;  // rejected by a correction gate
+  int ambiguous = 0;     // rejected by the ambiguity check
+  int correction = 0;    // rejected by a correction gate
+  int pcm_rejected = 0;  // verified but not selected by PCM
+  int removed = 0;       // selected, then removed from the graph by PCM
 };
 
 // How a two-lap run is set up (review H3 I-1: the claimed odometry covariance is scaled by
@@ -94,6 +97,7 @@ struct LapOptions {
   bool loops_on = true;
   double claim = 1.0;
   bool graph_gate = false;  // loop_closure.graph_covariance_gate
+  bool pcm = true;          // loop_closure.pcm_enabled
   unsigned seed = 42;       // odometry noise draw
 };
 
@@ -115,7 +119,9 @@ LapRun run_two_laps(const Config& cfg, const LapOptions& o) {
   loop::LoopConfig lc = cfg.loop_closure;
   lc.enabled = loops_on;
   lc.graph_covariance_gate = o.graph_gate;
+  lc.pcm_enabled = o.pcm;
   loop::LoopDetector det(lc, cfg.scan_match, cfg.map, T_b_l, kMaxPoints);
+  loop::LoopSelector sel(lc, kKeyframes);
   std::vector<std::unique_ptr<common::ScanFrame>> clouds;
   std::vector<loop::KeyframeView> views;
   std::mt19937 rng(o.seed);
@@ -142,6 +148,9 @@ LapRun run_two_laps(const Config& cfg, const LapOptions& o) {
       x0.T_w_b = guess;
       graph.add_keyframe(t, x0);
       graph.add_lidar_factor(static_cast<KeyId>(k - 1), static_cast<KeyId>(k), meas, cov, nullptr);
+      if (loops_on && o.pcm) {
+        EXPECT_TRUE(sel.add_odometry(static_cast<KeyId>(k), meas, cov));
+      }
     } else {
       common::NavState x0;
       x0.t = t;
@@ -176,11 +185,31 @@ LapRun run_two_laps(const Config& cfg, const LapOptions& o) {
     if (r.outcome != loop::LoopOutcome::kAccepted) {
       continue;
     }
-    graph.add_loop_factor(r.constraint);
+    // ADR-028: PCM selects (as EstimatorCore::try_loop_closure does).
+    bool selected = true;
+    if (o.pcm) {
+      selected = sel.propose(r.constraint).selected;
+      for (const auto& ij : sel.to_remove()) {
+        EXPECT_TRUE(graph.remove_loop_factor(ij.first, ij.second));
+        ++out.removed;
+      }
+      for (const common::LoopConstraint& a : sel.to_add()) {
+        graph.add_loop_factor(a);
+      }
+      out.pcm_rejected += selected ? 0 : 1;
+      if (sel.to_add().empty() && sel.to_remove().empty()) {
+        continue;
+      }
+    } else {
+      graph.add_loop_factor(r.constraint);
+    }
     for (int u = 0; u <= lc.isam_extra_updates; ++u) {
       EXPECT_TRUE(graph.optimize().is_ok());
     }
     guess = graph.keyframe_state(static_cast<KeyId>(k)).value().T_w_b;
+    if (!selected) {
+      continue;
+    }
     skip = lc.min_interval_keyframes;
     ++out.accepted;
     const Pose truth = circle_pose(static_cast<int>(r.constraint.i)).inverse() * circle_pose(k);
@@ -240,6 +269,222 @@ TEST(LoopComponent, TwoLapDriftClosedByLoops) {
   EXPECT_LT(on.max_err_m, kLoopTolM);
   EXPECT_LT(on.max_err_rad, kLoopTolRad);
   EXPECT_LT(on.end_to_start_m, 0.2 * off.end_to_start_m);
+}
+
+// PCM compared with no PCM on the same run (review H3, I-1): the two-lap drift test over a
+// fixed list of odometry seeds, claimed covariance as the noise. PCM selects the same loops as
+// without it (none rejected, none removed) and the end-to-start error is the same within 1 mm;
+// the loops remove at least 20 % of the drift for every seed (loops-off error 0.61 to 1.79 m).
+// Measured: seeds 42 / 1 / 7 / 2024 give 0.082 / 0.125 / 1.199 / 0.454 m with and without PCM.
+struct SeedRun {
+  LapRun off;
+  LapRun pcm;
+  LapRun no_pcm;
+};
+
+SeedRun seed_run(const Config& cfg, unsigned seed, double claim) {
+  SeedRun r;
+  LapOptions off;
+  off.loops_on = false;
+  off.seed = seed;
+  r.off = run_two_laps(cfg, off);
+  LapOptions a;
+  a.seed = seed;
+  a.claim = claim;
+  r.pcm = run_two_laps(cfg, a);
+  LapOptions b = a;
+  b.pcm = false;
+  r.no_pcm = run_two_laps(cfg, b);
+  std::printf(
+      "[ loop two laps ] seed %u claim x%.2f: end-to-start off %.3f m, PCM %.3f m "
+      "(%d loops, %d PCM-rejected, %d removed), no PCM %.3f m (%d loops)\n",
+      seed,
+      claim,
+      r.off.end_to_start_m,
+      r.pcm.end_to_start_m,
+      r.pcm.accepted,
+      r.pcm.pcm_rejected,
+      r.pcm.removed,
+      r.no_pcm.end_to_start_m,
+      r.no_pcm.accepted);
+  return r;
+}
+
+constexpr unsigned kSeeds[] = {42U, 1U, 7U, 2024U};
+
+TEST(LoopComponent, TwoLapPcmNoWorseThanWithoutAcrossSeeds) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  const Config cfg = shipped_config();
+  for (const unsigned seed : kSeeds) {
+    const SeedRun r = seed_run(cfg, seed, 1.0);
+    EXPECT_EQ(r.pcm.accepted, r.no_pcm.accepted) << seed;
+    EXPECT_EQ(r.pcm.pcm_rejected, 0) << seed;
+    EXPECT_EQ(r.pcm.removed, 0) << seed;
+    EXPECT_EQ(r.pcm.false_loops, 0) << seed;
+    EXPECT_LE(r.pcm.end_to_start_m, r.no_pcm.end_to_start_m + 1e-3) << seed;
+    EXPECT_LT(r.pcm.end_to_start_m, 0.8 * r.off.end_to_start_m) << seed;
+  }
+}
+
+// Review H3 B-1, fixed by the yaw-drift term (ADR-028 amendment C): the same with the claimed
+// covariance halved and quartered (overconfident odometry). PCM is no worse than without it.
+// Before the drift term: seed 7 x0.5 rejected one true loop (1.350 m against 1.129 m without
+// PCM) and seed 2024 x0.25 one (0.576 against 0.511 m).
+TEST(LoopComponent, TwoLapOverconfidentPcmNoWorseThanWithoutAcrossSeeds) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  const Config cfg = shipped_config();
+  for (const double claim : {0.5, 0.25}) {
+    for (const unsigned seed : kSeeds) {
+      const SeedRun r = seed_run(cfg, seed, claim);
+      EXPECT_EQ(r.pcm.accepted, r.no_pcm.accepted) << seed << " " << claim;
+      EXPECT_EQ(r.pcm.removed, 0) << seed << " " << claim;
+      EXPECT_LE(r.pcm.end_to_start_m, r.no_pcm.end_to_start_m + 1e-3) << seed << " " << claim;
+    }
+  }
+}
+
+// PCM against false loops that passed verification (the ambiguity check missed them), with the
+// loops given directly (no scans, so detection recall does not depend on the graph): the
+// two-lap odometry of LoopComponent.TwoLapDrift, 8 true loops one lap apart (truth, floored
+// covariance 5 cm / 1 deg) and 3 loops aliased by one 2 m period along world x, one of them
+// before any true loop (so it is selected first). PCM selects every true loop, removes the
+// early aliased one and never selects the others; end-to-start within 1 cm of the run without
+// the aliased loops. Without PCM (Cauchy only) they stay and drag the lap (here little: eight
+// true loops outvote them).
+struct OracleRun {
+  double end_to_start_m = 0.0;
+  int removed = 0;
+  int rejected = 0;
+  int aliased_in_graph = 0;
+};
+
+OracleRun run_oracle_laps(const Config& cfg, bool with_aliased, bool pcm) {
+  OracleRun out;
+  backend::Graph graph(cfg.backend, cfg.imu, Vec3::Zero());
+  loop::LoopConfig lc = cfg.loop_closure;
+  lc.enabled = true;
+  lc.pcm_enabled = pcm;
+  loop::LoopSelector sel(lc, kKeyframes);
+  std::mt19937 rng(42);
+  std::normal_distribution<double> n01(0.0, 1.0);
+  common::PoseCovariance cov = common::PoseCovariance::Zero();
+  for (int a = 0; a < 3; ++a) {
+    cov(a, a) = kPosSigmaM * kPosSigmaM;
+    cov(a + 3, a + 3) = kYawSigmaRad * kYawSigmaRad;
+  }
+  common::PoseCovariance lcov = common::PoseCovariance::Zero();
+  lcov.diagonal() << 0.0025, 0.0025, 0.0025, 3.05e-4, 3.05e-4, 3.05e-4;
+  struct Proposed {
+    int i;
+    int j;
+    bool aliased;
+  };
+  std::vector<Proposed> loops = {{0, 75, false},
+                                 {9, 84, false},
+                                 {23, 98, false},
+                                 {38, 113, false},
+                                 {50, 125, false},
+                                 {60, 135, false},
+                                 {68, 143, false},
+                                 {0, 150, false}};
+  if (with_aliased) {
+    loops.push_back({1, 70, true});
+    loops.push_back({20, 110, true});
+    loops.push_back({65, 145, true});
+  }
+  Pose guess = circle_pose(0);
+  for (int k = 0; k < kKeyframes; ++k) {
+    const common::Timestamp t{static_cast<std::int64_t>(k) * kNsPerS};
+    if (k > 0) {
+      const Pose truth = circle_pose(k - 1).inverse() * circle_pose(k);
+      Vec6 e;
+      e << kPosSigmaM * n01(rng), kPosSigmaM * n01(rng), 0.0, 0.0, 0.0,
+          kYawBiasRad + kYawSigmaRad * n01(rng);
+      const Pose meas = truth * common::se3_exp(e);
+      guess = guess * meas;
+      common::NavState x0;
+      x0.t = t;
+      x0.T_w_b = guess;
+      graph.add_keyframe(t, x0);
+      graph.add_lidar_factor(static_cast<KeyId>(k - 1), static_cast<KeyId>(k), meas, cov, nullptr);
+      if (pcm) {
+        EXPECT_TRUE(sel.add_odometry(static_cast<KeyId>(k), meas, cov));
+      }
+    } else {
+      common::NavState x0;
+      x0.t = t;
+      x0.T_w_b = guess;
+      graph.add_keyframe(t, x0);
+    }
+    EXPECT_TRUE(graph.optimize().is_ok());
+    for (const Proposed& l : loops) {
+      if (l.j != k) {
+        continue;
+      }
+      common::LoopConstraint c;
+      c.i = static_cast<KeyId>(l.i);
+      c.j = static_cast<KeyId>(l.j);
+      Pose T_j = circle_pose(l.j);
+      T_j.p.x() += l.aliased ? 2.0 : 0.0;
+      c.T_bi_bj = circle_pose(l.i).inverse() * T_j;
+      c.cov = lcov;
+      if (!pcm) {
+        graph.add_loop_factor(c);
+      } else {
+        out.rejected += sel.propose(c).selected ? 0 : 1;
+        for (const auto& ij : sel.to_remove()) {
+          EXPECT_TRUE(graph.remove_loop_factor(ij.first, ij.second));
+          ++out.removed;
+        }
+        for (const common::LoopConstraint& a : sel.to_add()) {
+          graph.add_loop_factor(a);
+        }
+      }
+      for (int u = 0; u <= lc.isam_extra_updates; ++u) {
+        EXPECT_TRUE(graph.optimize().is_ok());
+      }
+      guess = graph.keyframe_state(static_cast<KeyId>(k)).value().T_w_b;
+    }
+  }
+  const Pose e0 = graph.keyframe_state(0).value().T_w_b;
+  const Pose eN = graph.keyframe_state(static_cast<KeyId>(kKeyframes - 1)).value().T_w_b;
+  out.end_to_start_m =
+      ((e0.inverse() * eN.p) - (circle_pose(0).inverse() * circle_pose(kKeyframes - 1).p)).norm();
+  for (const Proposed& l : loops) {
+    if (l.aliased && pcm) {
+      out.aliased_in_graph +=
+          graph.remove_loop_factor(static_cast<KeyId>(l.i), static_cast<KeyId>(l.j)) ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+TEST(LoopComponent, PcmRemovesAliasedLoopsKnownLoops) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  const Config cfg = shipped_config();
+  const OracleRun clean = run_oracle_laps(cfg, false, true);
+  const OracleRun pcm = run_oracle_laps(cfg, true, true);
+  const OracleRun raw = run_oracle_laps(cfg, true, false);
+  std::printf(
+      "[ loop pcm ] known loops + 3 aliased: end-to-start PCM %.3f m (no aliased %.3f m, "
+      "Cauchy only %.3f m); %d removed, %d rejected, %d aliased left in the graph\n",
+      pcm.end_to_start_m,
+      clean.end_to_start_m,
+      raw.end_to_start_m,
+      pcm.removed,
+      pcm.rejected,
+      pcm.aliased_in_graph);
+  EXPECT_EQ(clean.rejected, 0);  // every true loop is selected
+  EXPECT_EQ(pcm.aliased_in_graph, 0);
+  EXPECT_GE(pcm.removed, 1);  // (1, 70) was selected first, then removed
+  EXPECT_LT(std::abs(pcm.end_to_start_m - clean.end_to_start_m), 0.01);
+  EXPECT_GT(raw.end_to_start_m, pcm.end_to_start_m);  // the kernel leaves some drag
 }
 
 // --- Whole estimator on the box world -------------------------------------------------------
@@ -317,6 +562,184 @@ TEST(LoopComponent, BoxWorldEstimatorLoops) {
   EXPECT_LE(e_on.ate_m, 1.2 * e_off.ate_m + 0.001);
 }
 
+// --- The pipeline's PCM path (review H3, I-4) ------------------------------------------------
+// The whole Estimator on the box world (two laps of the 2 m circle, lap period 2 pi / 0.25 s),
+// the detector replaced by CoreTestHooks::loop_inject: at three moments of lap 2 a verified
+// loop to the keyframe one lap earlier, from the truth with the floor covariance (5 cm / 1 deg).
+// The first is wrong (along x of b_i: 0.5 m in the forget test, 0.8 m on a loosened chain in
+// the removal test, where it drags the result by centimetres), the next two are true. Known answer
+// through EstimatorCore::try_loop_closure: the wrong loop enters first, the first true one ties and
+// is left out, the second true one outvotes the wrong one, which is removed from iSAM2 while the
+// first true one is added back; counters, map rebuilds and the front-end re-sync follow, the graph
+// holds the two true loops only, and the trajectory ends as the run that only ever had the two true
+// loops.
+constexpr double kInjectSigmaM = 0.05;          // injected loop covariance, position sigma (m)
+constexpr double kInjectSigmaRad = 1.0 * kDeg;  // injected loop covariance, rotation sigma (rad)
+
+struct InjectPlan {
+  test::BoxWorldParams p;
+  std::vector<double> at_s;     // s after t0: inject at the first keyframe at or after it
+  std::vector<double> wrong_m;  // offset along x of b_i, m (0: true loop)
+  std::vector<bool> done;
+  double lap_s = 0.0;
+  std::vector<std::pair<KeyId, KeyId>> injected;  // (i, j) of each injection, in order
+};
+
+std::optional<common::LoopConstraint> inject(InjectPlan& plan,
+                                             common::Span<const loop::KeyframeView> views) {
+  const loop::KeyframeView& q = views[views.size() - 1];
+  const double tq = 1e-9 * static_cast<double>(q.t.ns - plan.p.t0_ns);
+  for (std::size_t n = 0; n < plan.at_s.size(); ++n) {
+    if (plan.done[n] || tq < plan.at_s[n]) {
+      continue;
+    }
+    plan.done[n] = true;
+    // The keyframe nearest to one lap earlier.
+    std::size_t best = 0;
+    double best_dt = 1e9;
+    for (std::size_t k = 0; k + 1 < views.size(); ++k) {
+      const double dt = std::abs(1e-9 * static_cast<double>(q.t.ns - views[k].t.ns) - plan.lap_s);
+      if (dt < best_dt) {
+        best_dt = dt;
+        best = k;
+      }
+    }
+    common::LoopConstraint lc;
+    lc.i = views[best].id;
+    lc.j = q.id;
+    lc.T_bi_bj =
+        test::box_truth(plan.p, views[best].t).T_w_b.inverse() * test::box_truth(plan.p, q.t).T_w_b;
+    lc.T_bi_bj.p.x() += plan.wrong_m[n];
+    lc.cov.setZero();
+    const double vm = kInjectSigmaM * kInjectSigmaM;
+    const double vr = kInjectSigmaRad * kInjectSigmaRad;
+    lc.cov.diagonal() << vm, vm, vm, vr, vr, vr;
+    plan.injected.emplace_back(lc.i, lc.j);
+    return lc;
+  }
+  return std::nullopt;
+}
+
+struct InjectRun {
+  ct::ReplayResult r;
+  ct::Errors e;
+  std::vector<std::pair<KeyId, KeyId>> injected;  // (i, j) of each injection, in order
+  std::vector<bool> in_graph;  // Graph::has_loop_factor of each, after the last graph change
+};
+
+InjectRun run_injected(const std::string& name,
+                       std::vector<double> at_s,
+                       std::vector<double> wrong_m,
+                       bool pcm,
+                       int drop_updates,
+                       double lidar_var_scale = 1.0) {
+  InjectPlan plan;
+  plan.p.motion_s = 55.0;
+  plan.lap_s = 2.0 * test::kLoopPi / plan.p.yaw_rate_radps;
+  plan.at_s = std::move(at_s);
+  plan.wrong_m = std::move(wrong_m);
+  plan.done.assign(plan.at_s.size(), false);
+  const std::filesystem::path dir = ct::test_dir() / name;
+  EXPECT_TRUE(test::write_box_dataset(dir / "data", plan.p).is_ok());
+  const Config cfg =
+      ct::box_config(plan.p,
+                     false,
+                     false,
+                     dir / "cfg",
+                     std::string("    loop_closure:\n      enabled: true\n      pcm_enabled: ") +
+                         (pcm ? "true" : "false") + "\n");
+  detail::CoreTestHooks hooks;
+  hooks.loop_inject = [&plan](common::Span<const loop::KeyframeView> v) {
+    loop::LoopResult r;
+    const std::optional<common::LoopConstraint> lc = inject(plan, v);
+    r.outcome = lc ? loop::LoopOutcome::kAccepted : loop::LoopOutcome::kNoCandidate;
+    if (lc) {
+      r.constraint = *lc;
+      r.n_verified = 1;
+    }
+    return r;
+  };
+  hooks.drop_loop_updates = drop_updates;
+  if (lidar_var_scale != 1.0) {
+    hooks.lidar_cov = [lidar_var_scale](common::Timestamp /*t*/, const common::PoseCovariance& c) {
+      const common::PoseCovariance scaled = lidar_var_scale * c;
+      return scaled;
+    };
+  }
+  InjectRun out;
+  hooks.inspect_graph = [&plan, &out](const backend::Graph& g) {
+    out.in_graph.clear();
+    for (const auto& ij : plan.injected) {
+      out.in_graph.push_back(g.has_loop_factor(ij.first, ij.second));
+    }
+  };
+  {
+    ct::HooksScope scope(&hooks);
+    out.r = ct::replay(dir / "data", cfg);
+  }
+  out.e = ct::trajectory_errors(plan.p, out.r.estimates);
+  for (std::size_t n = 0; n < plan.done.size(); ++n) {
+    EXPECT_TRUE(plan.done[n]) << name << ": injection " << n << " never happened";
+  }
+  out.injected = plan.injected;
+  return out;
+}
+
+TEST(LoopComponent, PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  const double t_lap2 = 3.0 + 2.0 + 2.0 * test::kLoopPi / 0.25;  // static + ramp + one lap
+  const std::vector<double> at = {t_lap2 + 2.0, t_lap2 + 8.0, t_lap2 + 14.0};
+  // A loose LiDAR chain (its covariance x100 through the lidar_cov seam) so that the wrong loop,
+  // 0.8 m off, drags the graph by centimetres while it is in (review H3 round 2, I-2); on the
+  // shipped stiff chain it moved the result by millimetres, too little to see a removal.
+  constexpr double kLoose = 100.0;
+  constexpr double kWrongM = 0.8;
+  const InjectRun a = run_injected("wrong_then_true", at, {kWrongM, 0.0, 0.0}, true, 0, kLoose);
+  const InjectRun b = run_injected("true_only", {at[1], at[2]}, {0.0, 0.0}, true, 0, kLoose);
+  const InjectRun c = run_injected("wrong_kept", {at[0]}, {kWrongM}, false, 0, kLoose);
+  ASSERT_FALSE(a.r.estimates.empty());
+  ASSERT_FALSE(b.r.estimates.empty());
+  ASSERT_FALSE(c.r.estimates.empty());
+  const Pose ea = a.r.estimates.back().state.T_w_b;
+  const Pose eb = b.r.estimates.back().state.T_w_b;
+  const Pose ec = c.r.estimates.back().state.T_w_b;
+  std::printf(
+      "[ loop pcm pipeline ] wrong then true: %llu accepted, %llu removed, %llu "
+      "PCM-rejected, %llu rebuilds; final pose against true only: %.4f m; wrong kept (no "
+      "PCM) against true only: %.4f m\n",
+      static_cast<unsigned long long>(a.r.stats.n_loops_accepted),
+      static_cast<unsigned long long>(a.r.stats.n_loops_removed),
+      static_cast<unsigned long long>(a.r.stats.n_loops_pcm_rejected),
+      static_cast<unsigned long long>(a.r.stats.n_map_rebuilds),
+      (ea.p - eb.p).norm(),
+      (ec.p - eb.p).norm());
+  // Counters: wrong in (1), first true left out, second true in with the first true back (2).
+  EXPECT_EQ(a.r.stats.n_loops_accepted, 3U);
+  EXPECT_EQ(a.r.stats.n_loops_removed, 1U);
+  EXPECT_EQ(a.r.stats.n_loops_pcm_rejected, 1U);
+  EXPECT_EQ(b.r.stats.n_loops_accepted, 2U);
+  EXPECT_EQ(b.r.stats.n_loops_removed, 0U);
+  // A forced map rebuild for each graph change (2 here: the wrong loop, then the swap).
+  EXPECT_GE(a.r.stats.n_map_rebuilds, b.r.stats.n_map_rebuilds);
+  EXPECT_GE(a.r.stats.n_map_rebuilds, 2U);
+  // The graph after the last change holds the two true loops and not the wrong one
+  // (Graph::has_loop_factor through CoreTestHooks::inspect_graph).
+  ASSERT_EQ(a.injected.size(), 3U);
+  ASSERT_EQ(a.in_graph.size(), 3U);
+  EXPECT_FALSE(a.in_graph[0]);
+  EXPECT_TRUE(a.in_graph[1]);
+  EXPECT_TRUE(a.in_graph[2]);
+  ASSERT_EQ(c.in_graph.size(), 1U);
+  EXPECT_TRUE(c.in_graph[0]);
+  // The wrong loop moves the result by centimetres when it stays (measured 6.0 cm); removed, the
+  // run ends as the run that only ever had the two true loops (measured 3 mm), the front end
+  // re-synced to it.
+  EXPECT_GT((ec.p - eb.p).norm(), 0.03);
+  EXPECT_LT((ea.p - eb.p).norm(), 0.01);
+}
+
 // Review H3 I-2: in repeated structure every search is ambiguous; after a kAmbiguous result
 // the pipeline skips ambiguity_backoff_keyframes keyframes. Every search is made ambiguous
 // (injected) on the box world: with a back-off of B the searches are about 1 / (1 + B) of
@@ -364,6 +787,23 @@ TEST(LoopComponent, AmbiguousResultBacksOffTheSearch) {
   // One search per 6 keyframes (the last block may be partial).
   EXPECT_LE(searches[1], searches[0] / 6 + 1);
   EXPECT_GE(searches[1], searches[0] / 6);
+}
+
+// Review H3 m-1: the update after the wrong loop entered fails and drops it (injected); the
+// selector forgets it, so the first true loop is not left out by a tie with a loop that is not
+// in the graph: two loops accepted, none removed, the run ends as with the true loops only.
+TEST(LoopComponent, PipelinePcmForgetsALoopDroppedByAFailedUpdate) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  const double t_lap2 = 3.0 + 2.0 + 2.0 * test::kLoopPi / 0.25;
+  const std::vector<double> at = {t_lap2 + 2.0, t_lap2 + 8.0, t_lap2 + 14.0};
+  const InjectRun a = run_injected("dropped_wrong", at, {0.5, 0.0, 0.0}, true, 1);
+  const InjectRun b = run_injected("true_only", {at[1], at[2]}, {0.0, 0.0}, true, 0);
+  EXPECT_EQ(a.r.stats.n_loops_accepted, 2U);
+  EXPECT_EQ(a.r.stats.n_loops_removed, 0U);
+  EXPECT_EQ(a.r.stats.n_loops_pcm_rejected, 0U);
+  EXPECT_LT(std::abs(a.e.ate_m - b.e.ate_m), 1e-3);
 }
 
 // I-4 (review C1): every iSAM2 update after the one that adds the loop fails (injected). The
@@ -601,7 +1041,8 @@ TEST(LoopAliasing, OptionalGraphGateArbitratesWhileDriftIsWithinGraphCovariance)
 
 // Known limit of the optional graph gate (review H3 I-1, why it is off): with the claimed
 // odometry covariance halved, the gate rejects every true loop of the two-lap run and the drift
-// stays (end-to-start as with loops off); without the gate, seed 42 closes it to 0.548 m.
+// stays (end-to-start as with loops off); without the gate, seed 42 closes it to 0.548 m with
+// or without PCM (LoopComponent.TwoLapOverconfidentPcmNoWorseThanWithoutAcrossSeeds).
 TEST(LoopKnownLimits, GraphGateDropsTrueLoopsOnAnOverconfidentGraph) {
   if (!ct::kWithGtsam) {
     GTEST_SKIP() << "needs GTSAM";

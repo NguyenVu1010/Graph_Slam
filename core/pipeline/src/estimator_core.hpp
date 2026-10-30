@@ -17,6 +17,7 @@
 #include "mss/imu/preintegrator.hpp"
 #include "mss/imu/trajectory.hpp"
 #include "mss/loop/loop_detector.hpp"
+#include "mss/loop/loop_selector.hpp"
 #include "mss/map/voxel_map.hpp"
 #include "mss/odom/wheel_integrator.hpp"
 #include "mss/pipeline/bounded_queue.hpp"
@@ -135,6 +136,13 @@ struct CoreTestHooks {
   /// ADR-028 tests: when set, replaces LoopDetector::detect at every loop search: the views
   /// (store order, the query last) in, the detection result out.
   std::function<loop::LoopResult(common::Span<const loop::KeyframeView>)> loop_inject;
+  /// ADR-028 failure path: the next `drop_loop_updates` updates after a PCM change fail and
+  /// drop the pending loop factors (as a failed optimize() does); the selector must forget them.
+  /// Decremented by the core (the hooks object is mutable test state).
+  mutable int drop_loop_updates = 0;
+  /// ADR-028 tests: called with the backend graph after every loop search that changed it (after
+  /// the extra updates and the front-end re-sync), to check which loop factors it holds.
+  std::function<void(const backend::Graph&)> inspect_graph;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).
@@ -180,7 +188,9 @@ struct CoreCounters {
   std::uint64_t n_loop_searches = 0;
   std::uint64_t n_loops_accepted = 0;
   std::uint64_t n_loops_rejected = 0;
-  std::uint64_t n_loops_no_marginal = 0;  // ADR-028
+  std::uint64_t n_loops_pcm_rejected = 0;  // ADR-028
+  std::uint64_t n_loops_removed = 0;
+  std::uint64_t n_loops_no_marginal = 0;
   /// VoxelMap spacing replacements counted before the map's last clear() (rebuilds); the
   /// total is this plus VoxelMap::num_spacing_replaced().
   std::uint64_t n_map_spacing_replaced_cleared = 0;
@@ -268,6 +278,7 @@ class EstimatorCore {
   // accepted loop: loop factor, optimize() (+ loop_closure.isam_extra_updates), then front_,
   // ref_, kf_ and cov_out re-synced; returns true.
   bool try_loop_closure(common::KeyId j, common::Timestamp t, common::PoseCovariance& cov_out);
+  common::Result<common::Estimate> drop_pending_loops_for_test();
   // ADR-020 consistency check of the gravity factor after keyframe `j` was optimised.
   void check_gravity_factor(common::KeyId j);
   // Prediction preintegrator restarted at front_ (bias) with the boundary sample.
@@ -294,6 +305,7 @@ class EstimatorCore {
   KeyframeStore store_;
   MapWindow window_;
   loop::LoopDetector loop_;
+  loop::LoopSelector selector_;  // ADR-028: PCM over the verified loops (pcm_enabled)
   std::vector<loop::KeyframeView> loop_views_;  // reserved map.max_keyframes when enabled
   int loop_skip_ = 0;  // keyframes left to skip after an accepted loop (min_interval_keyframes)
 
