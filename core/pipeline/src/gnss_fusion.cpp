@@ -85,7 +85,7 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
                                                           wheel_odometer_m,
                                                           heading_variation_rad,
                                                           travel_unobserved_scans)
-                                  : aligner_.update(m.p_e_g, m.cov, T_w_b_fix, p_b_g_);
+                                  : aligner_.update(m.p_e_g, m.cov, T_w_b_fix, p_b_g_, P_w_b);
   if (T.is_ok()) {
     T_e_w_ = T.value();
     if (!aligned_) {

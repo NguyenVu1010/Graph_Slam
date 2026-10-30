@@ -158,10 +158,33 @@ transform while `sigma_yaw > gnss.align_yaw_max_sigma_deg` (the same threshold a
 6 deg), error "yaw sigma above threshold"; the pair is still added. The 3-argument `update()`
 has no covariance and uses the floor for every fix.
 
+Front-end covariance (backlog G15, `gnss.align_yaw_sigma_frontend_cov`, default false). The
+w side carries the front end's error `e_i`; to first order it moves the yaw by
+`-sum_i (J a_c,i) . e_c,i / sum_i |a_c,i|^2`. Along a LiDAR-degenerate axis `e_i` is dead
+reckoning: one correlated error (the corridor front end ran backwards, a scale of -1 along the
+axis), not independent noise. For errors of any correlation
+
+    Var(sum_i u_i . e_i) <= (sum_i |u_i| s_i)^2 <= (sum_i |u_i|^2) (sum_i s_i^2)
+
+with `|u_i| = |a_c,i|` and `s_i^2` the larger horizontal eigenvalue of the antenna position
+covariance `J P_w_b J^T`, `J = d(T_w_b p_b_g)/d[rho, phi] = [R_w_b, -R_w_b skew(p_b_g)]`, from the
+pose covariance the pipeline passes (the one of the chi-square gate; non-finite: zero). So
+
+    sigma_yaw^2 = sum_i var_i |a_c,i|^2 / (sum_i |a_c,i|^2)^2 + sum_i s_i^2 / sum_i |a_c,i|^2
+
+one more running sum. The bound does not average down with the number of fixes: a constant
+`s` gives `s / spread`, so the alignment waits until the spread is large against the front-end
+uncertainty. Counting the `s_i` as independent, as the fix noise, would average it away: with
+1000 m^2 along a reversed axis that version aligned 180 deg off with a 6 deg sigma after 96 s
+(`GnssAligner.FrontEndCovCatchesADeadReckonedAxis`). The pose covariance is absolute (it holds
+the error common to all fixes, which the centring removes), so the term is an upper bound.
+Numbers: `gnss_fusion_study.md` section 18.2.
+
 Limits.
-- The front end is taken as exact. Along a LiDAR-degenerate axis its positions are dead
-  reckoning (section 5), and the sigma is then optimistic: the check does not prevent the
-  corridor's 180 deg starts (seeds 51, 52), which need section 5.
+- Without `gnss.align_yaw_sigma_frontend_cov` the front end is taken as exact. Along a
+  LiDAR-degenerate axis its positions are dead reckoning (section 5), and the sigma is then
+  optimistic: the check does not prevent the corridor's 180 deg starts (seeds 51, 52), which
+  need section 5 or the front-end covariance.
 - The noise is taken as white and honestly declared. A slow common drift cancels in the
   centring; multipath steps and drift that changes within the window do not.
 - The sigma does not enter the prior of `E` (ADR-019 keeps 30 deg; changing that needs
