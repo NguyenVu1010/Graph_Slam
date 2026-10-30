@@ -432,9 +432,12 @@ TEST(LoopSelector, ThreeLapTrueLoopsAllStaySelected) {
 
 // Known limit (review H3 I-1; the owner keeps pcm_odometry_sigma_scale at 1.5 pending a manual
 // test): at claim x0.5 on a 250 m lap (radius 40 m) the white part of a lap, claimed at half its
-// size, exceeds what the 1.5 inflation covers. Measured: seed 2024 rejects 3 true loops (pair
-// chi2 up to 24.5), seed 3 removes 1 and rejects 1 (33.2), seed 31337 rejects 2 (38.0); the others
-// pass. Known answer once covered: every loop selected. Disabled until the owner decides.
+// size, exceeds what the 1.5 inflation covers. As this test prints them (run with
+// --gtest_also_run_disabled_tests): seed 2024 rejects 3 true loops (largest pair chi2 24.5), seed 3
+// removes 1 and rejects 1 (33.2), seed 31337 rejects 2 (38.0); the other 4 pass (16.3 to 20.7).
+// Known answer once covered: every loop selected.
+// TODO(C1-27, owner decision on review H3 I-1): re-enable with pcm_odometry_sigma_scale 2, or
+// delete if 1.5 is kept and the limit accepted.
 TEST(LoopSelector, DISABLED_ThreeLapRadius40HalfClaimAllStaySelected) {
   const LoopConfig cfg = pcm_config();
   for (const unsigned seed : kThreeLapSeeds) {

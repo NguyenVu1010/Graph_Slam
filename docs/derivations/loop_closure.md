@@ -436,8 +436,10 @@ white part of a whole lap claimed at half its size); `s = 1.5` closes the probe'
 **Honest limit (review H3 I-1):** claim x0.5 is 2 times too small, and 1.5 holds it only for
 cycles up to about 125 m. On a 250 m lap (radius 40 m, 12 true loops, 7 seeds) claim x1 keeps
 every loop (largest chi2 12.3) but claim x0.5 loses 1 to 3 true loops at 3 of 7 seeds (seed 2024:
-3 rejected, chi2 24.5; seed 3: 1 removed and 1 rejected, 33.2; seed 31337: 2 rejected, 38.0)
-(`ThreeLapTrueLoopsAllStaySelected`, `DISABLED_ThreeLapRadius40HalfClaimAllStaySelected`).
+3 rejected, chi2 24.5; seed 3: 1 removed and 1 rejected, 33.2; seed 31337: 2 rejected, 38.0; the
+largest pair chi2 as `DISABLED_ThreeLapRadius40HalfClaimAllStaySelected` prints it when run with
+`--gtest_also_run_disabled_tests`) (`ThreeLapTrueLoopsAllStaySelected`). The disabled test is
+re-enabled or deleted when the owner rules (backlog C1-27).
 `s = 2` would cover it at the price of weaker aliasing rejection against far loops; the owner
 decides after a manual test.
 
