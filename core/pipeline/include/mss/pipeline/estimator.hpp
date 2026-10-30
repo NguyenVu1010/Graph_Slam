@@ -110,14 +110,19 @@ class Estimator {
     /// evaluated (innovation covariance not positive definite, or no estimate) (ADR-020)
     std::uint64_t n_gravity_factor_unchecked = 0;
     /// Loop closure (ADR-026, loop_closure.enabled; all 0 when off): keyframes searched;
-    /// loops verified and added to the graph; searches whose verified candidate failed the
-    /// ICP acceptance gates or the ambiguity check (a candidate that failed only the Scan
-    /// Context gate is not counted).
+    /// loop factors that entered the graph (with PCM, ADR-028: also a loop that enters later
+    /// than its detection or comes back, one count each time; removals are in
+    /// n_loops_removed); searches whose verified candidate failed the ICP acceptance gates or
+    /// the ambiguity check (a candidate that failed only the Scan Context gate is not
+    /// counted).
     std::uint64_t n_loop_searches = 0;
     std::uint64_t n_loops_accepted = 0;
     std::uint64_t n_loops_rejected = 0;
-    /// ADR-028: candidates rejected because the graph could not give the relative marginal
-    /// (loop_closure.graph_covariance_gate).
+    /// ADR-028 (loop_closure.pcm_enabled): verified loops not selected by PCM when proposed;
+    /// selected loops removed from the graph later (inconsistent with newer ones); candidates
+    /// rejected because the graph could not give the relative marginal (graph_covariance_gate).
+    std::uint64_t n_loops_pcm_rejected = 0;
+    std::uint64_t n_loops_removed = 0;
     std::uint64_t n_loops_no_marginal = 0;
     std::uint64_t n_map_points = 0;  ///< points in the VoxelMap cache now (ADR-007)
     /// map points refreshed in place by map.min_point_dist_m since construction (summed
