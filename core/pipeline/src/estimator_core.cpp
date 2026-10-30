@@ -308,6 +308,16 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
       track_restart_logged_ = true;
     }
   }
+  if (fusion_.n_track_frontend_wheel_disagreements() != counters_.n_gnss_frontend_wheel_disagree) {
+    counters_.n_gnss_frontend_wheel_disagree = fusion_.n_track_frontend_wheel_disagreements();
+    if (!track_fe_disagree_logged_) {
+      common::log_warn(
+          "gnss: the front end holds the robot still while the wheels turn (wheels spinning on a "
+          "still robot, or a LiDAR that sees surroundings moving with the robot); see "
+          "Stats::n_gnss_frontend_wheel_disagree");
+      track_fe_disagree_logged_ = true;
+    }
+  }
   if (early_out_ != nullptr) {
     sync_prealign_counters();
   }
@@ -550,13 +560,19 @@ void EstimatorCore::track_heading(const common::MatchResult* match) {
   }
   have_scan_heading_ = true;
   last_scan_heading_rad_ = heading_rad;
-  // Root-cause study (gnss_fusion_study.md section 16.13): a scan observes the travel axis when
-  // its matching has gnss.align_yaw_frontend_min_info constraints along it.
+  // Backlog G3 (gnss.md section 5.3): a scan observes the travel axis when the marginal
+  // information of its matching along the axis reaches the degeneracy module's threshold.
   double unobserved = std::numeric_limits<double>::quiet_NaN();
   if (cfg_.gnss.align_yaw_frontend_travel) {
-    if (match == nullptr ||
-        !(travel_axis_info(front_.T_w_b.R, cfg_.frames.T_b_o.R, match->T_w_l.R, match->H) >=
-          cfg_.gnss.align_yaw_frontend_min_info)) {
+    // The odometry frame's origin in l: the aligner uses the displacement of o (m-2 of the
+    // H4 review), so a rotation error moves it through the lever arm.
+    const common::Vec3 p_l_o = T_l_b_ * cfg_.frames.T_b_o.p;
+    if (match == nullptr || !travel_axis_observed(front_.T_w_b.R,
+                                                  cfg_.frames.T_b_o.R,
+                                                  match->T_w_l.R,
+                                                  match->H,
+                                                  p_l_o,
+                                                  cfg_.degeneracy.eig_threshold)) {
       travel_unobserved_scans_ += 1.0;
     }
     unobserved = travel_unobserved_scans_;

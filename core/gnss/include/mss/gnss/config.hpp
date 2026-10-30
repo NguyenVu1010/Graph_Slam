@@ -78,12 +78,10 @@ struct GnssConfig {
   int align_yaw_merge_max_chunks = 0;
   // When the LiDAR observes the travel axis between two chunk centres, the front-end
   // displacement of o decides that a segment is stationary (wheels turning on a still body, a
-  // parked robot), and without wheel data it gives the direction of travel.
+  // parked robot), and without wheel data it gives the direction of travel. A scan observes the
+  // axis when the scan matcher's marginal information along it reaches degeneracy.eig_threshold
+  // (degeneracy::marginal_information, backlog G3).
   bool align_yaw_frontend_travel = false;
-  // Information along the travel axis needed for a scan to observe it: x^T H_rho x of the scan
-  // matcher's translation block, the robust-weighted count of point-to-plane constraints along
-  // the axis (dimensionless, > 0).
-  double align_yaw_frontend_min_info = 100.0;
 };
 
 }  // namespace mss::gnss

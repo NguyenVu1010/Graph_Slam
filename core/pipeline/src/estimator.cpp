@@ -348,6 +348,7 @@ Estimator::Stats Estimator::stats() const {
   out.n_gnss_unfused_eof = c.n_gnss_unfused_eof;
   out.n_gnss_realign = c.n_gnss_realign;
   out.n_gnss_wheel_mismatch = c.n_gnss_wheel_mismatch;
+  out.n_gnss_frontend_wheel_disagree = c.n_gnss_frontend_wheel_disagree;
   out.n_gnss_prealign_attached = c.n_gnss_prealign_attached;
   out.n_gnss_prealign_static = c.n_gnss_prealign_static;
   out.n_gnss_prealign_dropped = c.n_gnss_prealign_dropped;
