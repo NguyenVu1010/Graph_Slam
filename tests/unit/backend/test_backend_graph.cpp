@@ -753,9 +753,12 @@ TEST(BackendGraph, RemoveLoopFactorPendingAndUnknown) {
       lc.T_bi_bj = s.edge_meas[4];
       lc.cov = s.edge_cov;
       g.add_loop_factor(lc);
+      EXPECT_TRUE(g.has_loop_factor(0, 4));
+      EXPECT_FALSE(g.has_loop_factor(3, 4));     // a lidar edge, not a loop
       EXPECT_FALSE(g.remove_loop_factor(3, 4));  // a lidar edge, not a loop
       EXPECT_FALSE(g.remove_loop_factor(1, 4));  // never added
       EXPECT_TRUE(g.remove_loop_factor(0, 4));   // pending
+      EXPECT_FALSE(g.has_loop_factor(0, 4));
     }
     ASSERT_TRUE(ref.optimize().is_ok());
     ASSERT_TRUE(g.optimize().is_ok());
@@ -765,34 +768,158 @@ TEST(BackendGraph, RemoveLoopFactorPendingAndUnknown) {
   }
 }
 
-// A committed loop removed later: after a few updates the graph equals one that never had it
-// (pose error < 1e-6), and marginals follow (the latest pose is less certain without it).
+// The square without its loop, optimised like run_square (5 keyframes + `extra` updates).
+void run_square_without_loop(Graph& g, const test::Scenario& s, int extra) {
+  for (KeyId k = 0; k < 5; ++k) {
+    g.add_keyframe(s.truth[k].t, s.guess[k]);
+    if (k > 0) {
+      g.add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+    }
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+  for (int n = 0; n < extra; ++n) {
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+}
+
+// The square's loop, measured `off_m` metres off along x of body 0 (a wrong loop inside the
+// Cauchy core when small: it drags the square by a large part of it).
+common::LoopConstraint square_loop_off(const test::Scenario& s, double off_m) {
+  common::LoopConstraint lc;
+  lc.i = 0;
+  lc.j = 4;
+  lc.T_bi_bj = s.edge_meas[4];
+  lc.T_bi_bj.p.x() += off_m;
+  lc.cov = s.edge_cov;
+  return lc;
+}
+
+// A committed wrong loop (0.5 m off: inside the Cauchy core, it drags the square by
+// centimetres) removed later, followed by the pipeline's update count (1 + isam_extra_updates
+// = 3): the graph equals the one that never had it within 1e-4 m (iSAM2 relinearises only the
+// variables that moved more than relinearize_threshold; the residual is reported), and the
+// marginal of the last pose grows back.
 TEST(BackendGraph, RemoveLoopFactorCommitted) {
   const test::Scenario s = test::square_loop(true, 9);
   Graph with(default_backend_config(), default_imu_config(), Vec3::Zero());
-  run_square(with, s, 2);
   Graph without(default_backend_config(), default_imu_config(), Vec3::Zero());
+  run_square_without_loop(without, s, 3);
   for (KeyId k = 0; k < 5; ++k) {
-    without.add_keyframe(s.truth[k].t, s.guess[k]);
+    with.add_keyframe(s.truth[k].t, s.guess[k]);
     if (k > 0) {
-      without.add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+      with.add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
     }
-    ASSERT_TRUE(without.optimize().is_ok());
-  }
-  for (int n = 0; n < 2; ++n) {
-    ASSERT_TRUE(without.optimize().is_ok());
-  }
-  const double tr_with = with.marginal_cov(4).trace();
-  ASSERT_TRUE(with.remove_loop_factor(0, 4));
-  for (int n = 0; n < 5; ++n) {
+    if (k == 4) {
+      with.add_loop_factor(square_loop_off(s, 0.5));
+    }
     ASSERT_TRUE(with.optimize().is_ok());
   }
+  double drag = 0.0;
   for (KeyId k = 0; k < 5; ++k) {
-    EXPECT_LT(pose_error(state_or_fail(with, k).T_w_b, state_or_fail(without, k).T_w_b), 1e-6) << k;
+    drag =
+        std::max(drag, (state_or_fail(with, k).T_w_b.p - state_or_fail(without, k).T_w_b.p).norm());
   }
+  const double tr_with = with.marginal_cov(4).trace();
+  ASSERT_TRUE(with.has_loop_factor(0, 4));
+  ASSERT_TRUE(with.remove_loop_factor(0, 4));
+  EXPECT_FALSE(with.has_loop_factor(0, 4));
+  for (int n = 0; n < 3; ++n) {
+    ASSERT_TRUE(with.optimize().is_ok());
+  }
+  double after = 0.0;
+  for (KeyId k = 0; k < 5; ++k) {
+    after = std::max(after,
+                     (state_or_fail(with, k).T_w_b.p - state_or_fail(without, k).T_w_b.p).norm());
+  }
+  RecordProperty("drag_before_m", std::to_string(drag));
+  RecordProperty("drag_after_m", std::to_string(after));
+  EXPECT_GT(drag, 0.05);  // the wrong loop really dragged the square
+  EXPECT_LT(after, 1e-4);
   EXPECT_GT(with.marginal_cov(4).trace(), tr_with);
   EXPECT_LT((with.marginal_cov(4) - without.marginal_cov(4)).norm(),
-            1e-6 * without.marginal_cov(4).norm());
+            1e-3 * without.marginal_cov(4).norm());
+}
+
+// A pair added twice: each removal takes the most recent one; after the first the graph holds
+// only the older (equal to a graph built with only it), after the second none, a third finds
+// nothing.
+TEST(BackendGraph, RemoveLoopFactorOfAPairAddedTwice) {
+  const test::Scenario s = test::square_loop(true, 9);
+  Graph twice(default_backend_config(), default_imu_config(), Vec3::Zero());
+  Graph older(default_backend_config(), default_imu_config(), Vec3::Zero());
+  for (KeyId k = 0; k < 5; ++k) {
+    for (Graph* x : {&twice, &older}) {
+      x->add_keyframe(s.truth[k].t, s.guess[k]);
+      if (k > 0) {
+        x->add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+      }
+    }
+    if (k == 4) {
+      twice.add_loop_factor(square_loop_off(s, 0.3));  // older
+      older.add_loop_factor(square_loop_off(s, 0.3));
+    }
+    ASSERT_TRUE(twice.optimize().is_ok());
+    ASSERT_TRUE(older.optimize().is_ok());
+  }
+  twice.add_loop_factor(square_loop_off(s, 0.0));  // newer, committed by the next update
+  ASSERT_TRUE(twice.optimize().is_ok());
+  ASSERT_TRUE(twice.remove_loop_factor(0, 4));  // the newer one
+  EXPECT_TRUE(twice.has_loop_factor(0, 4));     // the older one stays
+  for (int n = 0; n < 3; ++n) {
+    ASSERT_TRUE(twice.optimize().is_ok());
+    ASSERT_TRUE(older.optimize().is_ok());
+  }
+  for (KeyId k = 0; k < 5; ++k) {
+    EXPECT_LT((state_or_fail(twice, k).T_w_b.p - state_or_fail(older, k).T_w_b.p).norm(), 1e-4)
+        << k;
+  }
+  EXPECT_TRUE(twice.remove_loop_factor(0, 4));
+  EXPECT_FALSE(twice.has_loop_factor(0, 4));
+  EXPECT_FALSE(twice.remove_loop_factor(0, 4));
+}
+
+// Removal followed by a failing update (a new keyframe held only by a rank-deficient GNSS
+// factor, as in OptimizeFailureDropsPendingFactorsKeepsKeyframes): iSAM2 is rebuilt from the
+// committed factors, which no longer hold the loop, so it does not come back; the next updates
+// match the square without the loop.
+TEST(BackendGraph, RemoveLoopFactorSurvivesAFailedUpdate) {
+  const Vec3 p_b_g(0.3, 0.0, 0.8);
+  const test::Scenario s = test::square_loop(true, 9);
+  Graph with(default_backend_config(), default_imu_config(), p_b_g);
+  Graph without(default_backend_config(), default_imu_config(), p_b_g);
+  for (KeyId k = 0; k < 5; ++k) {
+    for (Graph* x : {&with, &without}) {
+      x->add_keyframe(s.truth[k].t, s.guess[k]);
+      if (k > 0) {
+        x->add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+      }
+    }
+    if (k == 4) {
+      with.add_loop_factor(square_loop_off(s, 0.5));
+    }
+    ASSERT_TRUE(with.optimize().is_ok());
+    ASSERT_TRUE(without.optimize().is_ok());
+  }
+  ASSERT_TRUE(with.remove_loop_factor(0, 4));
+  NavState x5 = s.truth[4];
+  x5.t = common::Timestamp{s.truth[4].t.ns + 1'000'000'000};
+  common::GnssMeasurement m;
+  m.p_e_g = x5.T_w_b * p_b_g;
+  m.cov = Mat3::Identity() * 0.01;
+  for (Graph* x : {&with, &without}) {
+    x->add_keyframe(x5.t, x5);
+    x->add_gnss_factor(5, m, Pose{});  // 3 of 6 DoF of keyframe 5: indeterminant
+    ASSERT_FALSE(x->optimize().is_ok());
+    x->add_lidar_factor(4, 5, s.truth[4].T_w_b.inverse() * x5.T_w_b, s.edge_cov, nullptr);
+    for (int n = 0; n < 3; ++n) {
+      ASSERT_TRUE(x->optimize().is_ok());
+    }
+  }
+  EXPECT_FALSE(with.has_loop_factor(0, 4));
+  for (KeyId k = 0; k < 6; ++k) {
+    EXPECT_LT((state_or_fail(with, k).T_w_b.p - state_or_fail(without, k).T_w_b.p).norm(), 1e-4)
+        << k;
+  }
 }
 
 // --- relative_pose_cov against an independent dense solve and Monte Carlo (review H3, M-2) ---

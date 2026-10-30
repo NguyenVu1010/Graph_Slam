@@ -508,13 +508,19 @@ measured, backlog C1-5 / C1-15). It is called only by the optional loop gate
 ### 8c. Removing a loop factor (`Graph::remove_loop_factor`, ADR-028)
 
 A loop selector may find a committed loop inconsistent later. The factor is found by pointer
-among `ISAM2::getFactorsUnsafe()` (or in the pending sets) and removed with one `update` with
-`removeFactorIndices`, as for the gravity factor (section 6c); it also leaves
-`committed_factors`, so a rebuild after a failure does not bring it back. iSAM2 re-eliminates
-the cliques the factor touched; relinearisation in the following updates returns the estimate
-to the optimum without it (`B03_OutlierLoopRemovedLeavesNoDrag`: the B-03 outlier removed, the
-square equals the one that never had it, < 1e-6 m). Cost on the pose + velocity + bias graph:
-0.45 / 2.1 / 7.4 ms at 61 / 300 / 1000 keyframes, about one `optimize()`.
+among `ISAM2::getFactorsUnsafe()` (or in the pending sets, where it is simply dropped); its
+slot is queued and passed as `removeFactorIndices` to the next `optimize()`, in the same update
+as the new factors, so the removal costs no update of its own. It leaves `committed_factors`
+at once, so if that update fails the rebuild (from `committed_factors`) does not bring it back
+(`RemoveLoopFactorSurvivesAFailedUpdate`); queued slots belong to the old iSAM2 instance and
+are cleared by a rebuild. iSAM2 re-eliminates the cliques the factor touched; relinearisation
+in the following updates returns the estimate to the optimum without it. With the pipeline's
+3 updates (1 + `isam_extra_updates`): the B-03 outlier removed, the square equals the one that
+never had it within 1e-6 m (`B03_OutlierLoopRemovedLeavesNoDrag`); a wrong loop 0.5 m off
+(inside the Cauchy core, it dragged the square by more than 5 cm) within 1e-4 m
+(`RemoveLoopFactorCommitted`). A pair added twice loses its most recent factor first
+(`RemoveLoopFactorOfAPairAddedTwice`). `has_loop_factor(i, j)` tells whether a loop factor is
+still in the graph (pending or committed; a factor dropped with a failed `optimize()` is not).
 
 ## 9. Failure handling and IMU-gap re-anchor
 

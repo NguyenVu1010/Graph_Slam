@@ -219,6 +219,9 @@ struct Graph::Impl {
     gtsam::NonlinearFactor::shared_ptr factor;
   };
   std::vector<LoopFactor> loop_factors;
+  // iSAM2 slots of committed loop factors removed since the last update (remove_loop_factor),
+  // passed as removeFactorIndices to the next one; invalid after a rebuild (cleared there).
+  gtsam::FactorIndices pending_removals;
 
   // Records the iSAM2 slot of the gravity factor when `added` (given to update() as `r`)
   // holds it.
@@ -323,6 +326,7 @@ struct Graph::Impl {
   // committed factor is queued again (as pending priors) for the next optimize().
   void rebuild() {
     isam = std::make_unique<gtsam::ISAM2>(params);
+    pending_removals.clear();  // slots of the old instance; committed_factors no longer hold them
     if (committed_factors.empty()) {
       return;
     }
@@ -826,8 +830,9 @@ void Graph::add_loop_factor(const common::LoopConstraint& lc) {
 }
 
 // ADR-028: a committed loop factor is found by pointer among the iSAM2 factors (rare call,
-// O(number of factors)); the removal is one update with removeFactorIndices, as for the
-// gravity factor.
+// O(number of factors)) and its slot is queued for the next update (removeFactorIndices), so
+// the removal costs no update of its own; it leaves committed_factors at once, so a rebuild
+// never brings it back.
 bool Graph::remove_loop_factor(common::KeyId i, common::KeyId j) {
   Impl& m = *impl_;
   std::size_t e = m.loop_factors.size();
@@ -841,6 +846,15 @@ bool Graph::remove_loop_factor(common::KeyId i, common::KeyId j) {
     return false;
   }
   const gtsam::NonlinearFactor::shared_ptr f = m.loop_factors[e].factor;
+  m.loop_factors.erase(m.loop_factors.begin() + static_cast<std::ptrdiff_t>(e));
+  const auto holds = [&f](const gtsam::NonlinearFactorGraph& g) {
+    for (const auto& x : g) {
+      if (x == f) {
+        return true;
+      }
+    }
+    return false;
+  };
   const auto without = [&f](const gtsam::NonlinearFactorGraph& g) {
     gtsam::NonlinearFactorGraph out;
     for (const auto& x : g) {
@@ -851,48 +865,33 @@ bool Graph::remove_loop_factor(common::KeyId i, common::KeyId j) {
     return out;
   };
   // Pending: since the last optimize(), or re-queued with the priors by a failed rebuild.
-  for (gtsam::NonlinearFactorGraph* g : {&m.pending_factors, &m.pending_priors}) {
-    for (const auto& x : *g) {
-      if (x == f) {
-        *g = without(*g);
-        m.loop_factors.erase(m.loop_factors.begin() + static_cast<std::ptrdiff_t>(e));
-        return true;
-      }
-    }
+  if (holds(m.pending_factors)) {
+    m.pending_factors = without(m.pending_factors);
+    return true;
   }
-  std::optional<gtsam::FactorIndex> index;
+  if (holds(m.pending_priors)) {
+    m.pending_priors = without(m.pending_priors);
+    return true;
+  }
   const gtsam::NonlinearFactorGraph& held = m.isam->getFactorsUnsafe();
   for (std::size_t k = 0; k < held.size(); ++k) {
     if (held[k] == f) {
-      index = k;
-      break;
+      m.pending_removals.push_back(k);
+      m.committed_factors = without(m.committed_factors);
+      return true;
     }
   }
-  if (!index) {
-    m.loop_factors.erase(m.loop_factors.begin() + static_cast<std::ptrdiff_t>(e));
-    return false;  // dropped with a failed optimize()
-  }
-  std::string failure;
-  gtsam::Values estimate;
-  try {
-    m.isam->update(gtsam::NonlinearFactorGraph(), gtsam::Values(), gtsam::FactorIndices{*index});
-    estimate = m.isam->calculateEstimate();
-    if (!values_finite(estimate)) {
-      failure = "non-finite estimate";
+  return false;  // dropped with a failed optimize()
+}
+
+bool Graph::has_loop_factor(common::KeyId i, common::KeyId j) const {
+  const Impl& m = *impl_;
+  for (const Impl::LoopFactor& l : m.loop_factors) {
+    if (l.i == i && l.j == j) {
+      return true;
     }
-  } catch (const std::exception& ex) {
-    failure = ex.what();
   }
-  if (!failure.empty()) {
-    common::log_error(call_name("backend: remove_loop_factor", i, j) +
-                      " failed, the loop stays: " + failure);
-    m.rebuild();
-    return false;
-  }
-  m.last_estimate = estimate;
-  m.committed_factors = without(m.committed_factors);
-  m.loop_factors.erase(m.loop_factors.begin() + static_cast<std::ptrdiff_t>(e));
-  return true;
+  return false;
 }
 
 common::Result<common::Estimate> Graph::optimize() {
@@ -915,7 +914,7 @@ common::Result<common::Estimate> Graph::optimize() {
   gtsam::Values estimate;
   if (!graph.empty() || !held.empty()) {
     try {
-      const gtsam::ISAM2Result r = m.isam->update(graph, new_values);
+      const gtsam::ISAM2Result r = m.isam->update(graph, new_values, m.pending_removals);
       m.note_gravity_index(graph, r);
       estimate = m.isam->calculateEstimate();
       if (!values_finite(estimate)) {
@@ -926,6 +925,15 @@ common::Result<common::Estimate> Graph::optimize() {
     }
   }
   if (!failure.empty()) {
+    // Loop factors dropped with the pending set are no longer in the graph.
+    for (std::size_t k = m.loop_factors.size(); k > 0; --k) {
+      for (const auto& x : m.pending_factors) {
+        if (x == m.loop_factors[k - 1].factor) {
+          m.loop_factors.erase(m.loop_factors.begin() + static_cast<std::ptrdiff_t>(k - 1));
+          break;
+        }
+      }
+    }
     m.pending_factors = gtsam::NonlinearFactorGraph();
     m.imu_end_pending.clear();
     m.imu_start_pending.clear();
@@ -940,6 +948,7 @@ common::Result<common::Estimate> Graph::optimize() {
   }
 
   m.committed_factors.push_back(graph);
+  m.pending_removals.clear();
   m.pending_priors = gtsam::NonlinearFactorGraph();
   m.pending_factors = gtsam::NonlinearFactorGraph();
   for (const KeyId e : m.imu_end_pending) {

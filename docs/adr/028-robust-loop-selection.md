@@ -31,15 +31,15 @@ Ràng buộc:
 
 **Odometry.**
 - Pipeline đưa vào mỗi keyframe phép đo LiDAR `T_{k-1,k}` cùng hiệp phương sai của nó, đúng cặp đã vào graph.
-- Selector giữ hai tổng tiền tố: pose `T_0k`, và hiệp phương sai trong tiếp tuyến trái của gốc, `S_k = S_{k-1} + Ad(T_0k) C_k Ad(T_0k)^T`.
+- Selector giữ hai tổng tiền tố: pose `T_0k`, và hiệp phương sai trong tiếp tuyến trái của gốc, `S_k = S_{k-1} + Ad(T_0k) (s² C_k) Ad(T_0k)^T`, với `s = pcm_odometry_sigma_scale` (2,0): hiệp phương sai odometry được nới trong phép thử cặp (graph không đổi), vì front-end có thể khai sigma nhỏ hơn thật tới `s` lần (review H3: sigma khai báo ×0,5 vẫn phải đóng được loop).
 - Odometry giữa `a < b` vì thế là O(1): `T_ab = T_0a^-1 T_0b`, `C_ab = Ad(T_0b^-1) (S_b - S_a) Ad(T_0b^-1)^T` (derivation `loop_closure.md` mục 11).
 - Đây là odometry thuần, không phải marginal của graph: marginal đã chứa chính các loop đang bị xét và mọi loop khác, nên không còn là phép thử độc lập.
 
 **Phép thử cặp.**
 - Hai loop `a`, `b` tạo một chu trình `X = Z_a^-1 · O(i_a → i_b) · Z_b · O(j_b → j_a)`. Hiệp phương sai được ghép theo nhiễu phải từ bốn đoạn, coi chúng độc lập.
 - Nhất quán khi `e^T Σ_X^-1 e ≤ pcm_chi2_gate` (22,46, phân vị 0,999 với 6 bậc tự do), với `e = Log(X)`.
-- Độ trôi tích luỹ giữa vòng 1 và vòng 2 xuất hiện ở cả hai loop nên bị triệt tiêu. Chu trình chỉ chứa hai đoạn odometry ngắn giữa hai loop và hai sàn hiệp phương sai loop (5 cm, 1°).
-- Graph tự tin quá mức vì vậy ảnh hưởng ít hơn nhiều so với cổng tuyệt đối. Đây là lý do chọn PCM.
+- Độ trôi tích luỹ giữa vòng 1 và vòng 2 xuất hiện ở cả hai loop nên bị triệt tiêu **khi hai đoạn odometry của chu trình ngắn và tương ứng nhau** (hai loop cùng một lần quay lại). Khi đó chu trình chỉ chứa hai đoạn odometry ngắn và hai sàn hiệp phương sai loop (5 cm, 1°), và graph tự tin quá mức ảnh hưởng ít hơn nhiều so với cổng tuyệt đối. Đây là lý do chọn PCM.
+- **Nói thẳng: PCM vẫn tin hiệp phương sai odometry (nhân `s`).** Khi chu trình chứa một đoạn odometry dài không bị triệt tiêu (ví dụ loop `(i, i+N)` với loop `(i, i+2N)`: cả một vòng odometry), độ lệch hệ thống không có trong hiệp phương sai (bias yaw 0,1° mỗi bước của test) làm chi2 lớn lên theo độ dài chu trình, và một `s` cố định chỉ che được chu trình tới một độ dài nhất định. Review H3 (B-1): ba vòng, bán kính 6 đến 20 m, loop đúng của lần quay lại đầu bị gỡ khi lần quay lại thứ hai lớn hơn; hai vòng ở seed khác cũng mất một loop đúng. Cách xử lý (cặp có chu trình dài không phải bằng chứng, hoặc gỡ loop chỉ khi có bằng chứng chu trình ngắn) là quyết định của chủ dự án, chờ bổ sung vào ADR này.
 
 **Chọn tập.**
 - Max clique chính xác: Bron–Kerbosch có pivot trên bitset, giới hạn `pcm_max_clique_steps` bước gọi đệ quy.
@@ -63,9 +63,9 @@ Chi phí mỗi loop mới là 64 phép thử cặp (ma trận 6x6) và một max
 
 - API bổ sung trong backend: `remove_loop_factor(i, j)`.
   - Factor còn chờ thì bị bỏ khỏi tập chờ.
-  - Factor đã commit được tìm theo con trỏ trong `getFactorsUnsafe()` và gỡ bằng một `update` với `removeFactorIndices`, giống cách đã gỡ factor trọng lực (ADR-020). Nó cũng bị bỏ khỏi `committed_factors`, để lần dựng lại sau lỗi không đưa nó trở lại.
-  - Nếu gỡ lỗi thì iSAM2 được dựng lại và factor ở lại, có ghi log.
-- **Chi phí:** một lần cập nhật iSAM2, chỉ chạy khi PCM đổi ý, tức hiếm hơn nhiều so với số loop. Sau đó pipeline tối ưu thêm `isam_extra_updates` lần, dựng lại bản đồ và đồng bộ front-end như sau một loop mới (ADR-016).
+  - Factor đã commit được tìm theo con trỏ trong `getFactorsUnsafe()`; chỉ số của nó được xếp hàng và gửi làm `removeFactorIndices` trong lần `optimize()` kế tiếp (cùng lần cập nhật đó, không tốn thêm một lần cập nhật riêng). Nó rời `committed_factors` ngay, nên nếu lần cập nhật đó lỗi thì iSAM2 dựng lại từ `committed_factors` không còn nó: việc gỡ vẫn có hiệu lực.
+  - `has_loop_factor(i, j)` cho biết một loop còn trong graph không (để pipeline đồng bộ selector với graph sau lỗi).
+- **Chi phí:** không có lần cập nhật riêng; lần `optimize()` sau lỗi kế tiếp tốn như sau một loop mới (đo: một `optimize()` 0,8 / 2,2 / 8,4 ms ở 61 / 300 / 1000 keyframe). Chỉ khi PCM đổi ý. Sau đó pipeline tối ưu thêm `isam_extra_updates` lần, dựng lại bản đồ và đồng bộ front-end như sau một loop mới (ADR-016).
 - **Không dùng switchable constraints / DCS:**
   - (a) Biến công tắc làm bài toán không lồi, và một loop sai có thể giữ `s` lớn khi nó gần với graph đã trôi: đúng trường hợp aliasing mà PCM và kiểm tra nhập nhằng xử lý.
   - (b) DCS là một kernel, nên nó có cùng giới hạn với Cauchy (C1-13): hiệu chỉnh lớn đúng bị coi như ngoại lai.
@@ -92,7 +92,7 @@ Tắt mặc định, vì với graph tự tin quá mức nó loại hết loop �
 
 Kiểm tra nhập nhằng (ICP từ hạt giống dời, ADR-026 sửa đổi B) giữ nguyên, nhưng khi cổng tắt nó không có graph phân xử: có đối thủ là loại. Đây là lớp chặn aliasing. Ở cấu trúc lặp hoàn toàn, mọi lần dò đều cho hai nghiệm gần như nhau, và PCM không giúp được: các loop sai cùng một bản sao lệch đều một chu kỳ, nên nhất quán với nhau. Cái giá là:
 - không còn loop nào trong hành lang lặp đúng chu kỳ (precision hơn recall);
-- tối đa 4 lần ICP thêm cho mỗi ứng viên sắp được nhận, khoảng +30 ms ở keyframe đó trên desktop; số đo ở dưới.
+- tối đa 4 lần ICP thêm cho mỗi ứng viên sắp được nhận, khoảng +30 ms ở keyframe đó trên desktop (review H3, I-2). Ba biện pháp không cần cổng graph giới hạn chi phí đó: lọc trước mỗi hạt giống dời bằng một lượt độ khớp rẻ (`ambiguity_prescreen_ratio`), giới hạn số vòng ICP của hạt giống dời (`ambiguity_icp_max_iterations`), và tạm dừng tìm loop sau một kết quả nhập nhằng (`ambiguity_backoff_keyframes`). Số đo E-01, E-07 trong `loop_closure.md` mục 12.
 
 ### 6. Cờ và khoá YAML (dưới `loop_closure.*`)
 
@@ -101,10 +101,15 @@ Kiểm tra nhập nhằng (ICP từ hạt giống dời, ADR-026 sửa đổi B)
 | `pcm_enabled` | `true` | Chỉ có tác dụng khi `enabled`. Tắt thì mọi loop qua xác minh vào thẳng graph, như trước ADR này. |
 | `pcm_chi2_gate` | 22,46 | Ngưỡng chi-square của phép thử cặp. |
 | `pcm_max_loops` | 64 | Từ 1 đến 64. |
-| `pcm_max_clique_steps` | 100000 | Giới hạn số bước tìm max clique. |
-| `graph_covariance_gate` | `false` | Bật cổng tuyệt đối. |
-
-Các khoá cũ của cổng (`correction_chi2_gate`, `ambiguity_chi2_margin`) chỉ được dùng khi `graph_covariance_gate` bật.
+| `pcm_odometry_sigma_scale` | 2,0 | ≥ 1. Hệ số nới sigma odometry trong phép thử cặp (mục 1). Chọn từ test hai vòng tổng hợp (×0,5 phải đóng; bản sao 2 m phải còn mâu thuẫn với loop đúng gần nó); chưa hiệu chỉnh (C1-27); không che được độ lệch hệ thống trên chu trình dài (B-1, chờ chủ dự án). |
+| `pcm_max_clique_steps` | 100000 | Giới hạn số bước tìm max clique; tìm bị cắt thì bắt đầu từ tập đang chọn, nên không bao giờ tệ hơn. |
+| `graph_covariance_gate` | `false` | Bật cổng tuyệt đối (mục 4). |
+| `correction_chi2_gate` | 22,46 | Ngưỡng của cổng tuyệt đối (chỉ khi bật). |
+| `ambiguity_seeds_per_side`, `ambiguity_seed_step_m`, `ambiguity_min_separation_m`, `ambiguity_min_separation_deg`, `ambiguity_max_ratio` | 2; 1,0 m; 0,5 m; 5°; 0,9 | Kiểm tra nhập nhằng (mục 5, ADR-026 sửa đổi B). |
+| `ambiguity_chi2_margin` | 13,8 | Graph phân xử đối thủ (chỉ khi cổng tuyệt đối bật). |
+| `ambiguity_backoff_keyframes` | 5 | Sau một kết quả nhập nhằng, bỏ tìm loop chừng ấy keyframe (lối đi lặp: không trả 1 + 4 lần ICP mỗi keyframe). |
+| `ambiguity_icp_max_iterations` | 10 | Số vòng ICP tối đa của hạt giống dời: đối thủ chỉ cần tới lưu vực của bản sao. |
+| `ambiguity_prescreen_ratio` | 0,8 | Trước mỗi ICP của hạt giống dời, một lượt độ khớp (không ICP) tại pose dời; chỉ chạy ICP khi tỉ số inlier ≥ giá trị này × của nghiệm tốt nhất. |
 
 ## Hệ quả
 

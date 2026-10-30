@@ -216,16 +216,21 @@ class Graph {
   /// Removes the loop factor (i, j) added by add_loop_factor (the most recent one when the pair
   /// was added more than once), for a loop selector that finds it inconsistent after it was
   /// committed (ADR-028). A pending factor (no optimize() since it was added) is dropped from
-  /// the pending set. A committed one is removed from iSAM2 (removeFactorIndices, one
-  /// update) and from the factors kept for a rebuild; the estimate is updated without it.
-  /// Returns false when there is no such loop factor (never added, already removed, or
-  /// dropped with a failed optimize()), or when iSAM2 throws or gives a non-finite estimate:
-  /// then iSAM2 is rebuilt from the committed factors at the last good estimate and the
-  /// factor stays (logged; a later call may retry). Stub: false.
-  /// Cost: one iSAM2 update that re-eliminates the cliques the factor touched (about one
-  /// optimize() after a loop). Hot path: no (only when a loop is rejected after the fact).
+  /// the pending set. A committed one leaves the factors kept for a rebuild at once and is
+  /// removed from iSAM2 by the next optimize() (its slot passed as removeFactorIndices in that
+  /// same update, so no extra update is spent); the estimate changes only then. If that
+  /// optimize() fails, iSAM2 is rebuilt from the committed factors, which no longer hold it,
+  /// so the removal stands either way.
+  /// Returns true when the factor was found (dropped or queued), false when there is no such
+  /// loop factor (never added, already removed, or dropped with a failed optimize()).
+  /// Stub: false. Hot path: no (only when a loop is rejected after the fact).
   /// Tests: BackendGraph.RemoveLoopFactor*, B03_OutlierLoopRemovedLeavesNoDrag.
   bool remove_loop_factor(common::KeyId i, common::KeyId j);
+
+  /// Whether a loop factor (i, j) added by add_loop_factor is in the graph (pending or
+  /// committed, not removed, not dropped with a failed optimize()). Stub: false. Hot path: no.
+  /// Tests: BackendGraph.RemoveLoopFactor*.
+  bool has_loop_factor(common::KeyId i, common::KeyId j) const;
 
   /// Runs one iSAM2 update with everything pending and returns the estimate of the
   /// LATEST keyframe: state (T_w_b, v_w_b, bias, t), cov = marginal 6x6 [rho, phi] of its
