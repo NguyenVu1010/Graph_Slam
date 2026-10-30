@@ -101,7 +101,7 @@ Kiểm tra nhập nhằng (ICP từ hạt giống dời, ADR-026 sửa đổi B)
 | `pcm_enabled` | `true` | Chỉ có tác dụng khi `enabled`. Tắt thì mọi loop qua xác minh vào thẳng graph, như trước ADR này. |
 | `pcm_chi2_gate` | 22,46 | Ngưỡng chi-square của phép thử cặp. |
 | `pcm_max_loops` | 64 | Từ 1 đến 64. |
-| `pcm_odometry_sigma_scale` | 1,5 | ≥ 1. Hệ số nới sigma odometry (phần nhiễu trắng) trong phép thử cặp (mục 1). Sau sửa đổi C chỉ còn che nhiễu trắng khai báo nhỏ hơn thật tới 1,5 lần (ba vòng, ×0,5: chi2 lớn nhất 13,5; với 1,0 thì 25,1, một loop đúng bị loại); chưa hiệu chỉnh (C1-27). |
+| `pcm_odometry_sigma_scale` | 1,5 | ≥ 1. Hệ số nới sigma odometry (phần nhiễu trắng) trong phép thử cặp (mục 1). Sau sửa đổi C chỉ che nhiễu trắng khai báo nhỏ hơn thật tới 1,5 lần. **Giới hạn thật (review H3 I-1):** sigma khai báo ×0,5 (nhỏ hơn 2 lần) chỉ đóng được với chu trình tới khoảng 125 m; vòng 250 m (bán kính 40 m) mất 1 đến 3 loop đúng ở 3 trên 7 seed (chi2 tới 38). Với 1,0 thì đã mất một loop ở vòng 57 m (bán kính 9 m). Chủ dự án chọn 1,5 hay 2 sau một lần thử tay; chưa hiệu chỉnh (C1-27). |
 | `pcm_yaw_drift_deg_per_m` | 0,2 | ≥ 0. Một sigma của tốc độ trôi yaw không biết của odometry, độ trên mét đi được (sửa đổi C). Mặc định theo mô hình odometry của chính repo (bias yaw 0,1° mỗi bước 0,5 m của odometry tổng hợp); lớn so với LiDAR thật, thay bằng giá trị đo khi hiệu chỉnh (C1-27). |
 | `pcm_max_clique_steps` | 100000 | Giới hạn số bước tìm max clique; tìm bị cắt thì bắt đầu từ tập đang chọn, nên không bao giờ tệ hơn. |
 | `graph_covariance_gate` | `false` | Bật cổng tuyệt đối (mục 4). |
@@ -115,6 +115,8 @@ Kiểm tra nhập nhằng (ICP từ hạt giống dời, ADR-026 sửa đổi B)
 ## Sửa đổi C (2026-10-30): trôi yaw trong hiệp phương sai odometry của PCM (review H3, B-1)
 
 Chủ dự án chọn phương án C: thêm vào hiệp phương sai odometry mà PCM dùng một số hạng trôi yaw tăng theo quãng đường, gồm tốc độ trôi yaw không biết, hằng trên đoạn (`pcm_yaw_drift_deg_per_m`, mặc định 0,2°/m theo bias của odometry tổng hợp của repo), và sai số ngang mà nó gây ra (bằng quãng đường nhân sai số yaw). Lý do: đây là sửa đúng nguyên nhân (một sai số odometry có thật nhưng thiếu trong mô hình), và nó giữ cho PCM có hiệu lực với các loop xa nhau: chu trình dài vẫn là bằng chứng, chỉ với hiệp phương sai đúng hơn. Công thức, test sai phân số và số đo: `loop_closure.md` mục 11b. Hệ số `s` giảm từ 2 xuống 1,5.
+
+Giới hạn: số hạng trôi là bậc nhất theo `b`. Khi trôi thật lớn hơn 1,5 đến 2 lần `sigma_b` trên vòng từ 125 m trở lên, yaw tích luỹ trên một vòng (khoảng 50 đến 100°) vượt xa vùng tuyến tính và loop đúng lại bị loại hoặc gỡ (tới 9 trên 12 ở 2 sigma, bán kính 40 m, ×0,5). Mô hình đúng khi `sigma_b` chặn được trôi thật; hiệu chỉnh `sigma_b` (C1-27) quyết định điều đó. Lần quay lại theo chiều ngược làm trôi chung cộng dồn giữa hai đoạn (phép thử chặt hơn), nhưng ở mặc định chưa ảnh hưởng (chi2 ≤ 8,4 tới 100 m).
 
 Các phương án bị loại:
 - **A, chu trình dài không phải bằng chứng:** bỏ đi đúng loại bằng chứng giúp loại alias khi không có loop đúng ở gần, và ngưỡng độ dài lại là một tham số không có cơ sở vật lý.

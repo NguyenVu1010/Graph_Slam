@@ -329,8 +329,8 @@ struct Laps3 {
   std::vector<Pose> truth;
   LoopSelector sel;
   int per_lap = 0;
-  Laps3(const LoopConfig& cfg, double radius_m, double claim) : sel(cfg, 4000) {
-    std::mt19937 rng(42);
+  Laps3(const LoopConfig& cfg, double radius_m, double claim, unsigned seed = 42) : sel(cfg, 4000) {
+    std::mt19937 rng(seed);
     std::normal_distribution<double> n01(0.0, 1.0);
     per_lap = static_cast<int>(std::lround(2.0 * test::kLoopPi * radius_m / 0.5));
     const auto circle = [radius_m](int k) {
@@ -360,44 +360,94 @@ struct Laps3 {
   }
 };
 
+// The probe's loops: 4 lap 2 -> lap 1, 5 lap 3 -> lap 1 and 3 lap 3 -> lap 2 (12 true loops).
+struct ThreeLapRun {
+  int removed = 0;
+  int rejected = 0;
+  std::size_t selected = 0;
+  double max_chi2 = 0.0;
+};
+
+ThreeLapRun three_laps(const LoopConfig& cfg, double radius, double claim, unsigned seed) {
+  Laps3 L(cfg, radius, claim, seed);
+  const int N = L.per_lap;
+  std::vector<LoopConstraint> seq;
+  for (int q = 0; q < 4; ++q) {
+    seq.push_back(L.loop(5 + q * N / 5, N + 5 + q * N / 5));
+  }
+  for (int q = 0; q < 5; ++q) {
+    seq.push_back(L.loop(5 + q * N / 5, 2 * N + 5 + q * N / 5));
+  }
+  for (int q = 0; q < 3; ++q) {
+    seq.push_back(L.loop(N + 10 + q * N / 4, 2 * N + 10 + q * N / 4));
+  }
+  ThreeLapRun r;
+  for (std::size_t a = 0; a < seq.size(); ++a) {
+    for (std::size_t b = a + 1; b < seq.size(); ++b) {
+      r.max_chi2 = std::max(r.max_chi2, L.sel.pair_chi2(seq[a], seq[b]));
+    }
+  }
+  for (const LoopConstraint& lc : seq) {
+    r.rejected += L.sel.propose(lc).selected ? 0 : 1;
+    r.removed += static_cast<int>(L.sel.to_remove().size());
+  }
+  r.selected = L.sel.n_selected();
+  return r;
+}
+
+constexpr unsigned kThreeLapSeeds[] = {42U, 1U, 7U, 2024U, 3U, 99U, 31337U};
+
 TEST(LoopSelector, ThreeLapTrueLoopsAllStaySelected) {
   const LoopConfig cfg = pcm_config();
-  for (const double radius : {6.0, 9.0, 12.0, 20.0}) {
-    for (const double claim : {1.0, 0.5}) {
-      Laps3 L(cfg, radius, claim);
-      const int N = L.per_lap;
-      int removed = 0;
-      int rejected = 0;
-      double max_chi2 = 0.0;
-      for (int a = 0; a < 4; ++a) {
-        for (int b = 0; b < 5; ++b) {
-          max_chi2 = std::max(max_chi2,
-                              L.sel.pair_chi2(L.loop(5 + a * N / 5, N + 5 + a * N / 5),
-                                              L.loop(5 + b * N / 5, 2 * N + 5 + b * N / 5)));
-        }
-      }
-      for (int q = 0; q < 4; ++q) {
-        rejected += L.sel.propose(L.loop(5 + q * N / 5, N + 5 + q * N / 5)).selected ? 0 : 1;
-        removed += static_cast<int>(L.sel.to_remove().size());
-      }
-      for (int q = 0; q < 5; ++q) {
-        rejected += L.sel.propose(L.loop(5 + q * N / 5, 2 * N + 5 + q * N / 5)).selected ? 0 : 1;
-        removed += static_cast<int>(L.sel.to_remove().size());
-      }
-      std::printf(
-          "[ pcm three laps ] R %.0f m (%d kf/lap) claim x%.2f: max cross-revisit chi2 %.1f, %d "
-          "removed, %d not selected, %zu of 9 selected\n",
-          radius,
-          N,
-          claim,
-          max_chi2,
-          removed,
-          rejected,
-          L.sel.n_selected());
-      EXPECT_EQ(removed, 0) << radius << " " << claim;
-      EXPECT_EQ(rejected, 0) << radius << " " << claim;
-      EXPECT_EQ(L.sel.n_selected(), 9U) << radius << " " << claim;
+  struct Case {
+    double radius;
+    double claim;
+  };
+  // Claim x1 on every lap size up to 250 m (radius 40 m); claim x0.5 up to 125 m (radius 20 m):
+  // the covered range of pcm_odometry_sigma_scale 1.5 (loop_closure.md 11b; review H3 I-1).
+  const Case cases[] = {{6.0, 1.0},
+                        {9.0, 1.0},
+                        {12.0, 1.0},
+                        {20.0, 1.0},
+                        {40.0, 1.0},
+                        {6.0, 0.5},
+                        {9.0, 0.5},
+                        {12.0, 0.5},
+                        {20.0, 0.5}};
+  for (const Case& c : cases) {
+    double worst = 0.0;
+    for (const unsigned seed : kThreeLapSeeds) {
+      const ThreeLapRun r = three_laps(cfg, c.radius, c.claim, seed);
+      worst = std::max(worst, r.max_chi2);
+      EXPECT_EQ(r.removed, 0) << c.radius << " " << c.claim << " seed " << seed;
+      EXPECT_EQ(r.rejected, 0) << c.radius << " " << c.claim << " seed " << seed;
+      EXPECT_EQ(r.selected, 12U) << c.radius << " " << c.claim << " seed " << seed;
     }
+    std::printf("[ pcm three laps ] R %.0f m claim x%.2f, 7 seeds: largest pair chi2 %.1f\n",
+                c.radius,
+                c.claim,
+                worst);
+  }
+}
+
+// Known limit (review H3 I-1; the owner keeps pcm_odometry_sigma_scale at 1.5 pending a manual
+// test): at claim x0.5 on a 250 m lap (radius 40 m) the white part of a lap, claimed at half its
+// size, exceeds what the 1.5 inflation covers. Measured: seed 2024 rejects 3 true loops (pair
+// chi2 up to 24.5), seed 3 removes 1 and rejects 1 (33.2), seed 31337 rejects 2 (38.0); the others
+// pass. Known answer once covered: every loop selected. Disabled until the owner decides.
+TEST(LoopSelector, DISABLED_ThreeLapRadius40HalfClaimAllStaySelected) {
+  const LoopConfig cfg = pcm_config();
+  for (const unsigned seed : kThreeLapSeeds) {
+    const ThreeLapRun r = three_laps(cfg, 40.0, 0.5, seed);
+    std::printf(
+        "[ pcm three laps ] R 40 m claim x0.50 seed %u: largest pair chi2 %.1f, %d "
+        "removed, %d not selected\n",
+        seed,
+        r.max_chi2,
+        r.removed,
+        r.rejected);
+    EXPECT_EQ(r.removed, 0) << seed;
+    EXPECT_EQ(r.rejected, 0) << seed;
   }
 }
 
@@ -461,8 +511,8 @@ TEST(LoopSelector, YawDriftCovarianceMatchesNumericalDifference) {
 }
 
 // How much the drift term weakens the aliasing rejection: chi2 of a loop aliased by one 2 m
-// period against true loops at increasing distance along the lap, with and without the term
-// (scale 1). The near ones (segments of 7 to 13 keyframes) stay far above the gate.
+// period against true loops 10, 13, 30 and 50 keyframes away, with and without the term (both at
+// the shipped pcm_odometry_sigma_scale 1.5). All four stay above the gate.
 TEST(LoopSelector, YawDriftTermKeepsNearAliasesInconsistent) {
   LoopConfig with = pcm_config();
   LoopConfig without = with;
@@ -481,9 +531,8 @@ TEST(LoopSelector, YawDriftTermKeepsNearAliasesInconsistent) {
         i + 75,
         cw,
         co);
-    if (std::abs(i - 10) <= 13) {
-      EXPECT_GT(cw, with.pcm_chi2_gate) << i;
-    }
+    EXPECT_GT(cw, with.pcm_chi2_gate) << i;
+    EXPECT_GT(co, with.pcm_chi2_gate) << i;
   }
 }
 

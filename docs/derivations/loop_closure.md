@@ -334,8 +334,11 @@ with the whole estimator see section 12.
 
 Mangelson, Dominic, Eustice and Vasudevan (2018): a set of loops is trustworthy when its loops
 agree with each other; the largest set of pairwise consistent loops is selected (maximum clique).
-This needs no trust in the graph's absolute covariance: the drift accumulated between the two
-passes is common to both loops of a pair and cancels in their cycle.
+This needs no trust in the graph's absolute covariance: when the two odometry segments of a
+pair's cycle are of similar length and direction (two loops of one revisit), the drift
+accumulated between the two passes is common to both loops and cancels in their cycle. Over long
+cycles it does not cancel (a loop `(i, i+N)` against `(i, i+2N)` holds a whole lap of odometry),
+and the odometry's drift has to be in the covariance: section 11b.
 
 **Odometry chain** (`loop::LoopSelector`, no GTSAM). The pipeline gives each keyframe's LiDAR
 factor measurement `Z_k = T_{k-1,k}` with its covariance `C_k` (`[rho, phi]`, frame `b_k`),
@@ -410,9 +413,14 @@ position, has covariance `sigma_b^2 L^3 / 2`: lateral error equals distance time
 fully correlated. Prefix sums keep the query O(1); the cost is one 6-vector per keyframe.
 `YawDriftCovarianceMatchesNumericalDifference` checks `g` against central differences of the
 re-composed chain (perturbing `b` by 1e-6 rad/m) to 1e-6, in both directions. The two odometry
-segments of a cycle get independent `b`s: a common drift would partly cancel between them, so
-this over-states the cycle covariance (more permissive), as the independence of the step noise
-already does.
+segments of a cycle get independent `b`s. When the cycle traverses them in opposite senses (two
+loops of one revisit in the same direction: `i_a < i_b` and `j_a < j_b`) a common drift cancels
+between them, so independence over-states the cycle covariance (more permissive). When it
+traverses them in the same sense (a revisit in the reverse direction: `i_a < i_b` but
+`j_a > j_b`) a common drift adds, up to twice the variance independence gives, and the test is
+stricter than the model intends. The review's out-and-back probe (corridors of 20 / 50 / 100 m,
+reverse revisits, drift at 1 and 1.5 sigma) stayed below chi2 8.4, so this has not mattered at
+the default; a correlated-drift model across segments is a refinement if it does.
 
 **Default.** `sigma_b = 0.2 deg/m`: the repo's own odometry error model, the yaw bias of the
 synthetic drifting odometry (0.1 deg per 0.5 m step, `LoopComponent.TwoLapDrift*`, the review's
@@ -423,10 +431,23 @@ largest drift the pairwise test then forgives.
 
 **Remaining inflation.** With the drift term, `s = 1` closes every true loop of the three-lap
 probe at the claimed covariance but rejects one at claimed sigma x0.5 (radius 9 m, chi2 25.1, the
-white part of a whole lap claimed at half its size); `s = 1.5` closes all (largest chi2 13.5). So
-`s` now covers only a claimed white step noise up to 1.5 times too small, not the bias.
+white part of a whole lap claimed at half its size); `s = 1.5` closes the probe's laps up to 125 m
+(radius 20 m). So `s` covers a claimed white step noise up to 1.5 times too small, not the bias.
+**Honest limit (review H3 I-1):** claim x0.5 is 2 times too small, and 1.5 holds it only for
+cycles up to about 125 m. On a 250 m lap (radius 40 m, 12 true loops, 7 seeds) claim x1 keeps
+every loop (largest chi2 12.3) but claim x0.5 loses 1 to 3 true loops at 3 of 7 seeds (seed 2024:
+3 rejected, chi2 24.5; seed 3: 1 removed and 1 rejected, 33.2; seed 31337: 2 rejected, 38.0)
+(`ThreeLapTrueLoopsAllStaySelected`, `DISABLED_ThreeLapRadius40HalfClaimAllStaySelected`).
+`s = 2` would cover it at the price of weaker aliasing rejection against far loops; the owner
+decides after a manual test.
 
-| three laps, 4 + 5 true loops | `s = 2`, no drift term (before) | `s = 1.5`, `sigma_b = 0.2 deg/m` |
+**First-order limit (review H3 m-2).** The drift term is linear in `b`. With a true drift of 1.5
+to 2 times `sigma_b` on laps of 125 m and more, the yaw accumulated over a lap (about 50 to 100
+deg) is far outside the linearisation, and true loops are rejected and removed again (up to 9 of
+12 removed at 2 sigma, radius 40 m, claim x0.5). The model holds while `sigma_b` bounds the real
+drift and the accumulated yaw per cycle stays moderate; calibrating `sigma_b` (C1-27) sets that.
+
+| three laps, 4 + 5 true loops, seed 42 | `s = 2`, no drift term (before) | `s = 1.5`, `sigma_b = 0.2 deg/m` |
 | --- | --- | --- |
 | radius 6 m (75 keyframes per lap), claim x1 / x0.5 | 0 / 2 removed | 0 / 0 (largest chi2 3.9 / 9.4) |
 | radius 9 m (113), x1 / x0.5 | 0 / 4 removed | 0 / 0 (5.0 / 13.5) |
@@ -436,7 +457,8 @@ white part of a whole lap claimed at half its size); `s = 1.5` closes all (large
 **Aliasing.** The drift term grows with the segment, so it weakens the rejection of an alias
 only against far true loops: a loop aliased by 2 m against true loops 10, 13, 30 and 50 keyframes
 away gives chi2 161.4 / 100.7 / 49.9 / 33.8 with the term and 161.5 / 100.7 / 51.3 / 35.5 without
-(`YawDriftTermKeepsNearAliasesInconsistent`, `s = 1.5`): at most 5 %, all still above the gate.
+(`YawDriftTermKeepsNearAliasesInconsistent`, `s = 1.5`, all four asserted): at most 5 %, all
+still above the gate.
 With `s = 2` and no drift term the 50-keyframe pair had dropped to 21 (below the gate).
 
 **Selection.** Up to `pcm_max_loops` (64) loops, one bit each: consistency bitsets, maximum
