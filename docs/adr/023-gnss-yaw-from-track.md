@@ -207,6 +207,8 @@ Quyết định:
 
 22. **Bốn mutant sống sót** (G12) bị test giết: `ext_path_ok`, `wheel_ok` của phần kéo dài, đánh dấu nửa khối của khoảng trống qua ranh giới khối, vị trí front-end của `b` thay vì `o`. Mutant của cận khoảng trống: study mục 18.4; bộ mutation đầy đủ: mục 18.9.
 
+23. **Số hạng trôi có màu của GNSS** (G10, `gnss.align_yaw_drift_var_m2_per_s` 0,0017 m^2/s). Sai số fix là nhiễu trắng cộng bước ngẫu nhiên với tốc độ phương sai mỗi trục `q` (con số phần cứng; trôi `d` mỗi fix ở tần số `f` cho `d^2 f`; 0,0017 là trôi Gauss-Markov của mô phỏng, `2 sigma^2 / tau` với 0,5 m và 300 s). Đoạn có hai tâm khối cách nhau `dt` cộng `q dt |a|^2` vào tử số của sigma yaw và vào nhiễu của cửa sổ nhất quán; cần thời gian fix (`TrackYawReadings::t`, pipeline đưa `m.t`), không có thì số hạng bằng 0. Đoạn kéo dài nhận trọn `q dt` của nó (review F2: phần kéo dài không có số hạng trôi). Trường hợp của F2, 0,05 m/s ở 0,02 m mỗi fix: 10 / 8 / 10 trong 100 quá 3 sigma xuống 0 / 1 / 1 (ba bộ seed), mọi lượt căn chỉnh (trung vị 4,5 m thay vì 3,3 m). Trong tốc độ khai báo, mọi ô của lưới tối đa 1/100 trên cả ba bộ seed. Chỉ nhiễu trắng: xe 0,03 m/s vẫn căn chỉnh, sau 6,0 m thay vì 3,1 m. Trôi trên tốc độ khai báo nằm ngoài mô hình: ở 0,05 m mỗi fix (7 lần tốc độ khai báo), từ 0,05 m/s trở lên 1 đến 38/100 quá 3 sigma (2b: 4 đến 52), khai báo đúng tốc độ đó thì 0 hoặc 1/100. Riêng 0,02 m/s ở 0,05 m mỗi fix số lượt quá 3 sigma tăng, 4 / 1 / 3 lên 11 / 10 / 10 (review H4 m-5): với khoá 2b cửa sổ liên tục lệch nên chỉ 5 / 2 / 5 lượt căn chỉnh, phần lớn sai; số hạng trôi nới cửa sổ nên 35 / 26 / 33 lượt căn chỉnh, một phần ba quá 3 sigma vì `q` nhỏ 7 lần. Khai báo đúng `q` thì ô này không căn chỉnh và không ô nào quá 1/100; bỏ số hạng khỏi cửa sổ thì ô này hết nhưng ô của F2 thành 2 / 3 / 2 và các hàng 0,05 m mỗi fix tăng gấp đôi, nên cửa sổ giữ số hạng. Có hiệu lực cả với khoá của thiết kế 2 khi cờ cha bật (review H4 m-7). Giá trị YAML là con số của từng máy thu (phán quyết của chủ dự án 2026-10-30, G18): > 0 và hữu hạn, kiểm khi khởi động; cách chọn ở chú thích config và `gnss.md` mục 5.3; đặt thấp quá thì xe chậm căn chỉnh tự tin mà sai, cao quá thì căn chỉnh muộn.
+
 Phương án đã cân nhắc thêm:
 
 | Phương án | Điểm cộng | Vì sao không chọn |
@@ -214,8 +216,10 @@ Phương án đã cân nhắc thêm:
 | Bù Schur 3x3 của `H_rho` dọc `d` (đề xuất của review) | Một phép giải 3x3 | Chỉ biên hoá phép quay, vẫn đếm ràng buộc ngang khi trục chạy lệch trục hành lang; thông tin biên đầy đủ dùng lại phân rã của module degeneracy |
 | Dùng cờ của `degeneracy::analyze` (một hướng bị đánh dấu có thành phần dọc trục chạy) | Đúng nguyên văn "các hướng bị đánh dấu" | Cần ngưỡng thứ hai cho "thành phần dọc trục"; thông tin biên trùng với cờ khi trục chạy là vectơ riêng và không cần ngưỡng đó |
 | Không bắc cầu khi đồng hồ quãng không liên tục | Đơn giản | Trong pipeline mọi số đọc thiếu đều là một khoảng trống mẫu, nên bỏ hẳn lợi ích của quyết định 17; chặn sai số giữ được nó |
+| Cổng phần kéo dài theo ngân sách trôi | Không cần thời gian fix | Chỉ sửa đoạn kéo dài; số hạng trôi sửa mọi đoạn và cho sigma đúng |
 
 Hệ quả (mục 18):
 - Khi cờ tắt: `est.tum` của E-01..E-03 trùng md5 với main e946ee9 (xem mục 18.8).
 - Hợp đồng (G3): thêm `degeneracy::marginal_information`, `GnssTrackYawAligner::n_frontend_wheel_disagreements()`, `Estimator::Stats::n_gnss_frontend_wheel_disagree`; bỏ trường `GnssConfig::align_yaw_frontend_min_info` và khoá YAML của nó (thay bằng `degeneracy.eig_threshold`, có thông báo lỗi riêng); kiểm chéo `degeneracy.eig_threshold > 0` khi cổng bật.
 - Hợp đồng (G9): thêm struct `gnss::TrackYawReadings` và overload `update(..., const TrackYawReadings&)`, trường `GnssConfig::align_yaw_wheel_gap_periods` và khoá YAML, `Estimator::Stats::n_wheel_gap_bounded`.
+- Hợp đồng (G10): trường `GnssConfig::align_yaw_drift_var_m2_per_s` và khoá YAML.
