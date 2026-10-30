@@ -509,8 +509,9 @@ and re-syncs the front end as after a new loop (section 5).
 | --- | --- | --- |
 | two-lap drift, claimed sigma x1 | 1.207 -> 0.082 m, 4 loops | 1.207 -> 0.082 m, 4 loops |
 | two-lap drift, seeds 42 / 1 / 7 / 2024, claimed sigma x1 | as without PCM | the same loops as without PCM, end-to-start equal (0.082 / 0.125 / 1.199 / 0.454 m), none removed |
-| two-lap drift, claimed sigma x0.5 (review I-1) | 1.207 m, 0 loops, 43 gated | 0.548 m, 4 loops (seed 42; seed 7 rejects one true loop: B-1, held) |
-| two-lap drift, claimed sigma x0.25 | 1.207 m, 0 loops | 1.123 m, 3 loops (the 4th is not verified, as without any gate) |
+| two-lap drift, seeds 42 / 1 / 7 / 2024, claimed sigma x0.5 (review I-1) | 1.207 m at seed 42, 0 loops, 43 gated | as without PCM: 0.548 / 1.156 / 1.129 / 0.299 m, none rejected or removed (before the drift term seed 7 lost a true loop: 1.350 m) |
+| the same, claimed sigma x0.25 | 1.207 m, 0 loops | as without PCM: 1.123 / 1.399 / 1.698 / 0.511 m (before the drift term seed 2024 lost a true loop: 0.576 m) |
+| three laps, radius 6 / 9 / 12 / 20 m, claimed sigma x1 and x0.5 (review B-1) | n/a | 9 of 9 true loops selected, none removed (before the drift term: 2 to 4 removed) |
 | known loops + 3 aliased, one before any true loop | n/a | aliased one removed, others never selected, end-to-start 0.055 m (0.051 m without them; Cauchy only 0.077 m) |
 | whole estimator, injected wrong loop then two true ones | n/a | wrong loop removed, first true one re-added, run ends as with the true loops only (`PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne`) |
 | aliasing probe, P = 2 / 2.5 m, drift 0 to 2.5 m | false loops at large drift on the loose chain (drag 0.34 to 0.64 m) | every case ambiguous, nothing added (drag 0); the graph's covariance is not used, so chain stiffness plays no part |

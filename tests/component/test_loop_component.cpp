@@ -328,12 +328,11 @@ TEST(LoopComponent, TwoLapPcmNoWorseThanWithoutAcrossSeeds) {
   }
 }
 
-// Review H3 B-1 (held for the owner's decision; prepared known answer): the same with the
-// claimed covariance halved and quartered (overconfident odometry). Known answer: PCM no worse
-// than without it. Today: seed 7 x0.5 rejects one true loop (1.350 m against 1.129 m without
-// PCM) and seed 2024 x0.25 one (0.576 against 0.511 m); the other cases are equal. Enabled with
-// the B-1 fix.
-TEST(LoopComponent, DISABLED_TwoLapOverconfidentPcmNoWorseThanWithoutAcrossSeeds) {
+// Review H3 B-1, fixed by the yaw-drift term (ADR-028 amendment C): the same with the claimed
+// covariance halved and quartered (overconfident odometry). PCM is no worse than without it.
+// Before the drift term: seed 7 x0.5 rejected one true loop (1.350 m against 1.129 m without
+// PCM) and seed 2024 x0.25 one (0.576 against 0.511 m).
+TEST(LoopComponent, TwoLapOverconfidentPcmNoWorseThanWithoutAcrossSeeds) {
   if (!ct::kWithGtsam) {
     GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
   }
@@ -1034,7 +1033,7 @@ TEST(LoopAliasing, OptionalGraphGateArbitratesWhileDriftIsWithinGraphCovariance)
 // Known limit of the optional graph gate (review H3 I-1, why it is off): with the claimed
 // odometry covariance halved, the gate rejects every true loop of the two-lap run and the drift
 // stays (end-to-start as with loops off); without the gate, seed 42 closes it to 0.548 m with
-// or without PCM (LoopComponent.DISABLED_TwoLapOverconfidentPcmNoWorseThanWithoutAcrossSeeds).
+// or without PCM (LoopComponent.TwoLapOverconfidentPcmNoWorseThanWithoutAcrossSeeds).
 TEST(LoopKnownLimits, GraphGateDropsTrueLoopsOnAnOverconfidentGraph) {
   if (!ct::kWithGtsam) {
     GTEST_SKIP() << "needs GTSAM";
