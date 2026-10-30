@@ -103,6 +103,11 @@ struct GnssConfig {
   // aligning on drift (0: white fixes only, the struct default; load_config requires > 0 and
   // finite: a per-receiver value, backlog G18).
   double align_yaw_drift_var_m2_per_s = 0.0;
+  // rad: a segment that turns by more than this (and at most align_yaw_max_turn_rad) takes its
+  // direction from the path of o (the front end where observed, else the wheel path) when that
+  // path exists, instead of the mean heading, whose chord bias grows with the turn (pi: never)
+  // ((0, pi]).
+  double align_yaw_path_min_turn_rad = 3.14159265358979323846;
 };
 
 }  // namespace mss::gnss

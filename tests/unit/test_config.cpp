@@ -448,7 +448,8 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
           .is_ok());
   // G15 flag off.
   EXPECT_FALSE(cfg.value().gnss.align_yaw_sigma_frontend_cov);
-  // Hardening of design 2b (gnss.md section 5.3): wheel gap > 1 period, drift rate > 0.
+  // Hardening of design 2b (gnss.md section 5.3): wheel gap > 1 period, drift rate > 0, path
+  // turn in (0, 180] deg.
   EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_wheel_gap_periods, 3.0);
   const auto bad_wheel_gap = parse_config(
       read_file(kDefault), overlay("    gnss:\n      align_yaw_wheel_gap_periods: 1\n"));
@@ -475,6 +476,16 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
     ASSERT_FALSE(bad_drift.is_ok());
     EXPECT_TRUE(mentions(bad_drift.reason(), "gnss.align_yaw_drift_var_m2_per_s: expected"))
         << bad_drift.reason();
+  }
+  EXPECT_NEAR(cfg.value().gnss.align_yaw_path_min_turn_rad, 10.0 * mss::gnss::kRadPerDegree, 1e-12);
+  for (const char* v : {"0", "181"}) {
+    const auto bad_turn = parse_config(
+        read_file(kDefault),
+        overlay(std::string("    gnss:\n      align_yaw_path_min_turn_deg: ") + v + "\n"));
+    ASSERT_FALSE(bad_turn.is_ok());
+    EXPECT_TRUE(
+        mentions(bad_turn.reason(), "gnss.align_yaw_path_min_turn_deg: must be in (0, 180]"))
+        << bad_turn.reason();
   }
   for (const char* v : {"0", "1"}) {
     const auto bad_slip = parse_config(
