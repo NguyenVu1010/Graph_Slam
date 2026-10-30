@@ -66,6 +66,27 @@ common::PoseCovariance prior_cov(const backend::BackendConfig& b) {
 
 const CoreTestHooks* g_test_hooks = nullptr;  // test-only, see set_core_test_hooks
 
+// ADR-026 amendment / ADR-028: the graph's relative marginal of (i, j) for the optional loop
+// correction gate (loop_closure.graph_covariance_gate). Lives for one try_loop_closure() call,
+// on the estimator thread; keeps the reason of the last failure for the log (review M-5).
+class GraphRelativeCovariance final : public loop::RelativeCovarianceSource {
+ public:
+  explicit GraphRelativeCovariance(const backend::Graph& graph) : graph_(graph) {}
+  common::Result<common::PoseCovariance> relative_cov(common::KeyId i,
+                                                      common::KeyId j) const override {
+    common::Result<common::PoseCovariance> r = graph_.relative_pose_cov(i, j);
+    if (!r.is_ok()) {
+      last_error_ = r.reason();
+    }
+    return r;
+  }
+  const std::string& last_error() const { return last_error_; }
+
+ private:
+  const backend::Graph& graph_;
+  mutable std::string last_error_;
+};
+
 }  // namespace
 
 void set_core_test_hooks(const CoreTestHooks* hooks) {
@@ -769,10 +790,24 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
     return false;  // stub backend, or keyframe j has no pose: nothing to search with
   }
   ++counters_.n_loop_searches;
-  const loop::LoopResult r =
-      loop_.detect(loop_views_.back(), common::Span<const loop::KeyframeView>(loop_views_));
+  const GraphRelativeCovariance rel(graph_);
+  loop::LoopResult r;
+  if (hooks_ != nullptr && hooks_->loop_inject) {  // test-only seam
+    r = hooks_->loop_inject(common::Span<const loop::KeyframeView>(loop_views_));
+  } else {
+    r = loop_.detect(loop_views_.back(), common::Span<const loop::KeyframeView>(loop_views_), &rel);
+  }
   if (observer() != nullptr) {
     observer()->on_loop_search(t, r);
+  }
+  if (r.outcome == loop::LoopOutcome::kNoMarginal) {
+    ++counters_.n_loops_no_marginal;
+    common::log_warn("loop closure: relative marginal failed, candidate rejected: " +
+                     rel.last_error());
+  }
+  if (r.outcome == loop::LoopOutcome::kAmbiguous) {
+    // Review H3 I-2: in repeated structure every search is ambiguous; pause the search.
+    loop_skip_ = cfg_.loop_closure.ambiguity_backoff_keyframes;
   }
   if (r.outcome != loop::LoopOutcome::kAccepted) {
     counters_.n_loops_rejected += r.n_verified > 0 ? 1U : 0U;

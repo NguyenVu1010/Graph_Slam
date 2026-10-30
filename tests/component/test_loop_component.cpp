@@ -3,6 +3,7 @@
 //     circle in the pillar hall with drifting odometry (relative factors carrying a yaw bias,
 //     covariance consistent with it): with loops the end-to-start error drops, every accepted
 //     loop matches the truth.
+//     The detector gets the graph's relative marginal (correction gate), as in the pipeline.
 //   - LoopComponent.BoxWorldEstimatorLoops: the whole Estimator on the box world (two laps):
 //     loops are found, each one matches the truth, the trajectory is not degraded and the
 //     front end keeps matching after the corrections (map rebuilt).
@@ -14,7 +15,9 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <random>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -53,13 +56,26 @@ constexpr double kRadiusM = 6.0;              // circle radius in the hall, m
 constexpr double kStepM = 0.5;                // keyframe spacing along the circle, m
 constexpr int kKeyframes = 151;               // two laps (75.4 keyframes per lap) and the start
 constexpr double kYawBiasRad = 0.1 * kDeg;    // odometry yaw bias per keyframe step
-constexpr double kYawSigmaRad = 0.15 * kDeg;  // claimed odometry yaw sigma per step
-constexpr double kPosSigmaM = 0.02;           // claimed odometry position sigma per step
+constexpr double kYawSigmaRad = 0.15 * kDeg;  // odometry yaw noise sigma per step
+constexpr double kPosSigmaM = 0.02;           // odometry position noise sigma per step
 
 Pose circle_pose(int k) {
   const double a = k * kStepM / kRadiusM;  // arc angle
   return test::body_pose(kRadiusM * std::sin(a), kRadiusM * (1.0 - std::cos(a)) - kRadiusM, a);
 }
+
+// The pipeline's source of the correction gate (as in EstimatorCore): the graph's relative
+// marginal of (i, j).
+class GraphRelativeCovariance : public loop::RelativeCovarianceSource {
+ public:
+  explicit GraphRelativeCovariance(const backend::Graph& g) : g_(g) {}
+  common::Result<common::PoseCovariance> relative_cov(KeyId i, KeyId j) const override {
+    return g_.relative_pose_cov(i, j);
+  }
+
+ private:
+  const backend::Graph& g_;
+};
 
 struct LapRun {
   double end_to_start_m = 0.0;
@@ -67,25 +83,47 @@ struct LapRun {
   int false_loops = 0;
   double max_err_m = 0.0;
   double max_err_rad = 0.0;
+  int searches = 0;
+  int ambiguous = 0;   // rejected by the ambiguity check
+  int correction = 0;  // rejected by a correction gate
 };
 
+// How a two-lap run is set up (review H3 I-1: the claimed odometry covariance is scaled by
+// `claim` while the noise keeps its sigmas, so claim < 1 is an overconfident graph).
+struct LapOptions {
+  bool loops_on = true;
+  double claim = 1.0;
+  bool graph_gate = false;  // loop_closure.graph_covariance_gate
+  unsigned seed = 42;       // odometry noise draw
+};
+
+LapRun run_two_laps(const Config& cfg, const LapOptions& o);
+
 LapRun run_two_laps(const Config& cfg, bool loops_on) {
+  LapOptions o;
+  o.loops_on = loops_on;
+  return run_two_laps(cfg, o);
+}
+
+LapRun run_two_laps(const Config& cfg, const LapOptions& o) {
   LapRun out;
+  const bool loops_on = o.loops_on;
   const std::vector<Vec3> hall = test::hall_points_w(0.4);
   const Pose T_b_l = test::loop_T_b_l();
   constexpr std::size_t kMaxPoints = 20000;
   backend::Graph graph(cfg.backend, cfg.imu, Vec3::Zero());
   loop::LoopConfig lc = cfg.loop_closure;
   lc.enabled = loops_on;
+  lc.graph_covariance_gate = o.graph_gate;
   loop::LoopDetector det(lc, cfg.scan_match, cfg.map, T_b_l, kMaxPoints);
   std::vector<std::unique_ptr<common::ScanFrame>> clouds;
   std::vector<loop::KeyframeView> views;
-  std::mt19937 rng(42);
+  std::mt19937 rng(o.seed);
   std::normal_distribution<double> n01(0.0, 1.0);
   common::PoseCovariance cov = common::PoseCovariance::Zero();
   for (int a = 0; a < 3; ++a) {
-    cov(a, a) = kPosSigmaM * kPosSigmaM;
-    cov(a + 3, a + 3) = kYawSigmaRad * kYawSigmaRad;
+    cov(a, a) = o.claim * o.claim * kPosSigmaM * kPosSigmaM;
+    cov(a + 3, a + 3) = o.claim * o.claim * kYawSigmaRad * kYawSigmaRad;
   }
   Pose guess = circle_pose(0);
   int skip = 0;
@@ -129,11 +167,21 @@ LapRun run_two_laps(const Config& cfg, bool loops_on) {
       v.cloud_l = clouds[static_cast<std::size_t>(i)].get();
       views.push_back(v);
     }
+    const GraphRelativeCovariance rel(graph);
     const loop::LoopResult r =
-        det.detect(views.back(), common::Span<const loop::KeyframeView>(views));
+        det.detect(views.back(), common::Span<const loop::KeyframeView>(views), &rel);
+    out.searches += 1;
+    out.ambiguous += r.outcome == loop::LoopOutcome::kAmbiguous ? 1 : 0;
+    out.correction += r.outcome == loop::LoopOutcome::kCorrection ? 1 : 0;
     if (r.outcome != loop::LoopOutcome::kAccepted) {
       continue;
     }
+    graph.add_loop_factor(r.constraint);
+    for (int u = 0; u <= lc.isam_extra_updates; ++u) {
+      EXPECT_TRUE(graph.optimize().is_ok());
+    }
+    guess = graph.keyframe_state(static_cast<KeyId>(k)).value().T_w_b;
+    skip = lc.min_interval_keyframes;
     ++out.accepted;
     const Pose truth = circle_pose(static_cast<int>(r.constraint.i)).inverse() * circle_pose(k);
     const double e_p = (r.constraint.T_bi_bj.p - truth.p).norm();
@@ -149,18 +197,14 @@ LapRun run_two_laps(const Config& cfg, bool loops_on) {
                 r.sc_distance,
                 r.inlier_ratio,
                 r.rms_m);
-    graph.add_loop_factor(r.constraint);
-    for (int u = 0; u <= lc.isam_extra_updates; ++u) {
-      EXPECT_TRUE(graph.optimize().is_ok());
-    }
-    guess = graph.keyframe_state(static_cast<KeyId>(k)).value().T_w_b;
-    skip = lc.min_interval_keyframes;
   }
-  const Pose e0 = graph.keyframe_state(0).value().T_w_b;
-  const Pose eN = graph.keyframe_state(static_cast<KeyId>(kKeyframes - 1)).value().T_w_b;
-  const Vec3 d_est = e0.inverse() * eN.p;
-  const Vec3 d_true = circle_pose(0).inverse() * circle_pose(kKeyframes - 1).p;
-  out.end_to_start_m = (d_est - d_true).norm();
+  {
+    const Pose e0 = graph.keyframe_state(0).value().T_w_b;
+    const Pose eN = graph.keyframe_state(static_cast<KeyId>(kKeyframes - 1)).value().T_w_b;
+    const Vec3 d_est = e0.inverse() * eN.p;
+    const Vec3 d_true = circle_pose(0).inverse() * circle_pose(kKeyframes - 1).p;
+    out.end_to_start_m = (d_est - d_true).norm();
+  }
   return out;
 }
 
@@ -177,11 +221,16 @@ TEST(LoopComponent, TwoLapDriftClosedByLoops) {
   const Config cfg = shipped_config();
   const LapRun off = run_two_laps(cfg, false);
   const LapRun on = run_two_laps(cfg, true);
-  std::printf("[ loop two laps ] end-to-start off %.3f m, on %.3f m; %d loops accepted, %d false\n",
-              off.end_to_start_m,
-              on.end_to_start_m,
-              on.accepted,
-              on.false_loops);
+  std::printf(
+      "[ loop two laps ] end-to-start off %.3f m, on %.3f m; %d searches, %d loops accepted, "
+      "%d false, %d ambiguous, %d correction-gated\n",
+      off.end_to_start_m,
+      on.end_to_start_m,
+      on.searches,
+      on.accepted,
+      on.false_loops,
+      on.ambiguous,
+      on.correction);
   RecordProperty("end_to_start_off_m", std::to_string(off.end_to_start_m));
   RecordProperty("end_to_start_on_m", std::to_string(on.end_to_start_m));
   EXPECT_EQ(off.accepted, 0);
@@ -268,6 +317,55 @@ TEST(LoopComponent, BoxWorldEstimatorLoops) {
   EXPECT_LE(e_on.ate_m, 1.2 * e_off.ate_m + 0.001);
 }
 
+// Review H3 I-2: in repeated structure every search is ambiguous; after a kAmbiguous result
+// the pipeline skips ambiguity_backoff_keyframes keyframes. Every search is made ambiguous
+// (injected) on the box world: with a back-off of B the searches are about 1 / (1 + B) of
+// those with none (counted by the hook, which only runs when a search runs).
+TEST(LoopComponent, AmbiguousResultBacksOffTheSearch) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  test::BoxWorldParams p;
+  p.motion_s = 30.0;
+  const std::filesystem::path dir = ct::test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  int calls[2] = {0, 0};
+  std::uint64_t searches[2] = {0, 0};
+  const int backoff[2] = {0, 5};
+  for (int n = 0; n < 2; ++n) {
+    const Config cfg = ct::box_config(
+        p,
+        false,
+        false,
+        dir / ("cfg" + std::to_string(n)),
+        "    loop_closure:\n      enabled: true\n      ambiguity_backoff_keyframes: " +
+            std::to_string(backoff[n]) + "\n");
+    detail::CoreTestHooks hooks;
+    hooks.loop_inject = [&calls, n](common::Span<const loop::KeyframeView> /*v*/) {
+      ++calls[n];
+      loop::LoopResult r;
+      r.outcome = loop::LoopOutcome::kAmbiguous;
+      r.n_verified = 1;
+      return r;
+    };
+    ct::ReplayResult r;
+    {
+      ct::HooksScope scope(&hooks);
+      r = ct::replay(dir / "data", cfg);
+    }
+    searches[n] = r.stats.n_loop_searches;
+  }
+  std::printf("[ loop backoff ] searches without back-off %llu, with 5: %llu\n",
+              static_cast<unsigned long long>(searches[0]),
+              static_cast<unsigned long long>(searches[1]));
+  EXPECT_EQ(static_cast<std::uint64_t>(calls[0]), searches[0]);
+  EXPECT_EQ(static_cast<std::uint64_t>(calls[1]), searches[1]);
+  ASSERT_GT(searches[0], 12U);
+  // One search per 6 keyframes (the last block may be partial).
+  EXPECT_LE(searches[1], searches[0] / 6 + 1);
+  EXPECT_GE(searches[1], searches[0] / 6);
+}
+
 // I-4 (review C1): every iSAM2 update after the one that adds the loop fails (injected). The
 // loop factor is committed by then, so the loop must count, the front end re-sync and the next
 // min_interval_keyframes keyframes skip the search: no loop is added twice.
@@ -308,8 +406,9 @@ TEST(LoopComponent, ExtraUpdateFailureKeepsLoopCountedAndNotDuplicated) {
   EXPECT_LT(e.ate_m, 0.05);
 }
 
-// --- Known limits (review C1, I-1 and I-2): these tests pin the CURRENT behaviour ----------
-// They document limits stated in ADR-026; a fix (backlog C1-12, C1-13) changes them on purpose.
+// --- Repeated structure (C1-12) and known limits (review C1, I-2; ADR-026 amendment) --------
+// LoopKnownLimits.* pin CURRENT behaviour stated in ADR-026; a fix (backlog C1-13, C1-3)
+// changes them on purpose.
 
 // Closed lap of n keyframes on a circle (0.5 m steps), noise-free odometry with the given
 // sigmas, then a loop (0, n-1) whose measurement is truth * correction with covariance lcov.
@@ -359,15 +458,63 @@ double applied_correction(const Config& cfg,
   return ((T0.inverse() * Tn).p - (truth(0).inverse() * truth(kN - 1)).p).norm();
 }
 
-// I-1: repeated structure with period P (2 m). While the graph drift along the corridor is
-// below P/2 the loop is correct; above it ICP snaps to the neighbouring pillar pair and the
-// false loop passes every gate (error ~P). On a loose chain (2 cm / 0.15 deg per 0.5 m step)
-// it drags the graph by most of what it asks; on a stiff chain (5 mm) by centimetres.
-TEST(LoopKnownLimits, PeriodicStructureAliasingAboveHalfPeriod) {
-  Config cfg = shipped_config();
-  cfg.loop_closure.enabled = true;
-  constexpr double kPeriodM = 2.0;
-  const std::vector<Vec3> w = test::periodic_corridor_w(kPeriodM);
+// Relative covariance of (0, n-1) of the closed lap above with the given chain sigmas, from
+// the graph (as the pipeline's correction gate sees it).
+common::PoseCovariance lap_relative_cov(const Config& cfg, double sig_m, double sig_rad) {
+  constexpr int kN = 61;
+  backend::Graph g(cfg.backend, cfg.imu, Vec3::Zero());
+  const double R = 0.5 * (kN - 1) / (2.0 * test::kLoopPi);
+  const auto truth = [&](int k) {
+    const double a = 2.0 * test::kLoopPi * k / (kN - 1);
+    return test::body_pose(R * std::sin(a), R * (1.0 - std::cos(a)), a);
+  };
+  common::PoseCovariance cov = common::PoseCovariance::Zero();
+  for (int a = 0; a < 3; ++a) {
+    cov(a, a) = sig_m * sig_m;
+    cov(a + 3, a + 3) = sig_rad * sig_rad;
+  }
+  for (int k = 0; k < kN; ++k) {
+    common::NavState x0;
+    x0.t = common::Timestamp{k * kNsPerS};
+    x0.T_w_b = truth(k);
+    g.add_keyframe(x0.t, x0);
+    if (k > 0) {
+      g.add_lidar_factor(static_cast<KeyId>(k - 1),
+                         static_cast<KeyId>(k),
+                         truth(k - 1).inverse() * truth(k),
+                         cov,
+                         nullptr);
+    }
+    EXPECT_TRUE(g.optimize().is_ok());
+  }
+  const common::Result<common::PoseCovariance> r = g.relative_pose_cov(0, kN - 1);
+  EXPECT_TRUE(r.is_ok()) << r.reason();
+  return r.is_ok() ? r.value() : common::PoseCovariance::Identity();
+}
+
+class FixedRelativeCovariance : public loop::RelativeCovarianceSource {
+ public:
+  explicit FixedRelativeCovariance(const common::PoseCovariance& c) : c_(c) {}
+  common::Result<common::PoseCovariance> relative_cov(KeyId /*i*/, KeyId /*j*/) const override {
+    return common::Result<common::PoseCovariance>::ok(c_);
+  }
+
+ private:
+  common::PoseCovariance c_;
+};
+
+// The review's periodic corridor (C1-12): identical pillar pairs every P m, the query truly at
+// the candidate's place, the graph `drift_m` further along the corridor.
+struct AliasCase {
+  loop::LoopResult r;
+  double err_m = 0.0;  // accepted loop vs truth (translation), m
+};
+
+AliasCase alias_case(const Config& cfg,
+                     double period_m,
+                     double drift_m,
+                     const loop::RelativeCovarianceSource* rel) {
+  const std::vector<Vec3> w = test::periodic_corridor_w(period_m);
   const Pose T_b_l = test::loop_T_b_l();
   constexpr std::size_t kMaxPoints = 60000;
   common::ScanFrame cc(kMaxPoints);
@@ -377,54 +524,140 @@ TEST(LoopKnownLimits, PeriodicStructureAliasingAboveHalfPeriod) {
   test::scan_at(w, tc * T_b_l, 15.0, cc);
   test::scan_at(w, tq * T_b_l, 15.0, cq);
   loop::LoopDetector det(cfg.loop_closure, cfg.scan_match, cfg.map, T_b_l, kMaxPoints);
-  const auto run = [&](double drift_m) {
-    std::vector<loop::KeyframeView> k(2);
-    k[0].id = 0;
-    k[0].t = common::Timestamp{0};
-    k[0].T_w_b = tc;
-    k[0].cloud_l = &cc;
-    k[1].id = 1;
-    k[1].t = common::Timestamp{100 * kNsPerS};
-    k[1].T_w_b = test::body_pose(0.1 + drift_m, 0.1, 3.0 * kDeg);
-    k[1].cloud_l = &cq;
-    return det.detect(k[1], common::Span<const loop::KeyframeView>(k));
-  };
-  const Pose truth = tc.inverse() * tq;
-  // Drift below P/2: correct.
-  const loop::LoopResult good = run(0.6);
-  ASSERT_EQ(good.outcome, loop::LoopOutcome::kAccepted);
-  EXPECT_LT((good.constraint.T_bi_bj.p - truth.p).norm(), kLoopTolM);
-  // Drift above P/2: accepted and wrong by about one period (the current limit).
-  const loop::LoopResult bad = run(1.3);
-  ASSERT_EQ(bad.outcome, loop::LoopOutcome::kAccepted);
-  const double err_m = (bad.constraint.T_bi_bj.p - truth.p).norm();
-  std::printf(
-      "[ aliasing ] P %.1f m, drift 1.3 m: accepted, error %.3f m, sc %.3f ratio %.3f "
-      "rms %.3f eig %.1f\n",
-      kPeriodM,
-      err_m,
-      bad.sc_distance,
-      bad.inlier_ratio,
-      bad.rms_m,
-      bad.min_eig);
-  EXPECT_GT(err_m, 0.8 * kPeriodM);
-  EXPECT_LT(err_m, 1.2 * kPeriodM);
-  if (!ct::kWithGtsam) {
-    return;
+  std::vector<loop::KeyframeView> k(2);
+  k[0].id = 0;
+  k[0].t = common::Timestamp{0};
+  k[0].T_w_b = tc;
+  k[0].cloud_l = &cc;
+  k[1].id = 1;
+  k[1].t = common::Timestamp{100 * kNsPerS};
+  k[1].T_w_b = test::body_pose(0.1 + drift_m, 0.1, 3.0 * kDeg);
+  k[1].cloud_l = &cq;
+  AliasCase out;
+  out.r = det.detect(k[1], common::Span<const loop::KeyframeView>(k), rel);
+  if (out.r.outcome == loop::LoopOutcome::kAccepted) {
+    out.err_m = (out.r.constraint.T_bi_bj.p - (tc.inverse() * tq).p).norm();
   }
-  // Drag of that false loop on a closed 30 m lap.
-  const Pose asked = (tc.inverse() * test::body_pose(0.1 + 1.3, 0.1, 3.0 * kDeg)).inverse() *
-                     bad.constraint.T_bi_bj;
-  const double loose = applied_correction(cfg, asked, bad.constraint.cov, 0.02, 0.15 * kDeg);
-  const double stiff = applied_correction(cfg, asked, bad.constraint.cov, 0.005, 0.0375 * kDeg);
+  return out;
+}
+
+// C1-12 with the shipped configuration (ADR-028: graph gate off): the review's aliasing probe,
+// both periods (2, 2.5 m), drifts 0 to 2.5 m. No false loop survives: the copy one period away
+// fits at 0.93-0.94 of the true fit, so every case is ambiguous and nothing is added to the
+// graph (remaining drag bound: 0 m). The price is recall: no loop at all in an exactly
+// periodic corridor. With the gate off detect() ignores the graph's covariance, so the chain
+// stiffness plays no part: a source (the review's stiff chain) gives the same outcome and the
+// same ICP work as none (review H3 m-3).
+TEST(LoopAliasing, NoFalseLoopAtAnyDrift) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (relative marginal)";
+  }
+  Config cfg = shipped_config();
+  cfg.loop_closure.enabled = true;
+  ASSERT_FALSE(cfg.loop_closure.graph_covariance_gate);
+  const FixedRelativeCovariance stiff(lap_relative_cov(cfg, 0.005, 0.0375 * kDeg));
+  int false_loops = 0;
+  for (const double period : {2.0, 2.5}) {
+    for (const double drift : {0.0, 0.3, 0.6, 0.9, 1.1, 1.3, 1.6, 2.0, 2.5}) {
+      const AliasCase c = alias_case(cfg, period, drift, nullptr);
+      EXPECT_EQ(c.r.outcome, loop::LoopOutcome::kAmbiguous) << "P " << period << " drift " << drift;
+      false_loops += (c.r.outcome == loop::LoopOutcome::kAccepted && c.err_m > kFalseLoopM);
+      const AliasCase with_source = alias_case(cfg, period, drift, &stiff);
+      EXPECT_EQ(with_source.r.outcome, c.r.outcome) << "P " << period << " drift " << drift;
+      EXPECT_EQ(with_source.r.n_icp_runs, c.r.n_icp_runs) << "P " << period << " drift " << drift;
+    }
+  }
+  EXPECT_EQ(false_loops, 0);
+}
+
+// The optional graph gate (graph_covariance_gate, ADR-026 amendment / ADR-028) with a covariance
+// consistent with metre-level drift (6 cm / 0.45 deg per 0.5 m step, relative sigma ~0.6 m): no
+// false loop for any drift up to 2 m at either period; on the loose chain (relative sigma
+// ~0.2 m) a true loop below P/2 is accepted (the graph rules the copy out) and the review's
+// first false loop (P = 2, drift 1.1 m) is ambiguous.
+TEST(LoopAliasing, OptionalGraphGateArbitratesWhileDriftIsWithinGraphCovariance) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (relative marginal)";
+  }
+  Config cfg = shipped_config();
+  cfg.loop_closure.enabled = true;
+  cfg.loop_closure.graph_covariance_gate = true;
+  const FixedRelativeCovariance consistent(lap_relative_cov(cfg, 0.06, 0.45 * kDeg));
+  const FixedRelativeCovariance loose(lap_relative_cov(cfg, 0.02, 0.15 * kDeg));
+  for (const double period : {2.0, 2.5}) {
+    for (const double drift : {0.0, 0.6, 1.1, 1.3, 1.6, 2.0}) {
+      const AliasCase c = alias_case(cfg, period, drift, &consistent);
+      if (c.r.outcome == loop::LoopOutcome::kAccepted) {
+        EXPECT_LT(c.err_m, kLoopTolM) << "false loop, P " << period << " drift " << drift;
+      }
+    }
+    const AliasCase good = alias_case(cfg, period, 0.6, &loose);
+    ASSERT_EQ(good.r.outcome, loop::LoopOutcome::kAccepted) << "P " << period;
+    EXPECT_LT(good.err_m, kLoopTolM);
+  }
+  const AliasCase first_false = alias_case(cfg, 2.0, 1.1, &loose);
+  EXPECT_EQ(first_false.r.outcome, loop::LoopOutcome::kAmbiguous);
+}
+
+// Known limit of the optional graph gate (review H3 I-1, why it is off): with the claimed
+// odometry covariance halved, the gate rejects every true loop of the two-lap run and the drift
+// stays (end-to-start as with loops off); without the gate, seed 42 closes it to 0.548 m.
+TEST(LoopKnownLimits, GraphGateDropsTrueLoopsOnAnOverconfidentGraph) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM";
+  }
+  const Config cfg = shipped_config();
+  LapOptions o;
+  o.claim = 0.5;
+  o.graph_gate = true;
+  const LapRun on = run_two_laps(cfg, o);
+  const LapRun off = run_two_laps(cfg, false);
   std::printf(
-      "[ aliasing ] drag of the false loop (asks %.3f m): loose chain %.3f m, stiff %.3f m\n",
-      asked.p.norm(),
-      loose,
-      stiff);
-  EXPECT_GT(loose, 0.25);  // most of the request goes through on a loose chain
-  EXPECT_LT(loose, 0.9);
-  EXPECT_LT(stiff, 0.1);  // a stiff chain holds it to centimetres
+      "[ loop two laps ] claim x0.5, graph gate on: %d accepted, %d correction-gated, "
+      "end-to-start %.3f m (loops off %.3f m)\n",
+      on.accepted,
+      on.correction,
+      on.end_to_start_m,
+      off.end_to_start_m);
+  EXPECT_EQ(on.accepted, 0);
+  EXPECT_GT(on.correction, 30);
+  EXPECT_NEAR(on.end_to_start_m, off.end_to_start_m, 1e-6);
+}
+
+// Known limit of the optional graph gate: when the drift is far outside the graph's covariance
+// (loose chain, relative sigma ~0.2 m, drift 1.6 m: 8 sigma) the graph prefers the copy and the
+// false loop (error ~P) is accepted. On the loose chain such loops drag the lap by 0.34 to
+// 0.64 m (drifts 1.3 to 2.5 m, both periods; ADR-026 amendment), on a stiff one by centimetres.
+TEST(LoopKnownLimits, GraphGateAliasingWhenDriftExceedsGraphCovariance) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM";
+  }
+  Config cfg = shipped_config();
+  cfg.loop_closure.enabled = true;
+  cfg.loop_closure.graph_covariance_gate = true;
+  constexpr double kPeriodM = 2.0;
+  constexpr double kDriftM = 1.6;
+  const FixedRelativeCovariance loose(lap_relative_cov(cfg, 0.02, 0.15 * kDeg));
+  const AliasCase bad = alias_case(cfg, kPeriodM, kDriftM, &loose);
+  ASSERT_EQ(bad.r.outcome, loop::LoopOutcome::kAccepted);
+  EXPECT_GT(bad.err_m, 0.8 * kPeriodM);
+  EXPECT_LT(bad.err_m, 1.2 * kPeriodM);
+  const Pose tc = test::body_pose(0.0, 0.0, 0.0);
+  const Pose asked = (tc.inverse() * test::body_pose(0.1 + kDriftM, 0.1, 3.0 * kDeg)).inverse() *
+                     bad.r.constraint.T_bi_bj;
+  const double loose_drag = applied_correction(cfg, asked, bad.r.constraint.cov, 0.02, 0.15 * kDeg);
+  const double stiff_drag =
+      applied_correction(cfg, asked, bad.r.constraint.cov, 0.005, 0.0375 * kDeg);
+  std::printf(
+      "[ aliasing ] graph gate, P %.1f drift %.1f: error %.3f m, drag loose %.3f m, "
+      "stiff %.3f m\n",
+      kPeriodM,
+      kDriftM,
+      bad.err_m,
+      loose_drag,
+      stiff_drag);
+  EXPECT_GT(loose_drag, 0.15);
+  EXPECT_LT(stiff_drag, 0.1);
 }
 
 // I-2: the Cauchy kernel cannot tell a true large correction from a false one: with the

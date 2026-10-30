@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -131,6 +132,9 @@ struct CoreTestHooks {
   /// ADR-026 failure path: every loop_closure.isam_extra_updates update after an accepted loop
   /// reports a failure (the loop factor itself is already committed by the first update).
   bool fail_loop_extra_updates = false;
+  /// ADR-028 tests: when set, replaces LoopDetector::detect at every loop search: the views
+  /// (store order, the query last) in, the detection result out.
+  std::function<loop::LoopResult(common::Span<const loop::KeyframeView>)> loop_inject;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).
@@ -176,6 +180,7 @@ struct CoreCounters {
   std::uint64_t n_loop_searches = 0;
   std::uint64_t n_loops_accepted = 0;
   std::uint64_t n_loops_rejected = 0;
+  std::uint64_t n_loops_no_marginal = 0;  // ADR-028
   /// VoxelMap spacing replacements counted before the map's last clear() (rebuilds); the
   /// total is this plus VoxelMap::num_spacing_replaced().
   std::uint64_t n_map_spacing_replaced_cleared = 0;

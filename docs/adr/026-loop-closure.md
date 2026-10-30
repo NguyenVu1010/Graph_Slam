@@ -1,7 +1,7 @@
 # ADR-026: Loop closure: tìm ứng viên theo bán kính trên pose đã tối ưu, yaw từ Scan Context, xác minh bằng ICP point-to-plane, factor tương đối bọc Cauchy, chạy đơn luồng lúc keyframe
 
 - Trạng thái: đề xuất
-- Ngày: 2026-10-29
+- Ngày: 2026-10-29; sửa đổi 2026-10-30 (cấu trúc lặp: kiểm tra nhập nhằng, cổng tuỳ chọn theo hiệp phương sai của graph, backlog C1-12, C1-16; xem "Sửa đổi 2026-10-30"). Việc chọn loop bền vững (PCM, gỡ loop) và việc tắt mặc định cổng tuyệt đối: ADR-028.
 - Liên quan: ADR-004 (factor LiDAR), ADR-005 (luồng loop), ADR-015 (loop bọc Cauchy), ADR-016 (kho keyframe, dựng lại bản đồ sau loop), ADR-021 (dạng factor tương đối `decoupled`), ADR-024 (node ROS 2)
 
 ## Bối cảnh
@@ -57,10 +57,63 @@ Backend stub không có pose keyframe (`keyframe_state` trả lỗi), nên khôn
 
 ## Giới hạn đã đo (review C1, 2026-10-29)
 
-Hai giới hạn dưới đây là hành vi hiện tại, được ghim bởi test `LoopKnownLimits.*` (`tests/component/test_loop_component.cpp`); sửa chúng là backlog C1-12, C1-13.
+Hai giới hạn dưới đây được đo lúc review C1 và ghim bởi test `LoopKnownLimits.*` (`tests/component/test_loop_component.cpp`). Giới hạn 1 đã được sửa một phần bằng sửa đổi 2026-10-30 (phần còn lại ghim bởi `LoopKnownLimits.AliasingWhenDriftExceedsGraphCovariance`); giới hạn 2 là backlog C1-13.
 
-1. **Cấu trúc lặp (aliasing).** Trong hành lang có cặp cột giống hệt nhau cách đều P m (giá kệ trong kho), khi trôi của graph dọc hành lang vượt P/2 (và còn dưới cổng 3 m), ICP từ hạt giống graph bám sang cặp cột kề bên và loop sai qua mọi cổng: Scan Context 0,13, ratio 0,93 đến 0,94, RMS 3,7 đến 4,0 cm, trị riêng nhỏ nhất 305 đến 392 (cổng 20); sai số so với thực bằng khoảng một chu kỳ (1,98 m với P = 2 m). Trên một chuỗi lỏng (2 cm / 0,15° mỗi bước 0,5 m) loop sai đó kéo đồ thị 0,34 đến 0,64 m (70 đến 90 % cái nó đòi); trên chuỗi cứng (5 mm) chỉ vài cm. Cổng hiệu chỉnh cố định 3 m / 30° không chặn được trường hợp này: cần cổng theo hiệp phương sai tương đối của graph (Mahalanobis trên marginal chung của i, j) và kiểm tra nghiệm tốt thứ hai.
+1. **Cấu trúc lặp (aliasing), trước sửa đổi.** Trong hành lang có cặp cột giống hệt nhau cách đều P m (giá kệ trong kho), khi trôi của graph dọc hành lang vượt P/2 (và còn dưới cổng 3 m), ICP từ hạt giống graph bám sang cặp cột kề bên và loop sai qua mọi cổng: Scan Context 0,13, ratio 0,93 đến 0,94, RMS 3,7 đến 4,0 cm, trị riêng nhỏ nhất 305 đến 392 (cổng 20); sai số so với thực bằng khoảng một chu kỳ (1,98 m với P = 2 m). Trên một chuỗi lỏng (2 cm / 0,15° mỗi bước 0,5 m) loop sai đó kéo đồ thị 0,34 đến 0,64 m (70 đến 90 % cái nó đòi); trên chuỗi cứng (5 mm) chỉ vài cm. Cổng hiệu chỉnh cố định 3 m / 30° không chặn được trường hợp này: cần cổng theo hiệp phương sai tương đối của graph (Mahalanobis trên marginal chung của i, j) và kiểm tra nghiệm tốt thứ hai.
 2. **Kernel Cauchy với sàn 5 cm / 1° không đóng được hiệu chỉnh lớn đúng.** Kernel không phân biệt hiệu chỉnh lớn đúng với loop sai: với hiệp phương sai ở sàn, một loop đúng đòi 0,5 / 1 / 2 m được áp dụng khoảng 10 / 3 / 1 % trên chuỗi cứng (5 mm mỗi bước, gần với chuỗi LiDAR thật mà nghịch đảo Hessian cỡ mm) và 92 / 60 / 13 % trên chuỗi lỏng (2 cm). Tức là một lần quay lại đầu tiên sau quãng dài với trôi 0,5 đến 2 m chỉ sửa được 3 đến 13 % trong các cấu hình đo được, dù được đếm là "accepted". Test hai vòng có trôi qua được chỉ vì loop đến khi trôi còn cỡ cm. Hướng sửa: cổng theo hiệp phương sai của graph rồi mới nới kernel (hoặc switchable constraints / GNC), hiệu chỉnh lại sàn theo NEES.
+
+## Sửa đổi 2026-10-30: cấu trúc lặp (C1-12, C1-16)
+
+Giới hạn đã đo 1 (review C1, I-1): trong hành lang có cặp cột giống nhau cách đều P m, khi trôi vượt P/2 thì một loop sai lệch khoảng P qua mọi cổng và kéo chuỗi lỏng 0,34 đến 0,64 m. Sửa đổi này thêm hai bước sau ICP, vẫn sau cờ `loop_closure.enabled` (mặc định tắt; tắt thì E-01..E-03 trùng md5). Công thức: `docs/derivations/loop_closure.md` mục 9 và 10. Review H3 (I-1) cho thấy bước A loại mọi loop đúng khi graph hơi tự tin quá mức; ADR-028 giữ nó làm tuỳ chọn tắt (`graph_covariance_gate: false`) và thêm PCM.
+
+### A. Cổng hiệu chỉnh theo độ bất định của graph: tuỳ chọn, mặc định tắt (ADR-028)
+
+- Backend thêm API bổ sung `Graph::relative_pose_cov(i, j)`: hiệp phương sai của `T_bi_bj` (`[rho, phi]`, nhiễu phải, khung `b_j`) từ marginal chung của `(X_i, X_j)` trên cây Bayes của iSAM2 (`backend_factors.md` mục 8b). GTSAM vẫn chỉ ở backend; module loop nhận nó qua giao diện `loop::RelativeCovarianceSource`.
+- Khi `graph_covariance_gate` bật, với mỗi kết quả ICP hội tụ: `e = Log(Z_graph^-1 Z_fit)` (6 trục, gồm roll và pitch: C1-16), `S = Sigma_cq + C'_fit`, `chi2 = e^T S^-1 e`; `chi2 > correction_chi2_gate` (22,46) thì kết quả đó không thể là loop. Không lấy được marginal thì ứng viên bị loại (`kNoMarginal`); pipeline ghi log lý do và đếm `n_loops_no_marginal`.
+- **Vì sao tắt mặc định (review H3, I-1).** Với chuỗi cứng (LiDAR cỡ mm), `S` bị sàn 5 cm / 1° chi phối, cổng chỉ cho qua khoảng 0,24 m theo một trục. Chỉ cần graph tự tin quá mức một chút là mọi loop đúng bị loại: test hai vòng với sigma odometry khai báo giảm một nửa cho 43 lần bị cổng chặn, 0 loop, sai số đầu–cuối vẫn 1,21 m (không có cổng: 0,55 m); trong sảnh cột, chuỗi cứng, loop đúng với 0,4 m trôi có chi2 33. Câu cũ "gần như không mất gì" là sai. NEES hộp của pipeline đã 7,5 đến 8,6 so với 6, nên cổng cần hiệu chỉnh hiệp phương sai trước (C1-3); khi cổng bật thì kernel rộng hơn (C1-13) cũng không cứu được hiệu chỉnh lớn.
+- **Chi phí** khi bật: một marginal chung mỗi lần tìm, tăng theo độ sâu của `X_i` trên cây: 1,5 / 3,9 / 12,2 ms trung bình (max 3,5 / 9,4 / 29 ms) ở 61 / 300 / 1000 keyframe trên graph pose + vận tốc + bias (desktop). Khi tắt: 0.
+
+### B. Kiểm tra nhập nhằng: nghiệm tốt thứ hai bằng ICP từ hạt giống dời (bật)
+
+- Chọn ICP lại từ hạt giống dời thay vì so khoảng cách Scan Context thứ hai hay độ khớp tại pose dời không ICP: descriptor quá thô (vòng 0,5 đến 2 m) và độ khớp với dung sai inlier 0,5 m gần như phẳng trong hành lang (tường khớp ở mọi độ dời). ICP đưa mỗi phương án về cực tiểu của nó và chấm bằng cùng độ khớp như cổng nhận.
+- Hướng: vectơ riêng ứng với trị riêng nhỏ nhất của khối ngang 2x2 của thông tin tịnh tiến (bù Schur, đã loại quay) của Hessian ICP, quay sang `w`. Hạt giống: nghiệm tốt nhất dời `+-k * ambiguity_seed_step_m` (1 m), `k = 1..ambiguity_seeds_per_side` (2), gần trước; bỏ hạt giống xa hơn `max_correction_m` khỏi pose graph.
+- Đối thủ: hội tụ, qua cổng cố định, RMS `<= max_rms_m`, cách nghiệm tốt nhất hơn `ambiguity_min_separation_m` (0,5 m) hoặc `ambiguity_min_separation_deg` (5°). Tỉ số inlier của nó trên của nghiệm tốt nhất `>= ambiguity_max_ratio` (0,9) thì loop bị loại (`kAmbiguous`). Trong hành lang cột, bản sao cách một chu kỳ khớp ở 0,93 đến 0,94 của nghiệm đúng.
+- Mặc định (cổng A tắt) mọi đối thủ đều được tính. Chỉ khi cổng A bật, graph mới được phân xử: đối thủ bị bỏ qua khi nó trượt cổng chi-square **và** tệ hơn nghiệm tốt nhất ít nhất `ambiguity_chi2_margin` (13,8), và các hạt giống mà graph đã loại thì bỏ qua (chi phí về 0 trên graph cứng).
+- Chi phí: chỉ ứng viên đã qua mọi cổng khác mới chạy, tối đa 4 lần ICP thêm, dừng ở đối thủ đầu tiên; khi cổng A tắt không có hạt giống nào bị bỏ (số đo ở bench dưới).
+
+### Kết quả (chi tiết trong `loop_closure.md` mục 12 và báo cáo PR)
+
+- Cấu hình mặc định (PCM bật, cổng A tắt), hành lang cột P = 2 và 2,5 m, trôi 0 đến 2,5 m, chuỗi lỏng và chuỗi cứng của review: mọi trường hợp là nhập nhằng, không loop sai nào vào graph (lực kéo còn lại 0). Cái giá: hành lang lặp hoàn toàn không cho loop nào.
+- Cổng A bật (tuỳ chọn): với hiệp phương sai nhất quán với trôi cỡ mét (sigma tương đối khoảng 0,6 m) không còn loop sai đến trôi 2 m; với chuỗi lỏng của review loop đúng ở trôi 0 đến 0,6 m được nhận, loop sai đầu tiên của review (trôi 1,1 m, P = 2) bị loại. **Giới hạn còn lại khi bật**: trôi vượt xa hiệp phương sai của graph thì bản sao thắng; trên chuỗi lỏng các loop sai đó (trôi 1,3 đến 2,5 m, cả hai chu kỳ) kéo đồ thị **0,34 đến 0,64 m**, trên chuỗi cứng chỉ trôi đúng một chu kỳ lọt (kéo khoảng 1,4 cm) (`LoopKnownLimits.GraphGateAliasingWhenDriftExceedsGraphCovariance`).
+- Loop đúng: L-01..L-03, B-02/B-03, hai vòng tổng hợp 1,207 m tắt, 0,082 m bật (4 loop, 0 sai); hai vòng với sigma khai báo giảm một nửa 0,548 m (4 loop, PCM); hộp E-01 trong estimator 7 loop, ATE 8,6 mm.
+
+### Bench (desktop WSL, trung vị 5 lần xen kẽ, cờ loop bật, ms mỗi scan)
+
+| dữ liệu | bản | p50 | p95 | p99 | max | loop nhận / tìm |
+| --- | --- | --- | --- | --- | --- | --- |
+| E-01 tổng hợp | e946ee9, loop tắt | 7,89 | 11,4 | 14,2 | 33,5 | – |
+| E-01 tổng hợp | e946ee9, loop bật | 8,24 | 12,6 | 33,4 | 45,8 | 6 / 61 |
+| E-01 tổng hợp | nhánh, loop tắt | 7,58 | 11,2 | 14,6 | 32,6 | – |
+| E-01 tổng hợp | nhánh, loop bật (nhập nhằng + PCM) | 7,77 | 12,3 | 28,8 | 44,8 | 6 / 61 |
+| E-01 tổng hợp | nhánh, loop bật, không kiểm tra nhập nhằng | 7,51 | 11,6 | 30,2 | 43,3 | 6 / 61 |
+| E-07 Gazebo (ghi lại ở nhánh, sau #41) | e946ee9, loop tắt | 13,7 | 25,9 | 35,0 | 51,2 | – |
+| E-07 Gazebo | e946ee9, loop bật | 12,8 | 22,4 | 35,3 | 70,3 | 16 / 55 |
+| E-07 Gazebo | nhánh, loop tắt | 13,9 | 26,1 | 34,4 | 51,6 | – |
+| E-07 Gazebo | nhánh, loop bật (nhập nhằng + PCM) | 14,0 | 24,3 | 39,5 | 66,5 | 16 / 55 |
+| E-07 Gazebo | nhánh, loop bật, không kiểm tra nhập nhằng | 12,7 | 23,6 | 36,1 | 73,8 | 16 / 55 |
+
+Máy chịu tải của tác tử khác lúc đo (p50 loop tắt 7,6 ms trên E-01, so với 4,6 ms lúc yên), nên chỉ so trong cùng lượt xen kẽ. Với ba giới hạn của review H3 I-2 (lọc trước bằng độ khớp, giới hạn vòng ICP, tạm dừng sau nhập nhằng), kiểm tra nhập nhằng không còn chi phí đo được: max ở keyframe có loop 44,8 ms so với 43,3 ms khi tắt kiểm tra (E-01), 66,5 so với 73,8 ms (E-07); trước các giới hạn đó là 73 và 106 ms. Max khi bật loop so với khi tắt loop: 1,37 lần (E-01) và 1,29 lần (E-07), bằng e946ee9 (1,37 và 1,37): phần còn lại là chi phí có từ trước của một loop (dựng lại bản đồ, cập nhật iSAM2; C1-15). PCM chỉ tốn 0,08 đến 0,12 ms mỗi loop đề xuất (tối đa 0,28 ms với 64 loop, 61 đến 1000 keyframe). Cờ tắt: `est.tum` E-01..E-03 và E-07 trùng md5 với e946ee9. Cờ bật: `est.tum` E-01 và E-07 trùng md5 với e946ee9 và với nhánh khi tắt kiểm tra nhập nhằng (không loop đúng nào bị loại, PCM chọn mọi loop; E-07: 16 loop, 0 sai, sai số lớn nhất 3,5 cm / 0,11°; đầu–cuối ngang 1,2 cm). Pi 5 chưa đo (C1-5, C1-15).
+
+### Khoá YAML mới (dưới `loop_closure.*`, được `load_config` và `LoopDetector` kiểm tra)
+
+`graph_covariance_gate` (false), `correction_chi2_gate` (22,46), `ambiguity_seeds_per_side` (2; 0 tắt kiểm tra), `ambiguity_seed_step_m` (1,0 m), `ambiguity_min_separation_m` (0,5 m), `ambiguity_min_separation_deg` (5°), `ambiguity_max_ratio` (0,9), `ambiguity_chi2_margin` (13,8). Khoá PCM: ADR-028.
+
+### Hợp đồng đổi (bổ sung)
+
+- `graph.hpp`: `relative_pose_cov(i, j)`, `remove_loop_factor(i, j)` (ADR-028; stub: lỗi / false).
+- `loop_detector.hpp`: `RelativeCovarianceSource`; overload `detect(query, keyframes, rel)` (overload cũ giữ nguyên, tương đương `rel = nullptr`; `rel` chỉ được dùng khi `graph_covariance_gate`); `LoopOutcome::kAmbiguous`, `kNoMarginal` (thêm cuối enum); `LoopResult::correction_chi2`, `ambiguity_ratio`, `n_icp_runs`.
+- `loop_selector.hpp` (mới, ADR-028), `loop/config.hpp`: các khoá trên và khoá PCM.
+- `estimator.hpp`: `Stats::n_loops_pcm_rejected`, `n_loops_removed`, `n_loops_no_marginal`; `bench.json`: các bộ đếm đó và `scan_process_ms_p99`, `scan_process_ms_max` (C1-15).
 
 ## Phương án đã cân nhắc
 

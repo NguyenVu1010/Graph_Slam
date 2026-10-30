@@ -391,6 +391,31 @@ mss_node:
       cov_floor_m: 0.05          # m
       cov_floor_deg: 1.0         # deg (radians in code)
       isam_extra_updates: 2      # extra iSAM2 updates after the one that adds a loop (>= 0)
+      # Repeated structure (ADR-026 amendment, ADR-028, loop_closure.md sections 9-11).
+      # Optional correction gate from the graph's uncertainty (off: with an overconfident graph
+      # it drops every true loop): e^T S^-1 e of the fitted relative pose (i, j) against the
+      # graph's, S = the graph's relative marginal + the floored loop covariance, all 6 axes.
+      graph_covariance_gate: false
+      correction_chi2_gate: 22.46  # chi-square, 6 DoF (0.999 quantile)
+      # Ambiguity check: ICP again from the best fit shifted by +-k * step (k = 1..seeds) along
+      # its least-constrained horizontal direction; a separated fit with an inlier ratio
+      # >= ambiguity_max_ratio x the best one rejects the loop (pillars every 2 m: the copy
+      # one period away fits at 0.94 of the true fit).
+      ambiguity_seeds_per_side: 2     # >= 0 (0: check off); 2 ICP runs per k
+      ambiguity_seed_step_m: 1.0      # m
+      ambiguity_min_separation_m: 0.5 # m, a fit closer than this to the best is the same fit
+      ambiguity_min_separation_deg: 5.0  # deg (radians in code)
+      ambiguity_max_ratio: 0.9        # second-best / best inlier ratio, in (0, 1]
+      # Unless the graph rules the competitor out: it fails correction_chi2_gate AND its
+      # chi-square exceeds the best fit's by at least this (likelihood ratio exp(13.8 / 2) = 1000).
+      ambiguity_chi2_margin: 13.8
+      # Latency bounds of the ambiguity check (ADR-028 section 5, review H3 I-2).
+      ambiguity_backoff_keyframes: 5    # keyframes not searched after an ambiguous result
+      ambiguity_icp_max_iterations: 10  # ICP iterations of a shifted seed (> 0)
+      # [0, 1]; ICP from a shifted seed only when one fitness pass there reaches this x the best
+      # fit's inlier ratio (0: off).
+      ambiguity_prescreen_ratio: 0.8
+
 
     backend:
       keyframe_dist_m: 1.0           # new keyframe after this translation, m (ADR-004)
