@@ -654,14 +654,17 @@ TEST(GnssTrackYawRootCause, BridgingKeepsTheStuckCheck) {
 // half it touched without wheel data, so exactly the segments using them take the forward
 // assumption (chunks of 10 fixes, segment c joins the second half of chunk c and the first half
 // of chunk c + 1): fixes 23-27, both halves of chunk 2: 2 segments; fixes 26-34, the second half
-// of chunk 2 and the whole of chunk 3: 2 segments.
+// of chunk 2 and the whole of chunk 3: 2 segments; fixes 27-31, from the second half of chunk 2
+// into the first half of chunk 3 (overflowing there): only segment 2 (review F6, cross-chunk half
+// marking).
 TEST(GnssTrackYawRootCause, GapLongerThanTheBoundIsNotBridged) {
   struct Case {
     int start;
     int len;
     int no_wheel;
   };
-  for (const Case& cs : {Case{23, 4, 0}, Case{27, 4, 0}, Case{23, 5, 2}, Case{26, 9, 2}}) {
+  for (const Case& cs :
+       {Case{23, 4, 0}, Case{27, 4, 0}, Case{23, 5, 2}, Case{26, 9, 2}, Case{27, 5, 1}}) {
     {
       const int start = cs.start;
       const int len = cs.len;

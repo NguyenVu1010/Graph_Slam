@@ -638,7 +638,7 @@ sensor in the set measures what is missing. Three changes follow from it (all be
 
 **Bridged odometer gaps** (`gnss.align_yaw_wheel_max_gap_fixes`, 4). The pipeline's reading is a
 running integral of wheel speed, interpolated across a wheel-message gap, so a bridged step is an
-estimate (backlog F1, `gnss_fusion_study.md` section 16.13). With `m` the number of consecutive fixes without a reading before a reading, the
+estimate; section 5.3 bounds it. With `m` the number of consecutive fixes without a reading before a reading, the
 travel `odo_i - odo_last` is taken when `m <= max_gap` and lands on fix `i` (its half, and the
 weights of fix `i` in `d_k`). Placing a step one to four fixes late moves the weighted travel by
 at most `max_gap / n` of that step (0.04 m at 0.5 m/s), well inside the tolerance of the window
@@ -708,7 +708,8 @@ than `min_travel / (2 s (max_chunks + 1))`, about 0.01 m/s, still does not align
    cannot tell constant speed from rest. The onset is observable (backlog F3). There the
    tolerance is 0.15 m per fix; above it the rate depends on the seeds, 0 to 14 of 100.
 2. **Missing wheel readings after a mismatch.** Algorithm: the window break threw away travel
-   that the next reading still gives (in the pipeline, interpolated across the gap: F1). Fixed: up to 20 % missing, the robot aligns after a
+   that the next reading still gives (in the pipeline, interpolated across the gap, bounded in
+   section 5.3). Fixed: up to 20 % missing, the robot aligns after a
    median 10.9 m (max 21.9 m). Before, at 2 % missing, it was 36 m (max 311 m).
 3. **A slow robot with wheel data.** Algorithm, with two causes: the per-segment travel threshold,
    and the coherence test failing on short segments that noise dominates. Fixed down to about
@@ -816,3 +817,46 @@ replacement (H4 review I-3).
   never aligns. Before, that case was silent (review F4: 0 of 100 aligned, nothing counted); now
   it is counted in 100 of 100 runs. An exact front end, also at 0.05 m/s where its displacements
   sit at the 0.2 m threshold, is never counted (the margin is the threshold itself).
+
+**Interpolated wheel travel (G9).** The pipeline's odometer (`pipeline::detail::WheelOdometer`)
+integrates wheel speed with a trapezoid between finite samples; there is no absolute odometer.
+Its nominal sample period `P` is the mean of the regular intervals so far, measured, so the rule
+holds at any wheel rate. An interval `T` longer than `gnss.align_yaw_wheel_gap_periods` (3)
+nominal periods is a gap, for example a wheel driver silent while the robot stops: one period of
+it is an ordinary interval, whose trapezoid error the slip term covers as for every other, and
+over the excess `T - P` the travel is interpolated. If the speed stays within the end speeds and
+does not reverse inside the gap, the travel over the excess lies in `[0, max(|v0|, |v1|) (T - P)]`,
+so the interpolation adds at most
+
+    g = max(|v0|, |v1|) (T - P).
+
+A regular interval, with its jitter, adds nothing: at 10 Hz with +-10 ms, 3 periods leave a
+margin of 0.19 s. (H4 review I-1: the first version used an absolute 0.1 s threshold and bounded
+the whole interval, so at 10 Hz half the ordinary intervals added `|v| x 0.1 s`; the bound grew to
+half the travel, swallowed the consistency window, and a still robot with spinning wheels aligned
+on drift in 97 of 100 runs, with 46 flips.) `EstimatorCore` sums `g` (an absolute,
+non-decreasing reading), counts the gaps (`Stats::n_wheel_gap_bounded`, bench.json, one log line)
+and passes the sum with each fix (`TrackYawReadings::wheel_gap_bound_m`). The growth of the sum
+since the last reading bounds the error of that reading's step, so the aligner splits it as the
+step enters the two segments around its chunk (`i / n` to the later segment, `(n - i) / n` to the
+earlier one, the weights of the wheel travel `d_k`; H4 review m-9: the first version put all of
+it on the half chunk of the fix, which left part of the step unbounded), sums it over the
+segments of the window that use their wheel travel, and widens the wheel/GNSS consistency test:
+
+    |r - sum d_k| > n sigma + slip sum d_k + sum g_k.
+
+A step with `g > 0` is not used in the wheel path. Bridging stays: at constant speed the
+interpolation is good, and across a stop the bound covers it. Review F1's stop-and-go (0.7 s
+stops every 4 s, silent driver, phantom 0.35 m per stop): 85 to 100 of 100 aligned (99 before
+bridging), median 3.3 m. The stuck-wheel protection does not use gaps: wheels that keep
+reporting a speed while the body is still have no gap; at 50, 10 and 5 Hz with +-10 ms jitter it
+is the same (`GnssTrackYawHardening.WheelRateKeepsTheProtectionAndTheAisles`: 4 of 100 at 0.20 m
+per fix of drift at each rate; aisles align after a median 4.5 m at each rate).
+
+**Mutation coverage (G12).** The four mutants that survived the 2b review are killed:
+`ext_path_ok` and the carried `wheel_ok` of an extended segment
+(`GnssTrackYawHardening.ExtendedSegmentWithAHoleInItsPathIsSkipped`,
+`ExtendedSegmentKeepsItsMissingReading`), the half marking of a gap that crosses a chunk boundary
+(`GnssTrackYawRootCause.GapLongerThanTheBoundIsNotBridged`, case 27-31), and the front-end
+position of `b` instead of `o` (`GnssTrackYawHardening.FrontEndPositionIsOfTheOdometryFrame`).
+The mutants of each change of this section: study section 18.4.

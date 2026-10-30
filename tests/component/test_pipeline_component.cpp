@@ -805,7 +805,9 @@ class StaticCore {
           if (spin_wheels_mps_ != 0.0) {
             w.v_mps = spin_wheels_mps_;
           }
-          core_->on_wheel(w);
+          if (next_wheel_ < silence_from_ || next_wheel_ >= silence_to_) {
+            core_->on_wheel(w);
+          }
         }
         for (; next_gnss_ < next_imu_; next_gnss_ += 200'000'000) {
           common::GnssMeasurement m;
@@ -826,6 +828,11 @@ class StaticCore {
   }
 
   void set_nan_times(std::vector<std::int64_t> times) { nan_ = std::move(times); }
+  // No wheel sample in [from_ns, to_ns) (a silent wheel driver).
+  void set_wheel_silence(std::int64_t from_ns, std::int64_t to_ns) {
+    silence_from_ = from_ns;
+    silence_to_ = to_ns;
+  }
 
   // Scan at t (covered by IMU first).
   void scan_at(std::int64_t t) {
@@ -854,6 +861,8 @@ class StaticCore {
   BoxWorldParams p_;
   bool aux_ = false;
   double spin_wheels_mps_ = 0.0;
+  std::int64_t silence_from_ = 0;
+  std::int64_t silence_to_ = 0;
   Config cfg_;
   std::unique_ptr<detail::EstimatorCore> core_;
   ScanFrame scan_;
@@ -912,6 +921,38 @@ TEST(PipelineComponent, WheelOdometerSkipsNonFiniteSpeed) {
   EXPECT_NEAR(core.wheel_odometer_m(), 1.0, 1e-9);
 }
 
+// Backlog G9: the odometer interpolates across a wheel-sample gap (a driver silent while the
+// robot stops), so an interval longer than gnss.align_yaw_wheel_gap_periods (3) nominal periods
+// adds the bound of its excess over one period, the larger end speed x (gap - nominal): 50 Hz at
+// 1 m/s, a 0.7 s gap, then 0.4 m/s: 0.7 - 0.0206 m (the nominal period is the mean regular
+// interval, 0.02 s and one 0.05 s), while the trapezoid adds 0.49 m. Regular samples and the
+// 0.05 s interval (2.5 periods) add nothing. The gap is counted in n_wheel_gap_bounded.
+TEST(PipelineComponent, WheelGapBoundOfSilentDriver) {
+  detail::EstimatorCore core(StaticCore::make_cfg(true));
+  ASSERT_DOUBLE_EQ(StaticCore::make_cfg(true).gnss.align_yaw_wheel_gap_periods, 3.0);
+  std::int64_t t = 1'000'000'000;
+  const auto push = [&](double v) {
+    common::WheelSample w;
+    w.t = Timestamp{t};
+    w.v_mps = v;
+    core.on_wheel(w);
+  };
+  for (int k = 0; k <= 50; ++k) {
+    push(1.0);
+    t += k == 20 ? 50'000'000 : 20'000'000;  // one 0.05 s interval: 2.5 periods, regular
+  }
+  EXPECT_EQ(core.wheel_gap_bound_m(), 0.0);
+  EXPECT_EQ(core.counters().n_wheel_gap_bounded, 0U);
+  const double nominal_s = core.wheel_nominal_period_s();
+  EXPECT_NEAR(nominal_s, (49 * 0.02 + 0.05) / 50.0, 1e-12);
+  const double before_m = core.wheel_odometer_m();
+  t += 700'000'000 - 20'000'000;  // silent for 0.7 s after the last 1 m/s sample
+  push(0.4);
+  EXPECT_NEAR(core.wheel_gap_bound_m(), 1.0 * (0.7 - nominal_s), 1e-12);
+  EXPECT_NEAR(core.wheel_odometer_m() - before_m, 0.5 * (1.0 + 0.4) * 0.7, 1e-12);
+  EXPECT_EQ(core.counters().n_wheel_gap_bounded, 1U);
+}
+
 // ADR-022: with gnss.attach_prealign_fixes the static body never aligns (no spread), so every
 // fix goes to the pre-alignment buffer, which fills (4 fixes) and then drops and counts; the
 // non-keyframe scans still do not allocate.
@@ -959,6 +1000,46 @@ TEST(PipelineComponent, FrontEndWheelDisagreementCounted) {
     }
     EXPECT_EQ(s.core().counters().n_gnss_factors, 0U);
   }
+}
+
+// Records the readings EstimatorCore passes to the track-yaw aligner with each fix.
+class ReadingsObserver : public detail::CoreObserver {
+ public:
+  void on_track_readings(Timestamp t, const gnss::TrackYawReadings& in) override {
+    t_.push_back(t);
+    readings_.push_back(in);
+  }
+  std::vector<Timestamp> t_;
+  std::vector<gnss::TrackYawReadings> readings_;
+};
+
+// Backlog G9: each fix carries its time and the running wheel-gap bound. Wheels at 0.5 m/s
+// on a still body, the wheel driver silent for 0.5 s: the bound reaches 0.5 m/s x (0.52 - 0.02) s
+// (the gap between the samples around the silence, less one nominal 50 Hz period) and does not
+// change otherwise.
+TEST(PipelineComponent, TrackYawReadingsCarryTimeAndGapBound) {
+  ReadingsObserver obs;
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  {
+    const HooksScope scope(&hooks);
+    StaticCore run(true, 0, 0.5);
+    run.set_wheel_silence(run.t_scan(30), run.t_scan(35));
+    for (int k = 0; k < 60; ++k) {
+      run.scan_at(run.t_scan(k));
+    }
+  }
+  ASSERT_GT(obs.readings_.size(), 20U);
+  double last_bound = 0.0;
+  for (std::size_t i = 0; i < obs.readings_.size(); ++i) {
+    const gnss::TrackYawReadings& in = obs.readings_[i];
+    EXPECT_TRUE(in.has_time) << i;
+    EXPECT_EQ(in.t, obs.t_[i]) << i;
+    if (std::isfinite(in.wheel_gap_bound_m)) {
+      last_bound = in.wheel_gap_bound_m;
+    }
+  }
+  EXPECT_NEAR(last_bound, 0.5 * (0.52 - 0.02), 1e-9);
 }
 
 // I-2: a NaN IMU sample inside a scan span and one exactly at a scan start are dropped;

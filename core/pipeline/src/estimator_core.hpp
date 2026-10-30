@@ -28,6 +28,7 @@
 #include "imu_buffer.hpp"
 #include "keyframe_policy.hpp"
 #include "keyframe_store.hpp"
+#include "wheel_odometer.hpp"
 
 namespace mss::pipeline::detail {
 
@@ -94,6 +95,10 @@ class CoreObserver {
                                 const common::Pose& /*T_w_b*/,
                                 double /*heading_variation_rad*/,
                                 double /*travel_unobserved_scans*/) {}
+  /// The readings passed to the track-yaw aligner with the fix at `t` (backlog G9, G10: wheel
+  /// odometer, wheel-sample gap bounds, fix time), whatever the aligner in use.
+  virtual void on_track_readings(common::Timestamp /*t*/,
+                                 const gnss::TrackYawReadings& /*readings*/) {}
 };
 
 /// Test-only seam (studies): `observer` receives the factor events; with `force_T_e_w` the
@@ -151,6 +156,7 @@ struct CoreCounters {
   /// Design 2b: chunks with a GNSS track / wheel travel mismatch in the track-yaw aligner.
   std::uint64_t n_gnss_wheel_mismatch = 0;
   std::uint64_t n_gnss_frontend_wheel_disagree = 0;  ///< backlog G3, see Estimator::Stats
+  std::uint64_t n_wheel_gap_bounded = 0;             ///< backlog G9, see Estimator::Stats
   std::uint64_t n_wheel_nonfinite =
       0;  ///< wheel samples with a non-finite speed (ADR-023 odometer)
   // ADR-022, see Estimator::Stats.
@@ -210,7 +216,12 @@ class EstimatorCore {
   [[nodiscard]] const common::Estimate& latest() const { return latest_; }
   [[nodiscard]] const CoreCounters& counters() const { return counters_; }
   /// ADR-023: signed wheel odometer (m) over the finite wheel samples received so far.
-  [[nodiscard]] double wheel_odometer_m() const { return wheel_odometer_m_; }
+  [[nodiscard]] double wheel_odometer_m() const { return odometer_.reading_m(); }
+  /// Backlog G9: sum (m) of the travel bounds of the wheel-sample gaps longer than
+  /// gnss.align_yaw_wheel_gap_periods nominal periods that the odometer interpolated across.
+  [[nodiscard]] double wheel_gap_bound_m() const { return odometer_.gap_bound_m(); }
+  /// Backlog G9: the nominal wheel-sample period (s) the gaps are measured against.
+  [[nodiscard]] double wheel_nominal_period_s() const { return odometer_.nominal_period_s(); }
   /// The VoxelMap cache (read-only, for diagnostics such as Estimator::stats()).
   [[nodiscard]] const map::VoxelMap& voxel_map() const { return map_; }
   /// Global map export (Estimator::visit_map): calls `visit` for every keyframe in the store,
@@ -307,12 +318,12 @@ class EstimatorCore {
   common::Timestamp last_prune_t_{};
   bool have_wheel_ = false;
   common::Timestamp last_wheel_t_{};
-  // ADR-023: signed wheel odometer (m, trapezoid of the finite WheelSample::v_mps) for the
-  // track-yaw direction of travel, and the time of the last GNSS fix it was read at.
-  bool have_odometer_ = false;
-  double last_odometer_v_mps_ = 0.0;
-  common::Timestamp last_odometer_t_{};
-  double wheel_odometer_m_ = 0.0;
+  // ADR-023: signed wheel odometer (trapezoid of the finite WheelSample::v_mps) for the
+  // track-yaw direction of travel, with the bound of the travel it interpolates across sample
+  // gaps longer than gnss.align_yaw_wheel_gap_periods nominal periods (backlog G9), and the
+  // time of the last GNSS fix it was read at.
+  WheelOdometer odometer_{cfg_.gnss.align_yaw_wheel_gap_periods};
+  bool wheel_gap_logged_ = false;  // one log line per run (backlog G9)
   bool have_fix_odometer_t_ = false;
   common::Timestamp last_fix_odometer_t_{};
   // Design 2b: total absolute heading variation of the front end (rad), summed scan to scan when

@@ -1769,3 +1769,57 @@ section 4.1) uses the pose covariance the chi-square gate uses.
 - Unit: `GnssAligner.FrontEndCovKnownValue`, `FrontEndCovCatchesADeadReckonedAxis` (reversed
   axis, 1000 m^2: never aligns; flag off: 175 deg off with a 4.8 deg sigma);
   `GnssFusion.FrontEndCovReachesTheAligner`.
+
+### 18.3 G9: the interpolated wheel travel
+
+Review F1's scene: straight at 0.5 m/s, 0.5 m white, stops with a wheel driver silent while
+stopped; the pipeline's trapezoid odometer at 50 Hz bridges each stop (100 seeds, 300 s; gaps
+longer than 3 nominal periods bound the excess over one period, split as the step enters the
+segments, `gnss.md` section 5.3):
+
+| stops | before bridging | 2b (no bound) | gap bound |
+| --- | --- | --- | --- |
+| 0.8 s every 10 s | 100, NEES 0.99 | 100, NEES 0.99 | 100, NEES 0.99 |
+| 0.7 s every 4 s | 99, max 6.6 m | 85, max 95 m driven, 1 beyond 3 sigma | 100, median 3.3 m, max 4.2 m, 1 beyond (NEES 1.02) |
+| 0.3 s every 6 s | | 100 | 100 |
+| 1.5 s every 6 s | | 99 | 99 |
+| 3.0 s every 6 s | | 99 | 99 |
+
+(The unit test's scene, `SilentWheelDriverStopsAreBounded`: 87 to 100 of 100, 2 beyond 3 sigma,
+NEES 1.21.) Missing readings after a mismatch (limit 2, spin 60 s then drive): identical to 2b,
+100 of 100 at 0 / 2 / 10 / 20 % missing, median 9.9 / 10.9 / 10.9 / 10.9 m, max 17.9 to 21.9 m,
+none beyond 3 sigma. The bound does not enter the stuck-wheel protection (no gaps).
+
+**Wheel rate** (H4 review I-1). The first version took an absolute 0.1 s threshold and bounded the
+whole interval: at 10 Hz with +-10 ms jitter about half the ordinary intervals passed it. Now the
+threshold is 3 nominal periods, measured (the mean regular interval), and only the excess is
+bounded. The review's probe with the pipeline odometer modelled (sample period, uniform jitter;
+seeds 31001 to 31100):
+
+| scene | 50 Hz +-10 ms | 10 Hz +-10 ms | 5 Hz +-10 ms | 10 Hz, first version | 5 Hz, first version (no jitter) |
+| --- | --- | --- | --- | --- | --- |
+| stuck for ever, 0.20 m per fix, aligned (beyond 3 sigma) | 1 (1) | 1 (1) | 2 (2) | 97 (90), 46 flips | 36 (33), 16 flips |
+| stuck for ever, 0.10 m per fix | 0 | 0 | 0 | 11 (10) | 8 |
+| aisles, median distance to align | 4.5 m | 4.5 m | 4.5 m | 11.6 m | 11.6 m |
+| spin 60 s then drive | 100 aligned, 10.9 m | 100, 10.9 m | 100, 10.9 m | ok | ok |
+
+At 5 Hz the bound never fires either: the second stuck run is the same with the bound off (it
+comes from the coarser odometer, sampled at the fix rate). Unit:
+`GnssTrackYawHardening.WheelRateKeepsTheProtectionAndTheAisles` (the aligner fed through
+`WheelOdometer`, 4 of 100 stuck runs align at each rate, aisles 100 of 100 after 4.5 m at each
+rate), `WheelOdometer.KnownAnswerAtEachRate` (50 / 10 / 5 Hz with +-10 ms: no gap, reading =
+travel; a 1 s silence: bound `v (1 - P)`), `ThresholdAndLargerEndSpeed`,
+`GnssTrackYawHardening.GapBoundWidensTheToleranceByItsSize` (1.05 x the excess: no mismatch,
+0.95 x: a mismatch), `GapBoundEntersTheSegmentsAsItsStep`.
+Pipeline: `PipelineComponent.WheelGapBoundOfSilentDriver` (50 Hz with one 0.05 s interval, then a
+0.7 s gap at 1 m/s and 0.4 m/s: bound `0.7 - P` m, the trapezoid 0.49 m, `n_wheel_gap_bounded`
+1; the 0.05 s interval: nothing).
+
+### 18.4 Mutation check of G9 and G12
+
+The four mutants that survived the 2b review (F6) are killed: `ext_path_ok` (by
+`ExtendedSegmentKeepsItsMissingReading` and `ExtendedSegmentWithAHoleInItsPathIsSkipped`), the
+carried `wheel_ok` (`ExtendedSegmentKeepsItsMissingReading`), the cross-chunk half mark
+(`GapLongerThanTheBoundIsNotBridged`, case 27-31), the front-end position of `b`
+(`FrontEndPositionIsOfTheOdometryFrame`). On the gap bound (private no-GTSAM copy, `test_gnss`,
+`test_pipeline_internals`, `test_pipeline_component`): 16 mutants of the gap bound, all killed: in the pipeline odometer the whole interval bounded, the mean end speed, a one-period threshold, a gap before any regular interval, the last interval as the nominal period, the counter, the bound not passed; in the aligner the tolerance, the wheel path, the segment, the rise part, the fall part, rise and fall swapped, all of it on the rise (the review's `rv_gap_half0`, killed by `GapBoundShortfallShowsInBothSegments`), half of it (`rv_seg_gap_half`, killed by `GapBoundWidensTheToleranceByItsSize` and `GapBoundEntersTheSegmentsAsItsStep`), and the growth taken at a fix without a reading (`GapBoundGoesWithTheBridgedReading`).
