@@ -13,6 +13,7 @@
 #include "mss/common/result.hpp"
 #include "mss/common/timestamp.hpp"
 #include "mss/common/types.hpp"
+#include "mss/degeneracy/degeneracy.hpp"
 #include "mss/gnss/config.hpp"
 #include "mss/gnss/gnss.hpp"
 #include "mss/pipeline/bounded_queue.hpp"
@@ -28,25 +29,77 @@ inline double travel_heading_rad(const common::Mat3& R_w_b, const common::Mat3& 
   return std::atan2(x_o_w.y(), x_o_w.x());
 }
 
-// Root-cause study (gnss_fusion_study.md section 16.13): the scan-matching information along the
-// horizontal travel axis x_o = R_w_b R_b_o x, d^T H_rho d with d that axis in the LiDAR frame l
-// (H in the [rho, phi] tangent of T_w_l, rho in l): the robust-weighted count of point-to-plane
-// constraints along it. 0 when x_o is vertical (horizontal norm below kMinTravelAxisNorm).
 // Below this horizontal norm of the unit travel axis it is taken as vertical (numerical guard,
 // as the aligner's heading).
 constexpr double kMinTravelAxisNorm = 1e-6;
-inline double travel_axis_info(const common::Mat3& R_w_b,
-                               const common::Mat3& R_b_o,
-                               const common::Mat3& R_w_l,
-                               const common::Mat6& H) {
+
+// The horizontal travel axis x_o = R_w_b R_b_o x as a unit vector in the LiDAR frame l (the rho
+// part of the [rho, phi] tangent of T_w_l); false when x_o is vertical (horizontal norm below
+// kMinTravelAxisNorm).
+inline bool travel_axis_in_lidar(const common::Mat3& R_w_b,
+                                 const common::Mat3& R_b_o,
+                                 const common::Mat3& R_w_l,
+                                 common::Vec3* d_l) {
   common::Vec3 d_w = R_w_b * R_b_o.col(0);
   d_w.z() = 0.0;
   const double norm = d_w.norm();
   if (!(norm > kMinTravelAxisNorm)) {
+    return false;
+  }
+  *d_l = R_w_l.transpose() * (d_w / norm);
+  return true;
+}
+
+// Root-cause study (gnss_fusion_study.md section 16.13), kept for the gate study: the raw
+// scan-matching information along the horizontal travel axis, d^T H_rho d with d that axis in l
+// (H in the [rho, phi] tangent of T_w_l): the robust-weighted count of point-to-plane constraints
+// along it, rotation coupling ignored. 0 when x_o is vertical.
+inline double travel_axis_info(const common::Mat3& R_w_b,
+                               const common::Mat3& R_b_o,
+                               const common::Mat3& R_w_l,
+                               const common::Mat6& H) {
+  common::Vec3 d_l;
+  if (!travel_axis_in_lidar(R_w_b, R_b_o, R_w_l, &d_l)) {
     return 0.0;
   }
-  const common::Vec3 d_l = R_w_l.transpose() * (d_w / norm);
   return d_l.dot(H.topLeftCorner<3, 3>() * d_l);
+}
+
+// Backlog G3: the track-yaw front-end gate's measure, the marginal information of the scan
+// match along the horizontal travel axis for the odometry frame's origin o (degeneracy::
+// marginal_information on the eigen-decomposition of H, rotation and the other translations
+// marginalised). H is in the right-perturbation tangent [rho, phi] of T_w_l, so the
+// displacement of o (at `p_l_o` in l) along d is u^T delta with u = [d_l; p_l_o x d_l]: a
+// rotation error moves o through the lever arm. 0 when x_o is vertical. One 6x6 eigen-solve, no
+// allocation.
+inline double travel_axis_marginal_info(const common::Mat3& R_w_b,
+                                        const common::Mat3& R_b_o,
+                                        const common::Mat3& R_w_l,
+                                        const common::Mat6& H,
+                                        const common::Vec3& p_l_o = common::Vec3::Zero()) {
+  common::Vec3 d_l;
+  if (!travel_axis_in_lidar(R_w_b, R_b_o, R_w_l, &d_l)) {
+    return 0.0;
+  }
+  common::Vec6 u;
+  u.head<3>() = d_l;
+  u.tail<3>() = p_l_o.cross(d_l);
+  // analyze() with the module off flags nothing but still decomposes H.
+  const common::DegeneracyReport report = degeneracy::analyze(H, degeneracy::DegeneracyConfig{});
+  return degeneracy::marginal_information(report, u);
+}
+
+// Backlog G3: whether a scan observes the travel axis: travel_axis_marginal_info() is positive,
+// finite and at least `threshold` (the pipeline passes degeneracy.eig_threshold, > 0 by
+// load_config when the gate is on). No information (0) never passes, whatever the threshold.
+inline bool travel_axis_observed(const common::Mat3& R_w_b,
+                                 const common::Mat3& R_b_o,
+                                 const common::Mat3& R_w_l,
+                                 const common::Mat6& H,
+                                 const common::Vec3& p_l_o,
+                                 double threshold) {
+  const double info = travel_axis_marginal_info(R_w_b, R_b_o, R_w_l, H, p_l_o);
+  return info > 0.0 && std::isfinite(info) && info >= threshold;
 }
 
 /// What GnssFusion::on_fix did with a fix, so callers can branch without building the
@@ -200,6 +253,13 @@ class GnssFusion {
     return track_mismatches_before_ +
            static_cast<std::uint64_t>(track_aligner_.n_wheel_mismatches());
   }
+  /// Backlog G3: chunks at which the track-yaw aligner's observed front end held a segment still
+  /// while the wheels moved (gnss::GnssTrackYawAligner::n_frontend_wheel_disagreements), over all
+  /// aligners.
+  [[nodiscard]] std::uint64_t n_track_frontend_wheel_disagreements() const {
+    return track_fe_disagree_before_ +
+           static_cast<std::uint64_t>(track_aligner_.n_frontend_wheel_disagreements());
+  }
   /// Latest aligner estimate (identity until aligned()). Maps w to e.
   [[nodiscard]] const common::Pose& T_e_w() const { return T_e_w_; }
   /// Accepted fixes dropped from the full pending queue so far.
@@ -251,10 +311,11 @@ class GnssFusion {
   bool forced_ = false;  // force_T_e_w: the aligner is never run
   std::uint64_t n_realign_ = 0;
   common::Vec3 p_b_g_;
-  common::Pose T_b_o_;                         // odometry frame in b, for the track-yaw aligner
-  double first_align_yaw_offset_rad_ = 0.0;    // test-only, see set_first_alignment_yaw_offset
-  int offset_fixes_left_ = 0;                  // test-only
-  std::uint64_t track_mismatches_before_ = 0;  // wheel/GNSS mismatches of the aligners rebuilt
+  common::Pose T_b_o_;                          // odometry frame in b, for the track-yaw aligner
+  double first_align_yaw_offset_rad_ = 0.0;     // test-only, see set_first_alignment_yaw_offset
+  int offset_fixes_left_ = 0;                   // test-only
+  std::uint64_t track_mismatches_before_ = 0;   // wheel/GNSS mismatches of the aligners rebuilt
+  std::uint64_t track_fe_disagree_before_ = 0;  // front-end/wheel disagreements of those
   gnss::GnssAligner aligner_;
   gnss::GnssTrackYawAligner track_aligner_;  // ADR-023, used when cfg_.align_yaw_from_track
   std::uint64_t n_alignments_ = 0;

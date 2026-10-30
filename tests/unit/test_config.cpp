@@ -404,11 +404,10 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   EXPECT_TRUE(mentions(bad_restart.reason(), "gnss.align_yaw_wheel_restart_m: must be > 0 (got 0)"))
       << bad_restart.reason();
   // Root-cause study (gnss_fusion_study.md section 16.13): bridged gaps below half a chunk,
-  // extension >= 0, front end on with 100 constraints.
+  // extension >= 0, front end on (its gate is degeneracy.eig_threshold since backlog G3).
   EXPECT_EQ(cfg.value().gnss.align_yaw_wheel_max_gap_fixes, 4);
   EXPECT_EQ(cfg.value().gnss.align_yaw_merge_max_chunks, 10);
   EXPECT_TRUE(cfg.value().gnss.align_yaw_frontend_travel);
-  EXPECT_DOUBLE_EQ(cfg.value().gnss.align_yaw_frontend_min_info, 100.0);
   const auto bad_gap = parse_config(read_file(kDefault),
                                     overlay("    gnss:\n      align_yaw_wheel_max_gap_fixes: 5\n"));
   ASSERT_FALSE(bad_gap.is_ok());
@@ -421,11 +420,32 @@ TEST(Config, GnssGateAndAlignmentKeysLoaded) {
   EXPECT_TRUE(
       mentions(bad_merge.reason(), "gnss.align_yaw_merge_max_chunks: must be >= 0 (got -1)"))
       << bad_merge.reason();
-  const auto bad_info = parse_config(read_file(kDefault),
-                                     overlay("    gnss:\n      align_yaw_frontend_min_info: 0\n"));
-  ASSERT_FALSE(bad_info.is_ok());
-  EXPECT_TRUE(mentions(bad_info.reason(), "gnss.align_yaw_frontend_min_info: must be > 0 (got 0)"))
-      << bad_info.reason();
+  // Backlog G3: the raw-count key is gone (unknown key), the gate is degeneracy.eig_threshold.
+  const auto old_info = parse_config(
+      read_file(kDefault), overlay("    gnss:\n      align_yaw_frontend_min_info: 100\n"));
+  ASSERT_FALSE(old_info.is_ok());
+  EXPECT_TRUE(mentions(old_info.reason(),
+                       "gnss.align_yaw_frontend_min_info: removed in backlog G3; the track-yaw "
+                       "front-end gate is degeneracy.eig_threshold on the marginal information "
+                       "along the travel axis (gnss.md section 5.3)"))
+      << old_info.reason();
+  // The gate's threshold must be > 0 when the gate is on (0 would pass every scan), and only then.
+  const auto zero_gate = parse_config(read_file(kDefault),
+                                      overlay("    gnss:\n      align_yaw_from_track: true\n"
+                                              "    degeneracy:\n      eig_threshold: 0.0\n"));
+  ASSERT_FALSE(zero_gate.is_ok());
+  EXPECT_TRUE(mentions(zero_gate.reason(),
+                       "degeneracy.eig_threshold: must be > 0 with gnss.align_yaw_from_track and "
+                       "gnss.align_yaw_frontend_travel"))
+      << zero_gate.reason();
+  EXPECT_TRUE(parse_config(read_file(kDefault),
+                           overlay("    gnss:\n      align_yaw_from_track: true\n"
+                                   "      align_yaw_frontend_travel: false\n"
+                                   "    degeneracy:\n      eig_threshold: 0.0\n"))
+                  .is_ok());
+  EXPECT_TRUE(
+      parse_config(read_file(kDefault), overlay("    degeneracy:\n      eig_threshold: 0.0\n"))
+          .is_ok());
   for (const char* v : {"0", "1"}) {
     const auto bad_slip = parse_config(
         read_file(kDefault),

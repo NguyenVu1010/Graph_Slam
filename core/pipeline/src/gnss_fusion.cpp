@@ -65,6 +65,8 @@ common::Status GnssFusion::on_fix(const common::GnssMeasurement& m,
       // factors share the graph's T_e_w with the old ones (ADR-019) and pull the chain back.
       aligner_ = gnss::GnssAligner(cfg_);
       track_mismatches_before_ += static_cast<std::uint64_t>(track_aligner_.n_wheel_mismatches());
+      track_fe_disagree_before_ +=
+          static_cast<std::uint64_t>(track_aligner_.n_frontend_wheel_disagreements());
       track_aligner_ = gnss::GnssTrackYawAligner(cfg_, T_b_o_);
       aligned_ = false;
       consecutive_rejects_ = 0;

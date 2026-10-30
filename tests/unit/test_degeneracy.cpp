@@ -332,6 +332,117 @@ TEST(UnobservedCovariance, RepeatedFlaggedEigenvalueBasisInvariant) {
   EXPECT_NEAR(out_b(0, 3), 0.0, 1e-15);
 }
 
+// Backlog G3 (degeneracy.md section 8): the marginal information along u is 1 / (u^T H^-1 u),
+// against an explicit inverse on random SPD matrices (relative error < 1e-9).
+TEST(MarginalInformation, MatchesExplicitInverse) {
+  for (std::uint32_t seed = 1; seed <= 20; ++seed) {
+    const common::Mat6 H = random_spd(100 + seed);
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> n01(0.0, 1.0);
+    common::Vec6 u;
+    for (int i = 0; i < 6; ++i) {
+      u(i) = n01(rng);
+    }
+    const double expected = 1.0 / u.dot(H.inverse() * u);
+    const double got = marginal_information(analyze(H, DegeneracyConfig{}), u);
+    EXPECT_NEAR(got, expected, 1e-9 * expected) << seed;
+  }
+}
+
+// Along an eigenvector it is the eigenvalue, so the gate ">= eig_threshold" is analyze()'s test;
+// a translation coupled to a rotation keeps only its Schur complement, while the raw count
+// u^T H u keeps the full diagonal; a direction mixed with a degenerate one inherits its weakness.
+TEST(MarginalInformation, EigenvectorCouplingAndMixing) {
+  const common::Mat6 D = diag6(3.0, 500.0, 800.0, 40.0, 60.0, 90.0);
+  common::Vec6 x = common::Vec6::Zero();
+  x(0) = 1.0;
+  EXPECT_NEAR(marginal_information(analyze(D, DegeneracyConfig{}), x), 3.0, 1e-9);
+  // rho_x coupled to phi_z: H = [[a, c], [c, b]] on (rho_x, phi_z): Schur a - c^2 / b.
+  common::Mat6 C = diag6(400.0, 500.0, 800.0, 40.0, 60.0, 90.0);
+  C(0, 5) = 150.0;
+  C(5, 0) = 150.0;
+  const double schur = 400.0 - 150.0 * 150.0 / 90.0;  // 150
+  EXPECT_NEAR(marginal_information(analyze(C, DegeneracyConfig{}), x), schur, 1e-9 * schur);
+  EXPECT_DOUBLE_EQ(x.dot(C * x), 400.0);  // the raw count would pass a gate of 200
+  // 10 deg off the degenerate axis x (3) towards y (5000): far below the threshold of 100.
+  const common::Mat6 D2 = diag6(3.0, 5000.0, 800.0, 40.0, 60.0, 90.0);
+  common::Vec6 u = common::Vec6::Zero();
+  u(0) = std::cos(0.1745);
+  u(1) = std::sin(0.1745);
+  const double mixed = marginal_information(analyze(D2, DegeneracyConfig{}), u);
+  EXPECT_LT(mixed, 3.0 / (u(0) * u(0)) + 1e-9);
+  EXPECT_GT(u.dot(D2 * u), 100.0);  // the raw count would call it observed
+}
+
+// A component along a non-positive eigenvalue (a singular corridor Hessian), a non-finite H
+// (analyze() returns zero eigenvalues) and u = 0 all give 0; a null direction orthogonal to u
+// does not.
+TEST(MarginalInformation, SingularNonFiniteAndZero) {
+  const common::Mat6 singular = diag6(0.0, 500.0, 800.0, 40.0, 60.0, 90.0);
+  common::Vec6 x = common::Vec6::Zero();
+  x(0) = 1.0;
+  common::Vec6 y = common::Vec6::Zero();
+  y(1) = 1.0;
+  EXPECT_EQ(marginal_information(analyze(singular, DegeneracyConfig{}), x), 0.0);
+  EXPECT_NEAR(marginal_information(analyze(singular, DegeneracyConfig{}), y), 500.0, 1e-9);
+  common::Mat6 bad = singular;
+  bad(2, 1) = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(marginal_information(analyze(bad, DegeneracyConfig{}), y), 0.0);
+  EXPECT_EQ(marginal_information(analyze(singular, DegeneracyConfig{}), common::Vec6::Zero()), 0.0);
+  // An indefinite H (a negative eigenvalue with a component along u) has no information along u,
+  // also when the positive part alone would give some.
+  const common::Mat6 indefinite = diag6(1.0, -1000.0, 800.0, 40.0, 60.0, 90.0);
+  common::Vec6 xy = common::Vec6::Zero();
+  xy(0) = std::sqrt(0.5);
+  xy(1) = std::sqrt(0.5);
+  EXPECT_EQ(marginal_information(analyze(indefinite, DegeneracyConfig{}), xy), 0.0);
+  // A report whose eigenvalue is not finite gives 0, also on an eigenvector orthogonal to u
+  // (analyze() never returns one; the function does not rely on that).
+  common::DegeneracyReport nan_report =
+      analyze(diag6(1000.0, 800.0, 600.0, 500.0, 400.0, 300.0), DegeneracyConfig{});
+  int k_orthogonal = -1;
+  for (int k = 1; k < 6; ++k) {
+    if (std::abs(nan_report.eigvecs.col(k).dot(x)) < 1e-12 &&
+        nan_report.eigvals(k) < nan_report.eigvals.maxCoeff()) {
+      k_orthogonal = k;
+    }
+  }
+  ASSERT_GE(k_orthogonal, 1);
+  EXPECT_NEAR(marginal_information(nan_report, x), 1000.0, 1e-9);
+  nan_report.eigvals(k_orthogonal) = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(marginal_information(nan_report, x), 0.0);
+}
+
+// H4 review m-1: a rank-deficient H whose null space is orthogonal to u (walls only: rho_z, roll
+// and pitch unobserved), seen in a randomly rotated frame, has eigenvalues of round-off size and
+// either sign on the null space; the information along a horizontal u is still finite and equal
+// to the unrotated value (1 / (c^2 / 1000 + s^2 / 800)), within 1e-6. A u with a component along
+// the null space still gets 0.
+TEST(MarginalInformation, RotatedRankDeficient) {
+  const common::Mat6 H0 = diag6(1000.0, 800.0, 0.0, 0.0, 0.0, 500.0);
+  std::mt19937 rng(7);
+  std::normal_distribution<double> n01(0.0, 1.0);
+  for (int trial = 0; trial < 200; ++trial) {
+    const Eigen::Vector3d axis = Eigen::Vector3d(n01(rng), n01(rng), n01(rng)).normalized();
+    const Eigen::Matrix3d R = Eigen::AngleAxisd(3.0 * n01(rng), axis).toRotationMatrix();
+    common::Mat6 Q = common::Mat6::Zero();
+    Q.topLeftCorner<3, 3>() = R;
+    Q.bottomRightCorner<3, 3>() = R;
+    const common::Mat6 H = Q * H0 * Q.transpose();
+    const double a = 0.3 * trial;
+    common::Vec6 u0 = common::Vec6::Zero();
+    u0(0) = std::cos(a);
+    u0(1) = std::sin(a);
+    const common::Vec6 u = Q * u0;
+    const double expected = 1.0 / (u0(0) * u0(0) / 1000.0 + u0(1) * u0(1) / 800.0);
+    const double got = marginal_information(analyze(H, DegeneracyConfig{}), u);
+    EXPECT_NEAR(got, expected, 1e-6 * expected) << trial;
+    common::Vec6 z0 = u0;
+    z0(2) = 0.5;  // a vertical component: rho_z is unobserved
+    EXPECT_EQ(marginal_information(analyze(H, DegeneracyConfig{}), Q * z0), 0.0) << trial;
+  }
+}
+
 TEST(DegeneracyHotPath, NoAllocation) {
   const common::Mat6 H = random_spd(17);
   const DegeneracyConfig cfg{true, 1e9, 10.0};  // everything flagged: every branch runs
@@ -346,7 +457,7 @@ TEST(DegeneracyHotPath, NoAllocation) {
       const common::Vec6 d = project_update(delta, r);
       const common::PoseCovariance c = relax_covariance(cov, r, cfg);
       const common::PoseCovariance u = unobserved_covariance(cov, r, cfg, kVarM2, kVarRad2, 1e-3);
-      sink += d.sum() + c.trace() + u.trace();
+      sink += d.sum() + c.trace() + u.trace() + marginal_information(r, delta);
     }
   }
   EXPECT_EQ(AllocCounter::count(), 0U);

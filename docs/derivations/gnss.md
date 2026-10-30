@@ -650,13 +650,14 @@ extending there lost a segment of track.
 After `max_chunks` the stationary segment is added with `a_k = 0` as before. So a robot slower
 than `min_travel / (2 s (max_chunks + 1))`, about 0.01 m/s, still does not align.
 
-**Front-end travel where the LiDAR observes the travel axis** (`gnss.align_yaw_frontend_travel`,
-`gnss.align_yaw_frontend_min_info` 100).
-- **The observability gate.** Per scan the pipeline computes `d^T H_rho d`, with `d` the
-  horizontal unit of `x_o` in the LiDAR frame and `H_rho` the translation block of the
-  scan-matching Hessian in the `[rho, phi]` tangent of `T_w_l`. This is the robust-weighted count
-  of point-to-plane constraints along the axis. A scan below the threshold, or a scan whose match
-  failed, increments a count that the pipeline passes with each fix.
+**Front-end travel where the LiDAR observes the travel axis** (`gnss.align_yaw_frontend_travel`).
+- **The observability gate** (since backlog G3, section 5.3: the marginal information along the
+  axis against `degeneracy.eig_threshold`). It was `d^T H_rho d`, with `d` the horizontal unit of
+  `x_o` in the LiDAR frame and `H_rho` the translation block of the scan-matching Hessian in the
+  `[rho, phi]` tangent of `T_w_l`: the robust-weighted count of point-to-plane constraints along
+  the axis, against `gnss.align_yaw_frontend_min_info` (100, removed). A scan below the
+  threshold, or a scan whose match failed, increments a count that the pipeline passes with each
+  fix.
 - **Observed segment.** A segment is observed when the count did not change over every step from
   the first fix of its earlier chunk to the last fix of its later chunk.
 - **What the front end then decides:**
@@ -665,7 +666,8 @@ than `min_travel / (2 s (max_chunks + 1))`, about 0.01 m/s, still does not align
   - without wheel data, the sign of `p_o . a_k` replaces the forward assumption;
   - in a turn, `a_k = unit(p_o + l_k)`, the antenna displacement from the front-end path, with no
     slip or profile term.
-- **Measured per scan:**
+- **Measured per scan** (the raw count; section 5.3 has the marginal information on recorded
+  Gazebo bags):
 
   | scene | constraints along `x_o` |
   | --- | --- |
@@ -723,3 +725,71 @@ from the velocity in every environment, and the yaw reaches a 6 deg sigma within
 - It would remove limits 1 and 4b everywhere, and the drift-per-metre limit of slow robots.
 - It would not remove limit 4a (the same sign ambiguity) or limit 5 (a skid rotates the velocity
   too).
+
+### 5.3 Hardening of design 2b
+
+Numbers: `gnss_fusion_study.md` section 18. Everything here is behind `gnss.align_yaw_from_track`
+(off); the struct defaults keep the previous behaviour and `config/default.yaml` sets the values
+below.
+
+**Observability gate of the front end (G3).** A scan observes the travel axis when the marginal
+information of its matching along the axis reaches `degeneracy.eig_threshold` (100), the
+degeneracy module's own threshold. With `d_l` the horizontal travel axis in the LiDAR frame and
+`p_l_o` the origin of the odometry frame `o` in it (`T_b_l^-1 T_b_o`), under the right
+perturbation `T_w_l Exp([rho; phi])` the point `o` moves by `rho + phi x p_l_o`, so along the axis
+by `d_l . rho + phi . (p_l_o x d_l)`:
+
+    u = [d_l; p_l_o x d_l]
+
+(H4 review m-2: the first version used `[d_l; 0]`, the LiDAR's own origin; the front-end path the
+aligner uses is that of `o`). Then
+
+    I(u) = 1 / (u^T H^-1 u) = 1 / sum_k (v_k . u)^2 / lambda_k
+
+over the eigen-decomposition of the scan-matching Hessian (`degeneracy::marginal_information`,
+`degeneracy.md` section 8). It is the information along `u` once the rotation and the other
+translations are marginalised: the Schur complement of `H` onto `u`. Eigenvalues at or below
+1e-9 of the largest are the null space (a rank-deficient `H` has round-off of either sign there):
+a component of `u` along it gives 0, unless it is below 1e-9 of `|u|^2` (round-off of a null
+space orthogonal to `u`, which is skipped). A non-finite `H` gives 0. The gate needs
+`0 < I(u) >= threshold`, finite, and `load_config` requires `degeneracy.eig_threshold > 0` while
+the gate is on (H4 review I-2: a threshold of 0 passed every scan, a corridor included). The gate
+shares the threshold with the degeneracy module: retuning `degeneracy.eig_threshold` moves both.
+A config with the removed `gnss.align_yaw_frontend_min_info` fails with a message naming its
+replacement (H4 review I-3).
+- **One definition with the degeneracy module.** Along an eigenvector `I(u)` is its eigenvalue,
+  so the gate and `degeneracy::analyze` agree on whether that direction is degenerate. A travel
+  axis at an angle to a degenerate corridor axis `v_k` gets at most `lambda_k / (v_k . u)^2`,
+  while the raw count `u^T H u` it replaces also counts the lateral constraints. It is basis-free
+  and does not depend on `degeneracy.enabled`.
+- **Rotation coupling.** The raw count is an upper bound: in the synthetic box world the marginal
+  information is 189 to 437 per scan against a raw 239 to 466.
+- **Measured per scan** (marginal / raw; scans below 100; degeneracy flags with
+  `eig_threshold` 100, any direction / one along the travel axis):
+
+  | scene | marginal | raw | below 100 | flags any / along |
+  | --- | --- | --- | --- | --- |
+  | box world (synthetic) | 189 to 437 | 239 to 466 | 0 of 179 | 35 / 0 |
+  | box-world corridor (synthetic) | 2.9 to 3.6 | 3.0 to 3.7 | 179 of 179 | 179 / 179 |
+  | E-01, Gazebo recording (warehouse) | 203 to 415 (p1 236) | 288 to 482 | 0 of 627 | 10 / 0 |
+  | E-04, Gazebo recording (corridor) | 10 to 66 (p1 13) | 11 to 70 | 708 of 708 | 708 / 708 |
+  | E-07, Gazebo recording (warehouse, 3 laps) | 212 to 413 (p1 239) | 262 to 480 | 0 of 1710 | 8 / 0 |
+
+  The gate and the degeneracy flags along the axis agree on every scan; the margins are 1.5x
+  (E-04's largest, 66) below and 2.0x (E-01's smallest, 203) above the threshold.
+- **Cost.** One 6x6 eigen-solve per scan, only with the flag on.
+- **Limit: the lateral axis of a turn.** The gate measures the travel axis of each scan. A turning
+  segment whose direction comes from the front-end path (`a_k = unit(p_o + l_k)`) also uses the
+  displacement across that axis, which the gate does not check. In a corridor that is the
+  observed direction, and in a turn the axis sweeps through the lateral one within the segment,
+  so a scan that sees neither is not passed; a scene that observes the instantaneous travel axis
+  but not the lateral one through a whole turn is not covered (H4 review m-3, backlog G21).
+- **Front-end/wheel disagreement.** A segment that the observed front end holds still (`o`
+  moved less than `align_yaw_min_wheel_travel_m`) while every step had wheel data and the wheels
+  moved by more than that much beyond it is counted (`n_frontend_wheel_disagreements()`,
+  `Stats::n_gnss_frontend_wheel_disagree`, bench.json, one warning per run). The front end still
+  decides. It is right for wheels turning on a still body, the case it was built for; it is wrong
+  for a LiDAR that sees surroundings moving with the robot (a lift, a pushed cart), which then
+  never aligns. Before, that case was silent (review F4: 0 of 100 aligned, nothing counted); now
+  it is counted in 100 of 100 runs. An exact front end, also at 0.05 m/s where its displacements
+  sit at the 0.2 m threshold, is never counted (the margin is the threshold itself).

@@ -1685,3 +1685,61 @@ on, against an 8.04 ms baseline; it was not interleaved.
 - **Box world** (`GnssCorridorStudy.BoxWorldAlignCheckPairs`, 0.5 m fixes on the 2 m circle):
   identical on every seed. GNSS 0.010 m median, GNSS + wheel 0.006 m, CI [+0.000, +0.000], same
   factor counts.
+
+## 18. Hardening of design 2b before enabling it
+
+The review of section 16.13 (on 3e32aa3) left six open issues, F1 to F6 (backlog G3, G5, G9, G10,
+G11, G12), and section 17.5 one more (G15). This section closes them. Method: `gnss.md` sections
+4.1 and 5.3; ADR-023 amendment 3, ADR-025 amendment. GTSAM build, desktop WSL, on main e946ee9.
+The 2b flag stays off; enabling it is a later owner decision.
+
+Drivers:
+- **Aligner probe** (not in the repo; the review's probe of 3e32aa3 extended with the new keys):
+  the aligner driven directly, front-end pose = truth unless stated, 1 kHz kinematics, fixes at
+  5 Hz, 0.22 m lever arm, the review's seeds (31001 to 31100, `T_e_w` yaw -75 deg). Configs:
+  "before" = the 2b keys before section 16.13; "2b" = with the root-cause keys as shipped on
+  e946ee9; "H4" = with the keys of this section as `config/default.yaml` sets them, and fix
+  times. Where a cell gives three numbers they are three seed sets: 31001 to 31100 (`psi0 = 0.91
+  seed`), and the H4 review's 52001 to 52100 (`1.37 seed`) and 73001 to 73100 (`0.53 seed`).
+- **Unit tests** `GnssTrackYawHardening.*` (the same scenes, fixed seeds, always run).
+- **Pipeline**: the gate study on recorded Gazebo bags (`PipelineComponent.TrackYawGateOnRecordings`),
+  E-01..E-03 (`tools/run_integration.py`), the corridor and box world studies (15 paired seeds),
+  P11 (the S-jog outage probe of re-review 2).
+
+### 18.1 G3: the observability gate on recorded bags, and the disagreement counter
+
+New recordings (`tools/record_scenario.sh`, 2026-10-30, seed 42, under flock, GTSAM build): E-01
+(warehouse loop), E-04 (Gazebo corridor), E-07 (three warehouse laps). Gate study
+(`PipelineComponent.TrackYawGateOnRecordings`), every matched scan, the information of the
+origin of `o` (`u = [d_l; p_l_o x d_l]`):
+
+| scene | scans | marginal information min / p1 / median / max | below 100 | raw count min / median / max | degeneracy flags (any / along the travel axis) |
+| --- | --- | --- | --- | --- | --- |
+| box world (synthetic) | 179 | 189 / 190 / 287 / 437 | 0 | 239 / 368 / 466 | 35 / 0 |
+| box-world corridor (synthetic) | 179 | 2.9 / 2.9 / 3.4 / 3.6 | 179 | 3.0 / 3.4 / 3.7 | 179 / 179 |
+| E-01 (Gazebo) | 627 | 203 / 236 / 290 / 415 | 0 | 288 / 381 / 482 | 10 / 0 |
+| E-04 (Gazebo corridor) | 708 | 10 / 13 / 33 / 66 | 708 | 11 / 33 / 70 | 708 / 708 |
+| E-07 (Gazebo) | 1710 | 212 / 239 / 307 / 413 | 0 | 262 / 372 / 480 | 8 / 0 |
+
+- On every scan the gate agrees with the degeneracy module's flags along the travel axis; the
+  few scans where a direction is flagged in the warehouse are rotation-like and not along the
+  axis. Margins: 1.5x below the threshold (E-04's largest, 66) and 2.0x above (E-01's
+  smallest, 203).
+- The first H4 version measured the LiDAR's origin (`u = [d_l; 0]`, H4 review m-2), on recordings
+  of the same scenarios (604 / 706 / 1705 scans): E-01 215 to 425, E-04 20 to 68, E-07 220 to 419.
+  The lever arm of `o` adds the pitch and roll uncertainty to the axis, so the values are a few
+  per cent lower; the decision is the same on every scan. A non-finite or rank-deficient `H` and a
+  threshold of 0 are covered by unit tests (`GnssFusionTrackYaw.TravelAxisMarginalInfo`,
+  `TravelAxisMarginalInfoOfTheOdometryFrame`, `MarginalInformation.RotatedRankDeficient`,
+  `test_config` cross-key check); the pipeline's use of `o` by
+  `PipelineComponent.TrackYawGateUsesTheOdometryFrameOrigin` (box world with `o` 30 m below the
+  body: 179 of 179 scans below 100, all counted; with the LiDAR's origin none would be).
+- The raw count it replaces is an upper bound of the marginal information; in the synthetic box
+  world the coupling with the rotation takes 20 to 25 % off it.
+- E-04's corridor has visible end walls only at the ends, so its information along the axis is
+  10 to 66: the Gazebo corridor is not observed along its axis, as the synthetic one.
+
+**Counter.** Review F4's frozen front end (passes the gate, never moves, 0.5 m/s with wheel data):
+0 of 100 aligned as before, now counted in 100 of 100 runs. An exact front end: 0 counted at 0.5
+m/s and at 0.05 m/s. Pipeline (`PipelineComponent.FrontEndWheelDisagreementCounted`, static box
+world, wheels at 0.5 m/s for 12 s): 4 chunks counted, one warning, no GNSS factor; still wheels: 0.

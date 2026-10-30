@@ -12,6 +12,11 @@ namespace mss::degeneracy {
 namespace {
 
 constexpr int kDim = 6;
+// Relative size below which an eigenvalue of H (against the largest) or a component of a
+// direction (against its squared norm) is numerical round-off: far below any scan's
+// information ratio (corridor axis against walls: about 1e-4) and far above double precision
+// round-off of a 6x6 eigen-solve (about 1e-15).
+constexpr double kNullRelative = 1e-9;
 
 // True if every entry of the lower triangle (i >= j) is finite. The upper triangle is
 // never read (header precondition: H symmetric, lower triangle used).
@@ -63,6 +68,36 @@ common::DegeneracyReport analyze(const common::Mat6& hessian, const DegeneracyCo
     flag = cfg.enabled;
   }
   return report;
+}
+
+double marginal_information(const common::DegeneracyReport& report, const common::Vec6& u) {
+  // u^T H^-1 u = sum_k (v_k . u)^2 / lambda_k over the eigen-decomposition H = V diag(lambda) V^T
+  // (degeneracy.md section 8). Eigenvalues at or below kNullRelative x the largest are the null
+  // space (a rank-deficient H gives round-off of either sign there): a component along it larger
+  // than kNullRelative x |u|^2 makes the variance unbounded (0), a smaller one is round-off.
+  const double lambda_max = report.eigvals.maxCoeff();
+  const double u2 = u.squaredNorm();
+  if (!(lambda_max > 0.0) || !std::isfinite(lambda_max) || !(u2 > 0.0)) {
+    return 0.0;
+  }
+  const double null_eig = kNullRelative * lambda_max;
+  double var = 0.0;
+  for (int k = 0; k < kDim; ++k) {
+    const double c = report.eigvecs.col(k).dot(u);
+    const double c2 = c * c;
+    const double lambda = report.eigvals(k);
+    if (!std::isfinite(lambda)) {
+      return 0.0;
+    }
+    if (!(lambda > null_eig)) {
+      if (c2 > kNullRelative * u2) {
+        return 0.0;
+      }
+      continue;
+    }
+    var += c2 / lambda;
+  }
+  return var > 0.0 ? 1.0 / var : 0.0;
 }
 
 common::Vec6 project_update(const common::Vec6& delta, const common::DegeneracyReport& report) {

@@ -686,6 +686,57 @@ TEST(GnssFusionTrackYaw, HeadingVariationUsesTheTravelAxis) {
 }
 
 }  // namespace
+// Backlog G3: the gate's measure is the marginal information along the travel axis (rotation
+// and the other translations marginalised). Diagonal H: equal to the raw count. With rho_x (the
+// travel axis in l) coupled to phi_z (a lever arm between the LiDAR and the surfaces): its Schur
+// complement 400 - 150^2 / 90 = 150, while the raw count stays 400. Vertical travel axis: 0.
+TEST(GnssFusionTrackYaw, TravelAxisMarginalInfo) {
+  mss::common::Mat6 H = mss::common::Mat6::Zero();
+  H(0, 0) = 400.0;
+  H(1, 1) = 9.0;
+  H(2, 2) = 50.0;
+  H(3, 3) = 40.0;
+  H(4, 4) = 60.0;
+  H(5, 5) = 90.0;
+  const Mat3 level = Mat3::Identity();
+  EXPECT_NEAR(travel_axis_marginal_info(level, level, level, H), 400.0, 1e-9);
+  const Mat3 yaw90 = Eigen::AngleAxisd(0.5 * kPi, Vec3::UnitZ()).toRotationMatrix();
+  EXPECT_NEAR(travel_axis_marginal_info(level, yaw90, level, H), 9.0, 1e-9);
+  H(0, 5) = 150.0;
+  H(5, 0) = 150.0;
+  EXPECT_NEAR(travel_axis_marginal_info(level, level, level, H), 150.0, 1e-9);
+  EXPECT_NEAR(travel_axis_info(level, level, level, H), 400.0, 1e-9);
+  const Mat3 pitch90 = Eigen::AngleAxisd(0.5 * kPi, Vec3::UnitY()).toRotationMatrix();
+  EXPECT_EQ(travel_axis_marginal_info(level, pitch90, level, H), 0.0);
+  // The gate: observed at a threshold of 150, not at 200, although the raw count is 400.
+  const Vec3 no_arm = Vec3::Zero();
+  EXPECT_TRUE(travel_axis_observed(level, level, level, H, no_arm, 149.9));
+  EXPECT_FALSE(travel_axis_observed(level, level, level, H, no_arm, 200.0));
+  // No information never passes, also at a threshold of 0 (H4 review I-2): a vertical travel
+  // axis, and an axis along a null direction of H.
+  EXPECT_FALSE(travel_axis_observed(level, pitch90, level, H, no_arm, 0.0));
+  mss::common::Mat6 corridor = H;
+  corridor.row(0).setZero();
+  corridor.col(0).setZero();
+  EXPECT_EQ(travel_axis_marginal_info(level, level, level, corridor), 0.0);
+  EXPECT_FALSE(travel_axis_observed(level, level, level, corridor, no_arm, 0.0));
+}
+
+// H4 review m-2: the gate measures the odometry frame's origin o, not the LiDAR's. With o 1 m
+// below the LiDAR (p_l_o = (0, 0, -1)) and the travel axis along l x, a pitch error moves o along
+// the axis: u = [x; p_l_o x x] = [x; (0, -1, 0)], so with no coupling in H the information is
+// 1 / (1/400 + 1/60) = 52.17, against 400 at the LiDAR origin.
+TEST(GnssFusionTrackYaw, TravelAxisMarginalInfoOfTheOdometryFrame) {
+  mss::common::Mat6 H = mss::common::Mat6::Zero();
+  H.diagonal() << 400.0, 9.0, 50.0, 40.0, 60.0, 90.0;
+  const Mat3 level = Mat3::Identity();
+  EXPECT_NEAR(travel_axis_marginal_info(level, level, level, H, Vec3::Zero()), 400.0, 1e-9);
+  const double expected = 1.0 / (1.0 / 400.0 + 1.0 / 60.0);
+  EXPECT_NEAR(
+      travel_axis_marginal_info(level, level, level, H, Vec3(0.0, 0.0, -1.0)), expected, 1e-9);
+  EXPECT_FALSE(travel_axis_observed(level, level, level, H, Vec3(0.0, 0.0, -1.0), 100.0));
+}
+
 // Root-cause study: the information along the horizontal travel axis, d^T H_rho d with d in the
 // LiDAR frame. H_rho = diag(400, 9, 50): with l = b = o and a yaw of 90 deg, x_o points along w y,
 // which is l x, so 400; with T_b_o turned by 90 deg about z it is l y, so 9; with x_o pitched to

@@ -32,6 +32,7 @@
 #include "mss/common/span.hpp"
 #include "mss/common/timestamp.hpp"
 #include "mss/common/types.hpp"
+#include "mss/degeneracy/degeneracy.hpp"
 #include "mss/imu/initializer.hpp"
 #include "mss/imu/preintegrator.hpp"
 #include "mss/io/dataset_reader.hpp"
@@ -41,6 +42,7 @@
 #include "alloc_counter.hpp"
 #include "box_world.hpp"
 #include "estimator_core.hpp"
+#include "gnss_fusion.hpp"
 #include "pipeline_test_support.hpp"
 
 #ifndef MSS_TEST_WITH_GTSAM
@@ -762,16 +764,22 @@ class StaticCore {
   // `aux`: gnss.enabled and wheel_odom.enabled, with GNSS (5 Hz, 1.234 ms off the IMU grid)
   // and wheel (50 Hz) messages merged into the stream by time.
   // `prealign_max_fixes` > 0: also gnss.attach_prealign_fixes with that buffer bound (ADR-022).
-  explicit StaticCore(bool aux = false, int prealign_max_fixes = 0)
+  // `spin_wheels_mps` != 0: the body stays still for the whole run (IMU, GNSS) while the wheel
+  // samples report that speed (wheels turning on a still body), with gnss.align_yaw_from_track.
+  explicit StaticCore(bool aux = false, int prealign_max_fixes = 0, double spin_wheels_mps = 0.0)
       : aux_(aux),
-        cfg_(make_cfg(aux, prealign_max_fixes)),
+        spin_wheels_mps_(spin_wheels_mps),
+        cfg_(make_cfg(aux, prealign_max_fixes, spin_wheels_mps != 0.0)),
         core_(std::make_unique<detail::EstimatorCore>(cfg_)) {
+    if (spin_wheels_mps_ != 0.0) {
+      p_.static_s = 1e6;
+    }
     scan_.reserve(static_cast<std::size_t>(p_.rings * p_.columns));
     test::box_scan(p_, Timestamp{p_.t0_ns}, scan_);  // static: identical at every time
     empty_.reserve(1);
   }
 
-  static Config make_cfg(bool aux = false, int prealign_max_fixes = 0) {
+  static Config make_cfg(bool aux = false, int prealign_max_fixes = 0, bool track_yaw = false) {
     const auto loaded = load_config(kDefault);
     EXPECT_TRUE(loaded.is_ok()) << loaded.reason();
     Config c = loaded.value();
@@ -783,6 +791,7 @@ class StaticCore {
       c.gnss.attach_prealign_fixes = true;
       c.gnss.prealign_max_fixes = prealign_max_fixes;
     }
+    c.gnss.align_yaw_from_track = track_yaw;
     return c;
   }
 
@@ -792,7 +801,11 @@ class StaticCore {
     for (; next_imu_ <= t; next_imu_ += period_) {
       if (aux_) {
         for (; next_wheel_ < next_imu_; next_wheel_ += 20'000'000) {
-          core_->on_wheel(test::box_wheel(p_, Timestamp{next_wheel_}));
+          common::WheelSample w = test::box_wheel(p_, Timestamp{next_wheel_});
+          if (spin_wheels_mps_ != 0.0) {
+            w.v_mps = spin_wheels_mps_;
+          }
+          core_->on_wheel(w);
         }
         for (; next_gnss_ < next_imu_; next_gnss_ += 200'000'000) {
           common::GnssMeasurement m;
@@ -829,7 +842,10 @@ class StaticCore {
     core_->on_scan(empty_);
   }
 
-  std::int64_t t_scan(int k) const { return p_.t0_ns + 2'000'000'000 + k * 100'000'000; }
+  std::int64_t t_scan(int k) const {
+    return p_.t0_ns + 2'000'000'000 +
+           static_cast<std::int64_t>(k) * 100'000'000;  // no int overflow
+  }
 
   detail::EstimatorCore& core() { return *core_; }
   std::int64_t period() const { return period_; }
@@ -837,6 +853,7 @@ class StaticCore {
  private:
   BoxWorldParams p_;
   bool aux_ = false;
+  double spin_wheels_mps_ = 0.0;
   Config cfg_;
   std::unique_ptr<detail::EstimatorCore> core_;
   ScanFrame scan_;
@@ -918,6 +935,30 @@ TEST(PipelineComponent, PrealignBufferBoundedNoAllocation) {
   EXPECT_EQ(s.core().counters().n_gnss_prealign_dropped, dropped + 5U);
   EXPECT_EQ(s.core().counters().n_gnss_prealign_attached, 0U);
   EXPECT_EQ(s.core().counters().n_gnss_factors, 0U);
+}
+
+// Backlog G3: wheels turning at 0.5 m/s on a still body in the box world (the LiDAR observes the
+// travel axis): the track-yaw aligner's front end holds every segment still, so the robot never
+// aligns, and the front-end/wheel disagreement is counted and logged (it used to be silent). The
+// same run with still wheels counts nothing.
+TEST(PipelineComponent, FrontEndWheelDisagreementCounted) {
+  for (const double spin : {0.5, 0.0}) {
+    StaticCore s(true, 0, spin);
+    for (int k = 0; k < 120; ++k) {  // 12 s
+      s.scan_at(s.t_scan(k));
+    }
+    ASSERT_TRUE(s.core().has_estimate());
+    std::printf(
+        "[ G3 ] still body, wheels at %.1f m/s: %llu front-end/wheel disagreements\n",
+        spin,
+        static_cast<unsigned long long>(s.core().counters().n_gnss_frontend_wheel_disagree));
+    if (spin != 0.0) {
+      EXPECT_GE(s.core().counters().n_gnss_frontend_wheel_disagree, 3U);
+    } else {
+      EXPECT_EQ(s.core().counters().n_gnss_frontend_wheel_disagree, 0U);
+    }
+    EXPECT_EQ(s.core().counters().n_gnss_factors, 0U);
+  }
 }
 
 // I-2: a NaN IMU sample inside a scan span and one exactly at a scan start are dropped;
@@ -1917,9 +1958,17 @@ TEST(PipelineComponent, TrackYawHeadingVariationUsesTheTravelAxis) {
   EXPECT_GT(std::abs(sum_x_o_rad - sum_x_b_rad), 1.0);  // the scene tells the two axes apart
 }
 
-// Records the count of scans that did not observe the travel axis (on_track_heading).
+// Records the count of scans that did not observe the travel axis (on_track_heading), and per
+// matched scan the gate's measures along the travel axis (backlog G3): the marginal information
+// (the gate), the raw count d^T H_rho d it replaced, and whether degeneracy::analyze at
+// degeneracy.eig_threshold flags a direction (any, and one mostly along the travel axis).
 class UnobservedObserver : public detail::CoreObserver {
  public:
+  UnobservedObserver() = default;
+  explicit UnobservedObserver(const Config& cfg)
+      : R_b_o_(cfg.frames.T_b_o.R),
+        p_l_o_(cfg.frames.T_b_l.inverse() * cfg.frames.T_b_o.p),
+        eig_threshold_(cfg.degeneracy.eig_threshold) {}
   void on_track_heading(Timestamp /*t*/,
                         const common::Pose& /*T_w_b*/,
                         double /*heading_variation_rad*/,
@@ -1927,14 +1976,66 @@ class UnobservedObserver : public detail::CoreObserver {
     last_ = travel_unobserved_scans;
     ++scans_;
   }
+  void on_scan_matched(Timestamp /*t*/,
+                       const common::Pose& /*T_w_b_pred*/,
+                       const common::Pose& T_w_b,
+                       const common::MatchResult& m) override {
+    marginal_.push_back(detail::travel_axis_marginal_info(T_w_b.R, R_b_o_, m.T_w_l.R, m.H, p_l_o_));
+    raw_.push_back(detail::travel_axis_info(T_w_b.R, R_b_o_, m.T_w_l.R, m.H));
+    degeneracy::DegeneracyConfig dc;
+    dc.enabled = true;
+    dc.eig_threshold = eig_threshold_;
+    const common::DegeneracyReport rep = degeneracy::analyze(m.H, dc);
+    common::Vec3 d_l;
+    const bool horizontal = detail::travel_axis_in_lidar(T_w_b.R, R_b_o_, m.T_w_l.R, &d_l);
+    bool any = false;
+    bool along = false;
+    for (int k = 0; k < 6; ++k) {
+      if (rep.degenerate[static_cast<std::size_t>(k)]) {
+        any = true;
+        const common::Vec3 v_rho = rep.eigvecs.col(k).head<3>();
+        along = along || (horizontal && v_rho.dot(d_l) * v_rho.dot(d_l) > 0.5);
+      }
+    }
+    flagged_any_ += any ? 1 : 0;
+    flagged_along_ += along ? 1 : 0;
+  }
+  // "min / 1st percentile / median / max" of `v`.
+  static std::string summary(std::vector<double> v) {
+    if (v.empty()) {
+      return "none";
+    }
+    std::sort(v.begin(), v.end());
+    char buf[128];
+    std::snprintf(buf,
+                  sizeof(buf),
+                  "%.1f / %.1f / %.1f / %.1f",
+                  v.front(),
+                  v[v.size() / 100],
+                  v[v.size() / 2],
+                  v.back());
+    return buf;
+  }
+  [[nodiscard]] int below(const std::vector<double>& v) const {
+    return static_cast<int>(
+        std::count_if(v.begin(), v.end(), [this](double x) { return !(x >= eig_threshold_); }));
+  }
   double last_ = 0.0;
   int scans_ = 0;
+  common::Mat3 R_b_o_ = common::Mat3::Identity();
+  common::Vec3 p_l_o_ = common::Vec3::Zero();
+  double eig_threshold_ = 100.0;
+  std::vector<double> marginal_;
+  std::vector<double> raw_;
+  int flagged_any_ = 0;
+  int flagged_along_ = 0;
 };
 
-// Root-cause study (gnss_fusion_study.md section 16.13): a scan observes the travel axis with
-// gnss.align_yaw_frontend_min_info (100) point-to-plane constraints along it. Box world (walls in
-// range in every direction, 239 to 466 per scan): every scan observes it. Corridor whose end walls
-// are out of range (0.2 to 66 per scan): no scan does, so the front end is not used there.
+// Root-cause study (gnss_fusion_study.md section 16.13), gate of backlog G3: a scan observes the
+// travel axis when the scan matcher's marginal information along it reaches
+// degeneracy.eig_threshold (100). Box world (walls in range in every direction): every scan
+// observes it. Corridor whose end walls are out of range: no scan does, so the front end is not
+// used there.
 TEST(PipelineComponent, TrackYawFrontEndObservesTheTravelAxis) {
   const fs::path dir = test_dir();
   for (const bool corridor : {false, true}) {
@@ -1953,23 +2054,121 @@ TEST(PipelineComponent, TrackYawFrontEndObservesTheTravelAxis) {
                    corridor ? std::string("    preprocess:\n      max_range_m: 10.0\n") : "",
                    "      align_yaw_from_track: true\n");
     ASSERT_TRUE(cfg.gnss.align_yaw_frontend_travel);
-    UnobservedObserver obs;
+    UnobservedObserver obs(cfg);
     detail::CoreTestHooks hooks;
     hooks.observer = &obs;
     {
       const HooksScope scope(&hooks);
       (void)replay(data, cfg);
     }
-    std::printf("[ root cause ] %s: %.0f of %d scans did not observe the travel axis\n",
-                corridor ? "corridor" : "box world",
-                obs.last_,
-                obs.scans_);
+    std::printf(
+        "[ root cause ] %s: %.0f of %d scans did not observe the travel axis; marginal "
+        "information min / p1 / median / max %s (raw count %s); degeneracy flags a direction "
+        "on %d scans, one along the travel axis on %d\n",
+        corridor ? "corridor" : "box world",
+        obs.last_,
+        obs.scans_,
+        UnobservedObserver::summary(obs.marginal_).c_str(),
+        UnobservedObserver::summary(obs.raw_).c_str(),
+        obs.flagged_any_,
+        obs.flagged_along_);
     ASSERT_GT(obs.scans_, 100);
     if (corridor) {
       EXPECT_EQ(obs.last_, static_cast<double>(obs.scans_));
     } else {
       EXPECT_EQ(obs.last_, 0.0);
     }
+  }
+}
+
+// H4 review m-2: the pipeline's gate measures the odometry frame's origin o, at p_l_o in the LiDAR
+// frame. Box world with o put 30 m below the body (frames.T_b_o.p): the rotation uncertainty of
+// the match now moves o along the axis, so some scans fall below the threshold; the pipeline
+// counts exactly the scans whose information of o (the observer's, with the same p_l_o) is below
+// it. With o at the LiDAR's origin it would count none of them.
+TEST(PipelineComponent, TrackYawGateUsesTheOdometryFrameOrigin) {
+  const fs::path dir = test_dir();
+  BoxWorldParams p;
+  p.seed = 42;
+  const fs::path data = dir / "box_lever";
+  ASSERT_TRUE(test::write_box_dataset(data, p).is_ok());
+  Config cfg =
+      box_config(p, true, false, dir / "box_lever_run", "", "      align_yaw_from_track: true\n");
+  ASSERT_TRUE(cfg.gnss.align_yaw_frontend_travel);
+  constexpr double kLeverM = 30.0;  // m
+  cfg.frames.T_b_o.p = common::Vec3(0.0, 0.0, -kLeverM);
+  UnobservedObserver obs(cfg);
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  {
+    const HooksScope scope(&hooks);
+    (void)replay(data, cfg);
+  }
+  int below = 0;
+  for (const double info : obs.marginal_) {
+    below += info < cfg.degeneracy.eig_threshold ? 1 : 0;
+  }
+  std::printf(
+      "[ gate ] o %.0f m below the body: %d of %d scans below the threshold, counted %.0f\n",
+      kLeverM,
+      below,
+      obs.scans_,
+      obs.last_);
+  ASSERT_GT(obs.scans_, 100);
+  EXPECT_GT(below, 0);
+  EXPECT_EQ(obs.last_, static_cast<double>(below));
+}
+
+// Backlog G3, gate study on recorded Gazebo bags (gnss.md section 5.3): replays each mssdata
+// directory of MSS_TRACK_GATE_STUDY ("name=dir=overlay;..."; skipped when unset) with
+// config/default.yaml + its overlay + the track-yaw flag, and prints per scene the travel-axis
+// marginal information (the gate), the raw count it replaced and the degeneracy flags.
+TEST(PipelineComponent, TrackYawGateOnRecordings) {
+  const char* env = std::getenv("MSS_TRACK_GATE_STUDY");
+  if (env == nullptr) {
+    GTEST_SKIP() << "set MSS_TRACK_GATE_STUDY=name=mssdata_dir=overlay.yaml;...";
+  }
+  std::string spec = env;
+  std::size_t pos = 0;
+  while (pos < spec.size()) {
+    const std::size_t end = std::min(spec.find(';', pos), spec.size());
+    const std::string item = spec.substr(pos, end - pos);
+    pos = end + 1;
+    const std::size_t a = item.find('=');
+    const std::size_t b = item.find('=', a + 1);
+    ASSERT_NE(a, std::string::npos) << item;
+    ASSERT_NE(b, std::string::npos) << item;
+    const std::string name = item.substr(0, a);
+    const fs::path data = item.substr(a + 1, b - a - 1);
+    const fs::path overlay = item.substr(b + 1);
+    auto loaded = load_config(kDefault, overlay);
+    ASSERT_TRUE(loaded.is_ok()) << loaded.reason();
+    Config cfg = loaded.value();
+    cfg.gnss.align_yaw_from_track = true;  // the gate runs with the track-yaw aligner only
+    cfg.gnss.enabled = true;
+    UnobservedObserver obs(cfg);
+    detail::CoreTestHooks hooks;
+    hooks.observer = &obs;
+    {
+      const HooksScope scope(&hooks);
+      (void)replay(data, cfg);
+    }
+    std::printf(
+        "[ gate study ] %s: %zu matched scans; marginal information min / p1 / median / max %s, "
+        "%d below %.0f; raw count %s, %d below; degeneracy flags a direction on %d scans, one "
+        "along the travel axis on %d; unobserved count %.0f of %d\n",
+        name.c_str(),
+        obs.marginal_.size(),
+        UnobservedObserver::summary(obs.marginal_).c_str(),
+        obs.below(obs.marginal_),
+        cfg.degeneracy.eig_threshold,
+        UnobservedObserver::summary(obs.raw_).c_str(),
+        obs.below(obs.raw_),
+        obs.flagged_any_,
+        obs.flagged_along_,
+        obs.last_,
+        obs.scans_);
+    EXPECT_GT(obs.marginal_.size(), 0U) << name;
   }
 }
 

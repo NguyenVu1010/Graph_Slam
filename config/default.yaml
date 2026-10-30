@@ -211,12 +211,11 @@ mss_node:
       align_yaw_merge_max_chunks: 10
       # When the LiDAR observes the travel axis, the front-end displacement makes a segment
       # stationary (wheels turning on a still body, a parked robot), gives the direction of travel
-      # without wheel data, and gives the path of a turn (a skid included). false: not used.
+      # without wheel data, and gives the path of a turn (a skid included). false: not used. A
+      # scan observes the axis when the scan matcher's marginal information along it (rotation
+      # and the other axes marginalised) reaches degeneracy.eig_threshold, the degeneracy
+      # module's test (backlog G3, gnss.md section 5.3).
       align_yaw_frontend_travel: true
-      # A scan observes the travel axis with at least this many robust-weighted point-to-plane
-      # constraints along it (x^T H_rho x of the scan matcher, dimensionless, > 0). Measured per
-      # scan: box world 239 to 466, E-01 304 to 577, box-world corridor 0.2 to 66.
-      align_yaw_frontend_min_info: 100.0
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m
@@ -306,7 +305,10 @@ mss_node:
       # GNSS + wheel 5.4 -> 6.0 mm, and on the Gazebo E-04 bag it lifts z by about 1.1 m at
       # start-up (S2 item).
       enabled: false             # flag (D-03)
-      eig_threshold: 100.0       # absolute eigenvalue of H below which a direction is degenerate
+      # Absolute eigenvalue of H below which a direction is degenerate. Also the threshold of the
+      # track-yaw front-end gate (gnss.align_yaw_frontend_travel: marginal information along the
+      # travel axis, backlog G3): retuning it moves that gate too; > 0 when the gate is on.
+      eig_threshold: 100.0
       # >= 1. Floor of the unobserved variance: relax_factor * c / eig_threshold, with
       # c = cov_scale * max(sigma_r^2, min_residual_sigma_m^2) (the pre-PR-4b relaxed value);
       # also the factor of degeneracy::relax_covariance.
