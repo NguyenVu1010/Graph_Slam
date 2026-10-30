@@ -631,6 +631,21 @@ Config read_config(Reader& r) {
             "must be in [0, 1]");
   }
   r.field("loop_closure.graph_covariance_gate", c.loop_closure.graph_covariance_gate);
+  r.field("loop_closure.pcm_enabled", c.loop_closure.pcm_enabled);
+  r.field("loop_closure.pcm_chi2_gate", c.loop_closure.pcm_chi2_gate, Range::kPositive);
+  if (r.field("loop_closure.pcm_odometry_sigma_scale", c.loop_closure.pcm_odometry_sigma_scale)) {
+    r.check("loop_closure.pcm_odometry_sigma_scale",
+            c.loop_closure.pcm_odometry_sigma_scale >= 1.0,
+            "must be >= 1");
+  }
+  r.angle_deg("loop_closure.pcm_yaw_drift_deg_per_m",
+              c.loop_closure.pcm_yaw_drift_rad_per_m,
+              Range::kNonNegative);
+  if (r.field("loop_closure.pcm_max_loops", c.loop_closure.pcm_max_loops, Range::kAtLeastOne)) {
+    r.check("loop_closure.pcm_max_loops", c.loop_closure.pcm_max_loops <= 64, "must be <= 64");
+  }
+  r.field(
+      "loop_closure.pcm_max_clique_steps", c.loop_closure.pcm_max_clique_steps, Range::kPositive);
 
   r.field("backend.keyframe_dist_m", c.backend.keyframe_dist_m, Range::kPositive);
   r.angle_deg("backend.keyframe_rot_deg", c.backend.keyframe_rot_rad);

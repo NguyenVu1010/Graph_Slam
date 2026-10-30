@@ -77,6 +77,20 @@ struct LoopConfig {
   int ambiguity_backoff_keyframes = 0;
   int ambiguity_icp_max_iterations = 1;
   double ambiguity_prescreen_ratio = 0.0;
+  // Loop selection by pairwise consistency (PCM, ADR-028, loop_closure.md section 11): the
+  // verified loops are kept in the graph only while they belong to a maximum set of mutually
+  // consistent loops; a loop that leaves the set is removed from the graph.
+  bool pcm_enabled = false;    // false: every verified loop goes into the graph (YAML: true)
+  double pcm_chi2_gate = 0.0;  // pairwise cycle chi-square, 6 DoF (> 0)
+  // The odometry covariance is multiplied by this squared in the pairwise test (>= 1): the
+  // front end's covariance is not trusted at its absolute scale (ADR-028; review H3 I-1).
+  double pcm_odometry_sigma_scale = 1.0;
+  // Unknown constant yaw drift rate of the odometry, 1 sigma, per metre travelled (>= 0; 0: no
+  // drift term). Its effect on a segment (yaw ~ distance, lateral ~ distance^2) is added to the
+  // odometry covariance of the pairwise test (ADR-028 amendment C, loop_closure.md 11b).
+  double pcm_yaw_drift_rad_per_m = 0.0;  // rad/m (YAML: pcm_yaw_drift_deg_per_m)
+  int pcm_max_loops = 1;         // loops held, [1, 64]; the oldest leaves (frozen if selected)
+  int pcm_max_clique_steps = 1;  // Bron-Kerbosch call bound (> 0)
 };
 
 }  // namespace mss::loop
