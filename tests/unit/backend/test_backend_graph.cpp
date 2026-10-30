@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include <Eigen/Dense>
 #include <gtest/gtest.h>
 
 #include "mss/backend/graph.hpp"
@@ -727,6 +728,202 @@ TEST(BackendGraph, RelativePoseCovConsistentOnLoopGraph) {
       const Mat6 expect = common::transform_covariance(rij.value(), T_ij);
       EXPECT_LT((rji.value() - expect).norm(), 1e-6 * expect.norm()) << i << " " << j;
     }
+  }
+}
+
+// --- remove_loop_factor (ADR-028) ------------------------------------------------------------
+
+// A pending loop (no optimize() yet) is dropped from the pending set: the graph optimises as if
+// it had never been added. Unknown pairs and lidar factors are not loop factors.
+TEST(BackendGraph, RemoveLoopFactorPendingAndUnknown) {
+  const test::Scenario s = test::square_loop(true, 5);
+  Graph ref(default_backend_config(), default_imu_config(), Vec3::Zero());
+  Graph g(default_backend_config(), default_imu_config(), Vec3::Zero());
+  for (KeyId k = 0; k < 5; ++k) {
+    for (Graph* x : {&ref, &g}) {
+      x->add_keyframe(s.truth[k].t, s.guess[k]);
+      if (k > 0) {
+        x->add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+      }
+    }
+    if (k == 4) {
+      common::LoopConstraint lc;
+      lc.i = 0;
+      lc.j = 4;
+      lc.T_bi_bj = s.edge_meas[4];
+      lc.cov = s.edge_cov;
+      g.add_loop_factor(lc);
+      EXPECT_FALSE(g.remove_loop_factor(3, 4));  // a lidar edge, not a loop
+      EXPECT_FALSE(g.remove_loop_factor(1, 4));  // never added
+      EXPECT_TRUE(g.remove_loop_factor(0, 4));   // pending
+    }
+    ASSERT_TRUE(ref.optimize().is_ok());
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+  for (KeyId k = 0; k < 5; ++k) {
+    EXPECT_EQ(state_or_fail(ref, k).T_w_b.p, state_or_fail(g, k).T_w_b.p) << k;
+  }
+}
+
+// A committed loop removed later: after a few updates the graph equals one that never had it
+// (pose error < 1e-6), and marginals follow (the latest pose is less certain without it).
+TEST(BackendGraph, RemoveLoopFactorCommitted) {
+  const test::Scenario s = test::square_loop(true, 9);
+  Graph with(default_backend_config(), default_imu_config(), Vec3::Zero());
+  run_square(with, s, 2);
+  Graph without(default_backend_config(), default_imu_config(), Vec3::Zero());
+  for (KeyId k = 0; k < 5; ++k) {
+    without.add_keyframe(s.truth[k].t, s.guess[k]);
+    if (k > 0) {
+      without.add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+    }
+    ASSERT_TRUE(without.optimize().is_ok());
+  }
+  for (int n = 0; n < 2; ++n) {
+    ASSERT_TRUE(without.optimize().is_ok());
+  }
+  const double tr_with = with.marginal_cov(4).trace();
+  ASSERT_TRUE(with.remove_loop_factor(0, 4));
+  for (int n = 0; n < 5; ++n) {
+    ASSERT_TRUE(with.optimize().is_ok());
+  }
+  for (KeyId k = 0; k < 5; ++k) {
+    EXPECT_LT(pose_error(state_or_fail(with, k).T_w_b, state_or_fail(without, k).T_w_b), 1e-6) << k;
+  }
+  EXPECT_GT(with.marginal_cov(4).trace(), tr_with);
+  EXPECT_LT((with.marginal_cov(4) - without.marginal_cov(4)).norm(),
+            1e-6 * without.marginal_cov(4).norm());
+}
+
+// --- relative_pose_cov against an independent dense solve and Monte Carlo (review H3, M-2) ---
+// A 75-keyframe circle built incrementally (one iSAM2 update per keyframe) with exact SE(3)
+// relative factors, random full covariances (fixed seed) and 7 loops one lap back, so the Bayes
+// tree has many cliques and the joint P_ij crosses branches. Reference: the dense information
+// matrix in mss order (prior + J_i = -Ad(T_j^-1 T_i), J_j = I per factor), inverted, then the
+// relative-pose formula; and 100k samples of that 12x12 joint pushed through T_i^-1 T_j.
+struct DenseFactor {
+  int i = 0;
+  int j = 0;
+  Pose Z;
+  Mat6 C = Mat6::Identity();
+};
+
+struct DenseGraph {
+  std::vector<Pose> T;
+  std::vector<DenseFactor> f;
+};
+
+DenseGraph build_dense_check_graph(Graph& g, int n, std::mt19937& rng) {
+  DenseGraph b;
+  constexpr double kTwoPi = 6.283185307179586;
+  for (int k = 0; k < n; ++k) {
+    const double a = kTwoPi * k / 30.0;
+    b.T.push_back(
+        test::pose_from(Vec3(0.05 * std::sin(0.7 * k), 0.03 * std::cos(0.3 * k), a + 0.2),
+                        Vec3(5.0 * std::cos(a), 5.0 * std::sin(a), 0.2 * std::sin(0.5 * k))));
+  }
+  for (int k = 0; k < n; ++k) {
+    NavState x;
+    x.t = common::Timestamp{static_cast<std::int64_t>(k) * 1'000'000'000};
+    x.T_w_b = b.T[static_cast<std::size_t>(k)];
+    g.add_keyframe(x.t, x);
+    const auto add = [&](int i, double sm, double sr) {
+      DenseFactor f;
+      f.i = i;
+      f.j = k;
+      f.Z = b.T[static_cast<std::size_t>(i)].inverse() * b.T[static_cast<std::size_t>(k)];
+      f.C = random_cov(rng, sm, sr);
+      g.add_lidar_factor(static_cast<KeyId>(i), static_cast<KeyId>(k), f.Z, f.C, nullptr);
+      b.f.push_back(f);
+    };
+    if (k > 0) {
+      add(k - 1, 0.02, 0.004);
+    }
+    if (k >= 30 && k % 7 == 0) {
+      add(k - 30, 0.05, 0.01);
+    }
+    EXPECT_TRUE(g.optimize().is_ok());
+  }
+  return b;
+}
+
+TEST(BackendGraph, RelativePoseCovDenseAndMonteCarloOnLoopyGraph) {
+  BackendConfig cfg = default_backend_config();
+  cfg.relative_factor = RelativeFactor::kSe3Exact;
+  Graph g(cfg, default_imu_config(), Vec3::Zero());
+  std::mt19937 rng(11);
+  constexpr int kN = 75;
+  const DenseGraph b = build_dense_check_graph(g, kN, rng);
+  Eigen::MatrixXd H = Eigen::MatrixXd::Zero(6 * kN, 6 * kN);
+  Vec6 sp;
+  sp << Vec3::Constant(cfg.prior_pos_sigma_m), Vec3::Constant(cfg.prior_rot_sigma_rad);
+  H.block<6, 6>(0, 0) += Mat6(sp.cwiseAbs2().cwiseInverse().asDiagonal());
+  for (const DenseFactor& f : b.f) {
+    const Mat6 Ji = -common::se3_adj(b.T[static_cast<std::size_t>(f.j)].inverse() *
+                                     b.T[static_cast<std::size_t>(f.i)]);
+    const Mat6 W = f.C.inverse();
+    H.block<6, 6>(6 * f.i, 6 * f.i) += Ji.transpose() * W * Ji;
+    H.block<6, 6>(6 * f.i, 6 * f.j) += Ji.transpose() * W;
+    H.block<6, 6>(6 * f.j, 6 * f.i) += W * Ji;
+    H.block<6, 6>(6 * f.j, 6 * f.j) += W;
+  }
+  const Eigen::MatrixXd P = H.inverse();
+  const int pairs[][2] = {{0, 74},
+                          {3, 74},
+                          {10, 74},
+                          {44, 74},
+                          {5, 60},
+                          {12, 40},
+                          {20, 21},
+                          {1, 50},
+                          {33, 70},
+                          {2, 3},
+                          {60, 73},
+                          {7, 37}};
+  std::normal_distribution<double> nd(0.0, 1.0);
+  for (const auto& pr : pairs) {
+    const int i = pr[0];
+    const int j = pr[1];
+    const Pose& Ti = b.T[static_cast<std::size_t>(i)];
+    const Pose& Tj = b.T[static_cast<std::size_t>(j)];
+    const common::Result<Mat6> r =
+        g.relative_pose_cov(static_cast<KeyId>(i), static_cast<KeyId>(j));
+    ASSERT_TRUE(r.is_ok()) << r.reason();
+    const Mat6 Ad = common::se3_adj(Tj.inverse() * Ti);
+    const Mat6 Pii = P.block<6, 6>(6 * i, 6 * i);
+    const Mat6 Pjj = P.block<6, 6>(6 * j, 6 * j);
+    const Mat6 Pij = P.block<6, 6>(6 * i, 6 * j);
+    const Mat6 expect =
+        Ad * Pii * Ad.transpose() - Ad * Pij - Pij.transpose() * Ad.transpose() + Pjj;
+    EXPECT_LT((r.value() - expect).norm(), 1e-6 * expect.norm()) << i << "," << j;
+    // The cross term matters: leaving it out is visibly wrong (> 50 %) for every pair.
+    const Mat6 no_cross = Ad * Pii * Ad.transpose() + Pjj;
+    EXPECT_GT((no_cross - expect).norm(), 0.5 * expect.norm()) << i << "," << j;
+    // Monte Carlo of the 12x12 joint through Log(T_ij^-1 T_i'^-1 T_j').
+    Eigen::Matrix<double, 12, 12> Pj;
+    Pj << Pii, Pij, Pij.transpose(), Pjj;
+    const Eigen::Matrix<double, 12, 12> L = Pj.llt().matrixL();
+    const Pose Tij = Ti.inverse() * Tj;
+    Mat6 S = Mat6::Zero();
+    constexpr int kSamples = 100000;
+    for (int n = 0; n < kSamples; ++n) {
+      Eigen::Matrix<double, 12, 1> z;
+      for (int k = 0; k < 12; ++k) {
+        z(k) = nd(rng);
+      }
+      const Eigen::Matrix<double, 12, 1> d = L * z;
+      const Pose Ti2 = common::boxplus(Ti, Vec6(d.head<6>()));
+      const Pose Tj2 = common::boxplus(Tj, Vec6(d.tail<6>()));
+      const Vec6 e = common::boxminus(Pose(Ti2.inverse() * Tj2), Tij);
+      S += e * e.transpose();
+    }
+    S /= kSamples;
+    const Eigen::LLT<Mat6> llt(r.value());
+    const Mat6 Li = llt.matrixL().solve(Mat6::Identity());
+    const Mat6 M = Li * S * Li.transpose();
+    const Eigen::SelfAdjointEigenSolver<Mat6> es(Mat6(0.5 * (M + M.transpose())));
+    EXPECT_LT(std::abs(es.eigenvalues()(0) - 1.0), 0.04) << i << "," << j;
+    EXPECT_LT(std::abs(es.eigenvalues()(5) - 1.0), 0.04) << i << "," << j;
   }
 }
 

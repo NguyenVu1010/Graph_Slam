@@ -213,6 +213,20 @@ class Graph {
   /// Tests: B-02 (square loop), B-03 (outlier loop).
   void add_loop_factor(const common::LoopConstraint& lc);
 
+  /// Removes the loop factor (i, j) added by add_loop_factor (the most recent one when the pair
+  /// was added more than once), for a loop selector that finds it inconsistent after it was
+  /// committed (ADR-028). A pending factor (no optimize() since it was added) is dropped from
+  /// the pending set. A committed one is removed from iSAM2 (removeFactorIndices, one
+  /// update) and from the factors kept for a rebuild; the estimate is updated without it.
+  /// Returns false when there is no such loop factor (never added, already removed, or
+  /// dropped with a failed optimize()), or when iSAM2 throws or gives a non-finite estimate:
+  /// then iSAM2 is rebuilt from the committed factors at the last good estimate and the
+  /// factor stays (logged; a later call may retry). Stub: false.
+  /// Cost: one iSAM2 update that re-eliminates the cliques the factor touched (about one
+  /// optimize() after a loop). Hot path: no (only when a loop is rejected after the fact).
+  /// Tests: BackendGraph.RemoveLoopFactor*, B03_OutlierLoopRemovedLeavesNoDrag.
+  bool remove_loop_factor(common::KeyId i, common::KeyId j);
+
   /// Runs one iSAM2 update with everything pending and returns the estimate of the
   /// LATEST keyframe: state (T_w_b, v_w_b, bias, t), cov = marginal 6x6 [rho, phi] of its
   /// pose (as marginal_cov), keyframe_id.
@@ -253,7 +267,10 @@ class Graph {
   /// Errors (Result::error): "unknown keyframe"; "i == j"; "keyframe not optimised";
   ///   "relative marginal failed: <GTSAM message>" (also for a non-finite or not positive
   ///   definite result); "built without GTSAM" in the stub. Hot path: no.
-  /// Tests: BackendGraph.RelativePoseCovKnownAnswerChain, RelativePoseCovMatchesBatchMarginals.
+  /// Measured (desktop, pose-velocity-bias graph with loops; docs/derivations/loop_closure.md
+  ///   section 9): grows with the depth of keyframe i in the Bayes tree, see the table there.
+  /// Tests: BackendGraph.RelativePoseCovKnownAnswerChain, RelativePoseCovConsistentOnLoopGraph,
+  ///   RelativePoseCovDenseAndMonteCarloOnLoopyGraph, RelativePoseCovErrors.
   common::Result<common::PoseCovariance> relative_pose_cov(common::KeyId i, common::KeyId j) const;
 
   /// State of keyframe `k` as of the last successful optimize(): T_w_b from the iSAM2
