@@ -177,3 +177,10 @@ cột in đậm là cấu hình phát hành. Các cột có kiểm tra bật ở
   dạng qua `backend.relative_factor`; ADR-021 chọn mặc định `decoupled` (-8,7 m, sigma 24,5 m
   trong cùng lần đối chứng). PR 4b đánh giá lại trên mặc định mới.
 - Neo lại hướng trọng lực định kỳ ở các cửa sổ đứng yên sau này.
+
+## Bổ sung (H2, 2026-10-30): ADR-027
+
+Bộ khởi tạo vẫn đặt `ba = 0` và lấy nghiêng từ trung bình cửa sổ khi cờ tắt, nên một bias ngang
+`b` thành nghiêng `b / g` mà factor này giữ lại. ADR-027 (`imu.init_level_start`, mặc định tắt)
+thêm cách tách khác: thân xe coi là đứng bằng, `b` vào bias; factor này giữ nguyên và có phần dư
+0 tại khởi tạo. Số liệu: `docs/derivations/vertical_drift_study.md`.

@@ -60,3 +60,10 @@ hiệp phương sai của trung bình đó (`InitState::acc_mean_b`, `acc_mean_c
 factor hướng trọng lực lên keyframe 0 (`backend.static_gravity_factor`, mặc định bật, nhiễu x2)
 khi keyframe 0 chính là scan khởi tạo. Lý do và số liệu: ADR-020,
 `docs/derivations/imu_only_observability.md`.
+
+## Bổ sung (H2, 2026-10-30): khởi tạo "đứng bằng"
+
+Quyết định 4 được mở rộng bởi ADR-027: với `imu.init_level_start` (mặc định tắt),
+`ImuInitializer` đặt `R_w_b = I` và đưa trung bình lực riêng trừ trọng lực vào bias gia tốc,
+trừ khi phần ngang vượt `imu.init_level_max_bias_mps2` (khi đó dùng cách khởi tạo cũ và ghi cảnh
+báo). Lý do và số liệu: ADR-027, `docs/derivations/vertical_drift_study.md`.

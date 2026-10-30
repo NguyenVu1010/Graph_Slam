@@ -1237,33 +1237,49 @@ TEST(PipelineComponent, ImuStaticGravityRound2Seeds) {
        scale("2.0") + check5,
        false,
        true},
+      // ADR-027 (vertical_drift_study.md section 5): shipped form plus the level start.
+      {"shipped form, scale 2, level start",
+       scale("2.0") + "    imu:\n      init_level_start: true\n"},
   };
   const char* first_env = std::getenv("MSS_IMU_R2_FIRST");
   const char* last_env = std::getenv("MSS_IMU_R2_LAST");
   const std::size_t v_first = first_env != nullptr ? std::stoul(first_env) : 0;
   const std::size_t v_last = last_env != nullptr ? std::stoul(last_env) : variants.size() - 1;
+  // MSS_IMU_R2_REF: the paired reference variant (default 0, main); it always runs.
+  const char* ref_env = std::getenv("MSS_IMU_R2_REF");
+  const std::size_t ref = ref_env != nullptr ? std::stoul(ref_env) : 0;
+  ASSERT_LT(ref, variants.size());
   std::vector<std::uint32_t> seeds;
   for (std::uint32_t s = 42; s < 57; ++s) {
     seeds.push_back(s);
   }
   std::vector<SeedScores> scores(variants.size());
-  for (std::size_t vi = 0; vi < variants.size(); ++vi) {
-    if (vi != 0 && (vi < v_first || vi > v_last)) {
-      continue;  // main always runs: it is the paired reference
+  // The reference runs first and writes the datasets the other variants replay (review M-2:
+  // a variant before it would read missing or stale data).
+  std::vector<std::size_t> order = {ref};
+  for (std::size_t vi = v_first; vi <= v_last && vi < variants.size(); ++vi) {
+    if (vi != ref) {
+      order.push_back(vi);
     }
+  }
+  ASSERT_EQ(order.front(), ref);
+  for (std::size_t k = 0; k < order.size(); ++k) {
+    const std::size_t vi = order[k];
     const Variant& v = variants[vi];
     SeedScores& sc = scores[vi];
     const FullResidualScope full(v.full);
     const PosteriorStatisticScope posterior(v.posterior);
+    const bool write_data = k == 0;  // the reference
     for (const std::uint32_t seed : seeds) {
-      ASSERT_NO_FATAL_FAILURE(score_seed(rep, v.yaml, seed, "v" + std::to_string(vi), vi == 0, sc));
+      ASSERT_NO_FATAL_FAILURE(
+          score_seed(rep, v.yaml, seed, "v" + std::to_string(vi), write_data, sc));
     }
   }
-  const SeedScores& m = scores[0];
+  const SeedScores& m = scores[ref];
   rep.line("");
-  rep.line(
-      "Cells: median (max) | wins / losses against main over the 15 paired seeds | 95 % "
-      "bootstrap CI of the median paired difference (variant - main). Lower is better.");
+  rep.line("Cells: median (max) | wins / losses against the reference (\"" + variants[ref].name +
+           "\", MSS_IMU_R2_REF) over the 15 paired seeds | 95 % bootstrap CI of the median paired "
+           "difference (variant - reference). Lower is better.");
   const auto table = [&](const char* title, auto get, bool abs_value) {
     rep.line("");
     rep.line(std::string("## ") + title);

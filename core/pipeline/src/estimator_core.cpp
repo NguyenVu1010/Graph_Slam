@@ -445,6 +445,11 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
                         last_wheel_motion_t_.ns <= t.ns;
     (void)wheel_.take_delta();
     predicted = front_;
+    if (init_.level_start_fallback) {  // initialisation runs once: logged once
+      common::log_warn(
+          "imu level start: horizontal mean specific force above "
+          "imu.init_level_max_bias_mps2, body taken as tilted (flag-off initialisation)");
+    }
     common::log_info("imu initialised");
   } else {
     for (std::size_t i = imu_.first_after(pred_last_t_); i < imu_.size() && imu_.at(i).t < t; ++i) {

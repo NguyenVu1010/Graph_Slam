@@ -17,6 +17,14 @@ struct ImuConfig {
   double init_max_mean_gyro_radps = 0.0;  // rad/s, max |mean gyro| of the window (bias + turn)
   double init_max_wheel_speed_mps = 0.0;  // m/s, max |wheel speed| in the window (wheel on)
   double init_gravity_check_sigma = 0.0;  // max ||f| - g| in sigmas (mean noise + acc bias prior)
+  // Level start (ADR-027): the body rests on a level floor at initialisation, so roll = pitch = 0
+  // and the whole window mean minus gravity is accelerometer bias. Off: roll and pitch from the
+  // window mean, bias 0 (previous behaviour).
+  bool init_level_start = false;
+  // m/s^2, > 0 (checked when init_level_start): largest horizontal norm of the window mean taken
+  // as bias. Above it the body is taken as tilted (ramp, mount) and the flag-off initialisation
+  // is used instead (InitState::level_start_fallback).
+  double init_level_max_bias_mps2 = 0.0;
 };
 
 }  // namespace mss::imu
