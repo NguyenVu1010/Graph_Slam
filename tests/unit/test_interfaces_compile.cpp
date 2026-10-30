@@ -18,6 +18,7 @@
 #include "mss/imu/trajectory.hpp"
 #include "mss/loop/config.hpp"
 #include "mss/loop/loop_detector.hpp"
+#include "mss/loop/loop_selector.hpp"
 #include "mss/map/config.hpp"
 #include "mss/map/voxel_map.hpp"
 #include "mss/odom/config.hpp"
