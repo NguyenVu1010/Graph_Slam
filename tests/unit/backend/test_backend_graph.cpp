@@ -5,9 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <random>
 #include <string>
 #include <vector>
 
+#include <Eigen/Dense>
 #include <gtest/gtest.h>
 
 #include "mss/backend/graph.hpp"
@@ -642,6 +644,430 @@ TEST(BackendGraph, MarginalCovIsMssOrder) {
       Vec3::Constant(cfg.prior_rot_sigma_rad * cfg.prior_rot_sigma_rad);
   const Mat6 cov = g.marginal_cov(0);
   EXPECT_LT((cov - expected).norm(), 1e-9 * expected.norm());
+}
+
+// --- relative_pose_cov (ADR-026 amendment, loop_closure.md section 9) -----------------------
+
+// A random SPD 6x6 covariance in [rho, phi] with m^2 / rad^2 scales (fixed seed).
+Mat6 random_cov(std::mt19937& rng, double sig_m, double sig_rad) {
+  Mat6 A;
+  std::normal_distribution<double> n(0.0, 1.0);
+  for (int r = 0; r < 6; ++r) {
+    for (int c = 0; c < 6; ++c) {
+      A(r, c) = n(rng);
+    }
+  }
+  Vec6 s;
+  s << sig_m, sig_m, sig_m, sig_rad, sig_rad, sig_rad;
+  const Mat6 B = s.asDiagonal() * A;
+  const Mat6 C = 0.25 * B * B.transpose() + Mat6(s.cwiseAbs2().asDiagonal());
+  return C;
+}
+
+// Known answer: a noise-free chain 0 -> 1 -> 2 of exact SE(3) relative factors with full
+// covariances C1, C2 (linearised at the truth, so first order is exact). The relative pose
+// T_02 = Z1 Exp(n1) Z2 Exp(n2) = Z1 Z2 Exp(Ad(Z2^-1) n1 + n2), so
+//   cov(0,1) = C1,  cov(1,2) = C2,  cov(0,2) = Ad(Z2^-1) C1 Ad(Z2^-1)^T + C2,
+// whatever the prior on keyframe 0.
+TEST(BackendGraph, RelativePoseCovKnownAnswerChain) {
+  BackendConfig cfg = default_backend_config();
+  cfg.relative_factor = RelativeFactor::kSe3Exact;
+  Graph g(cfg, default_imu_config(), Vec3::Zero());
+  std::mt19937 rng(7);
+  const Pose T0 = test::pose_from(Vec3(0.1, -0.2, 0.3), Vec3(1.0, 2.0, 0.5));
+  const Pose Z1 = test::pose_from(Vec3(0.05, 0.02, 0.4), Vec3(1.5, 0.3, -0.1));
+  const Pose Z2 = test::pose_from(Vec3(-0.03, 0.06, -0.7), Vec3(0.8, -1.2, 0.2));
+  const Mat6 C1 = random_cov(rng, 0.03, 0.01);
+  const Mat6 C2 = random_cov(rng, 0.05, 0.02);
+  const Pose truth[3] = {T0, T0 * Z1, T0 * Z1 * Z2};
+  for (KeyId k = 0; k < 3; ++k) {
+    NavState x;
+    x.t = common::Timestamp{static_cast<std::int64_t>(k) * 1'000'000'000};
+    x.T_w_b = truth[k];
+    g.add_keyframe(x.t, x);
+  }
+  g.add_lidar_factor(0, 1, Z1, C1, nullptr);
+  g.add_lidar_factor(1, 2, Z2, C2, nullptr);
+  ASSERT_TRUE(g.optimize().is_ok());
+  const common::Result<Mat6> r01 = g.relative_pose_cov(0, 1);
+  const common::Result<Mat6> r12 = g.relative_pose_cov(1, 2);
+  const common::Result<Mat6> r02 = g.relative_pose_cov(0, 2);
+  ASSERT_TRUE(r01.is_ok()) << r01.reason();
+  ASSERT_TRUE(r12.is_ok()) << r12.reason();
+  ASSERT_TRUE(r02.is_ok()) << r02.reason();
+  const Mat6 Ad = common::se3_adj(Z2.inverse());
+  const Mat6 expect02 = Ad * C1 * Ad.transpose() + C2;
+  EXPECT_LT((r01.value() - C1).norm(), 1e-6 * C1.norm());
+  EXPECT_LT((r12.value() - C2).norm(), 1e-6 * C2.norm());
+  EXPECT_LT((r02.value() - expect02).norm(), 1e-6 * expect02.norm());
+}
+
+// Loopy graph (B-02 square with its loop, noisy): two independent checks of the joint.
+//   1. Keyframe 0 pinned by a tight prior: cov(0, j) -> marginal_cov(j) (iSAM2's own
+//      single-variable marginal, a different code path).
+//   2. Inverse relation: T_ji = T_ij^-1, so cov(j, i) = Ad(T_ij) cov(i, j) Ad(T_ij)^T.
+TEST(BackendGraph, RelativePoseCovConsistentOnLoopGraph) {
+  BackendConfig cfg = default_backend_config();
+  cfg.prior_pos_sigma_m = 1e-6;
+  cfg.prior_rot_sigma_rad = 1e-6;
+  const test::Scenario s = test::square_loop(true, 3);
+  Graph g(cfg, default_imu_config(), Vec3::Zero());
+  run_square(g, s, 2);
+  for (KeyId j = 1; j < 5; ++j) {
+    const common::Result<Mat6> r = g.relative_pose_cov(0, j);
+    ASSERT_TRUE(r.is_ok()) << r.reason();
+    const Mat6 m = g.marginal_cov(j);
+    EXPECT_LT((r.value() - m).norm(), 1e-4 * m.norm()) << "keyframe " << j;
+  }
+  for (KeyId i = 1; i < 4; ++i) {
+    for (KeyId j = i + 1; j < 5; ++j) {
+      const common::Result<Mat6> rij = g.relative_pose_cov(i, j);
+      const common::Result<Mat6> rji = g.relative_pose_cov(j, i);
+      ASSERT_TRUE(rij.is_ok() && rji.is_ok());
+      const Pose T_ij = state_or_fail(g, i).T_w_b.inverse() * state_or_fail(g, j).T_w_b;
+      const Mat6 expect = common::transform_covariance(rij.value(), T_ij);
+      EXPECT_LT((rji.value() - expect).norm(), 1e-6 * expect.norm()) << i << " " << j;
+    }
+  }
+}
+
+// --- remove_loop_factor (ADR-028) ------------------------------------------------------------
+
+// A pending loop (no optimize() yet) is dropped from the pending set: the graph optimises as if
+// it had never been added. Unknown pairs and lidar factors are not loop factors.
+TEST(BackendGraph, RemoveLoopFactorPendingAndUnknown) {
+  const test::Scenario s = test::square_loop(true, 5);
+  Graph ref(default_backend_config(), default_imu_config(), Vec3::Zero());
+  Graph g(default_backend_config(), default_imu_config(), Vec3::Zero());
+  for (KeyId k = 0; k < 5; ++k) {
+    for (Graph* x : {&ref, &g}) {
+      x->add_keyframe(s.truth[k].t, s.guess[k]);
+      if (k > 0) {
+        x->add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+      }
+    }
+    if (k == 4) {
+      common::LoopConstraint lc;
+      lc.i = 0;
+      lc.j = 4;
+      lc.T_bi_bj = s.edge_meas[4];
+      lc.cov = s.edge_cov;
+      g.add_loop_factor(lc);
+      EXPECT_TRUE(g.has_loop_factor(0, 4));
+      EXPECT_FALSE(g.has_loop_factor(3, 4));     // a lidar edge, not a loop
+      EXPECT_FALSE(g.remove_loop_factor(3, 4));  // a lidar edge, not a loop
+      EXPECT_FALSE(g.remove_loop_factor(1, 4));  // never added
+      EXPECT_TRUE(g.remove_loop_factor(0, 4));   // pending
+      EXPECT_FALSE(g.has_loop_factor(0, 4));
+    }
+    ASSERT_TRUE(ref.optimize().is_ok());
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+  for (KeyId k = 0; k < 5; ++k) {
+    EXPECT_EQ(state_or_fail(ref, k).T_w_b.p, state_or_fail(g, k).T_w_b.p) << k;
+  }
+}
+
+// The square without its loop, optimised like run_square (5 keyframes + `extra` updates).
+void run_square_without_loop(Graph& g, const test::Scenario& s, int extra) {
+  for (KeyId k = 0; k < 5; ++k) {
+    g.add_keyframe(s.truth[k].t, s.guess[k]);
+    if (k > 0) {
+      g.add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+    }
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+  for (int n = 0; n < extra; ++n) {
+    ASSERT_TRUE(g.optimize().is_ok());
+  }
+}
+
+// The square's loop, measured `off_m` metres off along x of body 0 (a wrong loop inside the
+// Cauchy core when small: it drags the square by a large part of it).
+common::LoopConstraint square_loop_off(const test::Scenario& s, double off_m) {
+  common::LoopConstraint lc;
+  lc.i = 0;
+  lc.j = 4;
+  lc.T_bi_bj = s.edge_meas[4];
+  lc.T_bi_bj.p.x() += off_m;
+  lc.cov = s.edge_cov;
+  return lc;
+}
+
+// A committed wrong loop (0.5 m off: inside the Cauchy core, it drags the square by
+// centimetres) removed later, followed by the pipeline's update count (1 + isam_extra_updates
+// = 3): the graph equals the one that never had it within 1e-4 m (iSAM2 relinearises only the
+// variables that moved more than relinearize_threshold; the residual is reported), and the
+// marginal of the last pose grows back.
+TEST(BackendGraph, RemoveLoopFactorCommitted) {
+  const test::Scenario s = test::square_loop(true, 9);
+  Graph with(default_backend_config(), default_imu_config(), Vec3::Zero());
+  Graph without(default_backend_config(), default_imu_config(), Vec3::Zero());
+  run_square_without_loop(without, s, 3);
+  for (KeyId k = 0; k < 5; ++k) {
+    with.add_keyframe(s.truth[k].t, s.guess[k]);
+    if (k > 0) {
+      with.add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+    }
+    if (k == 4) {
+      with.add_loop_factor(square_loop_off(s, 0.5));
+    }
+    ASSERT_TRUE(with.optimize().is_ok());
+  }
+  double drag = 0.0;
+  for (KeyId k = 0; k < 5; ++k) {
+    drag =
+        std::max(drag, (state_or_fail(with, k).T_w_b.p - state_or_fail(without, k).T_w_b.p).norm());
+  }
+  const double tr_with = with.marginal_cov(4).trace();
+  ASSERT_TRUE(with.has_loop_factor(0, 4));
+  ASSERT_TRUE(with.remove_loop_factor(0, 4));
+  EXPECT_FALSE(with.has_loop_factor(0, 4));
+  for (int n = 0; n < 3; ++n) {
+    ASSERT_TRUE(with.optimize().is_ok());
+  }
+  double after = 0.0;
+  for (KeyId k = 0; k < 5; ++k) {
+    after = std::max(after,
+                     (state_or_fail(with, k).T_w_b.p - state_or_fail(without, k).T_w_b.p).norm());
+  }
+  RecordProperty("drag_before_m", std::to_string(drag));
+  RecordProperty("drag_after_m", std::to_string(after));
+  EXPECT_GT(drag, 0.05);  // the wrong loop really dragged the square
+  EXPECT_LT(after, 1e-4);
+  EXPECT_GT(with.marginal_cov(4).trace(), tr_with);
+  EXPECT_LT((with.marginal_cov(4) - without.marginal_cov(4)).norm(),
+            1e-3 * without.marginal_cov(4).norm());
+}
+
+// A pair added twice: each removal takes the most recent one; after the first the graph holds
+// only the older (equal to a graph built with only it), after the second none, a third finds
+// nothing.
+TEST(BackendGraph, RemoveLoopFactorOfAPairAddedTwice) {
+  const test::Scenario s = test::square_loop(true, 9);
+  Graph twice(default_backend_config(), default_imu_config(), Vec3::Zero());
+  Graph older(default_backend_config(), default_imu_config(), Vec3::Zero());
+  for (KeyId k = 0; k < 5; ++k) {
+    for (Graph* x : {&twice, &older}) {
+      x->add_keyframe(s.truth[k].t, s.guess[k]);
+      if (k > 0) {
+        x->add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+      }
+    }
+    if (k == 4) {
+      twice.add_loop_factor(square_loop_off(s, 0.3));  // older
+      older.add_loop_factor(square_loop_off(s, 0.3));
+    }
+    ASSERT_TRUE(twice.optimize().is_ok());
+    ASSERT_TRUE(older.optimize().is_ok());
+  }
+  twice.add_loop_factor(square_loop_off(s, 0.0));  // newer, committed by the next update
+  ASSERT_TRUE(twice.optimize().is_ok());
+  ASSERT_TRUE(twice.remove_loop_factor(0, 4));  // the newer one
+  EXPECT_TRUE(twice.has_loop_factor(0, 4));     // the older one stays
+  for (int n = 0; n < 3; ++n) {
+    ASSERT_TRUE(twice.optimize().is_ok());
+    ASSERT_TRUE(older.optimize().is_ok());
+  }
+  for (KeyId k = 0; k < 5; ++k) {
+    EXPECT_LT((state_or_fail(twice, k).T_w_b.p - state_or_fail(older, k).T_w_b.p).norm(), 1e-4)
+        << k;
+  }
+  EXPECT_TRUE(twice.remove_loop_factor(0, 4));
+  EXPECT_FALSE(twice.has_loop_factor(0, 4));
+  EXPECT_FALSE(twice.remove_loop_factor(0, 4));
+}
+
+// Removal followed by a failing update (a new keyframe held only by a rank-deficient GNSS
+// factor, as in OptimizeFailureDropsPendingFactorsKeepsKeyframes): iSAM2 is rebuilt from the
+// committed factors, which no longer hold the loop, so it does not come back; the next updates
+// match the square without the loop.
+TEST(BackendGraph, RemoveLoopFactorSurvivesAFailedUpdate) {
+  const Vec3 p_b_g(0.3, 0.0, 0.8);
+  const test::Scenario s = test::square_loop(true, 9);
+  Graph with(default_backend_config(), default_imu_config(), p_b_g);
+  Graph without(default_backend_config(), default_imu_config(), p_b_g);
+  for (KeyId k = 0; k < 5; ++k) {
+    for (Graph* x : {&with, &without}) {
+      x->add_keyframe(s.truth[k].t, s.guess[k]);
+      if (k > 0) {
+        x->add_lidar_factor(k - 1, k, s.edge_meas[k - 1], s.edge_cov, nullptr);
+      }
+    }
+    if (k == 4) {
+      with.add_loop_factor(square_loop_off(s, 0.5));
+    }
+    ASSERT_TRUE(with.optimize().is_ok());
+    ASSERT_TRUE(without.optimize().is_ok());
+  }
+  ASSERT_TRUE(with.remove_loop_factor(0, 4));
+  NavState x5 = s.truth[4];
+  x5.t = common::Timestamp{s.truth[4].t.ns + 1'000'000'000};
+  common::GnssMeasurement m;
+  m.p_e_g = x5.T_w_b * p_b_g;
+  m.cov = Mat3::Identity() * 0.01;
+  for (Graph* x : {&with, &without}) {
+    x->add_keyframe(x5.t, x5);
+    x->add_gnss_factor(5, m, Pose{});  // 3 of 6 DoF of keyframe 5: indeterminant
+    ASSERT_FALSE(x->optimize().is_ok());
+    x->add_lidar_factor(4, 5, s.truth[4].T_w_b.inverse() * x5.T_w_b, s.edge_cov, nullptr);
+    for (int n = 0; n < 3; ++n) {
+      ASSERT_TRUE(x->optimize().is_ok());
+    }
+  }
+  EXPECT_FALSE(with.has_loop_factor(0, 4));
+  for (KeyId k = 0; k < 6; ++k) {
+    EXPECT_LT((state_or_fail(with, k).T_w_b.p - state_or_fail(without, k).T_w_b.p).norm(), 1e-4)
+        << k;
+  }
+}
+
+// --- relative_pose_cov against an independent dense solve and Monte Carlo (review H3, M-2) ---
+// A 75-keyframe circle built incrementally (one iSAM2 update per keyframe) with exact SE(3)
+// relative factors, random full covariances (fixed seed) and 7 loops one lap back, so the Bayes
+// tree has many cliques and the joint P_ij crosses branches. Reference: the dense information
+// matrix in mss order (prior + J_i = -Ad(T_j^-1 T_i), J_j = I per factor), inverted, then the
+// relative-pose formula; and 100k samples of that 12x12 joint pushed through T_i^-1 T_j.
+struct DenseFactor {
+  int i = 0;
+  int j = 0;
+  Pose Z;
+  Mat6 C = Mat6::Identity();
+};
+
+struct DenseGraph {
+  std::vector<Pose> T;
+  std::vector<DenseFactor> f;
+};
+
+DenseGraph build_dense_check_graph(Graph& g, int n, std::mt19937& rng) {
+  DenseGraph b;
+  constexpr double kTwoPi = 6.283185307179586;
+  for (int k = 0; k < n; ++k) {
+    const double a = kTwoPi * k / 30.0;
+    b.T.push_back(
+        test::pose_from(Vec3(0.05 * std::sin(0.7 * k), 0.03 * std::cos(0.3 * k), a + 0.2),
+                        Vec3(5.0 * std::cos(a), 5.0 * std::sin(a), 0.2 * std::sin(0.5 * k))));
+  }
+  for (int k = 0; k < n; ++k) {
+    NavState x;
+    x.t = common::Timestamp{static_cast<std::int64_t>(k) * 1'000'000'000};
+    x.T_w_b = b.T[static_cast<std::size_t>(k)];
+    g.add_keyframe(x.t, x);
+    const auto add = [&](int i, double sm, double sr) {
+      DenseFactor f;
+      f.i = i;
+      f.j = k;
+      f.Z = b.T[static_cast<std::size_t>(i)].inverse() * b.T[static_cast<std::size_t>(k)];
+      f.C = random_cov(rng, sm, sr);
+      g.add_lidar_factor(static_cast<KeyId>(i), static_cast<KeyId>(k), f.Z, f.C, nullptr);
+      b.f.push_back(f);
+    };
+    if (k > 0) {
+      add(k - 1, 0.02, 0.004);
+    }
+    if (k >= 30 && k % 7 == 0) {
+      add(k - 30, 0.05, 0.01);
+    }
+    EXPECT_TRUE(g.optimize().is_ok());
+  }
+  return b;
+}
+
+TEST(BackendGraph, RelativePoseCovDenseAndMonteCarloOnLoopyGraph) {
+  BackendConfig cfg = default_backend_config();
+  cfg.relative_factor = RelativeFactor::kSe3Exact;
+  Graph g(cfg, default_imu_config(), Vec3::Zero());
+  std::mt19937 rng(11);
+  constexpr int kN = 75;
+  const DenseGraph b = build_dense_check_graph(g, kN, rng);
+  Eigen::MatrixXd H = Eigen::MatrixXd::Zero(6 * kN, 6 * kN);
+  Vec6 sp;
+  sp << Vec3::Constant(cfg.prior_pos_sigma_m), Vec3::Constant(cfg.prior_rot_sigma_rad);
+  H.block<6, 6>(0, 0) += Mat6(sp.cwiseAbs2().cwiseInverse().asDiagonal());
+  for (const DenseFactor& f : b.f) {
+    const Mat6 Ji = -common::se3_adj(b.T[static_cast<std::size_t>(f.j)].inverse() *
+                                     b.T[static_cast<std::size_t>(f.i)]);
+    const Mat6 W = f.C.inverse();
+    H.block<6, 6>(6 * f.i, 6 * f.i) += Ji.transpose() * W * Ji;
+    H.block<6, 6>(6 * f.i, 6 * f.j) += Ji.transpose() * W;
+    H.block<6, 6>(6 * f.j, 6 * f.i) += W * Ji;
+    H.block<6, 6>(6 * f.j, 6 * f.j) += W;
+  }
+  const Eigen::MatrixXd P = H.inverse();
+  const int pairs[][2] = {{0, 74},
+                          {3, 74},
+                          {10, 74},
+                          {44, 74},
+                          {5, 60},
+                          {12, 40},
+                          {20, 21},
+                          {1, 50},
+                          {33, 70},
+                          {2, 3},
+                          {60, 73},
+                          {7, 37}};
+  std::normal_distribution<double> nd(0.0, 1.0);
+  for (const auto& pr : pairs) {
+    const int i = pr[0];
+    const int j = pr[1];
+    const Pose& Ti = b.T[static_cast<std::size_t>(i)];
+    const Pose& Tj = b.T[static_cast<std::size_t>(j)];
+    const common::Result<Mat6> r =
+        g.relative_pose_cov(static_cast<KeyId>(i), static_cast<KeyId>(j));
+    ASSERT_TRUE(r.is_ok()) << r.reason();
+    const Mat6 Ad = common::se3_adj(Tj.inverse() * Ti);
+    const Mat6 Pii = P.block<6, 6>(6 * i, 6 * i);
+    const Mat6 Pjj = P.block<6, 6>(6 * j, 6 * j);
+    const Mat6 Pij = P.block<6, 6>(6 * i, 6 * j);
+    const Mat6 expect =
+        Ad * Pii * Ad.transpose() - Ad * Pij - Pij.transpose() * Ad.transpose() + Pjj;
+    EXPECT_LT((r.value() - expect).norm(), 1e-6 * expect.norm()) << i << "," << j;
+    // The cross term matters: leaving it out is visibly wrong (> 50 %) for every pair.
+    const Mat6 no_cross = Ad * Pii * Ad.transpose() + Pjj;
+    EXPECT_GT((no_cross - expect).norm(), 0.5 * expect.norm()) << i << "," << j;
+    // Monte Carlo of the 12x12 joint through Log(T_ij^-1 T_i'^-1 T_j').
+    Eigen::Matrix<double, 12, 12> Pj;
+    Pj << Pii, Pij, Pij.transpose(), Pjj;
+    const Eigen::Matrix<double, 12, 12> L = Pj.llt().matrixL();
+    const Pose Tij = Ti.inverse() * Tj;
+    Mat6 S = Mat6::Zero();
+    constexpr int kSamples = 100000;
+    for (int n = 0; n < kSamples; ++n) {
+      Eigen::Matrix<double, 12, 1> z;
+      for (int k = 0; k < 12; ++k) {
+        z(k) = nd(rng);
+      }
+      const Eigen::Matrix<double, 12, 1> d = L * z;
+      const Pose Ti2 = common::boxplus(Ti, Vec6(d.head<6>()));
+      const Pose Tj2 = common::boxplus(Tj, Vec6(d.tail<6>()));
+      const Vec6 e = common::boxminus(Pose(Ti2.inverse() * Tj2), Tij);
+      S += e * e.transpose();
+    }
+    S /= kSamples;
+    const Eigen::LLT<Mat6> llt(r.value());
+    const Mat6 Li = llt.matrixL().solve(Mat6::Identity());
+    const Mat6 M = Li * S * Li.transpose();
+    const Eigen::SelfAdjointEigenSolver<Mat6> es(Mat6(0.5 * (M + M.transpose())));
+    EXPECT_LT(std::abs(es.eigenvalues()(0) - 1.0), 0.04) << i << "," << j;
+    EXPECT_LT(std::abs(es.eigenvalues()(5) - 1.0), 0.04) << i << "," << j;
+  }
+}
+
+TEST(BackendGraph, RelativePoseCovErrors) {
+  Graph g(default_backend_config(), default_imu_config(), Vec3::Zero());
+  EXPECT_FALSE(g.relative_pose_cov(0, 1).is_ok());  // unknown
+  NavState x0;
+  g.add_keyframe(x0.t, x0);
+  NavState x1;
+  x1.t = common::Timestamp{1'000'000'000};
+  g.add_keyframe(x1.t, x1);
+  EXPECT_FALSE(g.relative_pose_cov(0, 0).is_ok());  // i == j
+  EXPECT_FALSE(g.relative_pose_cov(0, 1).is_ok());  // not optimised
+  Mat6 C = Mat6::Identity() * 1e-4;
+  g.add_lidar_factor(0, 1, Pose{}, C, nullptr);
+  ASSERT_TRUE(g.optimize().is_ok());
+  EXPECT_TRUE(g.relative_pose_cov(0, 1).is_ok());
 }
 
 }  // namespace

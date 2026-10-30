@@ -213,6 +213,25 @@ class Graph {
   /// Tests: B-02 (square loop), B-03 (outlier loop).
   void add_loop_factor(const common::LoopConstraint& lc);
 
+  /// Removes the loop factor (i, j) added by add_loop_factor (the most recent one when the pair
+  /// was added more than once), for a loop selector that finds it inconsistent after it was
+  /// committed (ADR-028). A pending factor (no optimize() since it was added) is dropped from
+  /// the pending set. A committed one leaves the factors kept for a rebuild at once and is
+  /// removed from iSAM2 by the next optimize() (its slot passed as removeFactorIndices in that
+  /// same update, so no extra update is spent); the estimate changes only then. If that
+  /// optimize() fails, iSAM2 is rebuilt from the committed factors, which no longer hold it,
+  /// so the removal stands either way.
+  /// Returns true when the factor was found (dropped or queued), false when there is no such
+  /// loop factor (never added, already removed, or dropped with a failed optimize()).
+  /// Stub: false. Hot path: no (only when a loop is rejected after the fact).
+  /// Tests: BackendGraph.RemoveLoopFactor*, B03_OutlierLoopRemovedLeavesNoDrag.
+  bool remove_loop_factor(common::KeyId i, common::KeyId j);
+
+  /// Whether a loop factor (i, j) added by add_loop_factor is in the graph (pending or
+  /// committed, not removed, not dropped with a failed optimize()). Stub: false. Hot path: no.
+  /// Tests: BackendGraph.RemoveLoopFactor*.
+  bool has_loop_factor(common::KeyId i, common::KeyId j) const;
+
   /// Runs one iSAM2 update with everything pending and returns the estimate of the
   /// LATEST keyframe: state (T_w_b, v_w_b, bias, t), cov = marginal 6x6 [rho, phi] of its
   /// pose (as marginal_cov), keyframe_id.
@@ -238,6 +257,27 @@ class Graph {
   ///   NaN (never zero, which would claim certainty).
   /// Hot path: no. Tests: B-02, B-04.
   common::PoseCovariance marginal_cov(common::KeyId k) const;
+
+  /// Marginal covariance of the relative pose T_bi_bj = T_w_bi^-1 * T_w_bj of keyframes `i`
+  /// and `j` as of the last successful optimize(): 6x6 [rho, phi] (mss order), right
+  /// perturbation of T_bi_bj (frame b_j), m^2 / rad^2 blocks. From the joint marginal P of
+  /// (X_i, X_j) (iSAM2 Bayes tree, BayesTree::joint): with right perturbations of both poses,
+  /// d(T_bi_bj) = -Ad(T_bj_bi) d_i + d_j, so
+  ///   cov = Ad P_ii Ad^T - Ad P_ij - P_ji Ad^T + P_jj,   Ad = Ad(T_bj_bi)
+  /// (docs/derivations/backend_factors.md section 8b). Used by the loop-closure correction gate
+  /// (optional, ADR-028). Additive API; no factor or estimate is changed.
+  /// Cost: one joint marginal on the Bayes tree, about the cost of the shortcut from the
+  ///   clique of `i` to the lowest common ancestor with `j` (j = the newest keyframe: near the
+  ///   root); no full re-factorisation (gtsam::Marginals is not used).
+  /// Errors (Result::error): "unknown keyframe"; "i == j"; "keyframe not optimised";
+  ///   "relative marginal failed: <GTSAM message>" (also for a non-finite or not positive
+  ///   definite result); "built without GTSAM" in the stub. Hot path: no.
+  /// Measured (desktop, pose-velocity-bias graph with loops; docs/derivations/backend_factors.md
+  ///   section 8b): 1.5 / 3.9 / 12 ms mean at 61 / 300 / 1000 keyframes, growing with the
+  ///   depth of keyframe i in the Bayes tree.
+  /// Tests: BackendGraph.RelativePoseCovKnownAnswerChain, RelativePoseCovConsistentOnLoopGraph,
+  ///   RelativePoseCovDenseAndMonteCarloOnLoopyGraph, RelativePoseCovErrors.
+  common::Result<common::PoseCovariance> relative_pose_cov(common::KeyId i, common::KeyId j) const;
 
   /// State of keyframe `k` as of the last successful optimize(): T_w_b from the iSAM2
   /// estimate; v_w_b and bias from the estimate when those variables are in the graph
