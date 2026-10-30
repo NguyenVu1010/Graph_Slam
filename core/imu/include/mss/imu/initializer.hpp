@@ -9,8 +9,9 @@ namespace mss::imu {
 
 /// Result of static IMU initialisation.
 struct InitState {
-  common::Vec3 g_w = common::Vec3::Zero();        ///< m/s^2, gravity in w: [0, 0, -gravity_mps2]
-  common::ImuBias bias;                           ///< bg = mean gyro (rad/s); ba = 0 (m/s^2)
+  common::Vec3 g_w = common::Vec3::Zero();  ///< m/s^2, gravity in w: [0, 0, -gravity_mps2]
+  /// bg = mean gyro (rad/s); ba = 0 (m/s^2), or a + g_w with imu.init_level_start (ADR-027)
+  common::ImuBias bias;
   common::Mat3 R_w_b = common::Mat3::Identity();  ///< initial body attitude, yaw = 0
   /// Mean accelerometer reading of the window (m/s^2, in b): the specific force at rest,
   /// `ba - R_w_b^T g_w` (the static-gravity factor of backend_factors.md section 6c).
@@ -19,6 +20,9 @@ struct InitState {
   /// s_k^2 the sample variance of axis k over the n samples (the believed white noise as a
   /// floor).
   common::Mat3 acc_mean_cov = common::Mat3::Zero();
+  /// True when imu.init_level_start is on but the window's horizontal mean exceeded
+  /// imu.init_level_max_bias_mps2, so R_w_b and ba come from the flag-off rule (ADR-027).
+  bool level_start_fallback = false;
 };
 
 /// Static-window initialisation of gravity direction, gyro bias and attitude.
@@ -30,7 +34,7 @@ class ImuInitializer {
   /// Validates `cfg`.
   /// Errors: throws std::invalid_argument when `init_window_s <= 0`,
   ///   `init_max_acc_std_mps2 <= 0`, `init_max_gyro_std_radps <= 0` or
-  ///   `gravity_mps2 <= 0`.
+  ///   `gravity_mps2 <= 0`, or `init_level_start` with `init_level_max_bias_mps2 <= 0`.
   /// Hot path: no. Tests: initializer unit tests (imu module).
   explicit ImuInitializer(const ImuConfig& cfg);
 
@@ -42,7 +46,12 @@ class ImuInitializer {
   /// except along gravity; left to the backend); with `a = mean(acc_b)`:
   /// `R_w_b = Ry(pitch) * Rx(roll)` (ZYX with yaw = 0), `roll = atan2(a_y, a_z)`,
   /// `pitch = atan2(-a_x, hypot(a_y, a_z))`, so R_w_b * a points along +z of w
-  /// (specific force at rest points up);
+  /// (specific force at rest points up). With `cfg.init_level_start` (ADR-027) the body is
+  /// taken as level instead: `R_w_b = I` and `bias.ba = a + g_w`, so the whole window mean
+  /// minus gravity is accelerometer bias (a floor slope theta enters ba as about g theta).
+  /// When `hypot(a_x, a_y) > cfg.init_level_max_bias_mps2` the level assumption is taken
+  /// as broken (ramp or tilted mount): the flag-off rule above is used and
+  /// `level_start_fallback` is set (the caller logs it);
   /// g_w = [0, 0, -cfg.gravity_mps2]; acc_mean_b = a and acc_mean_cov as documented in
   /// InitState (the window statistics for backend::Graph::add_static_gravity_factor).
   /// Frames: samples in b; result as documented in InitState (w gravity-aligned, z up).
@@ -54,11 +63,12 @@ class ImuInitializer {
   ///   2. "non-finite imu sample";
   ///   3. "imu timestamp not increasing" when t is not strictly increasing;
   ///   4. "window too short" when seconds_between(first.t, last.t) < init_window_s;
-  ///   5. "not static" when a std threshold is exceeded.
+  ///   5. "not static" when a std threshold is exceeded;
+  ///   6. "level start: body z not up" when `cfg.init_level_start` and `a_z <= 0`.
   /// Hot path: no (runs until it first succeeds, a few times per second); no allocation
   /// on the success path and on error paths that use string literals.
   /// Tests: I-01 (static gravity-only input yields R_w_b * mean(acc_b) along +z), imu
-  ///   module unit tests.
+  ///   module unit tests (LevelStart* for ADR-027, including both sides of the bound).
   common::Result<InitState> try_init(common::Span<const common::ImuSample> samples);
 
  private:

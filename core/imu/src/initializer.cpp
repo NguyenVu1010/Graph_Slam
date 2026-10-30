@@ -30,6 +30,9 @@ ImuInitializer::ImuInitializer(const ImuConfig& cfg) : cfg_(cfg) {
   if (!(cfg.gravity_mps2 > 0.0)) {
     throw std::invalid_argument("imu.gravity_mps2 must be > 0");
   }
+  if (cfg.init_level_start && !(cfg.init_level_max_bias_mps2 > 0.0)) {
+    throw std::invalid_argument("imu.init_level_max_bias_mps2 must be > 0");
+  }
 }
 
 Result<InitState> ImuInitializer::try_init(Span<const ImuSample> samples) {
@@ -77,14 +80,26 @@ Result<InitState> ImuInitializer::try_init(Span<const ImuSample> samples) {
     return Result<InitState>::error("not static");
   }
 
-  // R_w_b = Ry(pitch) * Rx(roll), yaw = 0, so R_w_b * acc_mean points along +z of w.
-  const double roll = std::atan2(acc_mean.y(), acc_mean.z());                              // rad
-  const double pitch = std::atan2(-acc_mean.x(), std::hypot(acc_mean.y(), acc_mean.z()));  // rad
   InitState out;
-  out.R_w_b = common::so3_exp(Vec3(0.0, pitch, 0.0)) * common::so3_exp(Vec3(roll, 0.0, 0.0));
-  out.bias.bg = gyro_mean;
-  out.bias.ba = Vec3::Zero();
   out.g_w = Vec3(0.0, 0.0, -cfg_.gravity_mps2);
+  out.bias.bg = gyro_mean;
+  if (cfg_.init_level_start && !(acc_mean.z() > 0.0)) {
+    return Result<InitState>::error("level start: body z not up");
+  }
+  // A horizontal mean above the bias bound is a tilt (ramp, mount), not bias: flag-off rule.
+  out.level_start_fallback = cfg_.init_level_start &&
+                             std::hypot(acc_mean.x(), acc_mean.y()) > cfg_.init_level_max_bias_mps2;
+  if (cfg_.init_level_start && !out.level_start_fallback) {
+    // ADR-027: the body is level (R_w_b = I), so f = ba - R_w_b^T g_w gives ba = f + g_w.
+    out.R_w_b = Mat3::Identity();
+    out.bias.ba = acc_mean + out.g_w;
+  } else {
+    // R_w_b = Ry(pitch) * Rx(roll), yaw = 0, so R_w_b * acc_mean points along +z of w.
+    const double roll = std::atan2(acc_mean.y(), acc_mean.z());                              // rad
+    const double pitch = std::atan2(-acc_mean.x(), std::hypot(acc_mean.y(), acc_mean.z()));  // rad
+    out.R_w_b = common::so3_exp(Vec3(0.0, pitch, 0.0)) * common::so3_exp(Vec3(roll, 0.0, 0.0));
+    out.bias.ba = Vec3::Zero();
+  }
   out.acc_mean_b = acc_mean;
   // Variance of the mean per axis; the believed white noise per sample is the floor.
   const double noise_var = cfg_.acc_noise_density * cfg_.acc_noise_density * cfg_.rate_hz;

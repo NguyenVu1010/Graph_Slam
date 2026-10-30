@@ -321,7 +321,10 @@ error, vertical = RMS of z; `n_gnss_rejected` (bridge) = 0; `/wheel/odom` 3280 r
 With the 50 Hz encoder and the sphere wheels, wheel odometry no longer degrades the estimate:
 horizontal RMS is 0.013 m with it vs 0.015 m without, and p95 is within about 1 ms. GNSS still
 changes nothing measurable. About 0.09 m of vertical error remains in every row, so it comes
-from the LiDAR + IMU part.
+from the LiDAR + IMU part. Cause (backlog S2): the IMU's horizontal accelerometer bias, read
+as a tilt `b / g` by the static initialisation, so the map is built tilted until the first
+turn; `imu.init_level_start` (ADR-027, default off) removes it (E-01 ATE 0.095 -> 0.015 m on
+a seed-42 recording), see `docs/derivations/vertical_drift_study.md`.
 
 Diagnostics for the pipeline follow-up (aligned error over time, RMS per window):
 
@@ -333,7 +336,10 @@ Diagnostics for the pipeline follow-up (aligned error over time, RMS per window)
 In E-01 the vertical error is largest early, with an offset of +0.10 m in the first 10 s, and it
 decreases later. E-04 with degeneracy on drifts vertically by metres while the horizontal error
 stays near 0.2-0.5 m. The bench exports no degeneracy counters; its log flags 47 of 53 keyframes
-degenerate (`add_lidar_factor ... degenerate`), without the directions.
+degenerate (`add_lidar_factor ... degenerate`), without the directions. Both patterns have the
+same cause, the bias read as tilt (`docs/derivations/vertical_drift_study.md` sections 2 and 5):
+E-01's offset holds until the first turn, and E-04's lift with degeneracy on drops from metres
+to 0.13-0.55 m with `imu.init_level_start`.
 
 ## Map demo
 
@@ -372,7 +378,9 @@ recordings, so they differ from the tables above; Gazebo is not deterministic):
 
 The record time includes the noise report. In the E-04 picture the corridor floor climbs
 through the 0.3-2.0 m cut along the corridor: the map's vertical drift (median z of the
-in-corridor points 0.36 m at x 8-16 m, 1.30 m at x 40-48 m).
+in-corridor points 0.36 m at x 8-16 m, 1.30 m at x 40-48 m). The climb is the tilt `b / g`
+of the IMU bias read at initialisation (about `abs(b) / g` per metre; the height cut clips it);
+`imu.init_level_start` removes it (`docs/derivations/vertical_drift_study.md`, ADR-027).
 
 ## Live
 
