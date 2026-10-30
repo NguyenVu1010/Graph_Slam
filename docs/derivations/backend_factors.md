@@ -467,6 +467,55 @@ so `|W r_m|^2 = r_m^T cov^+ r_m` and the unobserved directions carry no informat
 `ISAM2::marginalCovariance(X(k))` is `[phi, rho]` at the current estimate, right
 perturbation; `Graph::marginal_cov` returns `P Sigma P^T`.
 
+### 8b. Relative marginal of two keyframes (`Graph::relative_pose_cov`, ADR-028)
+
+Covariance of `T_bi_bj = T_w_bi^-1 T_w_bj` in the loop's own tangent (right perturbation,
+`[rho, phi]`, frame `b_j`). With right perturbations of both poses,
+
+    (T_w_bi Exp(d_i))^-1 T_w_bj Exp(d_j) = T_bi_bj Exp(-Ad(T_bj_bi) d_i) Exp(d_j)
+                                          ~ T_bi_bj Exp(d_j - Ad(T_bj_bi) d_i)
+
+so with `J = [-Ad(T_bj_bi), I]` and `P` the 12x12 joint marginal of `(X_i, X_j)`:
+
+    Sigma_ij = Ad P_ii Ad^T - Ad P_ij - P_ji Ad^T + P_jj,     Ad = Ad(T_bj_bi)
+
+`P` comes from the iSAM2 Bayes tree (`BayesTree::joint(x_i, x_j)`: the marginal of the lowest
+common ancestor clique and the shortcuts of both cliques to it, then the dense 12x12
+information, inverted); each 6x6 block is permuted `[phi, rho] -> [rho, phi]` (one
+permutation for rows and columns, so the off-diagonal `P_ij` is right too). `Ad` uses the
+last estimate, the same poses `keyframe_state` returns. The cross term matters: leaving it out
+changed the result by 1.8 to 72 times in the review check.
+
+Tests: a 3-keyframe chain of exact SE(3) factors (known answer
+`Ad(Z2^-1) C1 Ad(Z2^-1)^T + C2`); the B-02 loop graph (agrees with `marginal_cov` when `X_0` is
+pinned, inverse relation); a 75-keyframe circle built incrementally with 7 loops (many cliques)
+against an independent dense information solve (relative error below 1e-6) and 100k-sample
+Monte Carlo of the joint through `Log(T_ij^-1 T_i'^-1 T_j')` (whitened eigenvalues within 4 %).
+
+**Cost** (desktop WSL, release; `i` spread over the graph, `j` the newest keyframe):
+
+| keyframes | pose-only graph with loops (review) mean / max | pose + velocity + bias graph with IMU, LiDAR (1 mm) and loop factors, mean / max | one `optimize()` on that graph |
+| --- | --- | --- | --- |
+| 61 | 0.31 / 1.85 ms | 1.5 / 3.5 ms | 0.8 ms |
+| 300 | 0.83 / 1.46 ms | 3.9 / 9.4 ms | 2.2 ms |
+| 1000 | 2.2 / 5.2 ms | 12.2 / 29.1 ms | 8.4 ms |
+
+It grows with the depth of `X_i` in the tree (the shortcut to the common ancestor), so on a long
+run it costs about one to four `optimize()` calls; the Pi 5 is several times slower (not
+measured, backlog C1-5 / C1-15). It is called only by the optional loop gate
+(`loop_closure.graph_covariance_gate`, off, ADR-028), at most once per loop search.
+
+### 8c. Removing a loop factor (`Graph::remove_loop_factor`, ADR-028)
+
+A loop selector may find a committed loop inconsistent later. The factor is found by pointer
+among `ISAM2::getFactorsUnsafe()` (or in the pending sets) and removed with one `update` with
+`removeFactorIndices`, as for the gravity factor (section 6c); it also leaves
+`committed_factors`, so a rebuild after a failure does not bring it back. iSAM2 re-eliminates
+the cliques the factor touched; relinearisation in the following updates returns the estimate
+to the optimum without it (`B03_OutlierLoopRemovedLeavesNoDrag`: the B-03 outlier removed, the
+square equals the one that never had it, < 1e-6 m). Cost on the pose + velocity + bias graph:
+0.45 / 2.1 / 7.4 ms at 61 / 300 / 1000 keyframes, about one `optimize()`.
+
 ## 9. Failure handling and IMU-gap re-anchor
 
 Failure. `optimize()` inserts only the variables referenced by pending factors (an

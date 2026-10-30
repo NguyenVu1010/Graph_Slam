@@ -259,16 +259,17 @@ class Graph {
   /// (X_i, X_j) (iSAM2 Bayes tree, BayesTree::joint): with right perturbations of both poses,
   /// d(T_bi_bj) = -Ad(T_bj_bi) d_i + d_j, so
   ///   cov = Ad P_ii Ad^T - Ad P_ij - P_ji Ad^T + P_jj,   Ad = Ad(T_bj_bi)
-  /// (docs/derivations/loop_closure.md section 9). Used by the loop-closure correction gate
-  /// (ADR-026 amendment). Additive API; no factor or estimate is changed.
+  /// (docs/derivations/backend_factors.md section 8b). Used by the loop-closure correction gate
+  /// (optional, ADR-028). Additive API; no factor or estimate is changed.
   /// Cost: one joint marginal on the Bayes tree, about the cost of the shortcut from the
   ///   clique of `i` to the lowest common ancestor with `j` (j = the newest keyframe: near the
   ///   root); no full re-factorisation (gtsam::Marginals is not used).
   /// Errors (Result::error): "unknown keyframe"; "i == j"; "keyframe not optimised";
   ///   "relative marginal failed: <GTSAM message>" (also for a non-finite or not positive
   ///   definite result); "built without GTSAM" in the stub. Hot path: no.
-  /// Measured (desktop, pose-velocity-bias graph with loops; docs/derivations/loop_closure.md
-  ///   section 9): grows with the depth of keyframe i in the Bayes tree, see the table there.
+  /// Measured (desktop, pose-velocity-bias graph with loops; docs/derivations/backend_factors.md
+  ///   section 8b): 1.5 / 3.9 / 12 ms mean at 61 / 300 / 1000 keyframes, growing with the
+  ///   depth of keyframe i in the Bayes tree.
   /// Tests: BackendGraph.RelativePoseCovKnownAnswerChain, RelativePoseCovConsistentOnLoopGraph,
   ///   RelativePoseCovDenseAndMonteCarloOnLoopyGraph, RelativePoseCovErrors.
   common::Result<common::PoseCovariance> relative_pose_cov(common::KeyId i, common::KeyId j) const;
