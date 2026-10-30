@@ -125,6 +125,12 @@ TEST(Config, LoopClosureKeys) {
   EXPECT_EQ(l.ambiguity_backoff_keyframes, 5);
   EXPECT_EQ(l.ambiguity_icp_max_iterations, 10);
   EXPECT_DOUBLE_EQ(l.ambiguity_prescreen_ratio, 0.8);
+  // ADR-028: PCM on.
+  EXPECT_TRUE(l.pcm_enabled);
+  EXPECT_DOUBLE_EQ(l.pcm_chi2_gate, 22.46);
+  EXPECT_DOUBLE_EQ(l.pcm_odometry_sigma_scale, 2.0);
+  EXPECT_EQ(l.pcm_max_loops, 64);
+  EXPECT_EQ(l.pcm_max_clique_steps, 100000);
   const std::string base = read_file(kDefault);
   const auto bad = parse_config(base,
                                 overlay("    loop_closure:\n      sc_sectors: 3\n"
@@ -134,7 +140,8 @@ TEST(Config, LoopClosureKeys) {
                                         "      correction_chi2_gate: 0.0\n"
                                         "      ambiguity_seeds_per_side: -1\n"
                                         "      ambiguity_max_ratio: 1.5\n"
-                                        "      ambiguity_prescreen_ratio: 1.5\n"));
+                                        "      ambiguity_prescreen_ratio: 1.5\n"
+                                        "      pcm_max_loops: 65\n"));
   ASSERT_FALSE(bad.is_ok());
   EXPECT_TRUE(mentions(bad.reason(), "loop_closure.sc_sectors")) << bad.reason();
   EXPECT_TRUE(mentions(bad.reason(), "loop_closure.min_inlier_ratio")) << bad.reason();
@@ -144,6 +151,7 @@ TEST(Config, LoopClosureKeys) {
   EXPECT_TRUE(mentions(bad.reason(), "loop_closure.ambiguity_seeds_per_side")) << bad.reason();
   EXPECT_TRUE(mentions(bad.reason(), "loop_closure.ambiguity_max_ratio")) << bad.reason();
   EXPECT_TRUE(mentions(bad.reason(), "loop_closure.ambiguity_prescreen_ratio")) << bad.reason();
+  EXPECT_TRUE(mentions(bad.reason(), "loop_closure.pcm_max_loops")) << bad.reason();
 }
 
 TEST(Config, OverlayWarehouse) {
