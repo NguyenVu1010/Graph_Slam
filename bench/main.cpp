@@ -246,6 +246,10 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"n_loops_rejected\": %" PRIu64
                ",\n"
+               "  \"n_loops_pcm_rejected\": %" PRIu64
+               ",\n"
+               "  \"n_loops_removed\": %" PRIu64
+               ",\n"
                "  \"n_loops_no_marginal\": %" PRIu64
                ",\n"
                "  \"n_map_points\": %" PRIu64
@@ -312,6 +316,8 @@ bool write_json(const fs::path& path,
                st.n_loop_searches,
                st.n_loops_accepted,
                st.n_loops_rejected,
+               st.n_loops_pcm_rejected,
+               st.n_loops_removed,
                st.n_loops_no_marginal,
                st.n_map_points,
                st.n_map_spacing_replaced,

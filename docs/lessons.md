@@ -467,6 +467,29 @@ Format of an entry: **symptom** → cause → fix → rule.
   without SE(3) alignment (anchored at the start) and the tilt error against truth. Give the
   simulator the bias the real part has, so the estimator meets this before the hardware does.
 
+### 1.20 Pairwise loop checks over long odometry cycles need the odometry's drift in the covariance (H3, ADR-028 amendment C, `derivations/loop_closure.md` section 11b)
+
+- **Symptom.** PCM (pairwise consistency of loop closures through the odometry) rejected true
+  loops, and removed loops it had already committed, once two loops were a lap apart. Three laps
+  of 6 to 20 m radius lost 2 to 4 of the first revisit's 4 true loops; the two-lap test lost one
+  true loop at seed 7 (end-to-start 1.350 m against 1.129 m without PCM). Inflating the odometry
+  covariance by 2 did not help on the larger laps.
+- **Cause.** The odometry had a yaw drift (0.1 deg per 0.5 m step) that its covariance did not
+  contain. In a cycle whose two odometry segments are of similar length and direction the drift
+  cancels, but a loop `(i, i+N)` against a loop `(i, i+2N)` leaves a whole lap uncancelled. A
+  drift error grows like the distance (yaw) and its square (lateral), faster than white step noise,
+  so a fixed inflation only covers cycles up to some length, and the chi-square grows past the
+  gate.
+- **Fix.** Add an unknown constant yaw drift rate (1 sigma `pcm_yaw_drift_deg_per_m`) to the
+  odometry covariance of the pairwise test: a rank-one term per segment, yaw equal to the distance
+  and lateral equal to the distance times the yaw error, kept in prefix sums. It models the cause
+  instead of switching off the evidence of far-apart loops, so PCM still rejects an alias against
+  distant true loops (its chi-square falls by at most 5 %). The white inflation dropped to 1.5.
+- **Rule.** A consistency test between measurements joined by odometry must carry every odometry
+  error that grows with the distance travelled (heading drift first), not only the per-step
+  noise. Test it on cycles of several lengths (a whole lap and more), not only on loops of
+  one revisit.
+
 ## 2. Simulation and evaluation
 
 ### 2.1 Coupled calibration errors (PR #21, ADR-011 §3)
