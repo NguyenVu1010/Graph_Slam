@@ -276,3 +276,39 @@ is 0.14 m at 0.01 m^2 against its 0.1 m bound, and one chaotic bag (1 m^2 worse 
 cannot choose a value. Retune `unobserved_var_m2` over several Gazebo recordings in **S2**, with
 0.01 m^2 as the candidate, together with the per-direction flag dump for the E-04 start-up
 excursion.
+
+## 8. Marginal information along a direction (backlog G3)
+
+Code: `degeneracy::marginal_information(report, u)`. Used by the pipeline's track-yaw gate
+(`gnss.md` section 5.3): does a scan observe the robot's travel axis?
+
+For a direction `u` in the tangent of `H` (for a translation `u = [d; 0]`), the variance of the
+pose along `u` under `H` is `u^T H^-1 u`, and its inverse
+
+    I(u) = 1 / (u^T H^-1 u) = 1 / sum_k (v_k . u)^2 / lambda_k
+
+is the information along `u` with every other direction marginalised: the Schur complement of
+`H` onto `u`. It uses the eigen-decomposition of section 2 (`analyze()` computes it also when
+`degeneracy.enabled` is false; it then only flags nothing).
+- Along an eigenvector `I(v_k) = lambda_k`, so `I(u) >= eig_threshold` is section 2's test that
+  the direction is not degenerate.
+- For any `k`, `I(u) <= lambda_k / (v_k . u)^2`: a direction with a component along a degenerate
+  one keeps little information (10 deg off a corridor axis of eigenvalue 3: at most 3.1), while
+  the raw count `u^T H u` also sums the constraints across it (150 with a lateral eigenvalue of
+  5000).
+- A translation coupled to a rotation keeps only its Schur complement: `a - c^2 / b` on
+  `[[a, c], [c, b]]`, where the raw count keeps `a`.
+- Eigenvalues at or below `1e-9 lambda_max` are the null space: on a rank-deficient `H` the
+  solver returns round-off of either sign there, which would otherwise be divided by. A
+  component of `u` along it above `1e-9 |u|^2` gives 0 (the variance is unbounded); a smaller one
+  is round-off of a null space orthogonal to `u` and is skipped (H4 review m-1: a walls-only `H`
+  in a randomly rotated frame gave 0 or a wrong value; now its unrotated value within 1e-6). A
+  non-finite eigenvalue (a non-finite `H`, for which `analyze()` returns zero eigenvalues), no
+  positive eigenvalue, or `u = 0` give 0. The 1e-9 sits far below a scan's information ratio
+  (corridor axis against walls: about 1e-4) and far above the round-off of a 6x6 eigen-solve.
+- Basis-free: it does not depend on which eigenvectors the solver picks in a repeated eigenvalue.
+
+Tests: `MarginalInformation.MatchesExplicitInverse` (20 random SPD matrices against
+`1 / u^T H^-1 u`, relative 1e-9), `MarginalInformation.EigenvectorCouplingAndMixing`,
+`MarginalInformation.SingularNonFiniteAndZero`, `MarginalInformation.RotatedRankDeficient`. Hot path: fixed size, no allocation (checked in
+`DegeneracyHotPath.NoAllocation`).

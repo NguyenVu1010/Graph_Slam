@@ -72,6 +72,18 @@ std::string join_key(const std::string& prefix, const std::string& key) {
   return prefix.empty() ? key : prefix + "." + key;
 }
 
+// Keys removed from the config: what replaces them, instead of the generic "unknown key".
+std::string unknown_key_reason(const std::string& path, const std::string& generic) {
+  static const std::string kFrontendMinInfo = "gnss.align_yaw_frontend_min_info";
+  if (path.size() >= kFrontendMinInfo.size() &&
+      path.compare(
+          path.size() - kFrontendMinInfo.size(), kFrontendMinInfo.size(), kFrontendMinInfo) == 0) {
+    return "removed in backlog G3; the track-yaw front-end gate is degeneracy.eig_threshold on "
+           "the marginal information along the travel axis (gnss.md section 5.3)";
+  }
+  return generic;
+}
+
 // Lookup that never inserts (non-const operator[] would).
 YAML::Node child(const YAML::Node& map, const std::string& key) {
   const YAML::Node& const_map = map;
@@ -91,7 +103,7 @@ void merge_overlay(YAML::Node base,
     const YAML::Node current = child(base, key);
     const YAML::Node& value = kv.second;
     if (!current.IsDefined()) {
-      errors.add(path, "unknown key (not in base config)");
+      errors.add(path, unknown_key_reason(path, "unknown key (not in base config)"));
     } else if (current.IsMap() && value.IsMap()) {
       merge_overlay(base[key], value, path, errors);
     } else if (current.IsNull() || current.Type() == value.Type()) {
@@ -360,7 +372,7 @@ class Reader {
       }
       return;
     }
-    errors_.add(path, "unknown key");
+    errors_.add(path, unknown_key_reason(path, "unknown key"));
   }
 
   YAML::Node root_;
@@ -491,7 +503,6 @@ Config read_config(Reader& r) {
   r.field(
       "gnss.align_yaw_merge_max_chunks", c.gnss.align_yaw_merge_max_chunks, Range::kNonNegative);
   r.field("gnss.align_yaw_frontend_travel", c.gnss.align_yaw_frontend_travel);
-  r.field("gnss.align_yaw_frontend_min_info", c.gnss.align_yaw_frontend_min_info, Range::kPositive);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);
@@ -537,7 +548,15 @@ Config read_config(Reader& r) {
   r.field("scan_match.unobserved_var_rad2", c.scan_match.unobserved_var_rad2, Range::kPositive);
 
   r.field("degeneracy.enabled", c.degeneracy.enabled);
-  r.field("degeneracy.eig_threshold", c.degeneracy.eig_threshold, Range::kNonNegative);
+  if (r.field("degeneracy.eig_threshold", c.degeneracy.eig_threshold, Range::kNonNegative)) {
+    // Backlog G3: the track-yaw front-end gate compares the marginal information along the
+    // travel axis with this threshold; 0 would pass every scan, a dead-reckoned axis included.
+    r.check("degeneracy.eig_threshold",
+            !(c.gnss.align_yaw_from_track && c.gnss.align_yaw_frontend_travel) ||
+                c.degeneracy.eig_threshold > 0.0,
+            "must be > 0 with gnss.align_yaw_from_track and gnss.align_yaw_frontend_travel (the "
+            "track-yaw front-end gate's threshold)");
+  }
   r.field("degeneracy.relax_factor", c.degeneracy.relax_factor, Range::kAtLeastOne);
 
   r.field("loop_closure.enabled", c.loop_closure.enabled);

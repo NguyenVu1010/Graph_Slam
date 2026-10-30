@@ -349,7 +349,10 @@ Format of an entry: **symptom** → cause → fix → rule.
     shipped configuration: 1.5 to 4.6 cm along the corridor axis while the front end was 1 m off
     over 2 s. The scan matcher's information along the travel axis does say it: 239 to 577
     point-to-plane constraints per scan in the box world and E-01, 0.2 to 66 in the corridor. So
-    it is used, gated on that information (see the residual limits below).
+    it is used, gated on that information (see the residual limits below). The gate is now the
+    marginal information along the axis (rotation and the other axes marginalised) against the
+    degeneracy module's own threshold, one definition for both modules; on Gazebo recordings it
+    is 203 to 415 in the warehouse and 10 to 66 in the corridor, against 100.
 - **Chosen (proposed; the change of the first-factor target is the owner's call).** Sigma 6 deg
   (the graph refines the yaw; the first yaw stayed within its sigma, no flip, no more rejections,
   and a forced 18 deg start converged), turns from the wheel path, wheel/GNSS consistency, 3 m
@@ -365,7 +368,7 @@ Format of an entry: **symptom** → cause → fix → rule.
   unchanged. Three classes came out, and each is handled differently.
   - **Algorithm-caused.** A threshold or a reset rule threw away information the sensors still
     give. Fix it.
-        - A missing odometer reading reset the wheel/GNSS window. After a mismatch, with 2 % of
+    - A missing odometer reading reset the wheel/GNSS window. After a mismatch, with 2 % of
       readings missing, the robot aligned after a median 36 m (max 311 m). Bridging gaps of up
       to 4 fixes gives 10.9 m (max 16.9 m) in the study. The study gave the aligner the true
       odometer after a gap, but the pipeline integrates wheel speed and interpolates across a
@@ -375,7 +378,7 @@ Format of an entry: **symptom** → cause → fix → rule.
       dominates, kept a robot below 0.1 m/s from ever aligning. The oracle with the true travel
       sign alone did not fix it. Accumulating travel across chunks does: from 0.02 m/s, after
       about 3 m.
-        - A still front end was not used where the LiDAR observes the travel axis. Wheels spinning
+    - A still front end was not used where the LiDAR observes the travel axis. Wheels spinning
       on a still body aligned on GNSS drift in 6 of 100 runs at 0.2 m per fix, and a parked
       robot without wheel data in 25 of 100. Now none: swept to 0.5 m per fix with spinning
       wheels, and to 0.30 m per fix without wheel data.
@@ -397,7 +400,7 @@ Format of an entry: **symptom** → cause → fix → rule.
     with the sensor that would observe it.
     - The travel sign without wheel data is not in the GNSS positions or the heading, and GNSS
       Doppler does not give it either. The front end gives it where the LiDAR observes the axis.
-        - Where the LiDAR is blind along the axis, a still body with spinning wheels or a parked
+    - Where the LiDAR is blind along the axis, a still body with spinning wheels or a parked
       robot cannot be told from GNSS drift in steady state: the IMU sees the same signal at rest
       and at constant speed. The onset is observable, though (wheel delta-v against IMU delta-v),
       and no oracle tested it (open issue F3).

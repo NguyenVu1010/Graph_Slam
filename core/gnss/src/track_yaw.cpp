@@ -193,6 +193,12 @@ void GnssTrackYawAligner::close_chunk() {
   const bool fe_ok = frontend_travel_ && fe_steps_ok;
   const Eigen::Vector2d fe_disp = k.po - prev_.po;
   const bool fe_still = fe_ok && fe_disp.norm() < min_wheel_travel_m_;
+  // Backlog G3: the front end holds the segment still while the wheels moved by at least
+  // align_yaw_min_wheel_travel_m more than it (wheels turning on a still body, or a LiDAR that
+  // sees surroundings moving with the robot): counted, the front end decides.
+  if (fe_still && wheel_ok && std::abs(travel_m) - fe_disp.norm() > min_wheel_travel_m_) {
+    ++n_fe_wheel_disagree_;
+  }
   bool stationary = false;
 
   if (carry_.chunks > 0) {
