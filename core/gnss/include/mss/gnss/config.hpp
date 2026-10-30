@@ -22,6 +22,11 @@ struct GnssConfig {
   // floored at align_yaw_min_var_m2) is at most align_yaw_max_sigma_rad. On by default since
   // G13 (ADR-025); load_config overwrites it from YAML.
   bool align_check_yaw_sigma = true;
+  // Backlog G15: GnssAligner's yaw sigma also counts the front-end antenna position covariance
+  // (the w side, from the pose covariance the pipeline passes), so a dead-reckoned front end along
+  // a LiDAR-degenerate axis no longer looks exact (gnss.md section 4.1). The struct default
+  // keeps the previous behaviour; load_config overwrites it from YAML.
+  bool align_yaw_sigma_frontend_cov = false;
   double chi2_gate = 7.814727903251178;  // NIS threshold, 3 DoF (chi-square q = 0.95) (> 0)
   // Consecutive chi-square rejections (fixes) after which the pipeline restarts the aligner
   // so a front end that drifted during an outage can be re-aligned (docs/derivations/

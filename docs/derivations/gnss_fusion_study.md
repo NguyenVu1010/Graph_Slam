@@ -1743,3 +1743,29 @@ origin of `o` (`u = [d_l; p_l_o x d_l]`):
 0 of 100 aligned as before, now counted in 100 of 100 runs. An exact front end: 0 counted at 0.5
 m/s and at 0.05 m/s. Pipeline (`PipelineComponent.FrontEndWheelDisagreementCounted`, static box
 world, wheels at 0.5 m/s for 12 s): 4 chunks counted, one warning, no GNSS factor; still wheels: 0.
+
+### 18.2 G15: GnssAligner's yaw sigma with the front-end covariance
+
+`gnss.align_yaw_sigma_frontend_cov` (off). The term `sum s_i^2 / sum |a_c,i|^2` (`gnss.md`
+section 4.1) uses the pose covariance the chi-square gate uses.
+
+| run | first alignment (time, distance) | yaw error / sigma | GNSS factors | ATE |
+| --- | --- | --- | --- | --- |
+| E-01, flag off (main) | 14.8 s, 4.4 m | 15.44 / 5.968 deg | 214 | 0.002160 m |
+| E-01, flag on | 14.8 s, 4.4 m | 15.44 / 5.969 deg | 214 | 0.002160 m (`est.tum` identical) |
+| E-03, flag off | 14.8 s, 4.4 m | 15.44 / 5.967 deg | 216 | 0.002174 m |
+| E-03, flag on | 15.0 s, 4.5 m | 14.14 / 5.941 deg | 215 | 0.002163 m |
+| box world, 15 seeds, GNSS / GNSS + wheel | identical on every seed | | identical | 0.010 / 0.006 m, CI [+0.000, +0.000] |
+| corridor, 15 seeds (degeneracy 1000 m^2) | never (0 of 15) | | 0 | 24.1 m median (LiDAR only; ref 1.99 m) |
+
+- On E-01..E-03 the scan matcher's covariance is millimetres, so the sigma moves by 0.001 deg;
+  E-03 crosses the 6 deg threshold one fix later and its output changes. Turning the flag on by
+  default stays off until design 2 is enabled (owner ruling 2026-10-30, backlog G19).
+- In the corridor the front end along the axis carries the unobserved variance (1000 m^2), so
+  the sigma never comes below 6 deg and `GnssAligner` never aligns: the corridor seeds 51 and 52
+  no longer report 3.4 deg while 132 to 179 deg off, but no GNSS reaches the graph either
+  (fused ATE 24 m against 2.0 m). That is the honest answer for `GnssAligner` there; the
+  corridor needs the track-yaw aligner (design 2: 0.31 m median, design 1 + 2: 0.18 m).
+- Unit: `GnssAligner.FrontEndCovKnownValue`, `FrontEndCovCatchesADeadReckonedAxis` (reversed
+  axis, 1000 m^2: never aligns; flag off: 175 deg off with a 4.8 deg sigma);
+  `GnssFusion.FrontEndCovReachesTheAligner`.
