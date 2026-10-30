@@ -264,6 +264,136 @@ TEST(GnssAligner, YawSigmaKnownValue) {
   EXPECT_NEAR(sigma_with(Mat3::Zero(), true), 0.25, 1e-12);
 }
 
+// Backlog G15 (gnss.md section 4.1): with align_yaw_sigma_frontend_cov the yaw variance adds
+// sum s_i^2 / sum |a_c,i|^2, s_i^2 the larger horizontal eigenvalue of the front-end antenna
+// position covariance J P J^T. Diamond of YawSigmaKnownValue (sum |a_c|^2 = 4, fixes at 1 m^2:
+// 0.25 from the fixes):
+// - position variance 3 m^2 along w x: 0.25 + 4 x 3 / 4, sigma sqrt(3.25);
+// - yaw variance 0.25 rad^2 with the antenna 2 m ahead of b: (2 x 0.5)^2 = 1 m^2 across,
+//   0.25 + 4 / 4, sigma sqrt(1.25); the body is yawed by 90 deg so that the rotation of J
+//   matters;
+// - flag off, or a non-finite P (counted as zero, as the chi-square gate): sigma 0.5.
+TEST(GnssAligner, FrontEndCovKnownValue) {
+  const Vec3 corners[4] = {Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(-1, 0, 0), Vec3(0, -1, 0)};
+  const auto sigma_with =
+      [&](const mss::common::PoseCovariance& P, const Vec3& p_b_g, double body_yaw_rad, bool flag) {
+        GnssConfig c = cfg();
+        c.align_min_pairs = 4;
+        c.align_yaw_sigma_frontend_cov = flag;
+        GnssAligner aligner(c);
+        mss::common::Result<Pose> res = mss::common::Result<Pose>::error("none");
+        for (const Vec3& p : corners) {
+          Pose T_w_b = yaw_pose(body_yaw_rad, Vec3::Zero());
+          T_w_b.p = p - T_w_b.R * p_b_g;  // antenna at the corner
+          res = aligner.update(p, Mat3::Identity(), T_w_b, p_b_g, P);
+        }
+        EXPECT_TRUE(res.is_ok()) << res.reason();
+        return aligner.yaw_sigma_rad();
+      };
+  mss::common::PoseCovariance P_x = mss::common::PoseCovariance::Zero();
+  P_x(0, 0) = 3.0;  // rho_x of the body; body yaw 0, so w x
+  EXPECT_NEAR(sigma_with(P_x, Vec3::Zero(), 0.0, true), std::sqrt(3.25), 1e-12);
+  EXPECT_NEAR(sigma_with(P_x, Vec3::Zero(), 0.0, false), 0.5, 1e-12);
+  mss::common::PoseCovariance P_yaw = mss::common::PoseCovariance::Zero();
+  P_yaw(5, 5) = 0.25;
+  EXPECT_NEAR(sigma_with(P_yaw, Vec3(2.0, 0.0, 0.0), 0.5 * kPi, true), std::sqrt(1.25), 1e-12);
+  mss::common::PoseCovariance P_nan = P_x;
+  P_nan(1, 1) = kNan;
+  EXPECT_NEAR(sigma_with(P_nan, Vec3::Zero(), 0.0, true), 0.5, 1e-12);
+  // A non-finite covariance counts as zero for its fix only: P_nan on the first corner, 3 m^2 on
+  // the other three: 0.25 + 3 x 3 / 4, sigma sqrt(2.5).
+  {
+    GnssConfig c = cfg();
+    c.align_min_pairs = 4;
+    c.align_yaw_sigma_frontend_cov = true;
+    GnssAligner aligner(c);
+    mss::common::Result<Pose> res = mss::common::Result<Pose>::error("none");
+    for (int i = 0; i < 4; ++i) {
+      Pose T_w_b = yaw_pose(0.0, Vec3::Zero());
+      T_w_b.p = corners[i];
+      res = aligner.update(corners[i], Mat3::Identity(), T_w_b, Vec3::Zero(), i == 0 ? P_nan : P_x);
+    }
+    EXPECT_TRUE(res.is_ok()) << res.reason();
+    EXPECT_NEAR(aligner.yaw_sigma_rad(), std::sqrt(2.5), 1e-12);
+  }
+  // The 4-argument update equals the 5-argument one with P = 0, flag on or off.
+  for (const bool flag : {false, true}) {
+    GnssConfig c = cfg();
+    c.align_yaw_sigma_frontend_cov = flag;
+    GnssAligner a4(c);
+    GnssAligner a5(c);
+    for (int k = 0; k < 40; ++k) {
+      const Pose T_w_b = body_on_line(k, 0.3);
+      const Vec3 p = T_w_b * Vec3(-0.2, 0.1, 0.6) + Vec3(0.3 * std::sin(k), 0.2 * std::cos(k), 0);
+      const auto r4 = a4.update(p, Mat3::Identity(), T_w_b, Vec3(-0.2, 0.1, 0.6));
+      const auto r5 = a5.update(
+          p, Mat3::Identity(), T_w_b, Vec3(-0.2, 0.1, 0.6), mss::common::PoseCovariance::Zero());
+      ASSERT_EQ(r4.is_ok(), r5.is_ok());
+      if (r4.is_ok()) {
+        EXPECT_TRUE((r4.value().R.array() == r5.value().R.array()).all());
+      }
+    }
+    EXPECT_EQ(a4.yaw_sigma_rad(), a5.yaw_sigma_rad());
+  }
+}
+
+// Backlog G15: a front end dead-reckoned along a LiDAR-degenerate axis (corridor seeds 51 and
+// 52: the front end ran backwards while the robot drove forwards). Straight drive at 0.5 m/s, the
+// w side reversed along the axis, 0.5 m fixes, the yaw check at 6 deg. Taking the front end as
+// exact, the aligner aligns about 180 deg off with a sigma of a few degrees; with the front-end
+// covariance of the corridor's scan matching (1000 m^2 along the unobserved axis) the sigma
+// stays far above 6 deg (31.6 m over the spread) and it never aligns. Counting the front-end
+// variance as independent per fix instead would average it down: aligned at fix 478, 180 deg off
+// with a 6 deg sigma.
+TEST(GnssAligner, FrontEndCovCatchesADeadReckonedAxis) {
+  const Pose T_e_w = yaw_pose(0.4, Vec3(3.0, -2.0, 0.0));
+  for (const bool flag : {false, true}) {
+    GnssConfig c = cfg();
+    c.align_check_yaw_sigma = true;
+    c.align_yaw_max_sigma_rad = 6.0 * kDeg;
+    c.align_yaw_sigma_frontend_cov = flag;
+    GnssAligner aligner(c);
+    std::mt19937 rng(7);
+    std::normal_distribution<double> n01(0.0, 1.0);
+    mss::common::PoseCovariance P = mss::common::PoseCovariance::Zero();
+    P(0, 0) = 1000.0;  // unobserved_var_m2 of the corridor runs, along the axis (body x = w x)
+    P(1, 1) = 1e-4;
+    P(2, 2) = 1e-4;
+    int first = -1;
+    double err = 0.0;
+    double sigma = 0.0;
+    for (int k = 0; k < 600 && first < 0; ++k) {
+      const Pose truth = yaw_pose(0.0, Vec3(0.1 * k, 0.0, 0.0));
+      const Pose front = yaw_pose(0.0, Vec3(-0.1 * k, 0.0, 0.0));  // dead reckoning backwards
+      Vec3 p = T_e_w * (truth * Vec3::Zero());
+      p.x() += 0.5 * n01(rng);
+      p.y() += 0.5 * n01(rng);
+      const auto r = aligner.update(p, Mat3::Identity() * 0.25, front, Vec3::Zero(), P);
+      if (r.is_ok()) {
+        first = k;
+        err = wrap_pi(yaw_of(r.value().R) - 0.4);
+        sigma = aligner.yaw_sigma_rad();
+      }
+    }
+    std::printf(
+        "[ G15 ] dead-reckoned axis, front-end covariance %d: first fit at fix %d, %.1f "
+        "deg off, sigma %.2f deg; last sigma %.1f deg\n",
+        flag ? 1 : 0,
+        first,
+        err / kDeg,
+        sigma / kDeg,
+        aligner.yaw_sigma_rad() / kDeg);
+    if (flag) {
+      EXPECT_EQ(first, -1);
+      EXPECT_GT(aligner.yaw_sigma_rad(), 30.0 * kDeg);
+    } else {
+      ASSERT_GE(first, 0);  // negative control: confident and 180 deg off
+      EXPECT_GT(std::abs(err), 170.0 * kDeg);
+      EXPECT_LT(sigma, 6.0 * kDeg);
+    }
+  }
+}
+
 TEST(GnssAligner, NonFiniteCovarianceNotAdded) {
   GnssConfig c = cfg();
   c.align_min_pairs = 1;
@@ -468,9 +598,15 @@ TEST(GnssAligner, NoAllocation) {
     }
     n_ok += aligner.update(Vec3(kNan, 0.0, 0.0), T_e_w, p_b_g).is_ok() ? 1 : 0;
     n_ok += aligner.update(T_e_w.p, Mat3::Identity(), T_e_w, p_b_g).is_ok() ? 1 : 0;
+    n_ok +=
+        aligner.update(
+                   T_e_w.p, Mat3::Identity(), T_e_w, p_b_g, mss::common::PoseCovariance::Identity())
+                .is_ok()
+            ? 1
+            : 0;
   }
   EXPECT_EQ(AllocCounter::count(), 0u);
-  EXPECT_EQ(n_ok, 101);
+  EXPECT_EQ(n_ok, 102);
 }
 
 }  // namespace

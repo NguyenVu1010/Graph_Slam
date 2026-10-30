@@ -7,12 +7,15 @@
 
 #include <Eigen/Core>
 
+#include "mss/common/lie.hpp"
+
 namespace mss::gnss {
 
 GnssAligner::GnssAligner(const GnssConfig& cfg)
     : min_pairs_(cfg.align_min_pairs),
       min_spread_m_(cfg.align_min_spread_m),
       check_yaw_sigma_(cfg.align_check_yaw_sigma),
+      frontend_cov_(cfg.align_yaw_sigma_frontend_cov),
       max_yaw_sigma_rad_(cfg.align_yaw_max_sigma_rad),
       min_var_m2_(cfg.align_yaw_min_var_m2) {}
 
@@ -23,22 +26,48 @@ common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
   return update(p_e_g, common::Mat3::Zero(), T_w_b, p_b_g);
 }
 
-// Closed-form 4-DoF fit over running sums; docs/derivations/gnss.md section 4.
 common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
                                                  const common::Mat3& cov_e,
                                                  const common::Pose& T_w_b,
                                                  const common::Vec3& p_b_g) {
+  return update(p_e_g, cov_e, T_w_b, p_b_g, common::PoseCovariance::Zero());
+}
+
+namespace {
+
+// Larger eigenvalue of the symmetric part of the horizontal 2x2 block of `cov` (m^2).
+double horizontal_var_max_m2(const common::Mat3& cov) {
+  const double h_mean_m2 = 0.5 * (cov(0, 0) + cov(1, 1));
+  const double h_half_diff_m2 = 0.5 * (cov(0, 0) - cov(1, 1));
+  const double h_off_m2 = 0.5 * (cov(0, 1) + cov(1, 0));
+  return h_mean_m2 + std::hypot(h_half_diff_m2, h_off_m2);
+}
+
+}  // namespace
+
+// Closed-form 4-DoF fit over running sums; docs/derivations/gnss.md section 4.
+common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
+                                                 const common::Mat3& cov_e,
+                                                 const common::Pose& T_w_b,
+                                                 const common::Vec3& p_b_g,
+                                                 const common::PoseCovariance& P_w_b) {
   using ResultPose = common::Result<common::Pose>;
   if (!p_e_g.allFinite() || !cov_e.allFinite() || !T_w_b.R.allFinite() || !T_w_b.p.allFinite() ||
       !p_b_g.allFinite()) {
     return ResultPose::error("non-finite input");
   }
   // Larger eigenvalue of the symmetric part of the horizontal block, floored (gnss.md s. 4.1).
-  const double h_mean_m2 = 0.5 * (cov_e(0, 0) + cov_e(1, 1));
-  const double h_half_diff_m2 = 0.5 * (cov_e(0, 0) - cov_e(1, 1));
-  const double h_off_m2 = 0.5 * (cov_e(0, 1) + cov_e(1, 0));
-  const double var_max_m2 = h_mean_m2 + std::hypot(h_half_diff_m2, h_off_m2);
-  const double var_m2 = std::max(var_max_m2, min_var_m2_);
+  const double var_m2 = std::max(horizontal_var_max_m2(cov_e), min_var_m2_);
+  if (frontend_cov_ && P_w_b.allFinite()) {
+    // Backlog G15: the front-end antenna position error in w, J P J^T with
+    // J = d(T_w_b p_b_g)/d[rho, phi] = [R_w_b, -R_w_b skew(p_b_g)] (right perturbation): its
+    // larger horizontal eigenvalue (gnss.md section 4.1).
+    Eigen::Matrix<double, 3, 6> J;
+    J.leftCols<3>() = T_w_b.R;
+    J.rightCols<3>() = -T_w_b.R * common::skew(p_b_g);
+    const common::Mat3 cov_w = J * P_w_b * J.transpose();
+    sum_front_var_m2_ += std::max(horizontal_var_max_m2(cov_w), 0.0);
+  }
 
   const common::Vec3 p_w_g = T_w_b * p_b_g;  // lever arm applied (G-04)
   if (n_pairs_ == 0) {
@@ -81,7 +110,16 @@ common::Result<common::Pose> GnssAligner::update(const common::Vec3& p_e_g,
   const double sum_ac_sq_m2 = n * spread_w_sq_m2;  // > 0: spread_w_m >= min_spread_m_ > 0
   const double num_m4 =
       sum_var_w_sq_m4_ - 2.0 * mean_a_h.dot(sum_var_w_) + mean_a_h.squaredNorm() * sum_var_m2_;
-  yaw_sigma_rad_ = std::sqrt(num_m4 > 0.0 ? num_m4 : 0.0) / sum_ac_sq_m2;
+  // Backlog G15: the front-end errors e_i are of unknown correlation (dead reckoning along a
+  // degenerate axis is one correlated error), so their part of the variance is bounded for any
+  // correlation: Var(sum u_i . e_i) <= (sum |u_i| s_i)^2 <= sum |a_c,i|^2 sum s_i^2, which adds
+  // sum s_i^2 / sum |a_c,i|^2 (gnss.md section 4.1); 0 without the flag.
+  // Without the term the previous expression stays, bit for bit (m-4 of the H4 review).
+  const double num_clamped_m4 = num_m4 > 0.0 ? num_m4 : 0.0;
+  yaw_sigma_rad_ = sum_front_var_m2_ > 0.0
+                       ? std::sqrt(num_clamped_m4 / (sum_ac_sq_m2 * sum_ac_sq_m2) +
+                                   sum_front_var_m2_ / sum_ac_sq_m2)
+                       : std::sqrt(num_clamped_m4) / sum_ac_sq_m2;
   if (check_yaw_sigma_ && !(yaw_sigma_rad_ <= max_yaw_sigma_rad_)) {
     return ResultPose::error("yaw sigma above threshold");
   }

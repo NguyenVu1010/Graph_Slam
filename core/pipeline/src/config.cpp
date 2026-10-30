@@ -474,6 +474,7 @@ Config read_config(Reader& r) {
   r.field("gnss.align_min_pairs", c.gnss.align_min_pairs, Range::kAtLeastOne);
   r.field("gnss.align_min_spread_m", c.gnss.align_min_spread_m, Range::kPositive);
   r.field("gnss.align_check_yaw_sigma", c.gnss.align_check_yaw_sigma);
+  r.field("gnss.align_yaw_sigma_frontend_cov", c.gnss.align_yaw_sigma_frontend_cov);
   r.field("gnss.chi2_gate", c.gnss.chi2_gate, Range::kPositive);
   r.field("gnss.max_consecutive_rejects", c.gnss.max_consecutive_rejects, Range::kAtLeastOne);
   r.field("gnss.attach_prealign_fixes", c.gnss.attach_prealign_fixes);

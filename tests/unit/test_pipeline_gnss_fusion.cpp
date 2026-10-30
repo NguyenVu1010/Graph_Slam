@@ -503,6 +503,38 @@ TEST(GnssFusion, CheckYawSigmaUsesDeclaredCovariance) {
   }
 }
 
+// Backlog G15: GnssFusion passes the front-end covariance P_w_b of on_fix to GnssAligner: with
+// gnss.align_yaw_sigma_frontend_cov and a front end that is 30 m uncertain along the line (1000
+// m^2), the noise-free line of CheckYawSigmaUsesDeclaredCovariance never aligns within 200 fixes
+// (threshold 2 deg); without the flag it aligns at n = 100 as there.
+TEST(GnssFusion, FrontEndCovReachesTheAligner) {
+  for (const bool flag : {false, true}) {
+    gnss::GnssConfig c = fusion_cfg();
+    c.align_check_yaw_sigma = true;
+    c.align_yaw_max_sigma_rad = 2.0 * gnss::kRadPerDegree;
+    c.align_yaw_sigma_frontend_cov = flag;
+    GnssFusion f(c, kPbg);
+    common::PoseCovariance P = common::PoseCovariance::Zero();
+    P(0, 0) = 1000.0;
+    int n_aligned = 0;
+    for (int k = 0; k < 200 && !f.aligned(); ++k) {
+      Pose truth;
+      truth.p = Vec3(0.1 * k, 0.0, 0.0);
+      GnssMeasurement m;
+      m.t = Timestamp{k * kSec / 5};
+      m.p_e_g = truth_T_e_w() * (truth * kPbg);
+      m.cov = Vec3(1.0, 1.0, 4.0).asDiagonal();
+      m.status = 0;
+      (void)f.on_fix(m, truth, P);
+      n_aligned = k + 1;
+    }
+    EXPECT_EQ(f.aligned(), !flag);
+    if (!flag) {
+      EXPECT_EQ(n_aligned, 100);
+    }
+  }
+}
+
 // ADR-023 addendum: GnssFusion::on_fix passes the wheel travel to the track aligner. A body
 // driving backwards (x_b along +x, moving along -x) from the start: without wheel data the
 // forward assumption gives 180 deg; with the wheel travel the yaw is right.

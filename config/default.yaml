@@ -89,6 +89,11 @@ mss_node:
       # 0.002183 -> 0.002172 m (see docs/baselines/2026-10-29/). Box world and corridor
       # (15 seeds each) unchanged on every seed.
       align_check_yaw_sigma: true
+      # Backlog G15 (gnss.md section 4.1): the yaw sigma of GnssAligner also counts the front-end
+      # antenna position covariance (the pose covariance of the chi-square gate), so a front end
+      # dead-reckoned along a LiDAR-degenerate axis no longer looks exact. false: the front end
+      # is taken as exact (previous behaviour).
+      align_yaw_sigma_frontend_cov: false
       chi2_gate: 7.814727903251178  # chi-square 3 DoF at q = 0.95 (G-02 band 90-99 %), NIS
       # Lock-out guard: after this many chi-square rejections in a row (fixes) the aligner
       # restarts on the current front end (pipeline.md section 5). >= 1. Rule: the window must
