@@ -372,8 +372,15 @@ Format of an entry: **symptom** → cause → fix → rule.
       readings missing, the robot aligned after a median 36 m (max 311 m). Bridging gaps of up
       to 4 fixes gives 10.9 m (max 16.9 m) in the study. The study gave the aligner the true
       odometer after a gap, but the pipeline integrates wheel speed and interpolates across a
-      wheel-message gap, so a bridged step is an estimate. With stop-and-go and a silent wheel
-      driver, alignment drops from 99 to 85 of 100 (open issue F1).
+      wheel-message gap, so a bridged step is an estimate: with stop-and-go and a silent wheel
+      driver, alignment dropped from 99 to 85 of 100. An interpolated reading is not a
+      measurement; its error is now bounded (the larger end speed times the excess of the gap
+      over the nominal sample period) and the bound widens the consistency test: 100 of 100.
+      The first version of that bound took an absolute 0.1 s threshold, five periods of the
+      simulator's 50 Hz driver: at 10 Hz half the ordinary intervals passed it, the bound grew to
+      half the travel and swallowed the test, and spinning wheels on a still body aligned on
+      drift in 97 of 100 runs. A threshold on a sample interval is a multiple of the measured
+      period, and a bound enters the estimate with the same weights as the quantity it bounds.
     - A per-segment travel threshold, and a coherence test on short segments that noise
       dominates, kept a robot below 0.1 m/s from ever aligning. The oracle with the true travel
       sign alone did not fix it. Accumulating travel across chunks does: from 0.02 m/s, after

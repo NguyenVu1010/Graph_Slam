@@ -74,8 +74,10 @@ struct GnssConfig {
   // Root-cause study of the residual limits (gnss_fusion_study.md section 16.13). The struct
   // defaults keep the previous behaviour; load_config overwrites every field from YAML.
   // fixes: a run of at most this many fixes without an odometer reading is bridged, the travel
-  // over it coming from the next reading (the odometer is absolute), instead of leaving the chunk
-  // half without wheel data (0: never bridged) (>= 0, < align_yaw_chunk_fixes / 2).
+  // over it coming from the next reading, instead of leaving the chunk half without wheel data
+  // (0: never bridged) (>= 0, < align_yaw_chunk_fixes / 2). The pipeline integrates wheel speed,
+  // so across a wheel-sample gap that travel is interpolated; align_yaw_wheel_gap_periods bounds
+  // it.
   int align_yaw_wheel_max_gap_fixes = 0;
   // chunks: a stationary segment is extended over up to this many more chunks until it has
   // align_yaw_min_wheel_travel_m of travel, so that a slow robot's travel adds up instead of
@@ -87,6 +89,14 @@ struct GnssConfig {
   // axis when the scan matcher's marginal information along it reaches degeneracy.eig_threshold
   // (degeneracy::marginal_information, backlog G3).
   bool align_yaw_frontend_travel = false;
+  // Hardening of design 2b (gnss.md section 5.3). The struct defaults keep the previous
+  // behaviour; load_config overwrites every field from YAML.
+  // nominal periods: an interval between two finite wheel samples longer than this many nominal
+  // sample periods (the mean regular interval, measured) makes the pipeline's odometer an
+  // interpolation (trapezoid) across it; the travel over its excess beyond one period is bounded
+  // by the larger end speed x that excess, which the pipeline sums and passes to the aligner to
+  // widen the wheel/GNSS consistency tolerance (+inf: never) (> 1).
+  double align_yaw_wheel_gap_periods = std::numeric_limits<double>::infinity();
 };
 
 }  // namespace mss::gnss
