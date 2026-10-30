@@ -48,8 +48,9 @@ struct LidarConfig {
 
 // YAML: map_export.*  Global map export (Estimator::export_map, ADR-016 amendment 2026-10-29).
 struct MapExportConfig {
-  // m, edge of the centroid voxel grid applied to the exported points (>= 0); 0 = no extra
-  // downsampling: every stored keyframe point (already at map.keyframe_voxel_m).
+  // m, edge of the centroid voxel grid applied to the exported points. 0 = off: no extra
+  // downsampling, every stored keyframe point (already at map.keyframe_voxel_m). Otherwise
+  // >= 0.001 (1 mm): a smaller edge overflows the int64 voxel index.
   double voxel_m = 0.0;
 };
 

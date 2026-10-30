@@ -23,6 +23,7 @@
 
 #include "mss_ros2/conversions.hpp"
 #include "mss_ros2/rclcpp_logger.hpp"
+#include "mss_ros2/stamp_gate.hpp"
 #include <tf2_ros/transform_broadcaster.h>
 
 namespace mss_ros2 {
@@ -69,6 +70,25 @@ class MssNode : public rclcpp::Node {
   /// Call once after the executor stops (publishers are not used).
   void finish();
 
+  /// Per-input message counters (for tests and diagnostics).
+  struct InputStats {
+    std::uint64_t received = 0;        ///< messages received
+    std::uint64_t time_skipped = 0;    ///< dropped: stamp not increasing / jumped back
+    std::uint64_t convert_errors = 0;  ///< dropped: not convertible or out of range
+    std::uint64_t push_errors = 0;     ///< push_* returned an error
+  };
+  InputStats lidar_stats() const { return stats_of(kLidar); }
+  InputStats gnss_stats() const { return stats_of(kGnss); }
+  bool has_origin() const { return has_origin_; }
+  /// GNSS fixes skipped while no ENU origin was taken yet (no fix, or an impossible one).
+  std::uint64_t n_gnss_before_origin() const { return n_gnss_before_origin_; }
+
+  /// Subscription callbacks, public so tests can feed messages without DDS. Executor thread only.
+  void on_lidar(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
+  void on_imu(const sensor_msgs::msg::Imu::ConstSharedPtr& msg);
+  void on_gnss(const sensor_msgs::msg::NavSatFix::ConstSharedPtr& msg);
+  void on_odom(const nav_msgs::msg::Odometry::ConstSharedPtr& msg);
+
  private:
   enum Topic : std::size_t { kLidar = 0, kImu, kGnss, kOdom, kMap, kNumTopics };
   struct TopicCounters {
@@ -78,11 +98,21 @@ class MssNode : public rclcpp::Node {
     std::uint64_t push_errors = 0;     ///< push_* returned an error (see the Estimator counters)
     std::uint64_t pending_report = 0;  ///< problems since the last throttled warning
     std::chrono::steady_clock::time_point last_report{};
-    bool has_last_stamp = false;
-    mss::common::Timestamp last_stamp{};
+    StampGate stamp_gate;  ///< last accepted stamp (strictly increasing per topic)
   };
 
   NodeParams read_params();
+  InputStats stats_of(std::size_t topic) const {
+    const TopicCounters& c = counters_[topic];
+    return {c.received, c.time_skipped, c.convert_errors, c.push_errors};
+  }
+  /// Stamp must be later than the last committed one; counts and reports a skip. Does not
+  /// advance the gate: call commit_stamp() once the message is going to be used.
+  bool check_stamp(Topic topic, mss::common::Timestamp t);
+  void commit_stamp(Topic topic, mss::common::Timestamp t) {
+    counters_[topic].stamp_gate.commit(t);
+  }
+  /// check_stamp() then commit_stamp(), for topics with no conversion step that can fail.
   bool accept_stamp(Topic topic, mss::common::Timestamp t);
   /// Counts one problem on `topic` and logs one throttled warning (error_log_period_s) with
   /// `reason()`; the reason string is only built when the warning is actually logged, so the
@@ -96,10 +126,6 @@ class MssNode : public rclcpp::Node {
   bool report_due(Topic topic);
   void log_report(Topic topic, const char* what, const std::string& reason);
 
-  void on_lidar(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
-  void on_imu(const sensor_msgs::msg::Imu::ConstSharedPtr& msg);
-  void on_gnss(const sensor_msgs::msg::NavSatFix::ConstSharedPtr& msg);
-  void on_odom(const nav_msgs::msg::Odometry::ConstSharedPtr& msg);
   void on_process_timer();
   void on_map_timer();
 

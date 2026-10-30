@@ -153,5 +153,57 @@ TEST(Pcd, BadPathsReturnErrorNamingThePath) {
   EXPECT_NE(is_dir.reason().find("is a directory"), std::string::npos) << is_dir.reason();
 }
 
+// M7: the data goes to <path>.tmp and is renamed, so a failed write never replaces or
+// truncates an existing file, and a successful one leaves no temporary file.
+TEST(Pcd, FailedWriteKeepsExistingFileAndLeavesNoTemp) {
+  const PcdDir dir;
+  const fs::path file = dir.path() / "map.pcd";
+  const std::vector<Eigen::Vector3f> first = {{1.0F, 2.0F, 3.0F}, {4.0F, 5.0F, 6.0F}};
+  ASSERT_TRUE(write_pcd(file, first).is_ok());
+  EXPECT_FALSE(fs::exists(file.string() + ".tmp"));
+  const std::uintmax_t size_before = fs::file_size(file);
+
+  // A directory in the temporary file's place makes the open fail.
+  fs::create_directory(file.string() + ".tmp");
+  const std::vector<Eigen::Vector3f> second = {{7.0F, 8.0F, 9.0F}};
+  const common::Status st = write_pcd(file, second);
+  ASSERT_FALSE(st.is_ok());
+  EXPECT_NE(st.reason().find("cannot open"), std::string::npos) << st.reason();
+  EXPECT_EQ(fs::file_size(file), size_before);
+  const ParsedPcd p = parse(file);
+  ASSERT_EQ(p.points.size(), 2U);
+  EXPECT_EQ(p.points[1], first[1]);
+}
+
+// Review H1 finding 4: on a write, flush or rename failure the temporary file is removed, the
+// error names the path and an existing target stays as it was.
+TEST(Pcd, FailureAtEachStepRemovesTheTempFileAndKeepsTheTarget) {
+  struct Case {
+    detail::PcdFault fault;
+    const char* what;
+  };
+  const Case cases[] = {{detail::PcdFault::kWriteFail, "cannot write"},
+                        {detail::PcdFault::kSyncFail, "cannot flush"},
+                        {detail::PcdFault::kRenameFail, "cannot replace"}};
+  for (const Case& c : cases) {
+    const PcdDir dir;
+    const fs::path file = dir.path() / "map.pcd";
+    const std::vector<Eigen::Vector3f> first = {{1.0F, 2.0F, 3.0F}};
+    ASSERT_TRUE(write_pcd(file, first).is_ok());
+    const std::vector<Eigen::Vector3f> second = {{7.0F, 8.0F, 9.0F}, {1.0F, 1.0F, 1.0F}};
+    detail::set_pcd_fault(c.fault);
+    const common::Status st = write_pcd(file, second);
+    detail::set_pcd_fault(detail::PcdFault::kNone);
+    ASSERT_FALSE(st.is_ok()) << c.what;
+    EXPECT_NE(st.reason().find(c.what), std::string::npos) << st.reason();
+    EXPECT_FALSE(fs::exists(file.string() + ".tmp")) << c.what;
+    const ParsedPcd p = parse(file);
+    ASSERT_EQ(p.points.size(), 1U) << c.what;
+    EXPECT_EQ(p.points[0], first[0]);
+    // And the writer works again afterwards.
+    ASSERT_TRUE(write_pcd(file, second).is_ok());
+  }
+}
+
 }  // namespace
 }  // namespace mss::io

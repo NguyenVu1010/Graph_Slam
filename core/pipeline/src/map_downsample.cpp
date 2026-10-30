@@ -27,6 +27,20 @@ struct VoxelKeyHash {
   }
 };
 
+// Smallest edge accepted (matches the load_config minimum, 1 mm) and the largest voxel index
+// magnitude: floor(x * inv) is cast to int64 only below this (2^62 is well inside int64).
+constexpr double kMinVoxelM = 0.001;
+constexpr double kMaxIndex = 4.0e18;
+
+bool voxel_index(double x, double inv, std::int64_t& out) {
+  const double v = std::floor(x * inv);
+  if (!(std::abs(v) < kMaxIndex)) {  // NaN, infinity or too large
+    return false;
+  }
+  out = static_cast<std::int64_t>(v);
+  return true;
+}
+
 struct Accumulator {
   Eigen::Vector3d sum = Eigen::Vector3d::Zero();
   std::size_t n = 0;
@@ -35,7 +49,7 @@ struct Accumulator {
 }  // namespace
 
 void voxel_centroids(std::vector<Eigen::Vector3f>& points, double voxel_m) {
-  if (!(voxel_m > 0.0) || points.empty()) {
+  if (!(voxel_m >= kMinVoxelM) || points.empty()) {
     return;
   }
   const double inv = 1.0 / voxel_m;
@@ -45,9 +59,11 @@ void voxel_centroids(std::vector<Eigen::Vector3f>& points, double voxel_m) {
   acc.reserve(points.size());
   for (const Eigen::Vector3f& p : points) {
     const Eigen::Vector3d pd = p.cast<double>();
-    const VoxelKey key{static_cast<std::int64_t>(std::floor(pd.x() * inv)),
-                       static_cast<std::int64_t>(std::floor(pd.y() * inv)),
-                       static_cast<std::int64_t>(std::floor(pd.z() * inv))};
+    VoxelKey key;
+    if (!voxel_index(pd.x(), inv, key.i) || !voxel_index(pd.y(), inv, key.j) ||
+        !voxel_index(pd.z(), inv, key.k)) {
+      continue;  // non-finite or beyond the int64 index range: not exported
+    }
     const auto [it, inserted] = index.try_emplace(key, acc.size());
     if (inserted) {
       acc.emplace_back();

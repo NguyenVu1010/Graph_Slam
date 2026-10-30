@@ -83,6 +83,19 @@ TEST(Config, MapExportVoxelValidated) {
   const auto negative = parse_config(base, overlay("    map_export:\n      voxel_m: -0.1\n"));
   ASSERT_FALSE(negative.is_ok());
   EXPECT_TRUE(mentions(negative.reason(), "map_export.voxel_m")) << negative.reason();
+  // M1: a sub-millimetre edge (1e-20 overflowed the int64 cast) is rejected; 0 and 1 mm pass.
+  for (const char* bad : {"1.0e-20", "0.0005"}) {
+    const auto r =
+        parse_config(base, overlay(std::string("    map_export:\n      voxel_m: ") + bad + "\n"));
+    ASSERT_FALSE(r.is_ok()) << bad;
+    EXPECT_TRUE(mentions(r.reason(), "map_export.voxel_m")) << r.reason();
+    EXPECT_TRUE(mentions(r.reason(), "0.001")) << r.reason();
+  }
+  for (const char* good : {"0.0", "0.001"}) {
+    const auto r =
+        parse_config(base, overlay(std::string("    map_export:\n      voxel_m: ") + good + "\n"));
+    EXPECT_TRUE(r.is_ok()) << good << " " << r.reason();
+  }
 }
 
 // ADR-026: loop_closure.* loaded (off by default), degree key converted, ranges named.
