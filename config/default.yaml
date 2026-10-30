@@ -243,6 +243,11 @@ mss_node:
       # under more drift aligns with a confident wrong yaw. Too high: later alignment (slow
       # robots much later). gnss.md section 5.3.
       align_yaw_drift_var_m2_per_s: 0.0017
+      # A segment turning by more than this (up to align_yaw_max_turn_deg) takes the path of o
+      # (front end where observed, else the wheel path) when it exists, because the chord of a
+      # turn is not along the mean heading, deg ((0, 180]; 180: never). 10: the first-yaw bias on
+      # noise-free S-jogs drops from up to 2.3 deg to at most 0.13 deg at the same distance.
+      align_yaw_path_min_turn_deg: 10.0
     wheel_odom:
       enabled: false
       wheel_radius_m: 0.10     # m

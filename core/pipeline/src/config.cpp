@@ -512,6 +512,8 @@ Config read_config(Reader& r) {
   r.field("gnss.align_yaw_wheel_gap_periods", c.gnss.align_yaw_wheel_gap_periods, Range::kAboveOne);
   r.field(
       "gnss.align_yaw_drift_var_m2_per_s", c.gnss.align_yaw_drift_var_m2_per_s, Range::kPositive);
+  r.angle_deg(
+      "gnss.align_yaw_path_min_turn_deg", c.gnss.align_yaw_path_min_turn_rad, Range::kHalfTurnDeg);
 
   r.field("wheel_odom.enabled", c.wheel_odom.enabled);
   r.field("wheel_odom.wheel_radius_m", c.wheel_odom.wheel_radius_m);
