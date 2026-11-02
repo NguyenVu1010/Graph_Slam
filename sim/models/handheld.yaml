@@ -1,0 +1,19 @@
+# Handheld rig (ADR-029, backlog L1): no wheels, LiDAR + IMU carried by a walking person. Read by
+# sim/mss_sim/walking.py. Units are in the key names; amplitudes are half peak-to-peak and scale
+# with v / cruise_speed_mps. Gait values are those of the human trunk at a normal walk (Perry and
+# Burnfield, Gait Analysis, 2010; Saunders, Inman and Eberhart, 1953; Bohannon, 1997); the device
+# is assumed to follow the trunk. Replace them with values measured on the real rig.
+model_name: handheld
+body_height_m: 1.2                 # body (IMU) origin above the ground, m
+drive:                             # pursuit limits of the walker's horizontal path
+  max_linear_velocity_mps: 1.6
+  max_linear_acceleration_mps2: 1.0
+  max_angular_velocity_radps: 1.5
+gait:
+  cruise_speed_mps: 1.3            # comfortable walking speed
+  step_frequency_hz: 1.9           # cadence, steps per second
+  bounce_amplitude_m: 0.025        # vertical, 5 cm peak-to-peak, at the step frequency
+  sway_amplitude_m: 0.02           # lateral, 4 cm peak-to-peak, at half the step frequency
+  roll_amplitude_deg: 2.0          # at half the step frequency
+  pitch_amplitude_deg: 1.5         # at the step frequency
+  yaw_amplitude_deg: 1.5           # at half the step frequency
