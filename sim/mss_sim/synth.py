@@ -20,7 +20,7 @@ from mss_sim.profile import load_profile
 
 T0_NS = 1_700_000_000_000_000_000  # epoch scale on purpose: catches float-seconds bugs
 GRAVITY_W = np.array([0.0, 0.0, -9.80665])
-P_B_G = np.array([-0.20, 0.10, 0.60])  # GNSS antenna in body frame [m]
+P_B_G = np.array([-0.12, 0.06, 0.15])  # GNSS antenna in body frame [m], = config/sim overlays
 
 _NS_PER_S = 1_000_000_000
 _GT_HZ, _IMU_HZ, _LIDAR_HZ, _GNSS_HZ, _JOINT_HZ = 200, 200, 10, 5, 50
@@ -263,13 +263,15 @@ def write_synthetic_raw_bag(
     static_s: float = 0.0,
     ramp_s: float = 0.0,
     t_b_l: _TBL | None = None,
+    p_b_g_m: tuple[float, float, float] | None = None,
 ) -> SynthInfo:
     """Write a raw bag into ``out_dir / "raw"`` and describe it.
 
     ``static_s`` seconds still, then a speed ramp over ``ramp_s`` seconds to ``speed_mps`` on a
     circle of curvature ``omega_radps / speed_mps`` (pipeline.md section 7). ``t_b_l`` is
     ``(translation_m, quaternion_wxyz)``, Hamilton order; ``None`` means identity. The defaults
-    reproduce the constant circle with an identity ``T_b_l`` byte for byte.
+    reproduce the constant circle with an identity ``T_b_l`` byte for byte. ``p_b_g_m`` is the
+    GNSS antenna lever arm in body (m); ``None`` means ``P_B_G``.
     """
     if not organized:
         raise NotImplementedError("only organized (16 x 720) clouds are generated")
@@ -285,6 +287,7 @@ def write_synthetic_raw_bag(
     # Cruise wheel speeds [rad/s]; the profile scales them by r = v / V, positions by u = s / V.
     wheel_vel = np.array([speed_mps - half_track, speed_mps + half_track]) / kin.wheel_radius_m
     r_b_l, p_b_l = np.eye(3), np.zeros(3)
+    p_b_g = P_B_G if p_b_g_m is None else np.asarray(p_b_g_m, dtype=float)
     if t_b_l is not None:
         w, x, y, z = t_b_l[1]  # Hamilton (w, x, y, z); scipy wants (x, y, z, w)
         r_b_l = Rotation.from_quat([x, y, z, w]).as_matrix()
@@ -339,7 +342,7 @@ def write_synthetic_raw_bag(
 
         stamps = _times(duration_s, _GNSS_HZ)
         _, p, rot = _pose(_rel_s(stamps), motion)
-        lla = np.asarray(enu_to_lla(p + rot @ P_B_G, origin_lla))  # p_w_g = p_w_b + R_w_b p_b_g
+        lla = np.asarray(enu_to_lla(p + rot @ p_b_g, origin_lla))  # p_w_g = p_w_b + R_w_b p_b_g
         for i, s in enumerate(stamps):
             bag.write("/gnss/fix", int(s), _gnss(int(s), lla[i]))
 

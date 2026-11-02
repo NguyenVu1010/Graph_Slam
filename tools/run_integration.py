@@ -207,6 +207,7 @@ def prepare(
     cfg = load_pipeline_config(_DEFAULT_YAML, sc.pipeline_config)
     tr = [float(v) for v in get(cfg, "frames.T_b_l.translation_m")]
     q = [float(v) for v in get(cfg, "frames.T_b_l.quaternion_wxyz")]  # Hamilton (w, x, y, z)
+    g = [float(v) for v in get(cfg, "frames.p_b_g_m")]  # antenna lever arm in body, m
     data = out / "data"
     data.mkdir(parents=True, exist_ok=True)
     write_synthetic_raw_bag(
@@ -220,6 +221,7 @@ def prepare(
         static_s=prep.static_s,
         ramp_s=prep.ramp_s,
         t_b_l=((tr[0], tr[1], tr[2]), (q[0], q[1], q[2], q[3])),
+        p_b_g_m=(g[0], g[1], g[2]),
     )
     bridged = data / "bridged"
     run_bridge(data / "raw", sc, load_profile(sc.profile), bridged, seed=sc.seed)
