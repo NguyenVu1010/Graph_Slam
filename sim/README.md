@@ -222,6 +222,29 @@ ground in seven non-overlapping tiles (top z = 0): concrete, a 30 x 30 m grass f
 buildings (9-15 m high), a row of eleven 4 m trunks along y = -5 (x = -40..40, every 8 m), a
 100 m fence (1.2 m) at y = -50 and bollards along x = +-52. No ceiling: rays that miss everything return nothing.
 
+Surfaces (`outdoor.planes.yaml` `surfaces`, `sim/mss_sim/surface.py`):
+
+| Surface | mu (SDF tile) | WheelSlip compliance (long. = lat.) | Basis |
+| --- | --- | --- | --- |
+| concrete (default) | 0.8, quoted | 0, chosen (no added slip, as the warehouse) | dry concrete peak 0.80-0.90 [1] |
+| grass | 0.5, chosen | 0.4 = 0.2 / 0.5, derived | between the two quoted ends: dry earth road 0.68 peak [1] and wet grassy field 0.20 [3] |
+| wet patch | 0.3, chosen | 0.67 = 0.2 / 0.3, derived | wet grassy field 0.20 [3] and wet earth road 0.40-0.50 sliding [1] |
+
+The friction values are those of ADR-011 section 4; only the concrete value is a quoted number,
+grass and wet are choices inside the quoted ranges. The gz WheelSlip compliance is the slip ratio
+per tangential / normal force ratio. It is set as the secant to the friction peak: the peak
+occurs near 20 % slip [1], so `c = 0.2 / mu` (a choice; the real slip curve is not linear).
+
+Sources (the page numbers are as given by the secondary source; not checked against the books):
+1. J. Y. Wong, *Theory of Ground Vehicles*, 2nd ed., Wiley, 1993, p. 26 (peak and sliding
+   friction of tyres per surface; peak near 20 % slip), as tabulated on hpwizard.com, "Tire
+   friction and rolling resistance coefficients".
+2. Robert Bosch GmbH, *Automotive Handbook*, 4th ed., 1996, p. 330 (rolling resistance: car tyre
+   on concrete or asphalt 0.013, unpaved road 0.05, field 0.10-0.35), same secondary source.
+3. R. K. Noon, *Engineering Analysis of Vehicular Accidents*, CRC Press, 1994 (wet grassy field
+   0.20), as cited by P. Cenek et al., "Frictional characteristics of roadside grass types",
+   Australasian Road Safety conference paper (saferroadsconference.com).
+
 ### Máy bàn
 
 Dev machine: WSL Ubuntu 24.04, 9 GB RAM, ROS 2 Jazzy, gz-sim 8.15.0 (vendor packages under

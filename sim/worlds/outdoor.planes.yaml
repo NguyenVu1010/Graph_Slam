@@ -3,6 +3,14 @@
 #   after the model whose box face they lie on within 1 mm (gen_sim_assets.py --check-worlds).
 # spawn: robot start pose in world; every outdoor route starts and ends there.
 # enu_origin_w_m: e = w (gz spherical_coordinates, ENU, heading 0).
+# surfaces: ground patches (axis-aligned rectangles [x_min, y_min, x_max, y_max], m, world) with
+#   the contact friction of their SDF tile (mu, checked by tests/python/test_surface.py) and the
+#   WheelSlip compliances that sim/mss_sim/surface_node.py sends while the body origin is inside.
+#   Outside every patch: `default_surface` (concrete; compliance 0 = no added slip, as the
+#   warehouse). Compliance = slip ratio / (tangential / normal force), unitless (gz WheelSlip):
+#   taken as the secant to the friction peak, slip 0.2 at mu_peak (peak friction occurs near 20 %
+#   slip, Wong, Theory of Ground Vehicles), so c = 0.2 / mu. Sources and limits: sim/README.md
+#   "Outdoor world and wheel slip".
 world: outdoor
 enu_origin_w_m: [0.0, 0.0, 0.0]
 spawn: {x_m: -40.0, y_m: -15.0, yaw_rad: 0.0}
@@ -14,3 +22,17 @@ planes:
   - {name: building_east, n: [1.0, 0.0, 0.0], d: 5.0}
   - {name: building_north, n: [0.0, 1.0, 0.0], d: 30.0}
   - {name: fence_south, n: [0.0, 1.0, 0.0], d: -49.9}
+default_surface: {name: concrete, mu: 0.8, slip_compliance_longitudinal: 0.0, slip_compliance_lateral: 0.0}
+surfaces:
+  - name: wet
+    model: ground_wet
+    rect_m: [-20.0, -40.0, -8.0, -10.0]
+    mu: 0.3
+    slip_compliance_longitudinal: 0.67
+    slip_compliance_lateral: 0.67
+  - name: grass
+    model: ground_grass
+    rect_m: [10.0, -40.0, 40.0, -10.0]
+    mu: 0.5
+    slip_compliance_longitudinal: 0.4
+    slip_compliance_lateral: 0.4
