@@ -168,3 +168,55 @@ def test_wheel_slip_request_text() -> None:
         'entity {name: "robot" type: MODEL} slip_compliance_lateral: 0.4 '
         "slip_compliance_longitudinal: 0.4"
     )
+
+
+def test_world_call_builds_the_gz_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from mss_sim import gz_cli
+
+    seen = {}
+
+    def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess:
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="data: true\n", stderr="")
+
+    monkeypatch.setattr(gz_cli.subprocess, "run", fake_run)
+    assert gz_cli.world_call("outdoor", "wheel_slip/blocking", "gz.msgs.X", "a: 1", 2000)
+    assert seen["cmd"][:4] == ["gz", "service", "-s", "/world/outdoor/wheel_slip/blocking"]
+    assert seen["cmd"][seen["cmd"].index("--timeout") + 1] == "2000"
+    monkeypatch.setattr(
+        gz_cli.subprocess,
+        "run",
+        lambda cmd, **_: subprocess.CompletedProcess(cmd, 0, stdout="data: false\n", stderr=""),
+    )
+    assert not gz_cli.world_call("outdoor", "wheel_slip/blocking", "gz.msgs.X", "a: 1")
+
+
+def test_world_call_bounds_the_process_and_survives_a_missing_binary(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import subprocess
+
+    from mss_sim import gz_cli
+
+    seen = {}
+
+    def hang(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
+        seen["timeout"] = kw["timeout"]
+        raise subprocess.TimeoutExpired(cmd, float(kw["timeout"]))  # type: ignore[arg-type]
+
+    monkeypatch.setattr(gz_cli.subprocess, "run", hang)
+    with caplog.at_level("WARNING"):
+        assert not gz_cli.world_call("outdoor", "wheel_slip/blocking", "gz.msgs.X", "a: 1", 2000)
+    assert seen["timeout"] == pytest.approx(2.0 + gz_cli.PROCESS_MARGIN_S)
+    assert "killed after" in caplog.text
+
+    def missing(cmd: list[str], **_: object) -> subprocess.CompletedProcess:
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(gz_cli.subprocess, "run", missing)
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        assert not gz_cli.world_call("outdoor", "wheel_slip/blocking", "gz.msgs.X", "a: 1")
+    assert "no gz binary" in caplog.text

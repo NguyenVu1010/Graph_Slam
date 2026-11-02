@@ -1,0 +1,12 @@
+# OUT-01 route in sim/worlds/outdoor.sdf (backlog L3 / S1): from the spawn east along y = -15
+# across the wet patch (x -20..-8) and the grass field (x 10..40) to x = 35, then back west along
+# y = -25 across both again, and north to the spawn. 170 m, about 220 s at 0.8 m/s with the 5 s
+# still start. waypoints: [x_m, y_m] in world; speed_mps: cruise target (+-10 % per 5 m, seeded).
+waypoints:
+  - [-40.0, -15.0]
+  - [35.0, -15.0]
+  - [35.0, -25.0]
+  - [-40.0, -25.0]
+  - [-40.0, -15.0]
+speed_mps: 0.8
+lookahead_m: 1.5

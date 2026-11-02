@@ -184,6 +184,11 @@ Calibration, 2026-10-27 UTC, gz-sim 8.15.0, ogre2, on the raw bags recorded for 
 | corridor (E-04) | 5-10 m | 0.0310 (10 119) | 0.0136 (10 506) | 0.0053 (4 616) | 0.0039 (43 952) |
 | corridor (E-04) | 10-20 m | - | - | - | 0.0035 (28 569) |
 | corridor (E-04) | 20-40 m | - | - | - | 0.0020 (6 572) |
+| outdoor (OUT-01) | 10-20 m | 0.0842 (3 069) | 0.0470 (1 239) | 0.0183 (120 593) | 0.0095 (183 993) |
+| outdoor (OUT-01) | 20-40 m | 0.1227 (74 286) | 0.0561 (285 882) | 0.0304 (463 025) | 0.0160 (503 251) |
+| outdoor (OUT-01) | 40-100 m | 0.1497 (13 431) | 0.0780 (75 606) | 0.0468 (72 840) | 0.0252 (36 801) |
+
+The outdoor rows were calibrated on 2026-11-02 UTC (same procedure) along the OUT-01 route.
 
 That is 6 warehouse cells and 14 corridor cells. The renderer error grows toward grazing
 incidence and with range, and differs between scenes at the same range and incidence. Earlier
@@ -234,6 +239,13 @@ The friction values are those of ADR-011 section 4; only the concrete value is a
 grass and wet are choices inside the quoted ranges. The gz WheelSlip compliance is the slip ratio
 per tangential / normal force ratio. It is set as the secant to the friction peak: the peak
 occurs near 20 % slip [1], so `c = 0.2 / mu` (a choice; the real slip curve is not linear).
+`sim/mss_sim/surface_node.py` (started by `sim.launch.py` when the sidecar has `surfaces`) feeds
+the ground truth to `surface.SurfaceCommander`, which sends the compliances of the patch under
+the body origin once per surface change (logged with its sim time; retried every 1 s of sim time
+until acknowledged). The request goes to the `UserCommands` service
+`/world/<world>/wheel_slip/blocking` through the `gz service` CLI (`mss_sim/gz_cli.py`, also used
+by `live_start`), so no Gazebo Python bindings are needed. It is a service, not a topic: a
+publisher on `/world/<world>/wheel_slip` has no subscriber in gz-sim 8.15.
 
 Sources (the page numbers are as given by the secondary source; not checked against the books):
 1. J. Y. Wong, *Theory of Ground Vehicles*, 2nd ed., Wiley, 1993, p. 26 (peak and sliding
@@ -244,6 +256,76 @@ Sources (the page numbers are as given by the secondary source; not checked agai
 3. R. K. Noon, *Engineering Analysis of Vehicular Accidents*, CRC Press, 1994 (wet grassy field
    0.20), as cited by P. Cenek et al., "Frictional characteristics of roadside grass types",
    Australasian Road Safety conference paper (saferroadsconference.com).
+
+**Limit (finding, backlog L22).** Gazebo contact has no rolling resistance and the casters are
+frictionless, so a wheel carries tangential force only while the robot accelerates or turns.
+Slip compliance acts on that force alone: on straight driving at constant speed it adds no slip.
+ADR-011's grass target (3-6 % odometry drift) is therefore not reached. Quoted rolling
+resistance [2] is 0.013 on concrete, 0.05 on an unpaved road and 0.10-0.35 in a field (no grass
+value is given; a grass field would sit in the field range); modelling it needs a drag force
+on the body per surface (e.g. the `ApplyLinkWrench` system), which is not added here.
+
+OUT-01 (`sim/scenarios/OUT-01.yaml`, `config/sim/outdoor.yaml`: GNSS and wheel odometry on):
+170 m at 0.8 m/s, east along y = -15 across the wet patch and the grass, back along y = -25, and
+north to the spawn. Recorded 2026-11-02 UTC (seed 42, gz-sim 8.15, ogre2): 234 s sim in 125 s
+wall (real-time factor 1.87), raw bag 199 MB in 10 files; a second slip recording through the
+`gz service` CLI (234 s in 122 s, noise report exit 0) shows how well a slip run reproduces.
+A control recording with the compliances not applied (the first run, before the service fix)
+differs in the surface commands and in Gazebo's own nondeterminism. Noise report with the outdoor render table: exit 0 (12 gated LiDAR cells; GNSS sigma_h
+1.016 / sigma_v 1.879 m; odometry drift 1.82 % of 168.7 m, yaw 4.60 deg/rev).
+
+Wheel-odometry residuals against ground truth, per `/wheel/odom` message (`r_v` speed,
+`r_lat` lateral body velocity the odometry assumes 0, `r_w` yaw rate; RMS, m/s and rad/s):
+
+| Surface, phase | n | slip run 1: r_v / r_lat / r_w | slip run 2 | control |
+| --- | --- | --- | --- | --- |
+| concrete, straight | 5295 | 0.0128 / 0.0001 / 0.0086 | 0.0128 / 0.0001 / 0.0088 | 0.0129 / 0.0001 / 0.0033 |
+| concrete, turns | 190 | 0.0126 / 0.0038 / 0.0130 | 0.0125 / 0.0038 / 0.0123 | 0.0124 / 0.0038 / 0.0138 |
+| grass, straight | 3320 | 0.0131 / 0.0003 / 0.0099 | 0.0131 / 0.0003 / 0.0098 | 0.0131 / 0.0001 / 0.0072 |
+| grass, turns | 372 | 0.0132 / **0.0096** / 0.0201 | 0.0132 / **0.0096** / 0.0198 | 0.0131 / 0.0038 / 0.0126 |
+| wet, straight | 1498 | 0.0133 / 0.0000 / 0.0098 | 0.0133 / 0.0000 / 0.0099 | 0.0134 / 0.0000 / 0.0000 |
+
+What the slip shows, and what is noise:
+- **Lateral residual (the slip evidence).** In the grass turns it is 2.5x the concrete turns of
+  the same run (0.0096 against 0.0038 m/s, max 0.016 m/s), in both slip runs, and 2.5x the
+  control's grass turns.
+- **Yaw rate: not evidence.** On straight driving the yaw-rate residual is the encoder
+  quantisation. One tick on one wheel in a 20 ms window is 2 pi 0.101 / 4096 / 0.02 / 0.399 =
+  0.0194 rad/s (believed radius 0.101 m and track 0.399 m, `odom.ticks_per_rev` 4096 and the
+  50 Hz `odom.rate_hz` of `sim/noise/default.yaml`), and the ground-truth yaw rate there is exactly 0 (on the wet straight in 100 %
+  of the messages: the robot drives straight with no rotation in DART). So the RMS is
+  0.0194 sqrt(p), with p the share of windows where the two wheels differ by a tick: p = 0.26
+  on the wet straight of run 2 gives 0.0098, as measured. In the control's wet straight p = 0,
+  hence exactly 0.0000. The two slip runs reproduce each other to 2 % (grass turns 0.0201 /
+  0.0198, concrete straights 0.0086 / 0.0088). The control differs even on the concrete
+  straights (0.0033), where the compliance is 0 in both configurations, so the yaw-rate
+  difference in the grass turns (0.020 against 0.013) cannot be attributed to grass slip; it is
+  dominated by encoder quantisation.
+- **Speed.** The speed residual and the travelled-distance error (+1.0 % on every surface, the
+  believed wheel radius) do not change. The speed NIS (declared 0.02 m/s) stays near 0.43, with
+  0.1-0.3 % of messages above the 1-DoF 0.95 bound (3.84).
+
+The pipeline has no chi-square gate on wheel-odometry factors (only the time check), so slip
+enters the graph unflagged (`n_odom_rejected` 0).
+
+Pipeline (`run_integration.py --bridged`, then `mss_bench` with one overlay change; ATE after
+SE(3) alignment, 2333 pairs; return = the start revisited after 216.7 s, relative displacement
+estimate vs truth):
+
+| Run | ATE [m] | horiz. / vert. RMS [m] | return horiz. / vert. [m] | GNSS factors | GNSS chi-square rejections | p50 / p95 / max scan [ms] |
+| --- | --- | --- | --- | --- | --- | --- |
+| slip, shipped | 0.375 | 0.112 / 0.358 | 0.326 / 0.368 | 959 | 80 of 1177 | 9.4 / 22.3 / 48.3 |
+| slip, `imu.init_level_start` | 0.208 | 0.101 / 0.181 | 0.319 / 0.356 | 976 | 57 | 8.5 / 19.1 / 27.3 |
+| slip, level start, wheel off | 0.234 | 0.092 / 0.216 | 0.313 / 0.392 | 1038 | 57 | 8.5 / 20.9 / 40.9 |
+| control, shipped | 0.395 | 0.107 / 0.380 | 0.277 / 0.392 | 957 | 74 of 1167 | 8.4 / 19.0 / 30.7 |
+| control, level start | 0.207 | 0.098 / 0.183 | 0.299 / 0.380 | 971 | 55 | 8.3 / 18.7 / 23.9 |
+| control, level start, wheel off | 0.297 | 0.080 / 0.286 | 0.294 / 0.347 | 981 | 53 | 8.2 / 20.0 / 29.3 |
+
+The estimator handles this much slip: horizontal ATE moves by 0.003-0.012 m. The vertical part
+is the IMU-bias tilt of S2 (halved by the level start) and the GNSS vertical noise. Wheel odometry
+makes the horizontal error 0.01-0.02 m larger on this route with or without slip. The scan p95
+(19-22 ms) is about 2.5x the warehouse's; the bench numbers are from the desktop under WSL. The
+control bench run exits 3 (3 scans dropped by the bench queue). These are not baselines.
 
 ### Máy bàn
 
