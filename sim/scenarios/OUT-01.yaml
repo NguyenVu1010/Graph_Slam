@@ -1,0 +1,22 @@
+# OUT-01: outdoor wheel slip (backlog L3 / S1). Concrete road, wet patch and grass field with
+# their WheelSlip compliances (sim/worlds/outdoor.planes.yaml `surfaces`), GNSS on (open sky) and
+# wheel odometry on. Not an E-xx test: it shows how slip reaches the wheel-odometry residuals.
+id: OUT-01
+world: outdoor
+profile: sim/noise/default.yaml
+pipeline_config: config/sim/outdoor.yaml
+trajectory: sim/trajectories/outdoor_slip.yaml
+seed: 42
+duration_s: 230
+origin_lla: [21.0278, 105.8342, 12.0]  # lat_deg, lon_deg, alt_m; = outdoor.sdf spherical_coordinates
+gnss:
+  - {mode: nominal, t_start_s: 0, t_end_s: 230}
+gnss_zones: []
+topics:
+  - /lidar/points
+  - /imu/data
+  - /gnss/fix
+  - /wheel/odom
+  - /ground_truth
+  - /tf_static
+  - /clock

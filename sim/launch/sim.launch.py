@@ -8,7 +8,8 @@ Starts the gz server (``ros_gz_sim``, ``-s -r --headless-rendering`` by default,
 scenario seed), spawns the generated robot (``tools/gen_sim_assets.py``) at the world's ``spawn``
 pose (``sim/worlds/<world>.planes.yaml``), runs ``ros_gz_bridge parameter_bridge`` with the
 generated ``bridge.yaml``, the ``/tf_static`` publisher (``python3 -m mss_sim.tf_static``) and
-the route driver (``python3 -m mss_sim.driver``). Every node uses sim time.
+the route driver (``python3 -m mss_sim.driver``) and, when the sidecar declares ``surfaces``,
+the WheelSlip surface node (``python3 -m mss_sim.surface_node``). Every node uses sim time.
 
 ``paused:=true`` starts the server paused (no ``-r``) so a recorder can subscribe first;
 ``tools/record_scenario.sh`` then unpauses through the world control service. ``world``
@@ -183,6 +184,23 @@ def _setup(context: LaunchContext) -> list:
             additional_env={"PYTHONPATH": env_path},
         )
     )
+    if "surfaces" in side:  # outdoor ground patches: WheelSlip by surface (mss_sim.surface)
+        actions.append(
+            ExecuteProcess(
+                cmd=[
+                    "python3",
+                    "-m",
+                    "mss_sim.surface_node",
+                    str(world_sdf.with_suffix(".planes.yaml")),
+                    world,
+                    meta["model_name"],
+                    *ros_sim_time,
+                ],
+                name="surface",
+                output="screen",
+                additional_env={"PYTHONPATH": env_path},
+            )
+        )
     if _flag(context, "driver"):
         actions.append(
             ExecuteProcess(
