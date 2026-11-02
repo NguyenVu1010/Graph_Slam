@@ -239,3 +239,9 @@ Mục 1 đã định `sim_bridge` "được bọc thành node live chỉ để x
 **Quyết định.** Mọi kịch bản mô phỏng dùng `p_b_g = [-0.12, 0.06, 0.15]` m: |p| = 0,201 m, ăng-ten nằm trên mặt hộp thân (z = 0,15 m trong b), lệch sau và trái IMU, ba thành phần khác 0 để tay đòn vẫn không tầm thường theo mọi trục. Robot sim (SDF, `/tf_static`) và `frames.p_b_g_m` của pipeline cùng lấy từ overlay (mục 5), nên vẫn khớp nhau (SIM-03). `run_integration.py` truyền tay đòn của overlay cho bộ sinh tổng hợp, nên dữ liệu tổng hợp E-01..E-03 không thể lệch overlay. `config/default.yaml` (rig thật) không đổi: giá trị thật phải đo trên robot.
 
 **Hệ quả.** Đầu ra E-01..E-03 (dữ liệu tổng hợp của CI) đổi vì factor GNSS dùng tay đòn: ATE E-01 / E-02 / E-03 từ 0,002160 / 0,002160 / 0,002174 m xuống 0,002158 / 0,002158 / 0,002163 m (cùng bản build, 2026-11-02; `est.tum` đổi, E-02 vẫn giống hệt byte E-01); p95 5,9–6,4 ms so với baseline 8,04 ms. Chủ dự án quyết định không làm PR `baseline-update` (2026-11-02). `eval/baselines.json` không đổi. Bag Gazebo cũ (E-01, E-04, E-07) ghi với tay đòn cũ; `run_integration.py --bridged` vẫn chạy với overlay mới nhưng ăng-ten thật trong bag là vị trí cũ, nên phải ghi lại trước khi trích số.
+
+## Sửa đổi 2026-11-02 (2): world ngoài trời, trượt bánh theo bề mặt (backlog L3, S1)
+
+**Quyết định.**
+
+1. *World `outdoor`* (mục 5): 120 × 120 m mặt đất phẳng ghép từ bảy tấm hộp không chồng nhau (mặt trên z = 0): bê tông µ = 0,8, bãi cỏ 30 × 30 m µ = 0,5, vũng ướt 12 × 30 m µ = 0,3 (mục 4); ba toà nhà, hàng cây, hàng rào, cọc. Khác thiết kế: không có heightmap ±5 cm, gờ 3 cm và cổng hầm 25 m (công cụ kiểm world chỉ hiểu hộp thẳng trục; E-05/E-06 cần thêm sau), không có world `loop` riêng: vòng E-07 sẽ là một tuyến trong `outdoor`, đúng mô tả "vòng quanh khối nhà trong `outdoor`".

@@ -52,8 +52,9 @@ What lives where:
   overlay's lever arm to the synthetic generator too.
 - `sim/worlds/<world>.sdf`: hand-written worlds (DART, 1 ms, no real-time lock, floor mu 0.8):
   `warehouse` (40 x 25 m, 6 m ceiling, model `shelf_run_15m`), `corridor` (60 x 2.5 m,
-  3.0 m ceiling, 6 x 6 m end room). The world frame is the ENU frame (spherical coordinates =
-  the scenario `origin_lla`, tested).
+  3.0 m ceiling, 6 x 6 m end room), `outdoor` (120 x 120 m open ground, buildings, tree row,
+  fence, bollards, grass and wet patches; see "Outdoor world and wheel slip"). The world frame
+  is the ENU frame (spherical coordinates = the scenario `origin_lla`, tested).
 - `sim/worlds/<world>.planes.yaml`: sidecar with the reference planes `n . p = d` (world, m)
   that `noise_report --planes` reads, the robot `spawn` pose and `enu_origin_w_m` (always 0).
   `python tools/gen_sim_assets.py --check-worlds` checks every plane lies on a box face (1 mm).
@@ -212,6 +213,14 @@ every route keeps at least 0.5 m between this footprint and the world boxes (tes
 with the true kinematics, straight segments read 0.00 % before and after; turns read
 -35.87 deg/rev before and +0.00 deg/rev after. WheelSlip (compliance 0) adds no slip, and it
 can only add slip.
+
+### Outdoor world and wheel slip
+
+Backlog L3 / S1, ADR-011 amendment 2026-11-02. `sim/worlds/outdoor.sdf`: 120 x 120 m of flat
+ground in seven non-overlapping tiles (top z = 0): concrete, a 30 x 30 m grass field
+(x 10..40, y -40..-10) and a 12 x 30 m wet patch (x -20..-8, same y). Structure: three
+buildings (9-15 m high), a row of eleven 4 m trunks along y = -5 (x = -40..40, every 8 m), a
+100 m fence (1.2 m) at y = -50 and bollards along x = +-52. No ceiling: rays that miss everything return nothing.
 
 ### Máy bàn
 
