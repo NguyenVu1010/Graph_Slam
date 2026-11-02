@@ -518,11 +518,11 @@ and re-syncs the front end as after a new loop (section 5).
 | B-03 outlier loop | Cauchy: drag < 0.1 m | removed: drag < 1e-6 m (backend); PCM removes it once two true loops agree |
 
 Whole estimator (desktop WSL, median of 5 interleaved runs, loops on; ADR-026 amendment for the
-table): E-01 and E-07 (re-recorded after #41) give the same `est.tum` as before ADR-028 (PCM
+table): E-01 and E-07 (the warehouse three-lap scene, now E-07W; re-recorded after #41) give the same `est.tum` as before ADR-028 (PCM
 selects every loop: 6 and 16, none removed, no false loop). With the latency bounds of section 10
 the ambiguity check costs nothing measurable: max per scan on the loop keyframes 44.8 ms against
-43.3 ms with the check off (E-01) and 66.5 against 73.8 ms (E-07); before the bounds it was 73 and
-106 ms. Loops-on max against loops-off max: 1.37 x (E-01) and 1.29 x (E-07), as at e946ee9 (1.37,
+43.3 ms with the check off (E-01) and 66.5 against 73.8 ms (E-07W); before the bounds it was 73 and
+106 ms. Loops-on max against loops-off max: 1.37 x (E-01) and 1.29 x (E-07W), as at e946ee9 (1.37,
 1.37): the rest is the loop's own cost (map rebuild, iSAM2 updates; C1-15). PCM itself costs 0.08
 to 0.12 ms per proposed loop (at most 0.28 ms with 64 loops held, 61 to 1000 keyframes), the
 odometry prefix update 0.2 to 0.3 us per keyframe.

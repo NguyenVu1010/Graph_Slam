@@ -96,11 +96,11 @@ Giới hạn đã đo 1 (review C1, I-1): trong hành lang có cặp cột giố
 | E-01 tổng hợp | nhánh, loop tắt | 7,58 | 11,2 | 14,6 | 32,6 | – |
 | E-01 tổng hợp | nhánh, loop bật (nhập nhằng + PCM) | 7,77 | 12,3 | 28,8 | 44,8 | 6 / 61 |
 | E-01 tổng hợp | nhánh, loop bật, không kiểm tra nhập nhằng | 7,51 | 11,6 | 30,2 | 43,3 | 6 / 61 |
-| E-07 Gazebo (ghi lại ở nhánh, sau #41) | e946ee9, loop tắt | 13,7 | 25,9 | 35,0 | 51,2 | – |
-| E-07 Gazebo | e946ee9, loop bật | 12,8 | 22,4 | 35,3 | 70,3 | 16 / 55 |
-| E-07 Gazebo | nhánh, loop tắt | 13,9 | 26,1 | 34,4 | 51,6 | – |
-| E-07 Gazebo | nhánh, loop bật (nhập nhằng + PCM) | 14,0 | 24,3 | 39,5 | 66,5 | 16 / 55 |
-| E-07 Gazebo | nhánh, loop bật, không kiểm tra nhập nhằng | 12,7 | 23,6 | 36,1 | 73,8 | 16 / 55 |
+| E-07 Gazebo, cảnh kho (nay là E-07W; ghi lại ở nhánh, sau #41) | e946ee9, loop tắt | 13,7 | 25,9 | 35,0 | 51,2 | – |
+| E-07W (kho) | e946ee9, loop bật | 12,8 | 22,4 | 35,3 | 70,3 | 16 / 55 |
+| E-07W (kho) | nhánh, loop tắt | 13,9 | 26,1 | 34,4 | 51,6 | – |
+| E-07W (kho) | nhánh, loop bật (nhập nhằng + PCM) | 14,0 | 24,3 | 39,5 | 66,5 | 16 / 55 |
+| E-07W (kho) | nhánh, loop bật, không kiểm tra nhập nhằng | 12,7 | 23,6 | 36,1 | 73,8 | 16 / 55 |
 
 Máy chịu tải của tác tử khác lúc đo (p50 loop tắt 7,6 ms trên E-01, so với 4,6 ms lúc yên), nên chỉ so trong cùng lượt xen kẽ. Với ba giới hạn của review H3 I-2 (lọc trước bằng độ khớp, giới hạn vòng ICP, tạm dừng sau nhập nhằng), kiểm tra nhập nhằng không còn chi phí đo được: max ở keyframe có loop 44,8 ms so với 43,3 ms khi tắt kiểm tra (E-01), 66,5 so với 73,8 ms (E-07); trước các giới hạn đó là 73 và 106 ms. Max khi bật loop so với khi tắt loop: 1,37 lần (E-01) và 1,29 lần (E-07), bằng e946ee9 (1,37 và 1,37): phần còn lại là chi phí có từ trước của một loop (dựng lại bản đồ, cập nhật iSAM2; C1-15). PCM chỉ tốn 0,08 đến 0,12 ms mỗi loop đề xuất (tối đa 0,28 ms với 64 loop, 61 đến 1000 keyframe). Cờ tắt: `est.tum` E-01..E-03 và E-07 trùng md5 với e946ee9. Cờ bật: `est.tum` E-01 và E-07 trùng md5 với e946ee9 và với nhánh khi tắt kiểm tra nhập nhằng (không loop đúng nào bị loại, PCM chọn mọi loop; E-07: 16 loop, 0 sai, sai số lớn nhất 3,5 cm / 0,11°; đầu–cuối ngang 1,2 cm). Pi 5 chưa đo (C1-5, C1-15).
 
@@ -129,7 +129,7 @@ Máy chịu tải của tác tử khác lúc đo (p50 loop tắt 7,6 ms trên E-
 ## Hệ quả
 
 - Với cờ tắt không có gì đổi: `LoopDetector` không kiểm tra, không dự trữ; `est.tum` của E-01..E-03 trùng md5 với main (mô tả PR).
-- **E-07 chưa đạt trên Gazebo.** Tiêu chí của Test_CI_CD ("sai số đầu–cuối giảm khi bật loop") không đạt trên cảnh kho hàng: sai số đầu–cuối 0,078 m khi tắt, 0,081 m khi bật. Hiệu quả chỉ được chứng minh trên dữ liệu tổng hợp. Bag E-07 ghi trước #41 (đổi khung thân) nên cần ghi lại (backlog C1-4). Chi tiết: E-07 (Gazebo kho hàng, ba vòng 72 m, GNSS tắt, seed 42): front-end gần như không trôi theo phương ngang, nên loop có ít việc để sửa. Loop tắt / bật: ATE 0,0858 / 0,0852 m (chi phối bởi độ lệch z 8 cm đã biết, mục S2), sai số ngang ở điểm cuối 4,1 / 2,3 cm; với `map.window_keyframes` 10 (cửa sổ không phủ một vòng): 3,6 / 1,1 cm. 55 lần tìm, 16 loop nhận, 0 bị loại, 0 false loop (so với ground truth: sai số lớn nhất 3,4 cm và 0,10°). Bản đồ hai trường hợp đều không bị đôi. Trôi tổng hợp (`LoopComponent.TwoLapDriftClosedByLoops`, hành lang cột, 151 keyframe): sai số đầu-cuối 1,21 m khi tắt, 0,08 m khi bật, 4 loop, 0 false.
+- **E-07 chưa đạt trên Gazebo** (cảnh kho ba vòng, nay là kịch bản E-07W; từ 2026-11-02 E-07 là vòng ngoài trời, số ở `sim/README.md` "E-07 on the outdoor loop"). Tiêu chí của Test_CI_CD ("sai số đầu–cuối giảm khi bật loop") không đạt trên cảnh kho hàng: sai số đầu–cuối 0,078 m khi tắt, 0,081 m khi bật. Hiệu quả chỉ được chứng minh trên dữ liệu tổng hợp. Bag E-07 ghi trước #41 (đổi khung thân) nên cần ghi lại (backlog C1-4). Chi tiết: E-07 (Gazebo kho hàng, ba vòng 72 m, GNSS tắt, seed 42): front-end gần như không trôi theo phương ngang, nên loop có ít việc để sửa. Loop tắt / bật: ATE 0,0858 / 0,0852 m (chi phối bởi độ lệch z 8 cm đã biết, mục S2), sai số ngang ở điểm cuối 4,1 / 2,3 cm; với `map.window_keyframes` 10 (cửa sổ không phủ một vòng): 3,6 / 1,1 cm. 55 lần tìm, 16 loop nhận, 0 bị loại, 0 false loop (so với ground truth: sai số lớn nhất 3,4 cm và 0,10°). Bản đồ hai trường hợp đều không bị đôi. Trôi tổng hợp (`LoopComponent.TwoLapDriftClosedByLoops`, hành lang cột, 151 keyframe): sai số đầu-cuối 1,21 m khi tắt, 0,08 m khi bật, 4 loop, 0 false.
 - Hộp E-01 tổng hợp (vòng tròn 1,67 m, 60 s), cờ bật: 6 loop, 0 false, ATE 2,183 lên 2,286 mm (không có trôi để sửa; sàn hiệp phương sai 5 cm cho phép loop kéo trong khoảng mm). E-03: 5 loop, 2,215 mm.
 - Bộ đếm mới: `Estimator::Stats::n_loop_searches`, `n_loops_accepted`, `n_loops_rejected` (cũng trong `bench.json`). Mỗi loop được nhận ghi một dòng log `loop closure accepted: j .. t_ns .. i .. t_ns .. dp_m .. dyaw_rad ..`, dùng để đối chiếu với ground truth.
 - Hợp đồng đổi (bổ sung): `loop_detector.hpp` (API mới; constructor giữ chỗ `LoopDetector(const LoopConfig&)` được giữ, chỉ kiểm tra cấu hình), `config.hpp` của loop (khoá mới), `estimator.hpp` (ba bộ đếm). `graph.hpp` không đổi.

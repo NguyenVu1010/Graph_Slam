@@ -70,7 +70,7 @@ Số đo: `docs/derivations/vertical_drift_study.md` mục 5.
 - Cờ tắt: đầu ra không đổi (`est.tum` của E-01..E-03 trùng md5 với main 9171c48). Không đụng
   đường nóng: bộ khởi tạo chỉ chạy trước keyframe đầu.
 - Cờ bật, trên bản ghi Gazebo (3 seed mỗi kịch bản): sai số đứng cuối E-04 0,30 đến 0,96 m
-  xuống 0,00 đến 0,03 m; ATE E-01 0,035 đến 0,095 m xuống 0,014 đến 0,016 m; E-07 0,087 m
+  xuống 0,00 đến 0,03 m; ATE E-01 0,035 đến 0,095 m xuống 0,014 đến 0,016 m; E-07 (cảnh kho, nay là E-07W) 0,087 m
   xuống 0,015 m. Kết quả trùng với phép trừ bias thật (oracle) trong 1,5 cm.
 - Dữ liệu tổng hợp (không có bias): 15 seed ghép cặp, mọi khoảng tin cậy chứa 0. Bốn test
   thành phần hành lang với seed cố định đổi kết quả khi cờ là mặc định (backlog S5): đó là

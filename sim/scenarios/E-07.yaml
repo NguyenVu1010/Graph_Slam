@@ -1,16 +1,19 @@
-# E-07: long loop for loop closure (Test_CI_CD.md E-07, ADR-026): the warehouse lap driven
-# three times. The pipeline config turns GNSS off (config/sim/warehouse_e07.yaml), so the
-# drift that loop closure must remove is not hidden by GNSS.
+# E-07: long loop for loop closure (Test_CI_CD.md E-07, ADR-026; ADR-011 section 5 `loop`): one
+# lap around the building block of the outdoor world plus a 30 m revisit of the start (backlog
+# C1-4, C1-14; the warehouse three-lap route, which drifted only 4 cm, is E-07W). GNSS off in both overlays, so
+# loop closure alone must remove the drift; the loops_on variant turns loop closure on (PCM on).
 id: E-07
-world: warehouse
+world: outdoor
 profile: sim/noise/default.yaml
-pipeline_config: config/sim/warehouse_e07.yaml
-trajectory: sim/trajectories/warehouse_3laps.yaml
+pipeline_config: config/sim/outdoor_e07.yaml
+pipeline_config_variants:
+  loops_on: config/sim/outdoor_e07_loops_on.yaml
+trajectory: sim/trajectories/outdoor_loop.yaml
 seed: 42
-duration_s: 170
-origin_lla: [21.0278, 105.8342, 12.0]  # lat_deg, lon_deg, alt_m
+duration_s: 450
+origin_lla: [21.0278, 105.8342, 12.0]  # lat_deg, lon_deg, alt_m; = outdoor.sdf spherical_coordinates
 gnss:
-  - {mode: nominal, t_start_s: 0, t_end_s: 170}
+  - {mode: nominal, t_start_s: 0, t_end_s: 450}
 gnss_zones: []
 topics:
   - /lidar/points

@@ -1,0 +1,23 @@
+# E-07 route in sim/worlds/outdoor.sdf (loop closure, ADR-026; backlog C1-4, C1-14): one lap
+# around the building block, then 30 m driven again past the start so the start is revisited:
+# polyline 314.6 m to the start and 344.6 m in all; driven with corner cutting about 312 m and
+# 342 m. East along y = -15 across the wet patch and the grass field; north along x = 45, a
+# feature-poor stretch (buildings 20 m away, small bollards); west along y = 46..50 as a slalom
+# (turn-heavy); south along x = -45; east past the spawn to x = -10. About 440 s at 0.8 m/s with
+# the 5 s still start. Same schema as the other routes.
+waypoints:
+  - [-40.0, -15.0]
+  - [45.0, -15.0]
+  - [45.0, 50.0]
+  - [35.0, 50.0]
+  - [25.0, 46.0]
+  - [15.0, 50.0]
+  - [5.0, 46.0]
+  - [-5.0, 50.0]
+  - [-15.0, 46.0]
+  - [-25.0, 50.0]
+  - [-45.0, 50.0]
+  - [-45.0, -15.0]
+  - [-10.0, -15.0]
+speed_mps: 0.8
+lookahead_m: 1.5
