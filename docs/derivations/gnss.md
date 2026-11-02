@@ -627,6 +627,8 @@ at 2 cm, 0.50 deg at 10 Hz; with 0.4 m of error correlated over 5 s (plus 0.3 m 
 (test `GnssTrackYaw2b.InPlaceRotationYawObservability`, 2000 runs each). The brief's
 `sigma / (|l| sqrt(N / 2))` overstates the white case by sqrt(2).
 
+> Note 2026-11-02 (backlog L2): the sim scenes' lever arm changed from `[-0.20, 0.10, 0.60]` (0.224 m horizontal) to `[-0.12, 0.06, 0.15]` m (0.134 m horizontal). The studies in this file used 0.22 m (the C++ `BoxWorldParams` fixtures still do, so their results stand for them). For the new scene default the results that depend on the horizontal lever arm move the unfavourable way: for the same fix noise and number of fixes, `sigma_yaw = sigma / (|l| sqrt N)` is 0.224 / 0.134 = 1.7 times larger; the same yaw accuracy needs 1.7^2 = 2.8 times more fixes in the rotation fit; a quoted length `L = |l| / sigma_yaw` must be recomputed from the new `|l|` rather than rescaled.
+
 ### 5.2 Residual limits: causes and tolerances (root-cause study)
 
 Study: `gnss_fusion_study.md` section 16.13. For each residual limit of design 2b the noise

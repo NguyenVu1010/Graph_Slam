@@ -130,7 +130,7 @@ def test_lidar_and_gnss_sensors(model: ET.Element) -> None:
     assert _f(lidar, "lidar/noise/stddev") == prof.lidar.range_sigma_m
     gnss = _sensor(model, "navsat")
     assert _f(gnss, "update_rate") == prof.gnss.rate_hz == 5.0
-    assert _floats(gnss.find("pose"))[:3] == [-0.20, 0.10, 0.60]
+    assert _floats(gnss.find("pose"))[:3] == [-0.12, 0.06, 0.15]
     assert gnss.find("navsat") is None  # no noise: the offline degrader adds it
     assert lidar.findtext("gz_frame_id") == "lidar_link"
     assert gnss.findtext("gz_frame_id") == "gnss_link"
@@ -192,7 +192,7 @@ def test_tf_static_transforms(assets: dict[str, Path]) -> None:
     assert q[1] == pytest.approx(0.01745241, abs=1e-6) and q[3] == pytest.approx(
         0.9998477, abs=1e-6
     )
-    assert by_child["gnss_link"]["translation_m"] == [-0.2, 0.1, 0.6]
+    assert by_child["gnss_link"]["translation_m"] == [-0.12, 0.06, 0.15]
     assert by_child["gnss_link"]["quaternion_xyzw"] == [0.0, 0.0, 0.0, 1.0]
 
 

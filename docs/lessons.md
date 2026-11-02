@@ -397,6 +397,8 @@ Format of an entry: **symptom** → cause → fix → rule.
     - a skid held through a one-way turn: 5 deg with the wheel path. Gyro and odometer cannot
       see the sideslip; the front-end path removes it where the LiDAR observes the axis.
 
+> Note 2026-11-02 (backlog L2): the sim scenes' horizontal lever arm changed from 0.224 m to 0.134 m; the numbers here used 0.22 m. How the lever-arm-dependent results move (sigma_yaw 1.7 times larger for the same fixes): `docs/derivations/gnss.md`, the note under "Yaw from rotating in place".
+
     What remains after the algorithm fixes, with its own criteria:
     - Missing wheel readings, up to 20 %. This is restart distance, not the 10 m criterion: after
       a mismatch the 10 m restart window comes first, then a median 10.9 m and a max 21.9 m.

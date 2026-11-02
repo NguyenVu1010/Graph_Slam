@@ -47,6 +47,9 @@ What lives where:
   extrinsics (`T_b_l`, `p_b_g`) and frame names (`imu_link`, `lidar_link`, `gnss_link`, `map`)
   from the scenario's pipeline overlay. The model frame is the body frame `b` (IMU) at axle
   height; `OdometryPublisher` on it gives `/ground_truth` at 200 Hz.
+  The GNSS antenna sits at `p_b_g = [-0.12, 0.06, 0.15]` m (0.201 m, on top of the body box)
+  in every overlay (ADR-011 amendment 2026-11-02, backlog L2); `run_integration.py` passes the
+  overlay's lever arm to the synthetic generator too.
 - `sim/worlds/<world>.sdf`: hand-written worlds (DART, 1 ms, no real-time lock, floor mu 0.8):
   `warehouse` (40 x 25 m, 6 m ceiling, model `shelf_run_15m`), `corridor` (60 x 2.5 m,
   3.0 m ceiling, 6 x 6 m end room). The world frame is the ENU frame (spherical coordinates =

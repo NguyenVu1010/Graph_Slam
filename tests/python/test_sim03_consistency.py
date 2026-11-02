@@ -11,7 +11,7 @@ from mss_sim.scenario import load_scenario
 REPO = Path(__file__).resolve().parents[2]
 ADR_T_B_L_TRANSLATION_M = [0.10, 0.0, 0.50]
 ADR_T_B_L_QUATERNION_WXYZ = [0.99984770, 0.0, 0.01745241, 0.0]
-ADR_P_B_G_M = [-0.20, 0.10, 0.60]
+ADR_P_B_G_M = [-0.12, 0.06, 0.15]
 
 
 def pairs(prof: NoiseProfile) -> list[tuple[str, float]]:
@@ -95,3 +95,10 @@ def test_e04_has_a_degeneracy_on_variant() -> None:
     assert get(on, "degeneracy.enabled") is True
     base["degeneracy"]["enabled"] = True
     assert base == on  # the two runs differ only by the flag
+
+
+def test_synthetic_antenna_matches_overlays() -> None:
+    """The synthetic generator's default lever arm is the overlays' one (backlog L2)."""
+    from mss_sim.synth import P_B_G
+
+    assert P_B_G.tolist() == ADR_P_B_G_M

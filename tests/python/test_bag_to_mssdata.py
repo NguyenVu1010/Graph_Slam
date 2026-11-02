@@ -74,7 +74,7 @@ def test_index_keys_and_counts(
         "count": bridged_bag[1].n_msgs["/imu/data"],
     }
     assert set(index["T_b_l"]) == {"translation_m", "quaternion_wxyz"}
-    assert index["p_b_g_m"] == [-0.20, 0.10, 0.60]
+    assert index["p_b_g_m"] == [-0.12, 0.06, 0.15]
     assert index["body_frame"] == "imu_link"
     assert index["lidar_frame"] == "lidar_link"
     assert index["gnss_cov_filled_from_sigma"] is False

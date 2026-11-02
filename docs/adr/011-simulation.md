@@ -49,7 +49,7 @@ Gazebo Harmonic ──ros_gz_bridge──▶ topic thô ──▶ sim_bridge (rc
 | Giới hạn | v ≤ 1.0 m/s, a ≤ 0.5 m/s², ω ≤ 1.0 rad/s | đặt trong bộ điều khiển, để vận tốc thật trễ so với lệnh như thật |
 | LiDAR `l` | 16 tia, 360°, dọc ±15°, 0.5–100 m, 10 Hz, 720 mẫu ngang (0.5°) | `gpu_lidar`; đặt cao 0.5 m, lệch IMU 0.10 m theo x, nghiêng 2° quanh y để `T_b_l` không tầm thường |
 | IMU `b` | 200 Hz, tại gốc body | sensor `imu` của Gazebo |
-| GNSS `g` | 5 Hz, anten lệch `p_b_g = [-0.20, 0.10, 0.60]` m | sensor `navsat`, gốc ENU tại điểm khởi hành của world |
+| GNSS `g` | 5 Hz, anten lệch `p_b_g = [-0.12, 0.06, 0.15]` m (dài 0,2 m; trước 2026-11-02 là `[-0.20, 0.10, 0.60]`, xem sửa đổi cuối) | sensor `navsat`, gốc ENU tại điểm khởi hành của world |
 | Encoder | 4096 xung/vòng mỗi bánh | lượng tử hoá trong `sim_bridge` |
 | Ground truth | pose và twist của body ở 200 Hz | plugin `OdometryPublisher` trên link IMU, không nhiễu |
 
@@ -231,3 +231,11 @@ Mục 1 đã định `sim_bridge` "được bọc thành node live chỉ để x
 **Đo trên máy bàn** (WSL, 12 lõi, 10 GB RAM, gz-sim 8.15, ogre2; E-01 trọn 61 s sim, 2026-10-29): `rtf` 1,0 giữ được, đo 0,983 không GUI, 0,934 khi có GUI Gazebo và RViz; node không mất message nào trên cả bốn topic (nhận đúng số node nhiễu phát); ATE `/mss/path` so với `/ground_truth` 0,097 m (không GUI) và 0,102 m (có GUI), cùng cỡ bench trên bag Gazebo (0,095 m). Số chi tiết, CPU và RAM: `sim/README.md` mục "Live".
 
 **Hệ quả.** Một lệnh `ros2 launch mss_ros2 mss_live.launch.py scenario:=sim/scenarios/E-01.yaml rviz:=true` chạy toàn bộ chuỗi trực tiếp. Live không thay thế bag: số dùng để so sánh và baseline vẫn lấy từ bag và bridge offline.
+
+## Sửa đổi 2026-11-02: tay đòn ăng-ten GNSS 0,2 m (backlog L2)
+
+**Bối cảnh.** Nền tảng của chủ dự án dùng GNSS thường (không RTK) với tay đòn ăng-ten khoảng 0,2 m. Mục 2 đặt `p_b_g = [-0.20, 0.10, 0.60]` m (|p| = 0,64 m, ngang 0,22 m, ăng-ten trên cột cao hơn LiDAR). Trước sửa đổi: cả bốn overlay `config/sim/*.yaml` (warehouse, warehouse_e07, corridor, corridor_degeneracy_on) và bộ sinh tổng hợp `sim/mss_sim/synth.py` dùng giá trị này; `config/default.yaml` (rig thật) dùng `[0, 0, 0]`.
+
+**Quyết định.** Mọi kịch bản mô phỏng dùng `p_b_g = [-0.12, 0.06, 0.15]` m: |p| = 0,201 m, ăng-ten nằm trên mặt hộp thân (z = 0,15 m trong b), lệch sau và trái IMU, ba thành phần khác 0 để tay đòn vẫn không tầm thường theo mọi trục. Robot sim (SDF, `/tf_static`) và `frames.p_b_g_m` của pipeline cùng lấy từ overlay (mục 5), nên vẫn khớp nhau (SIM-03). `run_integration.py` truyền tay đòn của overlay cho bộ sinh tổng hợp, nên dữ liệu tổng hợp E-01..E-03 không thể lệch overlay. `config/default.yaml` (rig thật) không đổi: giá trị thật phải đo trên robot.
+
+**Hệ quả.** Đầu ra E-01..E-03 (dữ liệu tổng hợp của CI) đổi vì factor GNSS dùng tay đòn: ATE E-01 / E-02 / E-03 từ 0,002160 / 0,002160 / 0,002174 m xuống 0,002158 / 0,002158 / 0,002163 m (cùng bản build, 2026-11-02; `est.tum` đổi, E-02 vẫn giống hệt byte E-01); p95 5,9–6,4 ms so với baseline 8,04 ms. Chủ dự án quyết định không làm PR `baseline-update` (2026-11-02). `eval/baselines.json` không đổi. Bag Gazebo cũ (E-01, E-04, E-07) ghi với tay đòn cũ; `run_integration.py --bridged` vẫn chạy với overlay mới nhưng ăng-ten thật trong bag là vị trí cũ, nên phải ghi lại trước khi trích số.

@@ -114,7 +114,7 @@ Each item names where its numbers live.
 | # | Item | Severity |
 |---|------|----------|
 | L1 | Handheld-rig sim variant: no wheels, 6-DoF walking motion (owner, 2026-10-29). | Important |
-| L2 | GNSS lever arm of 0.2 m as the default in every scene (owner, 2026-10-29). | Important |
+| L2 | Done in H5 (PR pending, `feat/sim-realism`): every sim overlay and the synthetic generator use `p_b_g = [-0.12, 0.06, 0.15]` m (0.201 m; was `[-0.20, 0.10, 0.60]`, 0.64 m), ADR-011 amendment 2026-11-02. Synthetic E-01/E-02/E-03 ATE 0.002160/0.002160/0.002174 -> 0.002158/0.002158/0.002163 m (`est.tum` changes; baselines untouched, owner: no baseline-update PR, 2026-11-02). `config/default.yaml` (real rig) stays `[0, 0, 0]` until measured. Owner request 2026-10-29. | Important |
 | L3 | Outdoor wheel slip, e.g. `WheelSlip` values for grass and wet patches in the `outdoor` world, still open from ADR-011 (owner, 2026-10-29). | Important |
 | L4 | LiDAR model to be decided; the owner has only a 2D LiDAR today. 2D LiDAR support (scan type, matching, map) would need its own ADR (owner, 2026-10-29). | Important |
 | L5 | No automated live test: CI has no Gazebo, so `check_launch.sh` only loads `mss_live.launch.py` (`--show-args`) and pytest covers the ROS-free core (`LiveNoise`). The rclpy wiring (`live_node`, `live_start`) and the launch run only by hand. | Important |
