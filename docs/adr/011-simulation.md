@@ -119,7 +119,7 @@ Chế độ gắn theo thời đoạn hoặc theo vùng không gian (đa giác t
 | `warehouse` | 40 × 25 m, trần 6 m | kệ hàng, thùng, cột; đủ ràng buộc 6 mặt; có một đoạn kệ dài 15 m gần suy biến nhẹ | E-01, E-02, E-03 |
 | `corridor` | 60 × 2.5 m | hai tường trơn song song, sàn, trần; cuối có phòng để kết thúc | E-04 |
 | `outdoor` | 120 × 120 m | 3 toà nhà (vùng multipath), hàng cây, bãi cỏ, đường bê tông, vũng ướt; cổng hầm 25 m (vùng outage) | E-05, E-06 |
-| `loop` | vòng 300 m quanh khối nhà trong `outdoor` | về đúng điểm xuất phát, có đoạn trùng đường | E-07 |
+| `loop` | vòng 300 m quanh khối nhà trong `outdoor` | về đúng điểm xuất phát, có đoạn trùng đường | E-07 (E-07W: vòng kho ba lần, xem sửa đổi 2026-11-02 (3)) |
 
 Mỗi kịch bản là một file YAML: world, profile nhiễu, quỹ đạo (waypoint), kịch bản GNSS (thời đoạn và vùng), seed, thời lượng, danh sách topic ghi. Ví dụ `sim/scenarios/E-01.yaml` = `warehouse` + `default` + `warehouse_lap_60s` + GNSS nominal + seed 42 + 60 s.
 
@@ -244,9 +244,15 @@ Mục 1 đã định `sim_bridge` "được bọc thành node live chỉ để x
 
 **Quyết định.**
 
-1. *World `outdoor`* (mục 5): 120 × 120 m mặt đất phẳng ghép từ bảy tấm hộp không chồng nhau (mặt trên z = 0): bê tông µ = 0,8, bãi cỏ 30 × 30 m µ = 0,5, vũng ướt 12 × 30 m µ = 0,3 (mục 4); ba toà nhà, hàng cây, hàng rào, cọc. Khác thiết kế: không có heightmap ±5 cm, gờ 3 cm và cổng hầm 25 m (công cụ kiểm world chỉ hiểu hộp thẳng trục; E-05/E-06 cần thêm sau), không có world `loop` riêng: vòng E-07 sẽ là một tuyến trong `outdoor`, đúng mô tả "vòng quanh khối nhà trong `outdoor`".
+1. *World `outdoor`* (mục 5): 120 × 120 m mặt đất phẳng ghép từ bảy tấm hộp không chồng nhau (mặt trên z = 0): bê tông µ = 0,8, bãi cỏ 30 × 30 m µ = 0,5, vũng ướt 12 × 30 m µ = 0,3 (mục 4); ba toà nhà, hàng cây, hàng rào, cọc. Khác thiết kế: không có heightmap ±5 cm, gờ 3 cm và cổng hầm 25 m (công cụ kiểm world chỉ hiểu hộp thẳng trục; E-05/E-06 cần thêm sau), không có world `loop` riêng: vòng E-07 (sửa đổi (3)) là một tuyến trong `outdoor`, đúng mô tả "vòng quanh khối nhà trong `outdoor`".
 2. *Bề mặt.* Sidecar khai `surfaces` (hình chữ nhật, µ của tấm SDF, hệ số slip compliance dọc và ngang của `WheelSlip`) và `default_surface`; `sim/mss_sim/surface.py` nạp, kiểm và tra bề mặt theo vị trí. Hệ số = 0,2 / µ (dây cung tới đỉnh ma sát, đỉnh ở trượt ≈ 20 %; là lựa chọn); µ bê tông là số trích dẫn, µ cỏ và vũng ướt là lựa chọn trong khoảng trích dẫn; nguồn (kèm ấn bản) trong `sim/README.md` "Outdoor world and wheel slip". Bê tông giữ 0 như kho.
 3. *Áp hệ số khi chạy.* Node `sim/mss_sim/surface_node.py` (do `sim.launch.py` chạy khi sidecar có `surfaces`) gửi hệ số của bề mặt dưới gốc thân tới dịch vụ `/world/<world>/wheel_slip/blocking` của `UserCommands` mỗi khi bề mặt đổi, qua CLI `gz service` (`sim/mss_sim/gz_cli.py`, dùng chung với `live_start`), nên không thêm phụ thuộc (không dùng binding Python của Gazebo).
 4. *Kịch bản OUT-01* (không phải E-xx): trượt bánh ngoài trời, GNSS và odom bật.
 
 **Hệ quả và giới hạn đo được.** Tiếp xúc của Gazebo không có lực cản lăn và caster không ma sát, nên bánh chỉ chịu lực tiếp tuyến khi tăng tốc hoặc quay; slip compliance chỉ tác động lên lực đó. Trên OUT-01 (hai lần ghi), trượt hiện ra ở khúc quay trên cỏ (sai số vận tốc ngang 2,5 lần khúc quay trên bê tông) nhưng không ở đoạn thẳng; sai số tốc độ quay bị lượng tử hoá encoder chi phối nên không dùng làm bằng chứng. Trôi odom 1,82 % quãng đường, chưa đạt mục tiêu 3–6 % trên cỏ của mục 3. Mô hình lực cản lăn theo bề mặt là việc sau (backlog L22). Bảng sai số render LiDAR `sim/noise/render/outdoor.yaml` đo trên tuyến OUT-01.
+
+## Sửa đổi 2026-11-02 (3): E-07 trên vòng ngoài trời, vòng kho giữ thành E-07W (backlog C1-4, C1-14)
+
+**Quyết định.**
+
+1. *E-07* chuyển sang `outdoor`: một vòng ≈ 312 m quanh khối nhà (đường gấp khúc 314,6 m) (đoạn qua vũng ướt và cỏ, đoạn ít đặc trưng dọc x = 45, đoạn zig-zag nhiều khúc quay) rồi đi lại 30 m qua điểm xuất phát (tổng ≈ 342 m); GNSS tắt ở cả hai overlay (`outdoor_e07.yaml`, biến thể `loops_on`). Vòng kho ba lần cũ giữ lại thành kịch bản riêng **E-07W** (`sim/scenarios/E-07W.yaml`, tuyến `warehouse_3laps.yaml` và overlay `warehouse_e07.yaml` không đổi, trừ tay đòn L2): vì chỉ trôi 4 cm, E-07W kiểm loop được tìm trong không gian trong nhà có cấu trúc và không làm hại ước lượng; E-07 ngoài trời kiểm loop gỡ được độ trôi thật. Bag và số cũ của E-07W (ATE 0,087 m, đầu–cuối 4,7 cm, C1-4) ghi ở e5e8320, trước #41 (khung thân `imu_link`) và trước tay đòn L2; phải ghi lại trước khi trích số (sửa đổi theo phán quyết của chủ dự án, 2026-11-02).

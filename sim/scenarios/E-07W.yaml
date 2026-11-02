@@ -1,0 +1,24 @@
+# E-07W: the former E-07 (ADR-026), kept as a regression scene for loop closure in structured
+# indoor space: the warehouse lap driven three times, with little drift (4 cm end-to-start), so
+# it checks that loops are found and do no harm, not that drift is removed (that is E-07 on the
+# outdoor loop). Route and overlay unchanged except the L2 lever arm. The pipeline config turns
+# GNSS off (config/sim/warehouse_e07.yaml), so the drift is not hidden by GNSS.
+id: E-07W
+world: warehouse
+profile: sim/noise/default.yaml
+pipeline_config: config/sim/warehouse_e07.yaml
+trajectory: sim/trajectories/warehouse_3laps.yaml
+seed: 42
+duration_s: 170
+origin_lla: [21.0278, 105.8342, 12.0]  # lat_deg, lon_deg, alt_m
+gnss:
+  - {mode: nominal, t_start_s: 0, t_end_s: 170}
+gnss_zones: []
+topics:
+  - /lidar/points
+  - /imu/data
+  - /gnss/fix
+  - /wheel/odom
+  - /ground_truth
+  - /tf_static
+  - /clock

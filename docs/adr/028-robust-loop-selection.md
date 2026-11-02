@@ -92,7 +92,7 @@ Tắt mặc định, vì với graph tự tin quá mức nó loại hết loop �
 
 Kiểm tra nhập nhằng (ICP từ hạt giống dời, ADR-026 sửa đổi B) giữ nguyên, nhưng khi cổng tắt nó không có graph phân xử: có đối thủ là loại. Đây là lớp chặn aliasing. Ở cấu trúc lặp hoàn toàn, mọi lần dò đều cho hai nghiệm gần như nhau, và PCM không giúp được: các loop sai cùng một bản sao lệch đều một chu kỳ, nên nhất quán với nhau. Cái giá là:
 - không còn loop nào trong hành lang lặp đúng chu kỳ (precision hơn recall);
-- tối đa 4 lần ICP thêm cho mỗi ứng viên sắp được nhận, khoảng +30 ms ở keyframe đó trên desktop (review H3, I-2). Ba biện pháp không cần cổng graph giới hạn chi phí đó: lọc trước mỗi hạt giống dời bằng một lượt độ khớp rẻ (`ambiguity_prescreen_ratio`), giới hạn số vòng ICP của hạt giống dời (`ambiguity_icp_max_iterations`), và tạm dừng tìm loop sau một kết quả nhập nhằng (`ambiguity_backoff_keyframes`). Số đo E-01, E-07 trong `loop_closure.md` mục 12.
+- tối đa 4 lần ICP thêm cho mỗi ứng viên sắp được nhận, khoảng +30 ms ở keyframe đó trên desktop (review H3, I-2). Ba biện pháp không cần cổng graph giới hạn chi phí đó: lọc trước mỗi hạt giống dời bằng một lượt độ khớp rẻ (`ambiguity_prescreen_ratio`), giới hạn số vòng ICP của hạt giống dời (`ambiguity_icp_max_iterations`), và tạm dừng tìm loop sau một kết quả nhập nhằng (`ambiguity_backoff_keyframes`). Số đo E-01, E-07 (cảnh kho, nay là E-07W) trong `loop_closure.md` mục 12.
 
 ### 6. Cờ và khoá YAML (dưới `loop_closure.*`)
 

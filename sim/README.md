@@ -188,7 +188,9 @@ Calibration, 2026-10-27 UTC, gz-sim 8.15.0, ogre2, on the raw bags recorded for 
 | outdoor (OUT-01) | 20-40 m | 0.1227 (74 286) | 0.0561 (285 882) | 0.0304 (463 025) | 0.0160 (503 251) |
 | outdoor (OUT-01) | 40-100 m | 0.1497 (13 431) | 0.0780 (75 606) | 0.0468 (72 840) | 0.0252 (36 801) |
 
-The outdoor rows were calibrated on 2026-11-02 UTC (same procedure) along the OUT-01 route.
+The outdoor rows were calibrated on 2026-11-02 UTC (same procedure) along the OUT-01 route; E-07
+uses the same world but another route, so its cells are only an approximation (re-run on E-07
+before gating it).
 
 That is 6 warehouse cells and 14 corridor cells. The renderer error grows toward grazing
 incidence and with range, and differs between scenes at the same range and incidence. Earlier
@@ -326,6 +328,56 @@ is the IMU-bias tilt of S2 (halved by the level start) and the GNSS vertical noi
 makes the horizontal error 0.01-0.02 m larger on this route with or without slip. The scan p95
 (19-22 ms) is about 2.5x the warehouse's; the bench numbers are from the desktop under WSL. The
 control bench run exits 3 (3 scans dropped by the bench queue). These are not baselines.
+
+### E-07 on the outdoor loop
+
+Backlog C1-4, C1-14. `sim/scenarios/E-07.yaml` drives `sim/trajectories/outdoor_loop.yaml`: a
+312 m lap plus a 30 m revisit (342 m in all; the polyline is 314.6 + 30 m, the pursuit cuts the
+corners) around the building block (east along y = -15 across the wet patch and the
+grass, north along the feature-poor x = 45, a slalom of eight turns along y = 46..50, south along
+x = -45), then 30 m past the start. GNSS is off in both overlays (`config/sim/outdoor_e07.yaml`,
+loops off; `outdoor_e07_loops_on.yaml`, `loop_closure.enabled` with PCM on). The profile is the
+default MPU-class one (no inflated noise).
+
+Two loop scenes, two purposes:
+- **E-07** (outdoor, this section): drift in metres, so it tests that loop closure removes real
+  drift.
+- **E-07W** (`sim/scenarios/E-07W.yaml`): the former E-07, the warehouse lap driven three times
+  (`warehouse_3laps.yaml`, overlay `warehouse_e07.yaml`, unchanged except the L2 lever arm). It
+  drifts about 4 cm, so it only tests that loops are found in structured indoor space and do no
+  harm. Its last bag and numbers (ATE 0.087 m, end-to-start 4.7 cm off / 1.5 cm on, backlog
+  C1-4) were recorded at e5e8320, before #41 (body frame `imu_link`) and before the L2 lever arm;
+  re-record it before quoting them.
+
+Recorded 2026-11-02 UTC on this branch (body frame `imu_link`, after #41; seed 42, gz-sim 8.15,
+ogre2): 452 s sim in 241 s wall (real-time factor 1.88), raw bag 375 MB in 19 files. Noise report
+exit 0 with the outdoor render table (12 gated cells; GNSS sigma_h 1.004 / sigma_v 1.916 m;
+odometry drift 0.87 % of the 342 m driven, yaw 4.51 deg/rev).
+
+Pipeline (`mss_bench`, same bag, one overlay each; ATE after SE(3) alignment, 4512 pairs;
+"return" = the start revisited at 392 s, before any loop is accepted; "final" = the last pose,
+30 m later, after the loops; both are the start-to-pose displacement in the start frame,
+estimate vs truth; est.tum is the online estimate; the return error is divided by the 312 m
+driven up to the return. That distance is the route's arc length at the return in the
+`test_pursuit` unicycle replay of the same route and seed (310.8 m at 392 s, 312.3 m at the
+closest pass); the recordings were deleted after the run, so it is not the ground-truth arc
+length):
+
+| Run | ATE [m] | horiz. / vert. RMS [m] | return horiz. [m] (% of 312 m) | final horiz. / vert. [m] | searches / accepted / rejected / PCM-rejected / removed | p50 / p95 / max scan [ms] |
+| --- | --- | --- | --- | --- | --- | --- |
+| loops off | 1.213 | 1.035 / 0.633 | 3.68 (1.18 %) | 2.69 / 0.82 | - | 7.5 / 15.0 / 25.4 |
+| loops on (PCM) | 1.190 | 1.007 / 0.634 | 3.68 | 2.25 / 0.83 | 316 / 2 / 4 / 0 / 0 | 7.4 / 15.1 / 74.5 |
+| loops off, `imu.init_level_start` | 0.961 | 0.745 / 0.606 | 2.77 (0.89 %) | 1.97 / 1.04 | - | 7.2 / 15.4 / 26.9 |
+| loops on, level start | 0.888 | 0.678 / 0.574 | 2.77 | 0.39 / 0.71 | 316 / 5 / 1 / 0 / 0 | 7.1 / 15.0 / 75.5 |
+
+The drift is now in metres: 3.7 m horizontal at the revisit with loops off. Loop closure with the
+shipped thresholds removes little of it. The drift at the revisit is above `max_correction_m`
+(3 m), so the first candidates fail that gate; the two accepted loops carry corrections of
+2.8-3.0 m, and the Cauchy kernel with the 5 cm / 1 deg floor applies only a small part of them
+(C1-13). With the level start the drift is 2.8 m: five loops are accepted (corrections
+0.9-2.1 m) and the final horizontal error drops from 1.97 to 0.39 m. The vertical error
+(0.6-1.0 m) is the S2 tilt plus no GNSS. A loop keyframe costs up to 75 ms (C1-15).
+These are not baselines.
 
 ### Máy bàn
 
