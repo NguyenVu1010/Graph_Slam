@@ -1,0 +1,16 @@
+# Sidecar of sim/worlds/outdoor.sdf (ADR-011 section 5; format as warehouse.planes.yaml).
+# planes: reference planes n . p = d in world coordinates (metres) for the noise report, named
+#   after the model whose box face they lie on within 1 mm (gen_sim_assets.py --check-worlds).
+# spawn: robot start pose in world; every outdoor route starts and ends there.
+# enu_origin_w_m: e = w (gz spherical_coordinates, ENU, heading 0).
+world: outdoor
+enu_origin_w_m: [0.0, 0.0, 0.0]
+spawn: {x_m: -40.0, y_m: -15.0, yaw_rad: 0.0}
+planes:
+  - {name: ground, n: [0.0, 0.0, 1.0], d: 0.0}
+  - {name: building_west, n: [1.0, 0.0, 0.0], d: -8.0}
+  - {name: building_west, n: [0.0, 1.0, 0.0], d: 0.0}
+  - {name: building_east, n: [0.0, 1.0, 0.0], d: 5.0}
+  - {name: building_east, n: [1.0, 0.0, 0.0], d: 5.0}
+  - {name: building_north, n: [0.0, 1.0, 0.0], d: 30.0}
+  - {name: fence_south, n: [0.0, 1.0, 0.0], d: -49.9}

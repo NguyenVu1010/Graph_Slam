@@ -124,10 +124,11 @@ def test_scenario_routes_start_at_spawn_inside_world_and_finish(scenario: str) -
     assert sc.route is not None
     side = yaml.safe_load((REPO / f"sim/worlds/{sc.world}.planes.yaml").read_text())
     assert sc.route.waypoints[0] == (side["spawn"]["x_m"], side["spawn"]["y_m"])
-    xs = sorted(p["d"] for p in side["planes"] if p["n"] == [1.0, 0.0, 0.0])
-    ys = sorted(p["d"] for p in side["planes"] if p["n"] == [0.0, 1.0, 0.0])
+    boxes = gsa.world_boxes(REPO / f"sim/worlds/{sc.world}.sdf")  # walls or ground tiles
+    lo = np.min([b.lo for b in boxes], axis=0)
+    hi = np.max([b.hi for b in boxes], axis=0)
     for x, y in sc.route.waypoints:
-        assert xs[0] < x < xs[-1] and ys[0] < y < ys[-1]
+        assert lo[0] < x < hi[0] and lo[1] < y < hi[1]
     run = simulate(sc.route, seed=sc.seed, t_max_s=sc.duration_s)
     assert run["done"], f"{scenario}: route not finished within duration_s"
     assert run["t"][-1] > 0.8 * sc.duration_s  # uses most of the recording
