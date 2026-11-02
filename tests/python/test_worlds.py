@@ -23,6 +23,16 @@ REQUIRED = {
         "corridor_wall_south",
         "room_wall_east",
     },
+    "outdoor": {
+        "ground_concrete_north",
+        "ground_wet",
+        "ground_grass",
+        "building_west",
+        "building_east",
+        "building_north",
+        "tree_row",
+        "fence_south",
+    },
 }
 
 
@@ -85,7 +95,7 @@ def test_corridor_extents() -> None:
     assert by_name["corridor_wall_north"] - by_name["corridor_wall_south"] == pytest.approx(2.5)
 
 
-@pytest.mark.parametrize("world", sorted(REQUIRED))
+@pytest.mark.parametrize("world", ["corridor", "warehouse"])  # outdoor: test_surface.py
 def test_floor_friction_is_concrete(world: str) -> None:
     floor = _models(world)["floor"]
     assert float(floor.findtext("link/collision/surface/friction/ode/mu") or "nan") == 0.8
@@ -109,10 +119,10 @@ def test_spawn_inside_the_world() -> None:
     for world in REQUIRED:
         side = gsa.load_sidecar(WORLDS / f"{world}.planes.yaml")
         x, y = side["spawn"]["x_m"], side["spawn"]["y_m"]
-        planes = side["planes"]
-        xs = sorted(p["d"] for p in planes if p["n"] == [1.0, 0.0, 0.0])
-        ys = sorted(p["d"] for p in planes if p["n"] == [0.0, 1.0, 0.0])
-        assert xs[0] < x < xs[-1] and ys[0] < y < ys[-1]
+        boxes = gsa.world_boxes(WORLDS / f"{world}.sdf")  # walls or ground tiles
+        lo = np.min([b.lo for b in boxes], axis=0)
+        hi = np.max([b.hi for b in boxes], axis=0)
+        assert lo[0] < x < hi[0] and lo[1] < y < hi[1]
 
 
 def test_check_requires_the_named_model(tmp_path: Path) -> None:
