@@ -18,7 +18,7 @@ _TOPICS = {
     "/joint_states": "sensor_msgs/msg/JointState",
     "/tf_static": "tf2_msgs/msg/TFMessage",
 }
-_P_B_G = np.array([-0.20, 0.10, 0.60])
+_P_B_G = np.array([-0.12, 0.06, 0.15])
 _FLOAT32_PLANE_TOL_M = 1e-4  # points are float32: ~1e-6 relative at 10 m
 
 

@@ -150,6 +150,8 @@ Phân loại các giới hạn (bảng đầy đủ: `gnss_fusion_study.md` mụ
 
 Đường bao dung sai ở mặc định mô phỏng (0,5 m, 5 Hz, tay đòn 0,22 m, có bánh xe, khoá phát hành; tối đa 1/100 lỗi và, khi xe chạy, căn chỉnh trong 10 m, trừ hai dòng có ghi chú riêng):
 
+> Ghi chú 2026-11-02 (backlog L2): tay đòn ngang của các kịch bản mô phỏng đổi từ 0,224 m sang 0,134 m; số ở đây dùng 0,22 m. Các kết quả phụ thuộc tay đòn đổi thế nào (sigma_yaw lớn hơn 1,7 lần với cùng số fix): `docs/derivations/gnss.md`, ghi chú dưới "Yaw from rotating in place".
+
 | Nguồn | LiDAR quan sát trục chạy | Không quan sát (hành lang, bãi trống) |
 | --- | --- | --- |
 | GNSS trôi, bánh quay trên thân đứng yên | không giới hạn tới 0,50 m mỗi fix | 0,15 m mỗi fix |

@@ -997,6 +997,8 @@ standard GNSS (0.5 m per axis in the simulator, 5 Hz), antenna lever arm 0.22 m 
 wheel odometry on the robot. Waiting for the alignment does not affect local navigation: the
 LiDAR-inertial pose is valid from frame 0, only the ENU output waits.
 
+> Note 2026-11-02 (backlog L2): the sim scenes' horizontal lever arm changed from 0.224 m to 0.134 m; the numbers here used 0.22 m. How the lever-arm-dependent results move (sigma_yaw 1.7 times larger for the same fixes): `docs/derivations/gnss.md`, the note under "Yaw from rotating in place".
+
 Method and error model: `gnss.md` section 5.1. Headline metric: time since the motion started
 and distance driven at the first alignment, with the yaw error against its predicted sigma.
 The numbers below are after fix round 1 of the review (section 16.9) unless marked.
