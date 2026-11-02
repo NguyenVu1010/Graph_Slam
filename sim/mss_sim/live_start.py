@@ -22,7 +22,6 @@ module is its rclpy node. World services go through the ``gz service`` CLI, as
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 import time
 
@@ -31,18 +30,8 @@ from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
+from mss_sim.gz_cli import world_call as _world_call
 from mss_sim.live_guard import run_live
-
-SERVICE_TIMEOUT_MS = 5000
-
-
-def _world_call(world: str, service: str, reqtype: str, req: str) -> bool:
-    cmd = [
-        "gz", "service", "-s", f"/world/{world}/{service}", "--reqtype", reqtype,
-        "--reptype", "gz.msgs.Boolean", "--timeout", str(SERVICE_TIMEOUT_MS), "--req", req,
-    ]  # fmt: skip
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    return proc.returncode == 0 and "true" in proc.stdout
 
 
 class LiveStart(Node):
