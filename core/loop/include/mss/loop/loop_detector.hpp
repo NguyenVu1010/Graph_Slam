@@ -105,7 +105,14 @@ struct LoopResult {
 ///   1. Candidates: keyframes with `t <= q.t - min_time_gap_s` and horizontal-and-vertical
 ///      distance `|p_w_c - p_w_q| <= search_radius_m` (both from the backend's optimised
 ///      poses), nearest first, at most `max_candidates`. Drift larger than the radius is not
-///      found (ADR-026, limit stated).
+///      found (ADR-026, limit stated). With place_search (ADR-030) the nearest
+///      place_search_max_ranked are ranked by their Scan Context distance (step 2) instead,
+///      most similar first, when the most similar one is distinct (no candidate at least
+///      place_search_min_separation_m from it within place_search_sc_ratio of its distance);
+///      else nearest first and no place seed. With place_search each keyframe's descriptor is
+///      cached (the Scan Context descriptor cache, map.max_keyframes slots reserved in the
+///      constructor) and recomputed only when the keyframe's roll and pitch moved by more than
+///      place_search_cache_tilt_deg since it was levelled.
 ///   2. Scan Context of q and of c (each in its own gravity-levelled body frame: the pose's
 ///      roll and pitch removed, yaw kept) and the column shift with the smallest
 ///      column-cosine distance; distance > sc_max_distance rejects c. The shift gives the
@@ -114,7 +121,9 @@ struct LoopResult {
 ///      degeneracy-aware update off) of q's cloud against a submap of c and its
 ///      `submap_keyframes` store neighbours on each side, placed in w at their optimised
 ///      poses. Seeds: the graph pose of q and, when it differs by more than one sector, the
-///      same pose with the yaw from step 2; the seed with the higher inlier ratio wins.
+///      same pose with the yaw from step 2; with a distinct place (step 1, ADR-030) also q at
+///      the candidate's position with the yaw from step 2. The seed with the higher inlier
+///      ratio wins.
 ///      A converged seed whose pose differs from the graph pose of q by more than
 ///      max_correction_m or max_correction_deg (yaw) is discarded: a correction that large is
 ///      not drift the graph can have accumulated since c, it is a symmetric false fit.
@@ -203,6 +212,7 @@ class LoopDetector {
                   std::vector<float>& out) const;
 
  private:
+  friend struct DetectorInternals;  // internal diagnostics for tests (loop_detector_internal.hpp)
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

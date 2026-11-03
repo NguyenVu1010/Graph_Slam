@@ -13,6 +13,28 @@ struct LoopConfig {
   double min_time_gap_s = 0.0;   // s, candidates must be at least this much older (>= 0)
   // Candidates verified per keyframe, nearest first (>= 1). Bounds the work per keyframe.
   int max_candidates = 1;
+  // Place search (ADR-030, backlog C1-1, C1-31): the candidates within search_radius_m are
+  // ranked by Scan Context distance instead of by distance, and ICP also starts from the query
+  // placed at the candidate's position with the Scan Context yaw. With drift of metres the
+  // nearest keyframe on the drifted estimate is not the revisited place and the graph seed is
+  // outside the ICP basin. false: nearest first, graph seeds only (the behaviour before).
+  bool place_search = false;
+  // Place search bounds (ADR-030 fix round, review B-2, B-3). Only the nearest
+  // place_search_max_ranked candidates (>= max_candidates) are ranked by Scan Context, so the
+  // per-keyframe cost stays bounded. Ranking and the place seed are used only when the best
+  // candidate is distinct: its Scan Context distance is at most place_search_sc_ratio (in
+  // (0, 1]) times the best one among candidates at least place_search_min_separation_m (> 0)
+  // from it; otherwise (a look-alike elsewhere) the search falls back to nearest first and the
+  // graph seeds only.
+  int place_search_max_ranked = 1;
+  double place_search_sc_ratio = 1.0;
+  double place_search_min_separation_m = 0.0;  // m
+  // A place-seed fit is a loop only when its correction is within icp_max_corr_dist_m plus this
+  // ratio times the distance travelled from the candidate to the query (review N-4; > 0).
+  double place_search_drift_ratio = 0.0;  // m per m travelled
+  // A cached descriptor is recomputed when the keyframe's roll and pitch moved by more than this
+  // since it was levelled (a graph correction can tilt keyframes; review N2-1; > 0).
+  double place_search_cache_tilt_rad = 0.0;  // rad (YAML: place_search_cache_tilt_deg)
   // Keyframes skipped after an accepted loop before the next search (>= 0).
   int min_interval_keyframes = 0;
   // Submap: the candidate keyframe plus this many store neighbours on each side (>= 0).
