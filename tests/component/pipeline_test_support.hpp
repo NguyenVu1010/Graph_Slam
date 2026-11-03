@@ -83,10 +83,12 @@ struct ReplayResult {
 
 // Replays an mssdata directory in time order, run_once() after every pushed record
 // (so before and after every scan push), flush() at the end. `after_scan(est, k)` (if set)
-// runs after the k-th scan record (k from 1) has been pushed and drained.
+// runs after the k-th scan record (k from 1) has been pushed and drained; `at_end(est)` (if set)
+// runs once after flush().
 inline ReplayResult replay(const fs::path& data,
                            const Config& cfg,
-                           const std::function<void(Estimator&, int)>& after_scan = {}) {
+                           const std::function<void(Estimator&, int)>& after_scan = {},
+                           const std::function<void(const Estimator&)>& at_end = {}) {
   ReplayResult out;
   auto opened = io::DatasetReader::open(data, cfg.realtime.max_points_per_scan);
   EXPECT_TRUE(opened.is_ok()) << opened.reason();
@@ -142,6 +144,9 @@ inline ReplayResult replay(const fs::path& data,
   est.flush();
   collect();
   out.stats = est.stats();
+  if (at_end) {
+    at_end(est);
+  }
   return out;
 }
 

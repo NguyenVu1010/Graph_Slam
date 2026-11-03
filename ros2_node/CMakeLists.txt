@@ -12,17 +12,21 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
-# Message <-> core struct conversions (ADR-024), no node state; unit-tested on its own.
-add_library(mss_ros2_conversions STATIC src/conversions.cpp)
+# Message <-> core struct conversions (ADR-024), the /mss/save writer and the Gazebo world control
+# (ADR-031); no node state, unit-tested on their own.
+add_library(mss_ros2_conversions STATIC src/conversions.cpp src/run_saver.cpp src/world_control.cpp)
 mss_set_target_defaults(mss_ros2_conversions)
 target_include_directories(mss_ros2_conversions PUBLIC include)
-target_link_libraries(mss_ros2_conversions PUBLIC mss::common mss::gnss)
+target_link_libraries(mss_ros2_conversions PUBLIC mss::common mss::gnss mss::pipeline mss::io)
 # Keyword form: target_link_libraries above uses the keyword signature, and mixing the two is
 # a CMake error. SYSTEM keeps -Werror from firing on ROS headers.
 ament_target_dependencies(mss_ros2_conversions SYSTEM PUBLIC
-  builtin_interfaces sensor_msgs nav_msgs geometry_msgs)
+  builtin_interfaces sensor_msgs nav_msgs geometry_msgs std_msgs visualization_msgs)
 
 # The node class as a static library so the node-level tests can link it.
 add_library(mss_ros2_node STATIC src/mss_node.cpp src/rclcpp_logger.cpp)
@@ -30,7 +34,7 @@ mss_set_target_defaults(mss_ros2_node)
 target_include_directories(mss_ros2_node PUBLIC include)
 target_link_libraries(mss_ros2_node PUBLIC mss_ros2_conversions mss::pipeline)
 ament_target_dependencies(mss_ros2_node SYSTEM PUBLIC
-  ament_index_cpp rclcpp sensor_msgs nav_msgs geometry_msgs tf2_ros)
+  ament_index_cpp rclcpp sensor_msgs nav_msgs geometry_msgs tf2_ros std_srvs visualization_msgs)
 
 add_executable(mss_node src/main.cpp)
 mss_set_target_defaults(mss_node)
@@ -47,6 +51,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_conversions test/test_conversions.cpp)
   mss_set_target_defaults(test_conversions)
   target_link_libraries(test_conversions mss_ros2_conversions)
+  ament_add_gtest(test_run_saver test/test_run_saver.cpp)
+  mss_set_target_defaults(test_run_saver)
+  target_link_libraries(test_run_saver mss_ros2_conversions)
   ament_add_gtest(test_stamp_gate test/test_stamp_gate.cpp)
   mss_set_target_defaults(test_stamp_gate)
   target_include_directories(test_stamp_gate PRIVATE include)
@@ -55,6 +62,8 @@ if(BUILD_TESTING)
   mss_set_target_defaults(test_mss_node)
   target_compile_definitions(test_mss_node PRIVATE MSS_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
   target_link_libraries(test_mss_node mss_ros2_node)
+  find_package(rosgraph_msgs REQUIRED)
+  ament_target_dependencies(test_mss_node SYSTEM rosgraph_msgs)
 endif()
 
 ament_package()

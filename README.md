@@ -11,6 +11,7 @@ Working rules: `CLAUDE.md`. Conventions: `docs/conventions.md`. Decisions: `docs
 ```
 core/        C++ library, no ROS (colcon package mss_core)
 ros2_node/   ROS 2 adapter (colcon package mss_ros2)
+mss_teleop/  drive the simulated robot, watch SLAM live in RViz2 (colcon package mss_teleop)
 bench/       latency benchmark binary
 tests/       unit, component, integration, python
 sim/ eval/   Gazebo worlds; evaluation (TUM files only)
@@ -70,12 +71,13 @@ notes: ADR-016, amendment of 2026-10-29. Keyframes evicted by `map.max_keyframes
 map. The no-GTSAM build cannot export a map (exit 2).
 
 Desktop with ROS 2 Jazzy (workspace contains this repo under `src/multi-sensor-slam`). colcon
-stops at the root `CMakeLists.txt`, so name the three packages' paths (ADR-013):
-`multi_sensor_slam` (root superbuild: core, tests, bench), `mss_core` (`core/`) and `mss_ros2`
-(`ros2_node/`, finds `mss_core` through colcon's prefix path).
+stops at the root `CMakeLists.txt`, so name the four packages' paths (ADR-013, ADR-031):
+`multi_sensor_slam` (root superbuild: core, tests, bench), `mss_core` (`core/`), `mss_ros2`
+(`ros2_node/`, finds `mss_core` through colcon's prefix path) and `mss_teleop` (`mss_teleop/`,
+the teleop launch, `sim/README.md` "Teleop").
 
 ```sh
-pkgs="src/multi-sensor-slam src/multi-sensor-slam/core src/multi-sensor-slam/ros2_node"
+pkgs="src/multi-sensor-slam src/multi-sensor-slam/core src/multi-sensor-slam/ros2_node src/multi-sensor-slam/mss_teleop"
 colcon build --paths $pkgs --parallel-workers 2 --cmake-args -DCMAKE_BUILD_TYPE=Release
 . install/setup.bash
 ros2 launch mss_ros2 mss.launch.py   # config:=<file> overrides the config path
@@ -87,7 +89,12 @@ once. It subscribes to `/lidar/points` (bridged PointCloud2 with per-point `t` a
 `/imu/data`, `/gnss/fix` and `/wheel/odom`, and publishes `/mss/odometry`, `/mss/path`, TF
 `map -> <frames.body>` (`imu_link`, the IMU) and `/mss/map` (the global map from `Estimator::export_map()`, 1 Hz,
 transient local). Topics, frame names, QoS depths, timer periods and the GNSS ENU origin are
-ROS parameters of the node; design and parameter list: ADR-024.
+ROS parameters of the node; design and parameter list: ADR-024. With `viz.enabled:=true`
+(default false, ADR-031) it also publishes the optimised graph (`/mss/graph/keyframes`,
+`/mss/graph/loops`, `/mss/graph/path`, `/mss/graph/counts`), the world state `/mss/paused`, and
+serves `/mss/save` and `/mss/pause`; `viz.rate_hz`, `viz.save_dir`, `viz.run_id`,
+`viz.gz_world`, `viz.gz_timeout_ms`, `viz.paused_after_s` and `viz.running_min_rtf` are
+declared only then.
 
 Play a bridged bag (the noise bridge's `bag/`, e.g. from `tools/record_scenario.sh` or
 `tools/run_integration.py`'s `data/bridged/bag`) into the node, with RViz:

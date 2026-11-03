@@ -113,3 +113,13 @@ def test_run_live_frozen_clock_exits_2() -> None:
     assert _run(node, stall_timeout_s=3.0) == 2
     assert "stuck" in node.errors[0]
     assert node.wall < 1.0 + 5.0 + 3.0 + 1.0  # gave up soon after the timeout
+
+
+def test_run_live_without_stop_returns_after_unpause() -> None:
+    """Teleop (ADR-031): no ``--stop-at-s``; the world runs on after the start and is never
+    paused by the starter, so a user pause (frozen clock) cannot fail the run."""
+    node = _FakeNode(lambda w: min(max(0.0, w - 1.0), 5.0))
+    assert _run(node, stop_at_s=None) == 0
+    assert node.calls[-1] == "pause: false"
+    assert "pause: true" not in node.calls
+    assert not node.errors

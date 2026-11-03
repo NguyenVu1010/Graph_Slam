@@ -6,16 +6,17 @@ FROM ${DEPS} AS build
 WORKDIR /ws/src/multi-sensor-slam
 COPY . .
 WORKDIR /ws
-# Three colcon packages (ADR-013): multi_sensor_slam (root superbuild: core + tests + bench,
-# bench at /ws/install/multi_sensor_slam/bin/mss_bench), mss_core (core/) and mss_ros2
-# (ros2_node/, finds mss_core through colcon's prefix path). colcon stops descending at the
+# Four colcon packages (ADR-013, ADR-031): multi_sensor_slam (root superbuild: core + tests + bench,
+# bench at /ws/install/multi_sensor_slam/bin/mss_bench), mss_core (core/), mss_ros2
+# (ros2_node/, finds mss_core through colcon's prefix path) and mss_teleop (mss_teleop/,
+# ament_python; its joy / teleop_twist_* run dependencies are only in docker/sim.Dockerfile). colcon stops descending at the
 # root CMakeLists.txt, so every package path is listed with --paths; colcon list prints them.
 # One package at a time (--parallel-workers 1), each with colcon's default make -j<nproc>.
 # The superbuild's ctest suite (GTSAM-linked tests included) and the mss_ros2 conversion
 # tests (ADR-024) run here, and colcon test-result exits non-zero on any failure, which
 # fails the image build.
 RUN . /opt/ros/jazzy/setup.sh \
-    && pkgs="src/multi-sensor-slam src/multi-sensor-slam/core src/multi-sensor-slam/ros2_node" \
+    && pkgs="src/multi-sensor-slam src/multi-sensor-slam/core src/multi-sensor-slam/ros2_node src/multi-sensor-slam/mss_teleop" \
     && colcon list --paths $pkgs \
     && colcon build --paths $pkgs --parallel-workers 1 \
          --cmake-args -DCMAKE_BUILD_TYPE=Release -DMSS_WERROR=ON \

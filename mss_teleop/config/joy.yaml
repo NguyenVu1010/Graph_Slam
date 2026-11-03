@@ -1,0 +1,26 @@
+# Gamepad mapping for teleop (ADR-031), Xbox-style pad on the Linux xpad driver:
+# axes 0 left stick left/right, 1 left stick up/down; buttons 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB,
+# 6 Back, 7 Start. Speed scales are NOT here: teleop.launch.py sets scale_linear.x and
+# scale_angular.yaw to the robot's maxima from sim/models/robot.yaml (the DiffDrive plugin clamps
+# speed and acceleration to the same values), so full stick = full speed.
+joy_node:
+  ros__parameters:
+    device_id: 0          # SDL joystick index (joy 3.x uses SDL2; device_name picks by name)
+    deadzone: 0.1         # stick fraction treated as 0
+    autorepeat_rate: 20.0  # Hz, Joy republished while a stick is held (keeps cmd_vel alive)
+
+teleop_twist_joy_node:
+  ros__parameters:
+    require_enable_button: true
+    enable_button: 4      # LB: dead-man button, release it and the robot stops
+    enable_turbo_button: -1  # no turbo: the scale already is the robot's maximum
+    axis_linear:
+      x: 1                # left stick up/down: forward/back
+    axis_angular:
+      yaw: 0              # left stick left/right: turn
+
+mss_joy_commands:
+  ros__parameters:
+    save_button: 3        # Y: /mss/save
+    pause_button: 7       # Start: /mss/pause toggle (pauses the whole Gazebo world)
+    call_timeout_s: 15.0  # wall s after which an unanswered call stops blocking (2 x (gz 5 s + 2 s))

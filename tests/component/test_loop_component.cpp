@@ -675,6 +675,11 @@ struct InjectRun {
   std::vector<bool> in_graph;  // Graph::has_loop_factor of each, after the last graph change
   // |p(Z) - p(T_w_bi^-1 T_w_bj)| of each injection in the graph after the last graph change, m
   std::vector<double> residual_m;
+  // ADR-031: Estimator::graph_snapshot() after flush(), its status, and the stored keyframes'
+  // T_w_b from visit_map() (T_w_l * T_l_b) at the same moment, by id.
+  common::Status snap_status = common::Status::ok();
+  GraphSnapshot snap;
+  std::vector<std::pair<KeyId, Pose>> stored_T_w_b;
 };
 
 InjectRun run_injected(const std::string& name,
@@ -736,9 +741,16 @@ InjectRun run_injected(const std::string& name,
               : -1.0);
     }
   };
+  const Pose T_l_b = cfg.frames.T_b_l.inverse();
+  const auto at_end = [&out, &T_l_b](const Estimator& est) {
+    out.snap_status = est.graph_snapshot(out.snap);
+    (void)est.visit_map([&out, &T_l_b](const MapKeyframe& kf) {
+      out.stored_T_w_b.emplace_back(kf.id, kf.T_w_l * T_l_b);
+    });
+  };
   {
     ct::HooksScope scope(&hooks);
-    out.r = ct::replay(dir / "data", cfg);
+    out.r = ct::replay(dir / "data", cfg, {}, at_end);
   }
   out.e = ct::trajectory_errors(plan.p, out.r.estimates);
   for (std::size_t n = 0; n < plan.done.size(); ++n) {
@@ -746,6 +758,41 @@ InjectRun run_injected(const std::string& name,
   }
   out.injected = plan.injected;
   return out;
+}
+
+// ADR-031 known answer for Estimator::graph_snapshot() after a run: every keyframe (ids 0..n-1,
+// times increasing), the stored ones at the pose visit_map() exports (the kf_opt pose), and
+// exactly the loops `want` ((i, j) of each injection with its expected state), in any order.
+void expect_snapshot(const InjectRun& run,
+                     const std::vector<std::pair<std::size_t, LoopState>>& want) {
+  ASSERT_TRUE(run.snap_status.is_ok()) << run.snap_status.reason();
+  const GraphSnapshot& s = run.snap;
+  ASSERT_EQ(s.keyframes.size(), run.r.stats.n_keyframes);
+  for (std::size_t k = 0; k < s.keyframes.size(); ++k) {
+    EXPECT_EQ(s.keyframes[k].id, static_cast<KeyId>(k));
+    if (k > 0) {
+      EXPECT_LT(s.keyframes[k - 1].t, s.keyframes[k].t);
+    }
+  }
+  ASSERT_FALSE(run.stored_T_w_b.empty());
+  for (const auto& [id, T_w_b] : run.stored_T_w_b) {
+    ASSERT_LT(id, s.keyframes.size());
+    EXPECT_LT((s.keyframes[id].T_w_b.p - T_w_b.p).norm(), 1e-9) << id;
+    EXPECT_LT((s.keyframes[id].T_w_b.R - T_w_b.R).norm(), 1e-9) << id;
+  }
+  ASSERT_EQ(s.loops.size(), want.size());
+  for (const auto& [n, state] : want) {
+    ASSERT_LT(n, run.injected.size());
+    const auto [i, j] = run.injected[n];
+    const auto it =
+        std::find_if(s.loops.begin(), s.loops.end(), [i = i, j = j](const GraphLoop& l) {
+          return l.i == i && l.j == j;
+        });
+    ASSERT_NE(it, s.loops.end()) << "injection " << n << " not in the snapshot";
+    EXPECT_EQ(static_cast<int>(it->state), static_cast<int>(state)) << "injection " << n;
+    EXPECT_EQ(it->t_i, s.keyframes[i].t);
+    EXPECT_EQ(it->t_j, s.keyframes[j].t);
+  }
 }
 
 TEST(LoopComponent, PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne) {
@@ -796,6 +843,10 @@ TEST(LoopComponent, PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne) {
   EXPECT_TRUE(a.in_graph[2]);
   ASSERT_EQ(c.in_graph.size(), 1U);
   EXPECT_TRUE(c.in_graph[0]);
+  // ADR-031 graph snapshot: the wrong loop listed as removed by PCM, the two true ones in the
+  // graph with the kernel; without PCM the single loop is in the graph.
+  expect_snapshot(a, {{0, LoopState::kRemoved}, {1, LoopState::kActive}, {2, LoopState::kActive}});
+  expect_snapshot(c, {{0, LoopState::kActive}});
   // The wrong loop moves the result by centimetres when it stays (measured 6.0 cm); removed, the
   // run ends as the run that only ever had the two true loops (measured 3 mm), the front end
   // re-synced to it.
@@ -1415,6 +1466,10 @@ TEST(LoopComponent, KernelReleaseAppliesACorroboratedCorrection) {
   ASSERT_EQ(on.run.in_graph.size(), 2U);
   EXPECT_TRUE(on.run.in_graph[0]);
   EXPECT_TRUE(on.run.in_graph[1]);
+  // ADR-031 graph snapshot: both loops in the graph without the kernel; with the kernel off both
+  // keep it (kActive).
+  expect_snapshot(on.run, {{0, LoopState::kReleased}, {1, LoopState::kReleased}});
+  expect_snapshot(off.run, {{0, LoopState::kActive}, {1, LoopState::kActive}});
   EXPECT_LT(on.run.residual_m[1], 0.2 * kShiftM);   // most of the shift applied
   EXPECT_GT(off.run.residual_m[1], 0.5 * kShiftM);  // the kernel leaves most of it
   // A lone loop keeps the kernel: same estimates as without kernel_release, bit for bit.

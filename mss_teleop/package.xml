@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mss_teleop</name>
+  <version>0.0.1</version>
+  <description>Drive the simulated robot with a gamepad or the keyboard and watch multi-sensor-slam live in RViz2 (ADR-031): launch, joystick command node, parameters, RViz config.</description>
+  <maintainer email="maintainers@multi-sensor-slam.invalid">multi-sensor-slam maintainers</maintainer>
+  <license>TODO</license>
+
+  <exec_depend>mss_ros2</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>joy</exec_depend>
+  <exec_depend>teleop_twist_joy</exec_depend>
+  <exec_depend>teleop_twist_keyboard</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

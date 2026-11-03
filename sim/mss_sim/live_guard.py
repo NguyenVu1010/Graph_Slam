@@ -81,7 +81,9 @@ def run_live(
     """The start/stop sequence of ``live_start``; 0 on a full run, 2 on any failure.
 
     ``args``: ``wait_subs``, ``wait_timeout_s``, ``step_s``, ``rtf``, ``max_start_clock_s``,
-    ``stall_timeout_s``, ``stop_at_s``. ``now`` is the wall clock in seconds.
+    ``stall_timeout_s``, ``stop_at_s``. ``now`` is the wall clock in seconds. ``stop_at_s``
+    ``None`` (teleop, ADR-031): return 0 right after the unpause; the world runs on and nothing
+    watches the clock, since the user may pause it.
     """
     deadline = now() + args.wait_timeout_s
     while missing := [t for t in args.wait_subs if node.count_subscribers(t) == 0]:
@@ -107,6 +109,9 @@ def run_live(
     if not world_call("control", "gz.msgs.WorldControl", "pause: false"):
         node.error("live_start: unpause failed")
         return 2
+    if args.stop_at_s is None:
+        node.info(f"live_start: running at real-time factor {args.rtf}; no stop time (teleop)")
+        return 0
     sim0, wall0 = node.sim_s(), now()
     watch = StallWatch(args.stall_timeout_s, wall0, sim0)
     node.info(

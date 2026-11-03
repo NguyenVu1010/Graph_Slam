@@ -1,11 +1,14 @@
 #include "mss_ros2/conversions.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 #include <Eigen/Geometry>
+#include <geometry_msgs/msg/point.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
 
 namespace mss_ros2 {
@@ -298,6 +301,170 @@ void cloud_from_points(const std::vector<Eigen::Vector3f>& points_w,
   for (std::size_t i = 0; i < n; ++i) {
     std::memcpy(dst + i * kPointStep, points_w[i].data(), kPointStep);
   }
+}
+
+namespace {
+
+using mss::pipeline::GraphKeyframe;
+using mss::pipeline::GraphSnapshot;
+using mss::pipeline::LoopState;
+using visualization_msgs::msg::Marker;
+using visualization_msgs::msg::MarkerArray;
+
+std_msgs::msg::ColorRGBA rgba(float r, float g, float b) {
+  std_msgs::msg::ColorRGBA c;
+  c.r = r;
+  c.g = g;
+  c.b = b;
+  c.a = 1.0F;
+  return c;
+}
+
+Marker marker_header(mss::common::Timestamp t, const std::string& world_frame) {
+  Marker m;
+  m.header.stamp = to_msg_time(t);
+  m.header.frame_id = world_frame;
+  m.action = Marker::ADD;
+  m.pose.orientation.w = 1.0;  // identity (Hamilton w, x, y, z = 1, 0, 0, 0)
+  return m;
+}
+
+void start_array(mss::common::Timestamp t, const std::string& world_frame, MarkerArray& out) {
+  out.markers.clear();
+  Marker del = marker_header(t, world_frame);
+  del.action = Marker::DELETEALL;
+  out.markers.push_back(del);
+}
+
+// Keyframe `id` of the snapshot (keyframes are in id order, possibly with gaps), or nullptr.
+const GraphKeyframe* find_keyframe(const GraphSnapshot& snap, mss::common::KeyId id) {
+  const auto it =
+      std::lower_bound(snap.keyframes.begin(),
+                       snap.keyframes.end(),
+                       id,
+                       [](const GraphKeyframe& k, mss::common::KeyId v) { return k.id < v; });
+  return it != snap.keyframes.end() && it->id == id ? &*it : nullptr;
+}
+
+geometry_msgs::msg::Point point_of(const mss::common::Vec3& p) {
+  geometry_msgs::msg::Point out;
+  out.x = p.x();
+  out.y = p.y();
+  out.z = p.z();
+  return out;
+}
+
+const char* state_name(LoopState s) {
+  switch (s) {
+    case LoopState::kActive:
+      return "active";
+    case LoopState::kReleased:
+      return "released";
+    case LoopState::kRemoved:
+      return "removed";
+  }
+  return "unknown";
+}
+
+}  // namespace
+
+std_msgs::msg::ColorRGBA loop_color(LoopState state) {
+  switch (state) {
+    case LoopState::kActive:
+      return rgba(0.1F, 0.9F, 0.1F);
+    case LoopState::kReleased:
+      return rgba(0.1F, 0.8F, 0.9F);
+    case LoopState::kRemoved:
+      return rgba(0.95F, 0.15F, 0.15F);
+  }
+  return rgba(1.0F, 1.0F, 1.0F);
+}
+
+void keyframe_markers(const GraphSnapshot& snap,
+                      mss::common::Timestamp t,
+                      const std::string& world_frame,
+                      const VizStyle& style,
+                      MarkerArray& out) {
+  start_array(t, world_frame, out);
+  for (const GraphKeyframe& k : snap.keyframes) {
+    Marker m = marker_header(t, world_frame);
+    m.ns = "keyframes";
+    m.id = static_cast<std::int32_t>(k.id);
+    m.type = Marker::ARROW;
+    m.pose = pose_to_msg(k.T_w_b);
+    m.scale.x = style.arrow_length_m;
+    m.scale.y = style.arrow_shaft_m;
+    m.scale.z = style.arrow_head_m;
+    m.color = rgba(1.0F, 0.75F, 0.1F);
+    out.markers.push_back(m);
+  }
+}
+
+void loop_markers(const GraphSnapshot& snap,
+                  mss::common::Timestamp t,
+                  const std::string& world_frame,
+                  const VizStyle& style,
+                  MarkerArray& out) {
+  start_array(t, world_frame, out);
+  for (std::size_t n = 0; n < snap.loops.size(); ++n) {
+    const mss::pipeline::GraphLoop& l = snap.loops[n];
+    const GraphKeyframe* ki = find_keyframe(snap, l.i);
+    const GraphKeyframe* kj = find_keyframe(snap, l.j);
+    if (ki == nullptr || kj == nullptr) {
+      continue;
+    }
+    Marker m = marker_header(t, world_frame);
+    m.ns = "loops";
+    m.id = static_cast<std::int32_t>(n);
+    m.type = Marker::LINE_LIST;
+    m.scale.x = style.loop_width_m;
+    m.color = loop_color(l.state);
+    m.points.push_back(point_of(ki->T_w_b.p));
+    m.points.push_back(point_of(kj->T_w_b.p));
+    out.markers.push_back(m);
+  }
+}
+
+void path_from_snapshot(const GraphSnapshot& snap,
+                        mss::common::Timestamp t,
+                        const std::string& world_frame,
+                        nav_msgs::msg::Path& out) {
+  out.header.stamp = to_msg_time(t);
+  out.header.frame_id = world_frame;
+  out.poses.clear();
+  for (const GraphKeyframe& k : snap.keyframes) {
+    out.poses.push_back(pose_stamped(k.T_w_b, k.t, world_frame));
+  }
+}
+
+Marker counts_marker(const GraphSnapshot& snap,
+                     const GraphCounts& counts,
+                     mss::common::Timestamp t,
+                     const std::string& world_frame,
+                     const VizStyle& style) {
+  Marker m = marker_header(t, world_frame);
+  m.ns = "counts";
+  m.id = 0;
+  m.type = Marker::TEXT_VIEW_FACING;
+  m.scale.z = style.text_height_m;
+  m.color = rgba(1.0F, 1.0F, 1.0F);
+  if (!snap.keyframes.empty()) {
+    m.pose.position = point_of(snap.keyframes.back().T_w_b.p);
+  }
+  m.pose.position.z += style.text_above_m;
+  std::size_t by_state[3] = {0, 0, 0};
+  for (const mss::pipeline::GraphLoop& l : snap.loops) {
+    ++by_state[static_cast<std::size_t>(l.state)];
+  }
+  m.text = "keyframes " + std::to_string(counts.keyframes) + " | loops: accepted " +
+           std::to_string(counts.loops_accepted) + ", rejected " +
+           std::to_string(counts.loops_rejected) + ", PCM rejected " +
+           std::to_string(counts.loops_pcm_rejected) + ", removed " +
+           std::to_string(counts.loops_removed) + "\nin graph: " + std::to_string(by_state[0]) +
+           " " + state_name(LoopState::kActive) + ", " + std::to_string(by_state[1]) + " " +
+           state_name(LoopState::kReleased) + "; " + std::to_string(by_state[2]) + " " +
+           state_name(LoopState::kRemoved);
+  return m;
 }
 
 }  // namespace mss_ros2
