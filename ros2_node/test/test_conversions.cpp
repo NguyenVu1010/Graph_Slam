@@ -399,4 +399,110 @@ TEST(Conversions, MapPointsToCloud) {
   EXPECT_FALSE(mss_ros2::scan_from_cloud(m, scan).is_ok());
 }
 
+// --- Live graph display (ADR-031) ------------------------------------------------------------
+
+// Three keyframes on a line (1 m apart, the third turned 90 deg about z), one loop per state;
+// the removed loop points at keyframe 7, which the snapshot does not hold.
+mss::pipeline::GraphSnapshot three_keyframes() {
+  mss::pipeline::GraphSnapshot s;
+  for (int k = 0; k < 3; ++k) {
+    mss::pipeline::GraphKeyframe g;
+    g.id = static_cast<mss::common::KeyId>(k);
+    g.t = Timestamp{kSec * 1000000000LL + k * 100000000LL};
+    g.T_w_b.p = mss::common::Vec3(k, 0.0, 0.0);
+    s.keyframes.push_back(g);
+  }
+  s.keyframes[2].T_w_b.R =
+      Eigen::AngleAxisd(0.5 * EIGEN_PI, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  using mss::pipeline::LoopState;
+  s.loops.push_back({0, 2, s.keyframes[0].t, s.keyframes[2].t, LoopState::kActive});
+  s.loops.push_back({1, 2, s.keyframes[1].t, s.keyframes[2].t, LoopState::kReleased});
+  s.loops.push_back({0, 1, s.keyframes[0].t, s.keyframes[1].t, LoopState::kRemoved});
+  return s;
+}
+
+bool same_color(const std_msgs::msg::ColorRGBA& a, const std_msgs::msg::ColorRGBA& b) {
+  return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
+TEST(GraphViz, KeyframeMarkersOnePerKeyframeAfterDeleteAll) {
+  using visualization_msgs::msg::Marker;
+  const auto s = three_keyframes();
+  visualization_msgs::msg::MarkerArray a;
+  mss_ros2::keyframe_markers(s, Timestamp{kSec * 1000000000LL}, "map", {}, a);
+  ASSERT_EQ(a.markers.size(), 4U);
+  EXPECT_EQ(a.markers[0].action, Marker::DELETEALL);
+  for (std::size_t k = 1; k < a.markers.size(); ++k) {
+    const Marker& m = a.markers[k];
+    EXPECT_EQ(m.header.frame_id, "map");
+    EXPECT_EQ(m.header.stamp.sec, kSec);
+    EXPECT_EQ(m.type, Marker::ARROW);
+    EXPECT_EQ(m.action, Marker::ADD);
+    EXPECT_EQ(m.ns, "keyframes");
+    EXPECT_EQ(m.id, static_cast<int>(k - 1));
+    EXPECT_NEAR(m.pose.position.x, static_cast<double>(k - 1), kTol);
+    EXPECT_GT(m.scale.x, 0.0);
+    EXPECT_EQ(m.color.a, 1.0F);
+  }
+  // Heading of the third arrow: 90 deg about z (Hamilton w = z = sqrt(1/2)).
+  EXPECT_NEAR(a.markers[3].pose.orientation.w, std::sqrt(0.5), kTol);
+  EXPECT_NEAR(a.markers[3].pose.orientation.z, std::sqrt(0.5), kTol);
+  // Reuse with an empty graph: only the DELETEALL is left.
+  mss_ros2::keyframe_markers({}, Timestamp{}, "map", {}, a);
+  ASSERT_EQ(a.markers.size(), 1U);
+  EXPECT_EQ(a.markers[0].action, Marker::DELETEALL);
+}
+
+TEST(GraphViz, LoopMarkersColouredByStateAndSkipUnknownKeyframes) {
+  using mss::pipeline::LoopState;
+  using visualization_msgs::msg::Marker;
+  auto s = three_keyframes();
+  s.loops[2].j = 7;  // keyframe 7 is not in the snapshot: that loop is not drawn
+  visualization_msgs::msg::MarkerArray a;
+  mss_ros2::loop_markers(s, Timestamp{}, "map", {}, a);
+  ASSERT_EQ(a.markers.size(), 3U);
+  EXPECT_EQ(a.markers[0].action, Marker::DELETEALL);
+  EXPECT_EQ(a.markers[1].type, Marker::LINE_LIST);
+  EXPECT_EQ(a.markers[1].header.frame_id, "map");
+  ASSERT_EQ(a.markers[1].points.size(), 2U);
+  EXPECT_NEAR(a.markers[1].points[0].x, 0.0, kTol);
+  EXPECT_NEAR(a.markers[1].points[1].x, 2.0, kTol);
+  EXPECT_TRUE(same_color(a.markers[1].color, mss_ros2::loop_color(LoopState::kActive)));
+  EXPECT_TRUE(same_color(a.markers[2].color, mss_ros2::loop_color(LoopState::kReleased)));
+  // The three states have three different colours.
+  EXPECT_FALSE(same_color(mss_ros2::loop_color(LoopState::kActive),
+                          mss_ros2::loop_color(LoopState::kReleased)));
+  EXPECT_FALSE(same_color(mss_ros2::loop_color(LoopState::kActive),
+                          mss_ros2::loop_color(LoopState::kRemoved)));
+  EXPECT_FALSE(same_color(mss_ros2::loop_color(LoopState::kReleased),
+                          mss_ros2::loop_color(LoopState::kRemoved)));
+  s.loops[2].j = 1;
+  mss_ros2::loop_markers(s, Timestamp{}, "map", {}, a);
+  ASSERT_EQ(a.markers.size(), 4U);
+  EXPECT_TRUE(same_color(a.markers[3].color, mss_ros2::loop_color(LoopState::kRemoved)));
+}
+
+TEST(GraphViz, PathAndCounts) {
+  const auto s = three_keyframes();
+  nav_msgs::msg::Path p;
+  mss_ros2::path_from_snapshot(s, Timestamp{kSec * 1000000000LL}, "map", p);
+  EXPECT_EQ(p.header.frame_id, "map");
+  ASSERT_EQ(p.poses.size(), 3U);
+  EXPECT_EQ(p.poses[1].header.stamp.nanosec, 100000000U);  // keyframe 1 at its own time
+  EXPECT_NEAR(p.poses[2].pose.position.x, 2.0, kTol);
+  mss_ros2::GraphCounts c;
+  c.keyframes = 3;
+  c.loops_accepted = 4;
+  c.loops_removed = 1;
+  mss_ros2::VizStyle style;
+  const auto m = mss_ros2::counts_marker(s, c, Timestamp{}, "map", style);
+  EXPECT_EQ(m.type, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
+  EXPECT_EQ(m.header.frame_id, "map");
+  EXPECT_NEAR(m.pose.position.x, 2.0, kTol);  // above the newest keyframe
+  EXPECT_NEAR(m.pose.position.z, style.text_above_m, kTol);
+  EXPECT_NE(m.text.find("keyframes 3"), std::string::npos) << m.text;
+  EXPECT_NE(m.text.find("accepted 4"), std::string::npos) << m.text;
+  EXPECT_NE(m.text.find("1 active, 1 released; 1 removed"), std::string::npos) << m.text;
+}
+
 }  // namespace
