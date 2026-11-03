@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "mss/backend/graph.hpp"
@@ -22,6 +23,7 @@
 #include "mss/odom/wheel_integrator.hpp"
 #include "mss/pipeline/bounded_queue.hpp"
 #include "mss/pipeline/config.hpp"
+#include "mss/pipeline/graph_snapshot.hpp"
 #include "mss/pipeline/map_export.hpp"
 #include "mss/preprocess/preprocessor.hpp"
 #include "mss/scan_match/scan_matcher.hpp"
@@ -175,6 +177,13 @@ struct CoreTestHooks {
 /// thread-safe, never used by production code.
 void set_core_test_hooks(const CoreTestHooks* hooks);
 
+/// ADR-031 loop listing of EstimatorCore::graph_snapshot(): appends loop (i, j) with `state` to
+/// `out` unless (i, j) is already listed; returns whether it was appended. The snapshot lists the
+/// loops in the graph first, then the PCM-removed ones, so a loop that was removed and later
+/// re-added appears once, with its current state. Times are not set here.
+/// Tests: PipelineInternals.GraphLoopListedOnceWithItsCurrentState.
+bool add_graph_loop(common::KeyId i, common::KeyId j, LoopState state, std::vector<GraphLoop>& out);
+
 /// Diagnostic counters of EstimatorCore, all since construction.
 struct CoreCounters {
   std::uint64_t n_keyframes = 0;                 ///< keyframes added to the graph
@@ -270,6 +279,11 @@ class EstimatorCore {
   /// without a backend estimate are skipped and counted (n_no_pose). Reads only; allocates
   /// nothing itself.
   MapExportInfo visit_map(const MapKeyframeVisitor& visit) const;
+  /// Graph snapshot (Estimator::graph_snapshot, ADR-031): clears `out`, then lists every
+  /// keyframe graph_.keyframe_state() has an estimate for and every loop that entered the graph
+  /// (graph_loops_ with PCM, plain_loops_ without; then removed_loops_). Returns the number of
+  /// keyframes the graph knows (estimated or not). Reads only; allocates only when `out` grows.
+  std::size_t graph_snapshot(GraphSnapshot& out) const;
 
  private:
   // Processes deferred GNSS fixes whose time the buffered IMU now covers.
@@ -342,7 +356,7 @@ class EstimatorCore {
   std::vector<loop::KeyframeView> loop_views_;  // reserved map.max_keyframes when enabled
   // ADR-030: the loop factors PCM put in the graph (selected, or frozen when they left PCM) and
   // whether each one is in the graph without the kernel. Owner: this class, estimator thread.
-  struct GraphLoop {
+  struct PcmLoop {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     common::LoopConstraint lc;
     ReleaseEvidence ev;
@@ -353,7 +367,13 @@ class EstimatorCore {
   // Reserved 2 * pcm_max_loops when enabled; it can grow past that (frozen loops stay in the
   // graph), one allocation per growth, per accepted loop, off the hot path (review M-17). The
   // partner scan is O(n^2) per graph change.
-  std::vector<GraphLoop> graph_loops_;
+  std::vector<PcmLoop> graph_loops_;
+  // ADR-031 bookkeeping for graph_snapshot() only (never read by the estimation): the loops added
+  // without PCM, in order (shown while Graph::has_loop_factor holds them), and the loops PCM
+  // removed from the graph, in removal order. One allocation per growth, per accepted or removed
+  // loop, off the hot path. Owner: this class, estimator thread.
+  std::vector<std::pair<common::KeyId, common::KeyId>> plain_loops_;
+  std::vector<std::pair<common::KeyId, common::KeyId>> removed_loops_;
   int loop_skip_ = 0;  // keyframes left to skip after an accepted loop (min_interval_keyframes)
 
   ImuBuffer imu_;

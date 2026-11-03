@@ -295,6 +295,18 @@ TEST(Estimator, LatestStateEmptyUntilImuInitialised) {
   EXPECT_EQ(est.latest_state().state.t, Timestamp{t});
 }
 
+// ADR-031: before the first keyframe the graph snapshot is ok and empty, and it clears what the
+// caller passed in.
+TEST(Estimator, GraphSnapshotEmptyBeforeData) {
+  const Estimator est(make_config());
+  GraphSnapshot snap;
+  snap.keyframes.resize(3);
+  snap.loops.resize(2);
+  EXPECT_TRUE(est.graph_snapshot(snap).is_ok());
+  EXPECT_TRUE(snap.keyframes.empty());
+  EXPECT_TRUE(snap.loops.empty());
+}
+
 // k-way merge step: smallest key first; ties IMU, wheel, GNSS, scan.
 TEST(Estimator, RunOnceOrdersByKeyWithTieOrder) {
   const std::int64_t key = 1000 + kScanSpanNs;  // end time of the scan below
