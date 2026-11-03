@@ -18,6 +18,8 @@
 #include "mss/map/voxel_map.hpp"
 #include "mss/scan_match/scan_matcher.hpp"
 
+#include "loop_detector_internal.hpp"
+
 // Design: ADR-026; derivation: docs/derivations/loop_closure.md.
 namespace mss::loop {
 
@@ -82,6 +84,23 @@ void validate(const LoopConfig& c) {
   require(c.ambiguity_prescreen_ratio >= 0.0 && c.ambiguity_prescreen_ratio <= 1.0,
           "ambiguity_prescreen_ratio",
           "must be in [0, 1]");
+  if (c.place_search) {
+    require(c.place_search_max_ranked >= c.max_candidates,
+            "place_search_max_ranked",
+            "must be >= max_candidates");
+    require(c.place_search_sc_ratio > 0.0 && c.place_search_sc_ratio <= 1.0,
+            "place_search_sc_ratio",
+            "must be in (0, 1]");
+    require(c.place_search_min_separation_m > 0.0 && std::isfinite(c.place_search_min_separation_m),
+            "place_search_min_separation_m",
+            "must be > 0 and finite");
+    require(c.place_search_drift_ratio > 0.0 && std::isfinite(c.place_search_drift_ratio),
+            "place_search_drift_ratio",
+            "must be > 0 and finite");
+    require(c.place_search_cache_tilt_rad > 0.0 && std::isfinite(c.place_search_cache_tilt_rad),
+            "place_search_cache_tilt_deg",
+            "must be > 0 and finite");
+  }
 }
 
 bool pose_finite(const common::Pose& T) {
@@ -170,10 +189,75 @@ struct LoopDetector::Impl {
   std::unique_ptr<scan_match::ScanMatcher> matcher;
   std::unique_ptr<map::VoxelMap> submap;
   std::vector<float> desc_q;
+  // Diagnostics (review N2-3, R3-1): Scan Context descriptors this detector has computed. Owned
+  // by this detector, written and read on its thread only; read by tests through
+  // DetectorInternals (loop_detector_internal.hpp).
+  mutable std::uint64_t n_descriptor_fills = 0;
   std::vector<float> desc_c;
-  // Candidates of one call: (squared distance m^2, index into keyframes). Its capacity
-  // follows the largest store seen (at most map.max_keyframes), so it stops growing.
-  std::vector<std::pair<double, std::size_t>> cand;
+  // Candidates of one call: sort key (squared distance m^2, or the Scan Context distance when
+  // ranked), index into keyframes, and the Scan Context distance and column shift once computed
+  // (sc < 0: not yet). Its capacity follows the largest store seen (at most map.max_keyframes),
+  // so it stops growing.
+  struct Cand {
+    double key = 0.0;
+    std::size_t idx = 0;
+    double sc = -1.0;
+    int shift = 0;
+    bool operator<(const Cand& o) const { return key < o.key || (key == o.key && idx < o.idx); }
+  };
+  std::vector<Cand> cand;
+  // Place search (ADR-030, reviews N-5, N2-1): the Scan Context descriptor cache, one descriptor
+  // per stored keyframe, computed the first time a search needs it and reused by later searches.
+  // A descriptor is levelled with the keyframe's roll and pitch (R_tilt), which a later graph
+  // correction can change, so the slot keeps the R_tilt it was levelled with and is recomputed
+  // when the keyframe's current R_tilt differs by more than place_search_cache_tilt_rad.
+  // Slot = id % cache_slots, cache_slots = map.max_keyframes (the store never holds more and ids
+  // increase, so live keyframes never share a slot); cache_id tells whether a slot holds this
+  // keyframe. Reserved in the constructor when place_search is on (max_keyframes x rings x
+  // sectors floats plus one 3x3 per slot), nothing allocated afterwards.
+  std::vector<float> desc_cache;
+  std::vector<common::KeyId> cache_id;
+  std::vector<unsigned char> cache_used;
+  std::vector<common::Mat3> cache_tilt;
+  std::size_t cache_slots = 0;
+
+  static common::Mat3 tilt_of(const common::Mat3& R) {
+    const double yaw = std::atan2(R(1, 0), R(0, 0));
+    common::Mat3 Rz;
+    Rz << std::cos(yaw), -std::sin(yaw), 0.0, std::sin(yaw), std::cos(yaw), 0.0, 0.0, 0.0, 1.0;
+    const common::Mat3 t = Rz.transpose() * R;
+    return t;
+  }
+
+  std::size_t cells() const {
+    return static_cast<std::size_t>(cfg.sc_rings) * static_cast<std::size_t>(cfg.sc_sectors);
+  }
+
+  // The cached descriptor of keyframe k, computed into its slot when missing.
+  common::Span<const float> cached_descriptor(const KeyframeView& k) {
+    const std::size_t slot = static_cast<std::size_t>(k.id % cache_slots);
+    float* d = desc_cache.data() + slot * cells();
+    const common::Mat3 tilt = tilt_of(k.T_w_b.R);
+    if (cache_used[slot] == 0 || cache_id[slot] != k.id ||
+        !(common::so3_log(cache_tilt[slot].transpose() * tilt).norm() <=
+          cfg.place_search_cache_tilt_rad)) {
+      fill_descriptor(*k.cloud_l, k.T_w_b, desc_c);
+      std::copy(desc_c.begin(), desc_c.end(), d);
+      cache_id[slot] = k.id;
+      cache_used[slot] = 1;
+      cache_tilt[slot] = tilt;
+    }
+    return common::Span<const float>(d, cells());
+  }
+
+  // Stores the query's descriptor (just computed into desc_q) for later searches.
+  void cache_query(const KeyframeView& q) {
+    const std::size_t slot = static_cast<std::size_t>(q.id % cache_slots);
+    std::copy(desc_q.begin(), desc_q.end(), desc_cache.data() + slot * cells());
+    cache_id[slot] = q.id;
+    cache_used[slot] = 1;
+    cache_tilt[slot] = tilt_of(q.T_w_b.R);
+  }
   map::NeighborBuffer nbr;
 
   // Scan Context of cloud_l in the gravity-levelled body frame h of T_w_b:
@@ -181,6 +265,7 @@ struct LoopDetector::Impl {
   void fill_descriptor(const common::ScanFrame& cloud_l,
                        const common::Pose& T_w_b,
                        std::vector<float>& out) const {
+    ++n_descriptor_fills;
     const int rings = cfg.sc_rings;
     const int sectors = cfg.sc_sectors;
     std::fill(out.begin(), out.end(), 0.0F);
@@ -474,7 +559,7 @@ struct LoopDetector::Impl {
 
   // ICP of the ambiguity seeds: max_iterations = ambiguity_icp_max_iterations.
   std::unique_ptr<scan_match::ScanMatcher> amb_matcher;
-  std::array<Fit, 2> fits;  // the step-3 seeds' fits of one candidate
+  std::array<Fit, 3> fits;  // the step-3 seeds' fits of one candidate
   Fit amb_fit;              // scratch of ambiguity_search
 };
 
@@ -508,6 +593,13 @@ LoopDetector::LoopDetector(const LoopConfig& cfg,
       static_cast<std::size_t>(cfg.sc_rings) * static_cast<std::size_t>(cfg.sc_sectors);
   m.desc_q.assign(cells, 0.0F);
   m.desc_c.assign(cells, 0.0F);
+  if (cfg.place_search) {
+    m.cache_slots = std::max<std::size_t>(1, map_cfg.max_keyframes);
+    m.desc_cache.assign(m.cache_slots * cells, 0.0F);
+    m.cache_id.assign(m.cache_slots, 0);
+    m.cache_used.assign(m.cache_slots, 0);
+    m.cache_tilt.assign(m.cache_slots, common::Mat3::Identity());
+  }
 }
 
 LoopDetector::LoopDetector(const LoopConfig& cfg) : impl_(std::make_unique<Impl>()) {
@@ -518,6 +610,10 @@ LoopDetector::LoopDetector(const LoopConfig& cfg) : impl_(std::make_unique<Impl>
 }
 
 LoopDetector::~LoopDetector() = default;
+
+std::uint64_t DetectorInternals::descriptor_fill_count(const LoopDetector& d) {
+  return d.impl_ ? d.impl_->n_descriptor_fills : 0U;
+}
 LoopDetector::LoopDetector(LoopDetector&&) noexcept = default;
 LoopDetector& LoopDetector::operator=(LoopDetector&&) noexcept = default;
 
@@ -562,7 +658,10 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
     }
     const double d2 = (k.T_w_b.p - query.T_w_b.p).squaredNorm();
     if (d2 <= r2) {
-      m.cand.emplace_back(d2, i);
+      Impl::Cand ce;
+      ce.key = d2;
+      ce.idx = i;
+      m.cand.push_back(ce);
     }
   }
   res.n_candidates = static_cast<int>(m.cand.size());
@@ -570,9 +669,60 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
     return res;
   }
   std::sort(m.cand.begin(), m.cand.end());  // nearest first; ties by store order
+  m.fill_descriptor(*query.cloud_l, query.T_w_b, m.desc_q);
+  if (c.place_search) {
+    m.cache_query(query);
+  }
+  const auto sc_of = [&](Impl::Cand& ce) {
+    if (ce.sc >= 0.0) {
+      return;
+    }
+    if (c.place_search) {
+      ce.sc = scan_context_distance(common::Span<const float>(m.desc_q),
+                                    m.cached_descriptor(keyframes[ce.idx]),
+                                    c.sc_rings,
+                                    c.sc_sectors,
+                                    ce.shift);
+      return;
+    }
+    m.fill_descriptor(*keyframes[ce.idx].cloud_l, keyframes[ce.idx].T_w_b, m.desc_c);
+    ce.sc = scan_context_distance(common::Span<const float>(m.desc_q),
+                                  common::Span<const float>(m.desc_c),
+                                  c.sc_rings,
+                                  c.sc_sectors,
+                                  ce.shift);
+  };
+  // Place search (ADR-030): the nearest place_search_max_ranked candidates (cost bound, review
+  // B-3) ranked by Scan Context, so the revisited place wins over the nearest keyframe of a
+  // drifted estimate; only when the best one is distinct (review B-2): no candidate at least
+  // place_search_min_separation_m from it comes within place_search_sc_ratio of its distance.
+  // Otherwise nearest first and the graph seeds only, as without the flag.
+  bool place = false;
+  if (c.place_search) {
+    const std::size_t n_rank =
+        std::min(m.cand.size(), static_cast<std::size_t>(c.place_search_max_ranked));
+    std::size_t best = 0;
+    for (std::size_t k = 0; k < n_rank; ++k) {
+      sc_of(m.cand[k]);
+      best = m.cand[k].sc < m.cand[best].sc ? k : best;
+    }
+    const common::Vec3& p_best = keyframes[m.cand[best].idx].T_w_b.p;
+    double other = std::numeric_limits<double>::infinity();
+    for (std::size_t k = 0; k < n_rank; ++k) {
+      if ((keyframes[m.cand[k].idx].T_w_b.p - p_best).norm() >= c.place_search_min_separation_m) {
+        other = std::min(other, m.cand[k].sc);
+      }
+    }
+    place = m.cand[best].sc <= c.place_search_sc_ratio * other;
+    if (place) {
+      for (std::size_t k = 0; k < n_rank; ++k) {
+        m.cand[k].key = m.cand[k].sc;
+      }
+      std::sort(m.cand.begin(), m.cand.begin() + static_cast<std::ptrdiff_t>(n_rank));
+    }
+  }
   const std::size_t n_try = std::min(m.cand.size(), static_cast<std::size_t>(c.max_candidates));
 
-  m.fill_descriptor(*query.cloud_l, query.T_w_b, m.desc_q);
   const double sector_rad = kTwoPi / c.sc_sectors;
   const double yaw_q = yaw_of(query.T_w_b.R);
   const common::Mat3 R_tilt_q = rot_z(yaw_q).transpose() * query.T_w_b.R;
@@ -580,17 +730,12 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
   bool verified_any = false;
   res.outcome = LoopOutcome::kDescriptor;
   for (std::size_t n = 0; n < n_try; ++n) {
-    const std::size_t ci = m.cand[n].second;
+    const std::size_t ci = m.cand[n].idx;
     const KeyframeView& cand = keyframes[ci];
-    // 2. Scan Context gate and relative yaw (query - candidate).
-    m.fill_descriptor(*cand.cloud_l, cand.T_w_b, m.desc_c);
-    int shift = 0;
-    const double sc_d = scan_context_distance(common::Span<const float>(m.desc_q),
-                                              common::Span<const float>(m.desc_c),
-                                              c.sc_rings,
-                                              c.sc_sectors,
-                                              shift);
-    const double sc_yaw = wrap_pi(shift * sector_rad);
+    // 2. Scan Context gate and relative yaw (query - candidate); computed once per candidate.
+    sc_of(m.cand[n]);
+    const double sc_d = m.cand[n].sc;
+    const double sc_yaw = wrap_pi(m.cand[n].shift * sector_rad);
     if (!verified_any) {
       res.candidate = cand.id;
       res.candidate_t = cand.t;
@@ -616,14 +761,17 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
     // ADR-028: the graph's covariance is used only with graph_covariance_gate (default off).
     Impl::Gate gate(m, cand, query, c.graph_covariance_gate ? rel : nullptr);
     // Seeds: the graph pose of q, and q with the Scan Context yaw when that differs from
-    // the graph yaw by more than one sector.
+    // the graph yaw by more than one sector; with place_search also q at the candidate's
+    // position with the Scan Context yaw (the revisit taken as co-located).
     const double yaw_seed = wrap_pi(yaw_of(cand.T_w_b.R) + sc_yaw);
-    std::array<common::Pose, 2> seeds;
+    std::array<common::Pose, 3> seeds;
     seeds[0] = query.T_w_b;
     std::size_t n_seeds = 1;
     if (std::abs(wrap_pi(yaw_seed - yaw_q)) > sector_rad) {
-      seeds[1] = common::Pose{rot_z(yaw_seed) * R_tilt_q, query.T_w_b.p};
-      n_seeds = 2;
+      seeds[n_seeds++] = common::Pose{rot_z(yaw_seed) * R_tilt_q, query.T_w_b.p};
+    }
+    if (place) {
+      seeds[n_seeds++] = common::Pose{rot_z(yaw_seed) * R_tilt_q, cand.T_w_b.p};
     }
     // Every fit within the fixed gates is kept (a competitor); the best is the plausible one
     // (chi-square gate) with the highest inlier ratio.
@@ -634,16 +782,48 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
     bool no_marginal = false;
     double corr_m = std::numeric_limits<double>::quiet_NaN();
     double corr_yaw = std::numeric_limits<double>::quiet_NaN();
+    // ADR-030: the place seed's fit when only its position failed max_correction_m. It cannot
+    // be the loop, but it competes with a graph-seed fit elsewhere (ambiguity check): on E-07
+    // a graph-seed fit 2.7 m wrong won once the true, co-located fit was gated out.
+    double far_ratio = 0.0;
+    // Review N-4: a place-seed fit is a loop only when its correction is plausible as drift:
+    // within icp_max_corr_dist_m (what the graph seed could reach anyway) plus
+    // place_search_drift_ratio times the distance travelled from the candidate to the query
+    // (store order). An identical place that was never travelled from (a copy only a few metres
+    // away along a short path) is then a competitor, not the loop.
+    double place_bound_m = 0.0;
+    if (place) {
+      double path_m = 0.0;
+      for (std::size_t k = ci + 1; k < keyframes.size(); ++k) {
+        path_m += (keyframes[k].T_w_b.p - keyframes[k - 1].T_w_b.p).norm();
+        if (keyframes[k].id == query.id) {
+          break;
+        }
+      }
+      place_bound_m = c.icp_max_corr_dist_m + c.place_search_drift_ratio * path_m;
+    }
+    common::Pose far_pose;
     for (std::size_t s = 0; s < n_seeds; ++s) {
       Impl::Fit& f = m.fits[n_fits];
-      const Impl::GateOutcome g =
+      Impl::GateOutcome g =
           m.fit_from(*m.matcher, true, *query.cloud_l, T_h_l_q, seeds[s], gate, f, res);
+      if (place && s + 1 == n_seeds && g == Impl::GateOutcome::kOk &&
+          !((f.T_w_bq.p - query.T_w_b.p).norm() <= place_bound_m)) {
+        g = Impl::GateOutcome::kTooFar;  // implausible as drift: competes only (below)
+      }
       if (g == Impl::GateOutcome::kTooFar || g == Impl::GateOutcome::kOk) {
         corr_m = (f.T_w_bq.p - query.T_w_b.p).norm();  // diagnostics (LoopResult)
         corr_yaw = wrap_pi(yaw_of(f.T_w_bq.R) - yaw_q);
       }
       if (g == Impl::GateOutcome::kTooFar) {
         too_far = true;
+        if (place && s + 1 == n_seeds &&
+            std::abs(wrap_pi(yaw_of(f.T_w_bq.R) - yaw_q)) <= c.max_correction_rad) {
+          double far_rms = 0.0;
+          m.fitness(*query.cloud_l, T_h_l_q, f.mr.T_w_l, far_ratio, far_rms);
+          far_ratio = far_rms <= c.max_rms_m ? far_ratio : 0.0;
+          far_pose = f.T_w_bq;
+        }
       } else if (g == Impl::GateOutcome::kNoMarginal) {
         no_marginal = true;
       } else if (g == Impl::GateOutcome::kOk) {
@@ -682,6 +862,10 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
           if (s != best) {
             amb = std::max(amb, m.competitor_ratio(b, m.fits[s]));
           }
+        }
+        if (far_ratio > 0.0 && b.ratio > 0.0 &&
+            (b.T_w_bq.p - far_pose.p).norm() > c.ambiguity_min_separation_m) {
+          amb = std::max(amb, far_ratio / b.ratio);
         }
         if (amb < c.ambiguity_max_ratio) {
           amb = std::max(amb, m.ambiguity_search(*query.cloud_l, T_h_l_q, query, b, gate, res));

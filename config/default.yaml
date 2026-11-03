@@ -355,6 +355,23 @@ mss_node:
       search_radius_m: 10.0      # candidate keyframes within this distance, m (drift beyond it is not found)
       min_time_gap_s: 30.0       # candidates must be at least this much older, s
       max_candidates: 1          # candidates verified per keyframe, nearest first (>= 1)
+      # Place search (ADR-030, C1-1): rank the candidates within the radius by Scan Context
+      # distance and also seed ICP with the query at the candidate's position (Scan Context
+      # yaw), for drift of metres. Off = nearest first, graph seeds only.
+      place_search: false        # flag
+      # Place-search bounds (ADR-030): rank at most this many nearest candidates (>= max_candidates)
+      # and use the ranking and the place seed only when the best candidate is distinct: its
+      # Scan Context distance <= place_search_sc_ratio x the best one at least
+      # place_search_min_separation_m away from it (else nearest first, graph seeds only).
+      place_search_max_ranked: 20      # candidates, >= max_candidates
+      place_search_sc_ratio: 0.8       # in (0, 1]
+      place_search_min_separation_m: 2.0  # m, > 0 (beyond the neighbouring keyframes of one place)
+      # A place-seed fit is a loop only within icp_max_corr_dist_m + this x the distance
+      # travelled from the candidate (else a competitor only): 2 % as kernel_release_drift_ratio.
+      place_search_drift_ratio: 0.02   # m per m travelled, > 0
+      # Descriptor cache: a stored keyframe's descriptor is recomputed when its roll and pitch
+      # moved by more than this since it was levelled (graph corrections can tilt it).
+      place_search_cache_tilt_deg: 0.1  # deg (radians in code), > 0
       min_interval_keyframes: 5  # keyframes skipped after an accepted loop (>= 0)
       submap_keyframes: 2        # store neighbours on each side of the candidate in the submap
       submap_max_voxels: 20000   # voxels reserved for the submap (memory bound)
