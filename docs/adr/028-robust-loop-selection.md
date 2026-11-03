@@ -2,6 +2,7 @@
 
 - Trạng thái: đề xuất
 - Ngày: 2026-10-30
+- Sửa đổi bởi: ADR-030 (quyết định 3: loop được PCM chọn và có một loop bạn ở nơi khác, cách từ 5 m, với hiệu chỉnh hợp lý theo quãng đường, vào graph không có kernel, sau cờ `loop_closure.kernel_release`, mặc định tắt; cặp loop từ một chỗ vẫn giữ Cauchy)
 - Liên quan: ADR-004 (iSAM2), ADR-005 (luồng), ADR-015 (Cauchy cho loop), ADR-016 (dựng lại bản đồ sau loop), ADR-026 (loop closure và sửa đổi 2026-10-30), backlog C1-3, C1-12, C1-13, C1-16, C1-23
 
 ## Bối cảnh

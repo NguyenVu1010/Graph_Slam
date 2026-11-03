@@ -140,8 +140,10 @@ Test tích hợp chạy cả `Estimator` trên bag mô phỏng. Ngưỡng là m�
 | E-04 | Hành lang dài | Xử lý suy biến | ATE khi bật suy biến nhỏ hơn khi tắt | Hằng đêm |
 | E-05 | Ngoài trời, mất GNSS 60 giây | Hồi phục sau mất tín hiệu | Trôi trong vùng mất < \[x\] m; hội tụ lại trong \[y\] giây khi có GNSS | Hằng đêm |
 | E-06 | Ngoài trời, multipath | Loại outlier GNSS | Không có bước nhảy pose > \[z\] m | Hằng đêm |
-| E-07 | Vòng khép kín dài (world `outdoor`, vòng 312 m cộng 30 m đi lại, trôi thật) | Loop closure | Sai số đầu–cuối giảm so với khi tắt loop | Hằng đêm |
-| E-07W | Vòng kho ba lần (world `warehouse`, ít trôi) | Loop closure trong nhà: loop được tìm, không làm hại | Sai số đầu–cuối không tăng khi bật loop | Hằng đêm |
+| E-07 | Vòng khép kín dài (world `outdoor`, vòng 312 m cộng 30 m đi lại, trôi thật) | Loop closure | Sai số đầu–cuối và ATE giảm so với khi tắt loop, chấm trên `kf_opt.tum` (quỹ đạo keyframe đã tối ưu của `mss_bench`; quyết định của chủ dự án, H6) | Hằng đêm |
+| E-07W | Vòng kho ba lần (world `warehouse`, ít trôi) | Loop closure trong nhà: loop được tìm, không làm hại | Sai số đầu–cuối không tăng khi bật loop, chấm trên `kf_opt.tum` | Hằng đêm |
+
+E-01 đến E-03 chấm trên `est.tum` (ước lượng trực tuyến). E-07 và E-07W chấm trên `kf_opt.tum` (quyết định của chủ dự án, H6): loop đến cuối hành trình sửa quỹ đạo về trước, không sửa `est.tum` đã ghi. `tools/loop_eval.py` tính cả hai (`docs/derivations/loop_closure.md` mục 14, 15).
 
 **Hiệu năng**
 
