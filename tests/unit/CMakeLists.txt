@@ -21,6 +21,8 @@ target_include_directories(test_gnss PRIVATE ${CMAKE_SOURCE_DIR}/core/gnss/src
   ${CMAKE_SOURCE_DIR}/core/pipeline/src)
 mss_add_test(test_scan_match test_scan_match.cpp)
 mss_add_test(test_loop test_loop_detector.cpp test_loop_selector.cpp alloc_counter_impl.cpp)
+# core/loop/src: loop_detector_internal.hpp (descriptor fill counter, review N2-3).
+target_include_directories(test_loop PRIVATE ${CMAKE_SOURCE_DIR}/core/loop/src)
 target_include_directories(test_scan_match PRIVATE ${CMAKE_SOURCE_DIR}/core/scan_match/src)
 # backend API (both builds) and the no-GTSAM stub.
 mss_add_test(test_backend_api test_backend_api.cpp)
