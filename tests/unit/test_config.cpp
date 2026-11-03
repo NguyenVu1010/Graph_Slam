@@ -135,6 +135,12 @@ TEST(Config, LoopClosureKeys) {
   // ADR-030: kernel release and place search, both off.
   EXPECT_FALSE(l.kernel_release);
   EXPECT_EQ(l.kernel_release_window_keyframes, 20);
+  EXPECT_FALSE(l.place_search);
+  EXPECT_EQ(l.place_search_max_ranked, 20);
+  EXPECT_DOUBLE_EQ(l.place_search_sc_ratio, 0.8);
+  EXPECT_DOUBLE_EQ(l.place_search_min_separation_m, 2.0);
+  EXPECT_DOUBLE_EQ(l.place_search_drift_ratio, 0.02);
+  EXPECT_NEAR(l.place_search_cache_tilt_rad, 0.1 * kRadPerDeg, 1e-12);
   EXPECT_DOUBLE_EQ(l.kernel_release_min_separation_m, 5.0);
   EXPECT_DOUBLE_EQ(l.kernel_release_drift_ratio, 0.02);
   const std::string base = read_file(kDefault);
@@ -158,6 +164,25 @@ TEST(Config, LoopClosureKeys) {
                                         overlay("    loop_closure:\n      kernel_release: true\n"
                                                 "      pcm_max_loops: 22\n"));
   EXPECT_TRUE(enough_held.is_ok()) << enough_held.reason();
+  // Review B-3: the ranking bound.
+  const auto bad_place = parse_config(base,
+                                      overlay("    loop_closure:\n      max_candidates: 3\n"
+                                              "      place_search_max_ranked: 2\n"
+                                              "      place_search_sc_ratio: 0.0\n"
+                                              "      kernel_release_drift_ratio: 0.0\n"
+                                              "      place_search_drift_ratio: 0.0\n"
+                                              "      place_search_cache_tilt_deg: 0.0\n"));
+  ASSERT_FALSE(bad_place.is_ok());
+  EXPECT_TRUE(mentions(bad_place.reason(), "loop_closure.place_search_max_ranked"))
+      << bad_place.reason();
+  EXPECT_TRUE(mentions(bad_place.reason(), "loop_closure.place_search_sc_ratio"))
+      << bad_place.reason();
+  EXPECT_TRUE(mentions(bad_place.reason(), "loop_closure.kernel_release_drift_ratio"))
+      << bad_place.reason();
+  EXPECT_TRUE(mentions(bad_place.reason(), "loop_closure.place_search_drift_ratio"))
+      << bad_place.reason();
+  EXPECT_TRUE(mentions(bad_place.reason(), "loop_closure.place_search_cache_tilt_deg"))
+      << bad_place.reason();
   const auto bad = parse_config(base,
                                 overlay("    loop_closure:\n      sc_sectors: 3\n"
                                         "      min_inlier_ratio: 1.5\n"

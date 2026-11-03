@@ -1,7 +1,9 @@
 // L-01..L-03 (Test_CI_CD.md, loop module) and the LoopDetector contract (ADR-026), with the
 // correction gate from the graph's uncertainty and the ambiguity check (ADR-026 amendment).
 // Scenes: tests/unit/loop_scenes.hpp (no randomness; every value fixed).
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <stdexcept>
 #include <vector>
@@ -14,6 +16,7 @@
 #include "mss/common/span.hpp"
 #include "mss/loop/loop_detector.hpp"
 
+#include "loop_detector_internal.hpp"
 #include "loop_scenes.hpp"
 
 namespace mss::loop {
@@ -111,6 +114,8 @@ class LoopFixture : public ::testing::Test {
     e_yaw = std::abs(wrap(yaw(r.constraint.T_bi_bj.R) - yaw(truth.R)));
   }
 
+  void l02(const LoopConfig& lc, const char* label);
+
   pipeline::Config cfg_;
   ScanFrame cloud_c_{kMaxPoints};
   ScanFrame cloud_q_{kMaxPoints};
@@ -166,6 +171,19 @@ TEST_F(LoopFixture, CorrectionFieldsReportTheAskedCorrection) {
 // "same place" (drift), plus pairs at the same place: no accepted loop may disagree with the
 // truth. Recall of the same-place pairs is reported.
 TEST_F(LoopFixture, L02_DifferentPlacesNoFalseLoop) {
+  l02(cfg_.loop_closure, "shipped");
+}
+
+// Review B-2: L-02 with the E-07 loop-scene settings (place search, max_correction_m 6): one
+// stored keyframe, so place search ranks nothing but seeds ICP at the candidate; no false loop.
+TEST_F(LoopFixture, L02_DifferentPlacesNoFalseLoopWithPlaceSearch) {
+  LoopConfig lc = cfg_.loop_closure;
+  lc.place_search = true;
+  lc.max_correction_m = 6.0;
+  l02(lc, "place search, 6 m");
+}
+
+void LoopFixture::l02(const LoopConfig& lc, const char* label) {
   const std::vector<common::Vec3> hall = test::hall_points_w();
   const double places[][2] = {
       {-14.0, 0.0}, {-8.0, -2.0}, {-3.0, 3.0}, {3.0, 0.5}, {9.0, -1.0}, {14.0, 3.0}};
@@ -183,7 +201,7 @@ TEST_F(LoopFixture, L02_DifferentPlacesNoFalseLoop) {
       pr.graph_c = pr.truth_c;
       // The graph believes q is next to c whatever the truth (drift of up to 12 m).
       pr.graph_q = body_pose(places[a][0] + 0.3, places[a][1], yaw_q);
-      const LoopResult r = run(hall, hall, pr, cfg_.loop_closure);
+      const LoopResult r = run(hall, hall, pr, lc);
       same_place += a == b ? 1 : 0;
       if (r.outcome != LoopOutcome::kAccepted) {
         continue;
@@ -200,7 +218,8 @@ TEST_F(LoopFixture, L02_DifferentPlacesNoFalseLoop) {
   }
   RecordProperty("accepted", accepted);
   RecordProperty("same_place_recall", same_place_accepted);
-  std::printf("L-02: %d accepted of %d pairs, same-place recall %d / %d\n",
+  std::printf("L-02 (%s): %d accepted of %d pairs, same-place recall %d / %d\n",
+              label,
               accepted,
               n * n,
               same_place_accepted,
@@ -536,6 +555,268 @@ TEST(LoopDetector, EnabledValidatesConfig) {
   lc = cfg.loop_closure;
   lc.ambiguity_chi2_margin = std::nan("");
   EXPECT_THROW(LoopDetector(lc, cfg.scan_match, cfg.map, Pose{}, 10), std::invalid_argument);
+}
+
+// Place search (ADR-030, backlog C1-1, C1-31). The query is truly at keyframe A, but its graph
+// pose carries 4 m of drift along x, which puts it next to keyframe B, 4 m from A: the
+// nearest keyframe on the estimate is the wrong place and the graph seed is 4 m outside ICP's
+// basin. Shipped (place_search off): no loop. Place search with max_correction_m 6 (and a drift
+// ratio that admits 4 m over this scene's short path, see below): A ranks
+// first by Scan Context, ICP from the place seed closes it, the measurement is the truth. With
+// the shipped 3 m gate the true fit is gated out and no loop is accepted, false or true (the
+// gated place fit still competes with any graph-seed fit: E-07 had a 2.7 m false loop without
+// that).
+class PlaceSearchFixture : public LoopFixture {
+ protected:
+  LoopResult run3(const LoopConfig& lc, const Pose& truth_q, const Pose& graph_q) {
+    const std::vector<common::Vec3> hall = test::hall_points_w();
+    const Pose T_b_l = test::loop_T_b_l();
+    const Pose a = body_pose(-2.0, 1.0, 0.0);
+    const Pose b = body_pose(2.0, 1.0, 0.0);
+    test::scan_at(hall, a * T_b_l, kRangeM, cloud_c_);
+    test::scan_at(hall, b * T_b_l, kRangeM, cloud_b_);
+    test::scan_at(hall, truth_q * T_b_l, kRangeM, cloud_q_);
+    LoopDetector det(lc, cfg_.scan_match, cfg_.map, T_b_l, kMaxPoints);
+    std::vector<KeyframeView> kfs(3);
+    kfs[0].id = 0;
+    kfs[0].t = common::Timestamp{0};
+    kfs[0].T_w_b = a;
+    kfs[0].cloud_l = &cloud_c_;
+    kfs[1].id = 1;
+    kfs[1].t = common::Timestamp{1 * kNs};
+    kfs[1].T_w_b = b;
+    kfs[1].cloud_l = &cloud_b_;
+    kfs[2].id = 2;
+    kfs[2].t = common::Timestamp{100 * kNs};
+    kfs[2].T_w_b = graph_q;
+    kfs[2].cloud_l = &cloud_q_;
+    return det.detect(kfs[2], common::Span<const KeyframeView>(kfs));
+  }
+  ScanFrame cloud_b_{kMaxPoints};
+};
+
+TEST_F(PlaceSearchFixture, ClosesDriftBeyondTheIcpBasin) {
+  const Pose truth_q = body_pose(-1.8, 1.1, 20.0 * kDeg);
+  const Pose graph_q = body_pose(2.2, 1.1, 23.0 * kDeg);  // 4 m of drift along x
+  LoopConfig lc = cfg_.loop_closure;
+  ASSERT_FALSE(lc.place_search);
+  const LoopResult shipped = run3(lc, truth_q, graph_q);
+  lc.place_search = true;
+  const LoopResult gated = run3(lc, truth_q, graph_q);
+  lc.max_correction_m = 6.0;
+  // Review N-4: with the shipped drift ratio a 4 m place-seed correction after a 4.2 m path
+  // (this three-keyframe scene) is implausible as drift. A real revisit comes after
+  // hundreds of metres (E-07: 312 m, bound 2 + 6.2 m); the ratio 1 stands in for that path.
+  const LoopResult short_path = run3(lc, truth_q, graph_q);
+  lc.place_search_drift_ratio = 1.0;
+  const LoopResult wide = run3(lc, truth_q, graph_q);
+  std::printf(
+      "[ place search ] shipped: outcome %d cand %llu; place, 3 m gate: outcome %d corr %.2f m; "
+      "place, 6 m gate: outcome %d cand %llu sc %.3f corr %.2f m\n",
+      static_cast<int>(shipped.outcome),
+      static_cast<unsigned long long>(shipped.candidate),
+      static_cast<int>(gated.outcome),
+      gated.correction_m,
+      static_cast<int>(wide.outcome),
+      static_cast<unsigned long long>(wide.candidate),
+      wide.sc_distance,
+      wide.correction_m);
+  const Pose truth = body_pose(-2.0, 1.0, 0.0).inverse() * truth_q;
+  const auto is_false = [&](const LoopResult& r) {
+    return r.outcome == LoopOutcome::kAccepted &&
+           ((r.constraint.T_bi_bj.p - truth.p).norm() > kMaxLoopErrM || r.constraint.i != 0);
+  };
+  EXPECT_NE(shipped.outcome, LoopOutcome::kAccepted);
+  EXPECT_NE(gated.outcome, LoopOutcome::kAccepted);
+  EXPECT_FALSE(is_false(shipped));
+  EXPECT_FALSE(is_false(gated));
+  // The place-seed fit is only a competitor here; the graph seed itself reaches the truth in
+  // this hall with the 6 m gate, so a loop may still be accepted, but never a false one.
+  EXPECT_FALSE(is_false(short_path));
+  ASSERT_EQ(wide.outcome, LoopOutcome::kAccepted);
+  EXPECT_EQ(wide.constraint.i, 0U);  // A, not the nearest keyframe B
+  EXPECT_LT((wide.constraint.T_bi_bj.p - truth.p).norm(), kMaxLoopErrM);
+  EXPECT_LT(std::abs(wrap(yaw(wide.constraint.T_bi_bj.R) - yaw(truth.R))), kMaxLoopErrRad);
+  EXPECT_GT(wide.correction_m, 3.5);
+}
+
+// Place search changes nothing for a loop the shipped search already closes (L-01 pose pair):
+// accepted, the same candidate, the measurement within the same accuracy.
+TEST_F(PlaceSearchFixture, SmallDriftUnchanged) {
+  const Pose truth_q = body_pose(-1.8, 1.1, 90.0 * kDeg);
+  const Pose graph_q = body_pose(-1.4, 1.1, 95.0 * kDeg);
+  LoopConfig lc = cfg_.loop_closure;
+  const LoopResult off = run3(lc, truth_q, graph_q);
+  lc.place_search = true;
+  const LoopResult on = run3(lc, truth_q, graph_q);
+  ASSERT_EQ(off.outcome, LoopOutcome::kAccepted);
+  ASSERT_EQ(on.outcome, LoopOutcome::kAccepted);
+  EXPECT_EQ(on.constraint.i, off.constraint.i);
+  const Pose truth = body_pose(-2.0, 1.0, 0.0).inverse() * truth_q;
+  EXPECT_LT((on.constraint.T_bi_bj.p - truth.p).norm(), kMaxLoopErrM);
+}
+
+// Review B-3: the cost of place search on a dense revisit. 300 stored keyframes inside the
+// radius (a robot turning in place at the candidate: one keyframe per 10 deg of yaw, 1.2 turns
+// around 25 places) and the query among them: with place_search only the nearest
+// place_search_max_ranked candidates get a descriptor, so the time per search stays near the
+// shipped one, while ranking every candidate costs one descriptor and one shift search each.
+// Times are printed (desktop numbers in loop_closure.md section 15), the work bound asserted.
+TEST(LoopDetector, PlaceSearchCostIsBoundedOnADenseRevisit) {
+  pipeline::Config cfg = test::shipped_loop_config();
+  const std::vector<common::Vec3> hall = test::hall_points_w();
+  const Pose T_b_l = test::loop_T_b_l();
+  constexpr int kStored = 300;
+  std::vector<ScanFrame> clouds;
+  clouds.reserve(kStored + 1);
+  std::vector<KeyframeView> kfs(kStored + 1);
+  for (int k = 0; k <= kStored; ++k) {
+    const double yaw_k = 10.0 * kDeg * k;
+    const Pose T = body_pose(-2.0 + 0.1 * (k % 25), 1.0 + 0.05 * (k % 7), yaw_k);
+    clouds.emplace_back(kMaxPoints);
+    test::scan_at(hall, T * T_b_l, kRangeM, clouds.back());
+    kfs[static_cast<std::size_t>(k)].id = static_cast<common::KeyId>(k);
+    kfs[static_cast<std::size_t>(k)].t = common::Timestamp{(k == kStored ? 1000 : k) * kNs};
+    kfs[static_cast<std::size_t>(k)].T_w_b = T;
+  }
+  for (int k = 0; k <= kStored; ++k) {
+    kfs[static_cast<std::size_t>(k)].cloud_l = &clouds[static_cast<std::size_t>(k)];
+  }
+  // First search (descriptors computed and cached) and later searches (cache hits): time, ms
+  // (printed only), and descriptors computed (detail::descriptor_fill_count(det), asserted).
+  struct Times {
+    double first = 0.0;
+    double later = 0.0;
+    std::uint64_t fills_first = 0;
+    std::uint64_t fills_later = 0;  // per later search
+  };
+  const auto time_ms = [&](const LoopConfig& lc, LoopResult& out) {
+    LoopDetector det(lc, cfg.scan_match, cfg.map, T_b_l, kMaxPoints);
+    Times t;
+    std::uint64_t f0 = detail::descriptor_fill_count(det);
+    auto t0 = std::chrono::steady_clock::now();
+    out = det.detect(kfs.back(), common::Span<const KeyframeView>(kfs));
+    t.fills_first = detail::descriptor_fill_count(det) - f0;
+    f0 = detail::descriptor_fill_count(det);
+    t.first =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    t0 = std::chrono::steady_clock::now();
+    constexpr int kReps = 3;
+    for (int r = 0; r < kReps; ++r) {
+      out = det.detect(kfs.back(), common::Span<const KeyframeView>(kfs));
+    }
+    t.later =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() /
+        kReps;
+    t.fills_later = (detail::descriptor_fill_count(det) - f0) / kReps;
+    return t;
+  };
+  LoopConfig off = cfg.loop_closure;
+  LoopConfig capped = off;
+  capped.place_search = true;
+  LoopConfig all = capped;
+  all.place_search_max_ranked = kStored;
+  LoopResult r_off;
+  LoopResult r_capped;
+  LoopResult r_all;
+  const Times t_off = time_ms(off, r_off);
+  const Times t_capped = time_ms(capped, r_capped);
+  const Times t_all = time_ms(all, r_all);
+  std::printf(
+      "[ place search cost ] %d candidates in the radius, ms per search (first / later, "
+      "descriptor cache warm): shipped %.1f / %.1f, place search capped at %d %.1f / %.1f, "
+      "uncapped %.1f / %.1f\n",
+      r_off.n_candidates,
+      t_off.first,
+      t_off.later,
+      capped.place_search_max_ranked,
+      t_capped.first,
+      t_capped.later,
+      t_all.first,
+      t_all.later);
+  ASSERT_EQ(r_off.n_candidates, kStored);
+  EXPECT_EQ(r_capped.outcome, r_all.outcome);
+  // Reviews N-5, N2-3: the work, not the time. The first search computes the query's descriptor
+  // and one per ranked candidate; a later search (poses unchanged) only the query's, capped or
+  // not. The shipped search computes the query's and the verified candidate's every time.
+  EXPECT_EQ(t_capped.fills_first, 1U + static_cast<std::uint64_t>(capped.place_search_max_ranked));
+  EXPECT_EQ(t_all.fills_first, 1U + static_cast<std::uint64_t>(kStored));
+  EXPECT_EQ(t_capped.fills_later, 1U);
+  EXPECT_EQ(t_all.fills_later, 1U);
+  EXPECT_EQ(t_off.fills_later, 1U + static_cast<std::uint64_t>(cfg.loop_closure.max_candidates));
+}
+
+// Review N2-1: the descriptor cache follows a change of tilt. Stored keyframes in the hall are
+// searched once (descriptors cached), then the graph tilts every stored keyframe by 2 deg of roll
+// (beyond place_search_cache_tilt_deg, 0.1): the warm detector recomputes every ranked descriptor
+// and its ranking is the fresh detector's, bit for bit. A further tilt below the threshold
+// (0.05 deg more) keeps the cache (only the query's descriptor is computed).
+TEST(LoopDetector, PlaceSearchCacheRefreshesOnTiltChange) {
+  pipeline::Config cfg = test::shipped_loop_config();
+  LoopConfig lc = cfg.loop_closure;
+  lc.place_search = true;
+  lc.max_correction_m = 6.0;
+  const std::vector<common::Vec3> hall = test::hall_points_w();
+  const Pose T_b_l = test::loop_T_b_l();
+  constexpr int kStored = 8;
+  std::vector<ScanFrame> clouds;
+  clouds.reserve(kStored + 1);
+  std::vector<Pose> truth;
+  for (int k = 0; k <= kStored; ++k) {
+    truth.push_back(k < kStored ? body_pose(-6.0 + 1.5 * k, 1.0, 0.2 * k)
+                                : body_pose(-1.8, 1.1, 20.0 * kDeg));
+    clouds.emplace_back(kMaxPoints);
+    test::scan_at(hall, truth.back() * T_b_l, kRangeM, clouds.back());
+  }
+  const auto views = [&](double roll_rad) {
+    std::vector<KeyframeView> kfs(kStored + 1);
+    const common::Mat3 Rx = common::so3_exp(common::Vec3(roll_rad, 0.0, 0.0));
+    for (int k = 0; k <= kStored; ++k) {
+      auto& v = kfs[static_cast<std::size_t>(k)];
+      v.id = static_cast<common::KeyId>(k);
+      v.t = common::Timestamp{(k == kStored ? 1000 : k) * kNs};
+      v.T_w_b = truth[static_cast<std::size_t>(k)];
+      if (k < kStored) {
+        v.T_w_b.R = v.T_w_b.R * Rx;  // the graph tilted the stored keyframes
+      }
+      v.cloud_l = &clouds[static_cast<std::size_t>(k)];
+    }
+    return kfs;
+  };
+  LoopDetector warm(lc, cfg.scan_match, cfg.map, T_b_l, kMaxPoints);
+  const std::vector<KeyframeView> level = views(0.0);
+  (void)warm.detect(level.back(), common::Span<const KeyframeView>(level));
+  for (const double roll_deg : {2.0, 2.05}) {
+    const std::vector<KeyframeView> tilted = views(roll_deg * kDeg);
+    const std::uint64_t f0 = detail::descriptor_fill_count(warm);
+    const LoopResult r_warm = warm.detect(tilted.back(), common::Span<const KeyframeView>(tilted));
+    const std::uint64_t fills = detail::descriptor_fill_count(warm) - f0;
+    LoopDetector fresh(lc, cfg.scan_match, cfg.map, T_b_l, kMaxPoints);
+    const LoopResult r_fresh =
+        fresh.detect(tilted.back(), common::Span<const KeyframeView>(tilted));
+    // Review R3-1: the count is per detector; the fresh detector's work is not the warm one's.
+    EXPECT_EQ(detail::descriptor_fill_count(warm), f0 + fills);
+    EXPECT_EQ(detail::descriptor_fill_count(fresh),
+              1U + static_cast<std::uint64_t>(r_fresh.n_candidates));
+    std::printf(
+        "[ place search cache ] roll %.2f deg: %llu descriptors computed; warm cand %llu sc "
+        "%.6f, fresh cand %llu sc %.6f\n",
+        roll_deg,
+        static_cast<unsigned long long>(fills),
+        static_cast<unsigned long long>(r_warm.candidate),
+        r_warm.sc_distance,
+        static_cast<unsigned long long>(r_fresh.candidate),
+        r_fresh.sc_distance);
+    if (roll_deg < 2.01) {
+      EXPECT_EQ(fills, 1U + static_cast<std::uint64_t>(r_warm.n_candidates));  // all refreshed
+      EXPECT_EQ(r_warm.outcome, r_fresh.outcome);
+      EXPECT_EQ(r_warm.candidate, r_fresh.candidate);
+      EXPECT_DOUBLE_EQ(r_warm.sc_distance, r_fresh.sc_distance);
+      EXPECT_DOUBLE_EQ(r_warm.sc_yaw_rad, r_fresh.sc_yaw_rad);
+    } else {
+      EXPECT_EQ(fills, 1U);  // within the threshold: cached
+    }
+  }
 }
 
 }  // namespace
