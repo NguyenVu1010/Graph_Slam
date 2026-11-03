@@ -526,3 +526,55 @@ the ambiguity check costs nothing measurable: max per scan on the loop keyframes
 1.37): the rest is the loop's own cost (map rebuild, iSAM2 updates; C1-15). PCM itself costs 0.08
 to 0.12 ms per proposed loop (at most 0.28 ms with 64 loops held, 61 to 1000 keyframes), the
 odometry prefix update 0.2 to 0.3 us per keyframe.
+
+## 13. Diagnosis on E-07 (H6, backlog C1-31)
+
+Where each candidate of the E-07 outdoor loop stops, on the recording of 2026-11-02 (seed 42,
+body frame `imu_link`, L2 lever arm; `imu.init_level_start` on, owner ruling S5) with the
+shipped loop settings (`config/sim/outdoor_e07_loops_on.yaml` before ADR-030). Instruments
+(diagnostics only, no effect on the estimate): one debug line per search,
+`loop search: j .. outcome .. n_cand .. cand .. sc .. ratio .. rms .. eig .. amb .. corr_m ..
+corr_yaw_deg` (`LoopResult::correction_m` / `correction_yaw_rad`: the correction the reported
+fit asks of the graph pose), the measurement and the floored sigmas of a verified loop, one
+`loop applied: .. residual_m a -> b` line per loop that enters (the loop residual against the
+graph before the loop and after the updates), and `mss_bench`'s `kf_opt.tum` (the stored
+keyframes at their optimised poses after the replay). The truth comes from the recording's
+`gt.tum`; "true distance" is between the query and the candidate.
+
+| stage | what the data shows | blocks true loops? |
+| --- | --- | --- |
+| search radius (C1-1) | 31 keyframes of the revisit have a true earlier place within 3 m (0.0 to 2.6 m); on the estimate that place is 3.2 to 4.5 m away, inside the 10 m radius. The radius never excludes it. | no |
+| candidate choice (nearest on the estimate) | the drift (4.0 m at the return) moves the query next to other keyframes: the nearest one on the estimate is 2.6 to 12.8 m from the query in truth (2.6 to 3.4 m once the robot is back at the start), while the revisited keyframe (0.0 to 0.5 m) is never tried (`max_candidates` 1) | yes: the root cause |
+| Scan Context gate | 21 searches: the nearest-on-estimate candidate is a different place (sc 0.47 to 0.73 > 0.4) | follows from the choice |
+| ICP verification | from the graph seed the true pose is 3 to 4 m away, beyond `icp_max_corr_dist_m` (2 m): 1 failed, 4 converged to partial fits (corrections 1.6 to 2.7 m) | follows from the choice |
+| ambiguity check | those 4 partial fits have a competitor at 0.95 to 1.04 of their inlier ratio: rejected (correctly, they are not the true alignment) | no (it removed wrong fits) |
+| `max_correction_m` gate (3 m) | 3 converged fits ask 3.27 to 3.33 m: discarded | yes, at a drift above 3 m |
+| PCM | no loop reached it | - |
+| kernel (C1-13) | no loop reached it | - |
+
+Reproduce with `tools/loop_eval.py` (commands in section 15). On recording B (2026-11-03 04:40
+UTC; drift 3.1 m at the return) the shipped settings give 321 searches: 21 Scan Context, 6
+correction gate, 2 ambiguous, 2 accepted (true, within 0.9 cm), which apply 8 and 10 % of what they
+ask (2.66 -> 2.45, 2.30 -> 2.08 m); on recording C (3.7 m) 315 searches: 22 Scan Context, 3
+ambiguous, 2 accepted (true, within 1.1 cm), applying 7 and 8 % (2.97 -> 2.78, 2.64 -> 2.43 m).
+The rest of this section is recording A (2026-11-02).
+
+So with the level start this recording drifts 4.0 m at the return (2.6 m without it, the
+opposite of the H5 recording: 2.8 and 3.7 m), and no loop is accepted: 318 searches, 289 without
+a candidate, 21 Scan Context, 1 ICP failure, 4 ambiguous, 3 correction gate.
+
+Without the level start (2.6 m of drift, below the gate) the same settings accept 5 loops, all
+true (1.3 to 2.7 cm, 0.01 to 0.08 deg against the truth), and the kernel is the limit: each loop
+applies 10 to 34 % of what it asks (`loop applied`: 2.82 -> 2.56, 2.34 -> 2.07, 1.90 -> 1.62,
+1.48 -> 1.12, 1.01 -> 0.66 m). The return error of the smoothed trajectory falls from 2.64 to
+0.74 m, the final one from 1.95 to 0.55 m; ATE of `kf_opt.tum` 0.718 -> 0.260 m.
+
+Two probes on the level-start run, configuration only: `max_correction_m` 6 accepts 1 loop
+(the nearest-on-estimate candidate is still the wrong place); `max_correction_m` 6 with all
+candidates in the radius verified (`max_candidates` 20) accepts 3 true loops but costs 353 ms on
+one keyframe (20 candidates verified). Both leave the kernel applying 5 to 7 % of a 3 to 4 m
+correction.
+
+The fix follows the data (ADR-030): rank the candidates in the radius by Scan Context and seed
+ICP at the candidate's place, let the loop scenes pass corrections up to 6 m, and drop the
+kernel for loops that PCM corroborates with a nearby partner (section 15).
