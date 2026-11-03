@@ -41,3 +41,7 @@ mss_node:
       # at another place (kernel_release_min_separation_m) and a correction within the drift
       # ratio of the distance travelled (default.yaml values).
       kernel_release: true
+      # ADR-030: rank candidates by Scan Context and seed ICP at the candidate (C1-1, C1-31);
+      # the gate passes the 4 m drift of E-07 at the return (yaw gate unchanged).
+      place_search: true
+      max_correction_m: 6.0      # m
