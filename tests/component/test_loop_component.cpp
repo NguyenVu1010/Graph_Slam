@@ -617,9 +617,14 @@ struct InjectPlan {
   test::BoxWorldParams p;
   std::vector<double> at_s;     // s after t0: inject at the first keyframe at or after it
   std::vector<double> wrong_m;  // offset along x of b_i, m (0: true loop)
+  // ADR-030: offset along x of w, m (empty: none): Z = T_w_bi^-1 * Tx(d) * T_w_bj, the loops a
+  // world shift of the query would give, so loops with the same d are consistent with each
+  // other (a correction of d for the graph to apply).
+  std::vector<double> world_m;
   std::vector<bool> done;
   double lap_s = 0.0;
   std::vector<std::pair<KeyId, KeyId>> injected;  // (i, j) of each injection, in order
+  std::vector<Pose> injected_Z;                   // T_bi_bj of each injection
 };
 
 std::optional<common::LoopConstraint> inject(InjectPlan& plan,
@@ -647,11 +652,17 @@ std::optional<common::LoopConstraint> inject(InjectPlan& plan,
     lc.T_bi_bj =
         test::box_truth(plan.p, views[best].t).T_w_b.inverse() * test::box_truth(plan.p, q.t).T_w_b;
     lc.T_bi_bj.p.x() += plan.wrong_m[n];
+    if (n < plan.world_m.size()) {
+      const Pose shift{common::Mat3::Identity(), Vec3(plan.world_m[n], 0.0, 0.0)};
+      lc.T_bi_bj = test::box_truth(plan.p, views[best].t).T_w_b.inverse() * shift *
+                   test::box_truth(plan.p, q.t).T_w_b;
+    }
     lc.cov.setZero();
     const double vm = kInjectSigmaM * kInjectSigmaM;
     const double vr = kInjectSigmaRad * kInjectSigmaRad;
     lc.cov.diagonal() << vm, vm, vm, vr, vr, vr;
     plan.injected.emplace_back(lc.i, lc.j);
+    plan.injected_Z.push_back(lc.T_bi_bj);
     return lc;
   }
   return std::nullopt;
@@ -662,6 +673,8 @@ struct InjectRun {
   ct::Errors e;
   std::vector<std::pair<KeyId, KeyId>> injected;  // (i, j) of each injection, in order
   std::vector<bool> in_graph;  // Graph::has_loop_factor of each, after the last graph change
+  // |p(Z) - p(T_w_bi^-1 T_w_bj)| of each injection in the graph after the last graph change, m
+  std::vector<double> residual_m;
 };
 
 InjectRun run_injected(const std::string& name,
@@ -669,8 +682,12 @@ InjectRun run_injected(const std::string& name,
                        std::vector<double> wrong_m,
                        bool pcm,
                        int drop_updates,
-                       double lidar_var_scale = 1.0) {
+                       double lidar_var_scale = 1.0,
+                       const std::string& extra_yaml = "",
+                       std::vector<double> world_m = {},
+                       int pass_updates = 0) {
   InjectPlan plan;
+  plan.world_m = std::move(world_m);
   plan.p.motion_s = 55.0;
   plan.lap_s = 2.0 * test::kLoopPi / plan.p.yaw_rate_radps;
   plan.at_s = std::move(at_s);
@@ -684,7 +701,7 @@ InjectRun run_injected(const std::string& name,
                      false,
                      dir / "cfg",
                      std::string("    loop_closure:\n      enabled: true\n      pcm_enabled: ") +
-                         (pcm ? "true" : "false") + "\n");
+                         (pcm ? "true" : "false") + "\n" + extra_yaml);
   detail::CoreTestHooks hooks;
   hooks.loop_inject = [&plan](common::Span<const loop::KeyframeView> v) {
     loop::LoopResult r;
@@ -697,6 +714,7 @@ InjectRun run_injected(const std::string& name,
     return r;
   };
   hooks.drop_loop_updates = drop_updates;
+  hooks.pass_loop_updates = pass_updates;
   if (lidar_var_scale != 1.0) {
     hooks.lidar_cov = [lidar_var_scale](common::Timestamp /*t*/, const common::PoseCovariance& c) {
       const common::PoseCovariance scaled = lidar_var_scale * c;
@@ -706,8 +724,16 @@ InjectRun run_injected(const std::string& name,
   InjectRun out;
   hooks.inspect_graph = [&plan, &out](const backend::Graph& g) {
     out.in_graph.clear();
-    for (const auto& ij : plan.injected) {
+    out.residual_m.clear();
+    for (std::size_t n = 0; n < plan.injected.size(); ++n) {
+      const auto& ij = plan.injected[n];
       out.in_graph.push_back(g.has_loop_factor(ij.first, ij.second));
+      const common::Result<common::NavState> si = g.keyframe_state(ij.first);
+      const common::Result<common::NavState> sj = g.keyframe_state(ij.second);
+      out.residual_m.push_back(
+          si.is_ok() && sj.is_ok()
+              ? (plan.injected_Z[n].p - (si.value().T_w_b.inverse() * sj.value().T_w_b).p).norm()
+              : -1.0);
     }
   };
   {
@@ -1303,6 +1329,298 @@ TEST(LoopKernelRelease, GaussianLoopAppliesLargeCorrections) {
       EXPECT_GT(none_scene, 0.8) << "chain " << sig_m << " correction " << c_m;
     }
   }
+}
+
+// ADR-030 through EstimatorCore::try_loop_closure (box world, loops injected one lap apart, a
+// loosened LiDAR chain as in PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne): two loops that
+// agree on a 1 m world shift of the query. With kernel_release the second one is the first
+// one's partner, both enter without the kernel and the graph takes the shift; without it the
+// Cauchy kernel leaves most of it. A lone loop keeps the kernel: the run is the same as without
+// kernel_release.
+struct ShiftRun {
+  InjectRun run;
+};
+
+// Box-world release settings (the circle is 2 m in radius, a lap 12.6 m, so the loop-scene
+// separation of 5 m and drift ratio of 2 % cannot be met there): separation 0.5 m, ratio 1.
+const char* const kBoxRelease =
+    "      kernel_release: true\n      kernel_release_min_separation_m: 0.5\n"
+    "      kernel_release_drift_ratio: 1.0\n";
+
+ShiftRun run_shift(const std::string& name,
+                   const std::vector<double>& at,
+                   bool release,
+                   double shift_m,
+                   const std::string& release_yaml = kBoxRelease) {
+  constexpr double kLoose = 100.0;
+  const std::string extra = release ? release_yaml : "";
+  ShiftRun out;
+  std::vector<double> world(at.size(), shift_m);
+  std::vector<double> none(at.size(), 0.0);
+  out.run = run_injected(name, at, none, true, 0, kLoose, extra, world);
+  return out;
+}
+
+TEST(LoopComponent, KernelReleaseAppliesACorroboratedCorrection) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  const double t_lap2 = 3.0 + 2.0 + 2.0 * test::kLoopPi / 0.25;
+  const std::vector<double> at = {t_lap2 + 2.0, t_lap2 + 5.0};
+  constexpr double kShiftM = 1.0;
+  const ShiftRun on = run_shift("release_on", at, true, kShiftM);
+  const ShiftRun off = run_shift("release_off", at, false, kShiftM);
+  const ShiftRun lone_on = run_shift("lone_on", {at[0]}, true, kShiftM);
+  const ShiftRun lone_off = run_shift("lone_off", {at[0]}, false, kShiftM);
+  ASSERT_FALSE(on.run.r.estimates.empty());
+  ASSERT_FALSE(off.run.r.estimates.empty());
+  // The loop residual left in the graph after the last change (graph poses of i, j against Z).
+  ASSERT_EQ(on.run.residual_m.size(), 2U);
+  ASSERT_EQ(off.run.residual_m.size(), 2U);
+  std::printf(
+      "[ kernel release pipeline ] two loops, 1 m shift: released %llu, accepted %llu; residual "
+      "of the second loop: released %.3f m, Cauchy %.3f m; lone loop released %llu\n",
+      static_cast<unsigned long long>(on.run.r.stats.n_loops_released),
+      static_cast<unsigned long long>(on.run.r.stats.n_loops_accepted),
+      on.run.residual_m[1],
+      off.run.residual_m[1],
+      static_cast<unsigned long long>(lone_on.run.r.stats.n_loops_released));
+  // First loop: in with the kernel, then re-added without it when the second arrives (1); the
+  // second enters without it (1).
+  EXPECT_EQ(on.run.r.stats.n_loops_accepted, 2U);
+  EXPECT_EQ(on.run.r.stats.n_loops_released, 2U);
+  EXPECT_EQ(off.run.r.stats.n_loops_released, 0U);
+  ASSERT_EQ(on.run.in_graph.size(), 2U);
+  EXPECT_TRUE(on.run.in_graph[0]);
+  EXPECT_TRUE(on.run.in_graph[1]);
+  EXPECT_LT(on.run.residual_m[1], 0.2 * kShiftM);   // most of the shift applied
+  EXPECT_GT(off.run.residual_m[1], 0.5 * kShiftM);  // the kernel leaves most of it
+  // A lone loop keeps the kernel: same estimates as without kernel_release, bit for bit.
+  EXPECT_EQ(lone_on.run.r.stats.n_loops_released, 0U);
+  ASSERT_EQ(lone_on.run.r.estimates.size(), lone_off.run.r.estimates.size());
+  for (std::size_t k = 0; k < lone_on.run.r.estimates.size(); ++k) {
+    ASSERT_EQ(lone_on.run.r.estimates[k].state.T_w_b.p, lone_off.run.r.estimates[k].state.T_w_b.p)
+        << k;
+  }
+}
+
+// ADR-030: a wrong loop that true loops contradict is removed by PCM before it can be released;
+// the two true loops that outvote it are partners and enter without the kernel. The run ends as
+// the run that only had the two true loops (no drag left). A wrong loop that nothing contradicts
+// is LoopKnownLimits.KernelReleaseConsistentWrongPair.
+TEST(LoopComponent, KernelReleaseOutvotedWrongLoopNeverReleased) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  const double t_lap2 = 3.0 + 2.0 + 2.0 * test::kLoopPi / 0.25;
+  const std::vector<double> at = {t_lap2 + 2.0, t_lap2 + 8.0, t_lap2 + 14.0};
+  constexpr double kLoose = 100.0;
+  const std::string rel = kBoxRelease;
+  const InjectRun a =
+      run_injected("rel_wrong_then_true", at, {0.8, 0.0, 0.0}, true, 0, kLoose, rel);
+  const InjectRun b =
+      run_injected("rel_true_only", {at[1], at[2]}, {0.0, 0.0}, true, 0, kLoose, rel);
+  ASSERT_FALSE(a.r.estimates.empty());
+  ASSERT_FALSE(b.r.estimates.empty());
+  std::printf(
+      "[ kernel release pcm ] wrong then true: released %llu, removed %llu; final pose "
+      "against true only %.4f m\n",
+      static_cast<unsigned long long>(a.r.stats.n_loops_released),
+      static_cast<unsigned long long>(a.r.stats.n_loops_removed),
+      (a.r.estimates.back().state.T_w_b.p - b.r.estimates.back().state.T_w_b.p).norm());
+  EXPECT_EQ(a.r.stats.n_loops_removed, 1U);
+  ASSERT_EQ(a.in_graph.size(), 3U);
+  EXPECT_FALSE(a.in_graph[0]);
+  EXPECT_TRUE(a.in_graph[1]);
+  EXPECT_TRUE(a.in_graph[2]);
+  EXPECT_EQ(a.r.stats.n_loops_released, 2U);  // the two true ones, when they enter together
+  EXPECT_EQ(b.r.stats.n_loops_released, 2U);  // first released when the second arrives, + second
+  EXPECT_LT((a.r.estimates.back().state.T_w_b.p - b.r.estimates.back().state.T_w_b.p).norm(), 0.01);
+}
+
+// --- ADR-030 fix round (review B-1, B-2, M-2, M-3) -------------------------------------------
+
+// B-1: the partner rule on the evidence of two loops. E-07-like pair (two loops of one revisit,
+// candidates and queries 6 m apart, 4 m asked over 312 m): partners. One look-alike seen from
+// two nearby queries (candidates 2 m apart): not. A correction beyond the drift ratio of the
+// distance travelled: not. Outside the keyframe window: not.
+TEST(LoopKernelRelease, PartnerRuleNeedsTwoPlacesAndPlausibleDrift) {
+  const loop::LoopConfig c = shipped_config().loop_closure;
+  ASSERT_DOUBLE_EQ(c.kernel_release_min_separation_m, 5.0);
+  ASSERT_DOUBLE_EQ(c.kernel_release_drift_ratio, 0.02);
+  detail::ReleaseEvidence a;
+  a.i = 0;
+  a.j = 309;
+  a.p_i = Vec3(0.0, 0.0, 0.0);
+  a.p_j = Vec3(3.0, 1.0, 0.0);
+  a.asked_m = 4.2;
+  a.path_m = 312.0;
+  detail::ReleaseEvidence b = a;
+  b.i = 6;
+  b.j = 315;
+  b.p_i = Vec3(6.0, 0.0, 0.0);
+  b.p_j = Vec3(9.0, 1.0, 0.0);
+  b.asked_m = 3.7;
+  EXPECT_TRUE(detail::release_plausible(a, c));
+  EXPECT_TRUE(detail::release_partners(a, b, c));
+  EXPECT_TRUE(detail::release_partners(b, a, c));
+  detail::ReleaseEvidence same_spot = b;
+  same_spot.p_i = Vec3(2.0, 0.0, 0.0);
+  same_spot.p_j = Vec3(5.0, 1.0, 0.0);
+  EXPECT_FALSE(detail::release_partners(a, same_spot, c));
+  detail::ReleaseEvidence too_large = a;
+  too_large.asked_m = 8.0;  // 2.6 % of 312 m
+  EXPECT_FALSE(detail::release_plausible(too_large, c));
+  EXPECT_FALSE(detail::release_partners(too_large, b, c));
+  detail::ReleaseEvidence far = b;
+  far.i = 30;
+  EXPECT_FALSE(detail::release_partners(a, far, c));
+  // Accepted limit (ADR-030, C1-34; review N-1): a consistent WRONG pair at two places 6 m apart
+  // has exactly the evidence of the true pair above (the rule sees positions, corrections and
+  // distance, not the truth), so it is released. Two such false loops 2 m wrong after 312 m
+  // pass, and they pull in full; only the ambiguity check and PCM stand before them.
+  detail::ReleaseEvidence wrong_a = a;
+  detail::ReleaseEvidence wrong_b = b;
+  wrong_a.asked_m = 2.0;
+  wrong_b.asked_m = 2.0;
+  EXPECT_TRUE(detail::release_partners(wrong_a, wrong_b, c));
+  // On a short indoor lap the drift ratio is the guard that binds (review N-2): the same
+  // period-sized wrong pair (3 m) after one 24 m warehouse lap asks 12.5 % of the distance.
+  detail::ReleaseEvidence lap_a = wrong_a;
+  detail::ReleaseEvidence lap_b = wrong_b;
+  lap_a.asked_m = 3.0;
+  lap_b.asked_m = 3.0;
+  lap_a.path_m = 24.0;
+  lap_b.path_m = 24.0;
+  EXPECT_FALSE(detail::release_partners(lap_a, lap_b, c));
+}
+
+// B-1 known limit, pinned for ONE SPOT: two loops with the same wrong world shift from one
+// place (injected 3.5 s apart, 5 keyframes; their candidates 1.7 m apart on the 2 m circle).
+// With the loop-scene rule (5 m, 2 %) and with the separation alone (drift ratio 1) neither loop
+// is released: the run is bit-identical to the run without kernel_release, so the pair pulls
+// only as two Cauchy loops do. Without the separation (box settings, 0.5 m) the pair is released
+// and pulls the map by most of the shift. A consistent wrong pair at two places 5 m or more apart
+// IS released (accepted limit, C1-34): PartnerRuleNeedsTwoPlacesAndPlausibleDrift.
+TEST(LoopKnownLimits, KernelReleaseConsistentWrongPair) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  const double t_lap2 = 3.0 + 2.0 + 2.0 * test::kLoopPi / 0.25;
+  const std::vector<double> at = {t_lap2 + 2.0, t_lap2 + 5.5};
+  const std::string sep_only =
+      "      kernel_release: true\n      kernel_release_min_separation_m: 5.0\n"
+      "      kernel_release_drift_ratio: 1.0\n";
+  const std::string scene = "      kernel_release: true\n";
+  const ShiftRun none = run_shift("pair_none", {}, false, 0.0);
+  ASSERT_FALSE(none.run.r.estimates.empty());
+  const Pose e_none = none.run.r.estimates.back().state.T_w_b;
+  for (const double shift : {1.0, 3.0}) {
+    const std::string tag = std::to_string(static_cast<int>(shift));
+    const ShiftRun off = run_shift("pair_off_" + tag, at, false, shift);
+    const ShiftRun on_sep = run_shift("pair_sep_" + tag, at, true, shift, sep_only);
+    const ShiftRun on_scene = run_shift("pair_scene_" + tag, at, true, shift, scene);
+    const ShiftRun box = run_shift("pair_box_" + tag, at, true, shift);
+    const ShiftRun single = run_shift("single_" + tag, {at[0]}, false, shift);
+    for (const ShiftRun* r : {&off, &on_sep, &on_scene, &box, &single}) {
+      ASSERT_FALSE(r->run.r.estimates.empty());
+    }
+    const auto drag = [&](const ShiftRun& r) {
+      return (r.run.r.estimates.back().state.T_w_b.p - e_none.p).norm();
+    };
+    std::printf(
+        "[ kernel release ] consistent wrong pair, %.0f m: accepted %llu; released: scene %llu, "
+        "separation only %llu, box %llu; drag: single %.3f m, pair (Cauchy) %.3f m, pair "
+        "released (box) %.3f m\n",
+        shift,
+        static_cast<unsigned long long>(off.run.r.stats.n_loops_accepted),
+        static_cast<unsigned long long>(on_scene.run.r.stats.n_loops_released),
+        static_cast<unsigned long long>(on_sep.run.r.stats.n_loops_released),
+        static_cast<unsigned long long>(box.run.r.stats.n_loops_released),
+        drag(single),
+        drag(off),
+        drag(box));
+    EXPECT_EQ(off.run.r.stats.n_loops_accepted, 2U);  // PCM takes both (consistent)
+    EXPECT_EQ(on_scene.run.r.stats.n_loops_released, 0U);
+    EXPECT_EQ(on_sep.run.r.stats.n_loops_released, 0U);
+    for (const ShiftRun* r : {&on_scene, &on_sep}) {
+      ASSERT_EQ(r->run.r.estimates.size(), off.run.r.estimates.size());
+      for (std::size_t k = 0; k < off.run.r.estimates.size(); ++k) {
+        ASSERT_EQ(r->run.r.estimates[k].state.T_w_b.p, off.run.r.estimates[k].state.T_w_b.p) << k;
+      }
+    }
+    EXPECT_GT(box.run.r.stats.n_loops_released, 0U);  // what the separation prevents
+    EXPECT_GT(drag(box), 0.8 * shift);                // released: most of the shift
+    // Kept as two Cauchy loops: the pair pulls at most what two single false loops do
+    // (measured 0.131 / 0.070 m at 1 m, 0.046 / 0.027 m at 3 m).
+    EXPECT_LT(drag(off), 2.0 * drag(single) + 0.01);
+    EXPECT_LT(drag(off), 0.2 * shift);
+  }
+}
+
+// M-2: the restore path. X (0.2 m world shift) and Y (0.45 m) are consistent and partners, so
+// both lose the kernel; then Z and W (true) arrive, consistent with X but not with Y, outside
+// the window of X: PCM removes Y, and X, its partner gone, is re-added with Cauchy. The run ends
+// as the run that only had X, Z and W.
+TEST(LoopComponent, KernelReleaseRestoresTheKernelWhenThePartnerLeaves) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  const double t_lap2 = 3.0 + 2.0 + 2.0 * test::kLoopPi / 0.25;
+  const std::vector<double> at = {t_lap2 + 2.0, t_lap2 + 6.0, t_lap2 + 16.0, t_lap2 + 20.0};
+  const std::string rel = std::string(kBoxRelease) + "      kernel_release_window_keyframes: 8\n";
+  const InjectRun a = run_injected(
+      "restore_all", at, {0.0, 0.0, 0.0, 0.0}, true, 0, 1.0, rel, {0.2, 0.45, 0.0, 0.0});
+  const InjectRun b = run_injected(
+      "restore_xzw", {at[0], at[2], at[3]}, {0.0, 0.0, 0.0}, true, 0, 1.0, rel, {0.2, 0.0, 0.0});
+  ASSERT_FALSE(a.r.estimates.empty());
+  ASSERT_FALSE(b.r.estimates.empty());
+  std::printf(
+      "[ kernel release ] restore: accepted %llu, removed %llu, released %llu; final "
+      "pose against X, Z, W only %.4f m\n",
+      static_cast<unsigned long long>(a.r.stats.n_loops_accepted),
+      static_cast<unsigned long long>(a.r.stats.n_loops_removed),
+      static_cast<unsigned long long>(a.r.stats.n_loops_released),
+      (a.r.estimates.back().state.T_w_b.p - b.r.estimates.back().state.T_w_b.p).norm());
+  ASSERT_EQ(a.in_graph.size(), 4U);
+  EXPECT_TRUE(a.in_graph[0]);
+  EXPECT_FALSE(a.in_graph[1]);
+  EXPECT_TRUE(a.in_graph[2]);
+  EXPECT_TRUE(a.in_graph[3]);
+  EXPECT_EQ(a.r.stats.n_loops_removed, 1U);
+  // X re-added released when Y arrived, Y, then Z and W together: 4; X's restore is not counted.
+  EXPECT_EQ(a.r.stats.n_loops_released, 4U);
+  EXPECT_LT((a.r.estimates.back().state.T_w_b.p - b.r.estimates.back().state.T_w_b.p).norm(), 0.01);
+}
+
+// M-3: a failed update right after a release. X enters with the kernel; when its partner Y
+// arrives, X's committed factor is queued for removal and X and Y are added without the kernel,
+// and that update fails (injected). The removal stands and the re-add is dropped, so X leaves
+// the graph with Y (stated in ADR-030); the selector forgets both, and a later loop V enters
+// alone. Counters count only what entered: X and V accepted, none released.
+TEST(LoopComponent, KernelReleaseFailedUpdateDropsTheReleasedPair) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM (stub backend has no keyframe poses)";
+  }
+  const double t_lap2 = 3.0 + 2.0 + 2.0 * test::kLoopPi / 0.25;
+  const std::vector<double> at = {t_lap2 + 2.0, t_lap2 + 6.0, t_lap2 + 20.0};
+  const InjectRun a =
+      run_injected("release_fail",
+                   at,
+                   {0.0, 0.0, 0.0},
+                   true,
+                   1,
+                   1.0,
+                   std::string(kBoxRelease) + "      kernel_release_window_keyframes: 8\n",
+                   {},
+                   1);
+  ASSERT_FALSE(a.r.estimates.empty());
+  ASSERT_EQ(a.in_graph.size(), 3U);
+  EXPECT_FALSE(a.in_graph[0]);
+  EXPECT_FALSE(a.in_graph[1]);
+  EXPECT_TRUE(a.in_graph[2]);
+  EXPECT_EQ(a.r.stats.n_loops_accepted, 2U);
+  EXPECT_EQ(a.r.stats.n_loops_released, 0U);
 }
 }  // namespace
 }  // namespace mss::pipeline

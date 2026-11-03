@@ -37,3 +37,7 @@ mss_node:
       # loop_closure.md section 14; not a NEES-6 calibration). Loop overlays only (owner ruling).
       cov_floor_m: 0.02          # m
       cov_floor_deg: 0.25        # deg
+      # ADR-030: a PCM-selected loop enters without the Cauchy kernel only with a partner loop
+      # at another place (kernel_release_min_separation_m) and a correction within the drift
+      # ratio of the distance travelled (default.yaml values).
+      kernel_release: true

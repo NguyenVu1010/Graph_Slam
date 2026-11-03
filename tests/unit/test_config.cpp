@@ -132,7 +132,32 @@ TEST(Config, LoopClosureKeys) {
   EXPECT_NEAR(l.pcm_yaw_drift_rad_per_m, 0.2 * kRadPerDeg, 1e-12);
   EXPECT_EQ(l.pcm_max_loops, 64);
   EXPECT_EQ(l.pcm_max_clique_steps, 100000);
+  // ADR-030: kernel release and place search, both off.
+  EXPECT_FALSE(l.kernel_release);
+  EXPECT_EQ(l.kernel_release_window_keyframes, 20);
+  EXPECT_DOUBLE_EQ(l.kernel_release_min_separation_m, 5.0);
+  EXPECT_DOUBLE_EQ(l.kernel_release_drift_ratio, 0.02);
   const std::string base = read_file(kDefault);
+  const auto no_pcm = parse_config(
+      base, overlay("    loop_closure:\n      kernel_release: true\n      pcm_enabled: false\n"));
+  ASSERT_FALSE(no_pcm.is_ok());
+  EXPECT_TRUE(mentions(no_pcm.reason(), "loop_closure.kernel_release")) << no_pcm.reason();
+  const auto bad_window =
+      parse_config(base, overlay("    loop_closure:\n      kernel_release_window_keyframes: 0\n"));
+  ASSERT_FALSE(bad_window.is_ok());
+  EXPECT_TRUE(mentions(bad_window.reason(), "loop_closure.kernel_release_window_keyframes"))
+      << bad_window.reason();
+  // Reviews M-1, N-3: a partner must still be held by PCM: pcm_max_loops > window + 1.
+  const auto few_held = parse_config(base,
+                                     overlay("    loop_closure:\n      kernel_release: true\n"
+                                             "      pcm_max_loops: 21\n"));
+  ASSERT_FALSE(few_held.is_ok());
+  EXPECT_TRUE(mentions(few_held.reason(), "loop_closure.kernel_release_window_keyframes"))
+      << few_held.reason();
+  const auto enough_held = parse_config(base,
+                                        overlay("    loop_closure:\n      kernel_release: true\n"
+                                                "      pcm_max_loops: 22\n"));
+  EXPECT_TRUE(enough_held.is_ok()) << enough_held.reason();
   const auto bad = parse_config(base,
                                 overlay("    loop_closure:\n      sc_sectors: 3\n"
                                         "      min_inlier_ratio: 1.5\n"
