@@ -14,6 +14,8 @@ mss_node:
       # (z = 0.15 m), behind and left of the IMU (ADR-011 amendment 2026-11-02, backlog L2).
       p_b_g_m: [-0.12, 0.06, 0.15]
     imu:
+      # S5 owner ruling (H6): level start on in the loop scenes only; default.yaml keeps it off.
+      init_level_start: true   # ADR-027
       gyro_noise_density: 3.5e-4  # rad/s/sqrt(Hz)
       acc_noise_density: 5.8e-3   # m/s^2/sqrt(Hz)
       gyro_random_walk: 2.0e-5    # rad/s^2/sqrt(Hz)
