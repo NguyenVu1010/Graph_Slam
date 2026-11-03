@@ -2,6 +2,7 @@
 
 - Trạng thái: đề xuất
 - Ngày: 2026-10-29; sửa đổi 2026-10-30 (cấu trúc lặp: kiểm tra nhập nhằng, cổng tuỳ chọn theo hiệp phương sai của graph, backlog C1-12, C1-16; xem "Sửa đổi 2026-10-30"). Việc chọn loop bền vững (PCM, gỡ loop) và việc tắt mặc định cổng tuyệt đối: ADR-028.
+- Sửa đổi bởi: ADR-030 (mục 1: với `loop_closure.place_search` các ứng viên trong bán kính xếp theo Scan Context khi nơi giống nhất là khác biệt; ngân sách mỗi keyframe thêm `place_search_max_ranked` descriptor; mặc định tắt)
 - Liên quan: ADR-004 (factor LiDAR), ADR-005 (luồng loop), ADR-015 (loop bọc Cauchy), ADR-016 (kho keyframe, dựng lại bản đồ sau loop), ADR-021 (dạng factor tương đối `decoupled`), ADR-024 (node ROS 2)
 
 ## Bối cảnh
@@ -43,7 +44,7 @@ Lý do: L-01 ("cùng chỗ, khác hướng 90°, yaw lệch ≤ 1 sector") cần
 
 Loop chạy trong `EstimatorCore::add_keyframe`, sau `optimize()` và sau khi keyframe vào kho, trên luồng gọi `run_once()`. Chưa tạo luồng loop của ADR-005.
 
-Lý do: (a) `deterministic: true` (test, bench, E-02) cần một luồng, và chế độ nhiều luồng của ADR-005 chưa được cài (`start()` vẫn là no-op), nên một luồng loop hôm nay sẽ là luồng duy nhất ngoài luồng gọi, kéo theo khoá cho kho keyframe và graph; (b) chi phí đo được nhỏ so với ngân sách: E-01 (desktop, WSL, trung vị 5 lần xen kẽ, scan p50 / p95): main 4,91 / 6,67 ms, nhánh này cờ tắt 4,82 / 6,84 ms, cờ bật 4,86 / 6,99 ms (độ trải giữa các lần chạy khoảng 0,8 ms ở p95). Cờ bật: 62 lần tìm và 6 loop được nhận thêm khoảng 36 ms wall cho cả lần chạy 4,5 s, tức trung bình khoảng 0,6 ms mỗi lần tìm, gồm cả các lần `optimize()` thêm và dựng lại bản đồ của 6 loop. Chưa đo trên Pi5 (backlog C1-5). Ngân sách mỗi keyframe bị chặn bởi `max_candidates` (1 ứng viên, tối đa 2 lần ICP) và `min_interval_keyframes`. Khi ADR-005 được cài, bước này chuyển sang luồng loop nguyên vẹn: đầu vào là các `KeyframeView` (id, t, pose, con trỏ đám mây), đầu ra là `LoopConstraint`.
+Lý do: (a) `deterministic: true` (test, bench, E-02) cần một luồng, và chế độ nhiều luồng của ADR-005 chưa được cài (`start()` vẫn là no-op), nên một luồng loop hôm nay sẽ là luồng duy nhất ngoài luồng gọi, kéo theo khoá cho kho keyframe và graph; (b) chi phí đo được nhỏ so với ngân sách: E-01 (desktop, WSL, trung vị 5 lần xen kẽ, scan p50 / p95): main 4,91 / 6,67 ms, nhánh này cờ tắt 4,82 / 6,84 ms, cờ bật 4,86 / 6,99 ms (độ trải giữa các lần chạy khoảng 0,8 ms ở p95). Cờ bật: 62 lần tìm và 6 loop được nhận thêm khoảng 36 ms wall cho cả lần chạy 4,5 s, tức trung bình khoảng 0,6 ms mỗi lần tìm, gồm cả các lần `optimize()` thêm và dựng lại bản đồ của 6 loop. Chưa đo trên Pi5 (backlog C1-5). Ngân sách mỗi keyframe bị chặn bởi `max_candidates` (1 ứng viên, tối đa 2 lần ICP) và `min_interval_keyframes`; với `place_search` (ADR-030) thêm tối đa `place_search_max_ranked` (20) descriptor và một lần ICP từ hạt giống nơi chốn mỗi ứng viên được xác minh. Khi ADR-005 được cài, bước này chuyển sang luồng loop nguyên vẹn: đầu vào là các `KeyframeView` (id, t, pose, con trỏ đám mây), đầu ra là `LoopConstraint`.
 
 Không cấp phát trên scan không phải keyframe; trong bước loop: `loop_views_` dự trữ `map.max_keyframes` một lần, bộ đệm ứng viên chỉ lớn theo kho, submap và ScanMatcher dự trữ trong constructor; không log theo điểm.
 
