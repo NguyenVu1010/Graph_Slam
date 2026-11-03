@@ -91,6 +91,12 @@ struct LoopResult {
   int n_icp_runs = 0;  ///< ICP runs of this call (seeds plus ambiguity seeds)
   /// Ambiguity seeds skipped by the fitness pre-screen (ambiguity_prescreen_ratio).
   int n_prescreen_skips = 0;
+  /// Correction the reported fit asks of the graph: |p_fit - p_graph| of the query body (m)
+  /// and its yaw difference (rad, wrapped to [-pi, pi]). When no fit was kept (kCorrection,
+  /// kIcpFailed with a converged but gated seed), of the last step-3 seed that converged, which
+  /// may be the place seed. NaN when no step-3 seed converged. Diagnostics only (H6, C1-31).
+  double correction_m = std::numeric_limits<double>::quiet_NaN();
+  double correction_yaw_rad = std::numeric_limits<double>::quiet_NaN();
 };
 
 /// Loop-closure detection and verification (ADR-026; docs/derivations/loop_closure.md).
