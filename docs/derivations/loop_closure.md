@@ -578,3 +578,49 @@ correction.
 The fix follows the data (ADR-030): rank the candidates in the radius by Scan Context and seed
 ICP at the candidate's place, let the loop scenes pass corrections up to 6 m, and drop the
 kernel for loops that PCM corroborates with a nearby partner (section 15).
+
+## 14. Loop-factor NEES and the covariance floor (H6, backlog C1-3)
+
+NEES of a verified loop against the truth, in the chart of the loop factor (`decoupled`,
+ADR-021): `e = [R_Z^T (p_true - p_Z), Log(R_Z^T R_true)]`, the factor's residual at the true
+poses, `NEES = e^T C'^-1 e` with `C'` the floored covariance that enters the graph; 6 expected
+(3 per block) for a consistent covariance (lessons 1.5). The truth of a recording is its
+`gt.tum`, the `/ground_truth` OdometryPublisher of the body link `imu_link`, which is the
+estimator's body frame `b`, so the true relative pose is `T_w_b(t_i)^-1 T_w_b(t_j)` with no
+extrinsic. On every loop below the ICP covariance is below the floor in every direction (the
+logged sigmas equal the floor), so `C'` is the floor itself and the NEES of another floor follows
+from the same errors. Reproduce with `tools/loop_eval.py` (section 15 gives the exact commands).
+Recordings: A = 2026-11-02, B = 2026-11-03 04:40 UTC, C = 2026-11-03 06:11 UTC (all seed 42; Gazebo
+is not deterministic). For A and B the truth was the nearest `gt.tum` sample (5 ms apart, up to
+about 2.5 mm at 1 m/s); from C on it is interpolated in time (positions linear, rotations SLERP,
+at most 5 ms between samples, review R-1). With interpolation the keyframe-0 loops of E-07W drop
+from 0.55 to 0.23 deg, so part of the earlier tail was the matching.
+
+| scene (loops) | errors against the truth | NEES, 5 cm / 1 deg (shipped) | NEES, 2 cm / 0.25 deg |
+| --- | --- | --- | --- |
+| E-07W, recording C (16), truth interpolated | 0.2 to 3.2 cm, 0.02 to 0.23 deg | mean 0.05 | mean 0.37, max 3.3 |
+| E-07, recording C, loop-scene settings (5), truth interpolated | 0.4 to 5.5 cm, 0.01 to 0.07 deg | 0.29 | 1.81, max 7.6 |
+| E-07W, recording B (16), nearest truth sample | 0.1 to 4.0 cm, 0.01 to 0.57 deg | mean 0.11 | mean 0.95, max 8.1 |
+| E-07, recording B (5), nearest truth sample | 0.2 to 3.7 cm, 0.01 to 0.11 deg | 0.20 | 1.28, max 3.5 |
+| E-07 and E-07W, recording A (26), nearest truth sample | 0.1 to 5.0 cm, 0.00 to 0.55 deg | 0.12 to 0.28 | 0.67 to 2.1, max 8.2 |
+| two-lap pillar hall, seeds 42 / 1 / 7 / 2024 (11; 10 with the new floor) | 0.8 to 5.8 cm, 0.01 to 0.44 deg | 0.56 | 4.42 |
+| box world, whole estimator (7) | below 1 cm | 0.024 | 0.21 |
+
+**This is a conservative floor, not a NEES-6 calibration.** The floor that would give NEES 6 on
+the pooled Gazebo loops is about 1.1 cm / 0.08 deg, but the errors are heavy-tailed: on both
+recordings the two loops to keyframes 0 and 1 of E-07W carry 0.21 to 0.57 deg (0.21 to 0.23 deg
+with interpolated truth), against 0.01 to 0.11 deg for every other loop. They look systematic rather than ICP noise: the probable cause is the
+one-sided submap at the first stored keyframe (`submap_keyframes` neighbours exist on one side
+only, and those were taken during the static start), not verified; they are kept, not excluded.
+The floor is set to the smallest round values for which (a) the mean NEES is below 6 on every
+scene and (b) no measured loop exceeds the chi-square 0.95 quantile (12.6, 6 DoF): 2 cm / 0.25
+deg. Criterion (b) is a choice for safety, not a consistency test (with 30 or more consistent
+loops one or two would exceed 12.6), and it biases the floor loose: on E-07W the NEES is still
+about 1 against 6, about 6 times too loose in variance. 1.5 cm / 0.15 deg already gives a largest
+NEES of 19. The floor is fitted and evaluated on the same loops. Against 6, the shipped 5 cm /
+1 deg is 30 to 55 times too loose in variance on the recordings (E-07W 6 / 0.11) and 11 times on
+the hall. Owner ruling: the 2 cm / 0.25 deg floor is set in the loop overlays only
+(`config/sim/*_e07_loops_on.yaml`); the default stays 5 cm / 1 deg.
+
+Test: `LoopNees.SyntheticScenes` (both floors: mean NEES below 6 on the two synthetic scenes; the
+shipped one below 1 on the hall, the scene floor above 2 there, so a looser covariance shows).

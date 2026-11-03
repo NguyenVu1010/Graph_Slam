@@ -32,3 +32,8 @@ mss_node:
       range_sigma_m: 0.03
     loop_closure:
       enabled: true   # E-07W second run
+      # Loop-scene settings (H6, E-07W; defaults unchanged):
+      # A conservative covariance floor from the loop NEES against ground truth (C1-3,
+      # loop_closure.md section 14; not a NEES-6 calibration). Loop overlays only (owner ruling).
+      cov_floor_m: 0.02          # m
+      cov_floor_deg: 0.25        # deg
