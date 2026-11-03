@@ -144,6 +144,24 @@ TEST_F(LoopFixture, L01_SamePlaceDifferentHeading) {
   }
 }
 
+// H6 diagnostics (C1-31): LoopResult::correction_m / correction_yaw_rad report what the fit asks
+// of the graph pose of the query: the L-01 pair with 0.4 m of drift along x and 10 deg of yaw.
+TEST_F(LoopFixture, CorrectionFieldsReportTheAskedCorrection) {
+  const std::vector<common::Vec3> hall = test::hall_points_w();
+  Pair pr;
+  pr.truth_c = body_pose(-2.0, 1.0, 0.0);
+  pr.truth_q = body_pose(-1.8, 1.1, 90.0 * kDeg);
+  pr.graph_c = pr.truth_c;
+  pr.graph_q = body_pose(-1.4, 1.1, 100.0 * kDeg);
+  const LoopResult r = run(hall, hall, pr, cfg_.loop_closure);
+  ASSERT_EQ(r.outcome, LoopOutcome::kAccepted);
+  EXPECT_NEAR(r.correction_m, 0.4, kMaxLoopErrM);
+  EXPECT_NEAR(r.correction_yaw_rad, -10.0 * kDeg, kMaxLoopErrRad);
+  LoopResult none;
+  EXPECT_TRUE(std::isnan(none.correction_m));
+  EXPECT_TRUE(std::isnan(none.correction_yaw_rad));
+}
+
 // L-02: precision. Pairs at truly different places (4 to 12 m apart) whose graph poses say
 // "same place" (drift), plus pairs at the same place: no accepted loop may disagree with the
 // truth. Recall of the same-place pairs is reported.

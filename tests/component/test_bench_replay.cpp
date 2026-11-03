@@ -1,5 +1,6 @@
 // Component test: mss_bench replays a small synthetic mssdata dataset with a known record
 // count and writes est.tum and bench.json under --out.
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -182,6 +183,18 @@ TEST(BenchReplay, ReplaysSyntheticDataset) {
     ++n_lines;
   }
   EXPECT_EQ(n_lines, 10);
+  // kf_opt.tum (H6): the stored keyframes at their optimised poses, written when the backend
+  // has keyframe poses (GTSAM builds): the first keyframe is scan 0, at most one per scan.
+  if (MSS_TEST_WITH_GTSAM == 0) {
+    EXPECT_FALSE(fs::exists(out / "kf_opt.tum"));
+  } else {
+    ASSERT_TRUE(fs::exists(out / "kf_opt.tum"));
+    const std::string kf = read_file(out / "kf_opt.tum");
+    EXPECT_EQ(kf.rfind("3.000000000 ", 0), 0U) << kf;
+    const auto n_kf = std::count(kf.begin(), kf.end(), '\n');
+    EXPECT_GE(n_kf, 1);
+    EXPECT_LE(n_kf, 10);
+  }
 
   const std::string json = read_file(out / "bench.json");
   EXPECT_NE(json.find("\"n_imu\": 601,"), std::string::npos) << json;
