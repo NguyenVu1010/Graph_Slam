@@ -646,6 +646,29 @@ Config read_config(Reader& r) {
   }
   r.field(
       "loop_closure.pcm_max_clique_steps", c.loop_closure.pcm_max_clique_steps, Range::kPositive);
+  if (r.field("loop_closure.kernel_release", c.loop_closure.kernel_release)) {
+    r.check("loop_closure.kernel_release",
+            !c.loop_closure.kernel_release || c.loop_closure.pcm_enabled,
+            "needs loop_closure.pcm_enabled (a partner loop counts only when PCM selected both)");
+  }
+  if (r.field("loop_closure.kernel_release_window_keyframes",
+              c.loop_closure.kernel_release_window_keyframes,
+              Range::kAtLeastOne)) {
+    // Reviews M-1, N-3: every loop within the window must still be held (and so checked) by
+    // PCM, not frozen. A PCM-rejected loop skips no keyframes, so up to window + 1 loops can
+    // fall in one window: pcm_max_loops must exceed that.
+    r.check("loop_closure.kernel_release_window_keyframes",
+            !c.loop_closure.kernel_release ||
+                c.loop_closure.pcm_max_loops > c.loop_closure.kernel_release_window_keyframes + 1,
+            "with kernel_release, loop_closure.pcm_max_loops must be > "
+            "kernel_release_window_keyframes + 1 (every partner must still be held by PCM)");
+  }
+  r.field("loop_closure.kernel_release_min_separation_m",
+          c.loop_closure.kernel_release_min_separation_m,
+          Range::kPositive);
+  r.field("loop_closure.kernel_release_drift_ratio",
+          c.loop_closure.kernel_release_drift_ratio,
+          Range::kPositive);
 
   r.field("backend.keyframe_dist_m", c.backend.keyframe_dist_m, Range::kPositive);
   r.angle_deg("backend.keyframe_rot_deg", c.backend.keyframe_rot_rad);

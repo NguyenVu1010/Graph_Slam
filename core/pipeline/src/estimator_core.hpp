@@ -109,6 +109,29 @@ class CoreObserver {
 /// rotation keyframe rule by one keyframe every n matched scans; `frontend_keeps_own_state`
 /// keeps the front-end state (matched pose, IMU velocity and bias) at a keyframe instead of
 /// taking the backend estimate, so the LiDAR factors carry no backend feedback.
+/// ADR-030 kernel-release rule (review B-1), on what the pipeline knows of a loop when it enters
+/// the graph: its keyframes, their positions on the graph at that time (m, w), the correction it
+/// asks of the graph (|p(Z) - p(T_w_bi^-1 T_w_bj)|, m) and the distance travelled from i to j
+/// (sum of the keyframe steps, m).
+struct ReleaseEvidence {
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+  common::KeyId i = 0;
+  common::KeyId j = 0;
+  common::Vec3 p_i = common::Vec3::Zero();
+  common::Vec3 p_j = common::Vec3::Zero();
+  double asked_m = 0.0;
+  double path_m = 0.0;
+};
+/// The correction is plausible as drift: asked_m <= kernel_release_drift_ratio * path_m.
+bool release_plausible(const ReleaseEvidence& a, const loop::LoopConfig& c);
+/// a and b are partners: both plausible, i and j each within kernel_release_window_keyframes,
+/// and candidates and queries each at least kernel_release_min_separation_m apart (two places:
+/// one look-alike seen from nearby queries gives loops whose candidates are close together).
+/// Tests: LoopKernelRelease.PartnerRule*.
+bool release_partners(const ReleaseEvidence& a,
+                      const ReleaseEvidence& b,
+                      const loop::LoopConfig& c);
+
 struct CoreTestHooks {
   CoreObserver* observer = nullptr;
   bool force_T_e_w = false;
@@ -140,6 +163,8 @@ struct CoreTestHooks {
   /// drop the pending loop factors (as a failed optimize() does); the selector must forget them.
   /// Decremented by the core (the hooks object is mutable test state).
   mutable int drop_loop_updates = 0;
+  /// Loop updates that succeed before drop_loop_updates applies (ADR-030 failure-path tests).
+  mutable int pass_loop_updates = 0;
   /// ADR-028 tests: called with the backend graph after every loop search that changed it (after
   /// the extra updates and the front-end re-sync), to check which loop factors it holds.
   std::function<void(const backend::Graph&)> inspect_graph;
@@ -191,6 +216,7 @@ struct CoreCounters {
   std::uint64_t n_loops_pcm_rejected = 0;  // ADR-028
   std::uint64_t n_loops_removed = 0;
   std::uint64_t n_loops_no_marginal = 0;
+  std::uint64_t n_loops_released = 0;  // ADR-030: loop factors (re-)added without the kernel
   /// VoxelMap spacing replacements counted before the map's last clear() (rebuilds); the
   /// total is this plus VoxelMap::num_spacing_replaced().
   std::uint64_t n_map_spacing_replaced_cleared = 0;
@@ -279,6 +305,13 @@ class EstimatorCore {
   // ref_, kf_ and cov_out re-synced; returns true.
   bool try_loop_closure(common::KeyId j, common::Timestamp t, common::PoseCovariance& cov_out);
   common::Result<common::Estimate> drop_pending_loops_for_test();
+  // ADR-030 (with PCM): adds the loops of graph_loops_ not yet in the graph and re-adds those
+  // whose kernel state changed (loop_closure.kernel_release: no kernel when a partner loop is
+  // within the window). Returns true when a loop already in the graph changed its kernel.
+  bool apply_loop_kernels();
+  // ADR-030: the release evidence of a loop entering the graph, from loop_views_ (the graph
+  // poses of this search).
+  ReleaseEvidence release_evidence(const common::LoopConstraint& lc) const;
   // ADR-020 consistency check of the gravity factor after keyframe `j` was optimised.
   void check_gravity_factor(common::KeyId j);
   // Prediction preintegrator restarted at front_ (bias) with the boundary sample.
@@ -307,6 +340,20 @@ class EstimatorCore {
   loop::LoopDetector loop_;
   loop::LoopSelector selector_;  // ADR-028: PCM over the verified loops (pcm_enabled)
   std::vector<loop::KeyframeView> loop_views_;  // reserved map.max_keyframes when enabled
+  // ADR-030: the loop factors PCM put in the graph (selected, or frozen when they left PCM) and
+  // whether each one is in the graph without the kernel. Owner: this class, estimator thread.
+  struct GraphLoop {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    common::LoopConstraint lc;
+    ReleaseEvidence ev;
+    bool added = false;     // add_loop_factor called (it may still be pending)
+    bool released = false;  // added with LoopKernel::kNone
+    bool pending = false;   // (re-)added in the update being prepared
+  };
+  // Reserved 2 * pcm_max_loops when enabled; it can grow past that (frozen loops stay in the
+  // graph), one allocation per growth, per accepted loop, off the hot path (review M-17). The
+  // partner scan is O(n^2) per graph change.
+  std::vector<GraphLoop> graph_loops_;
   int loop_skip_ = 0;  // keyframes left to skip after an accepted loop (min_interval_keyframes)
 
   ImuBuffer imu_;
