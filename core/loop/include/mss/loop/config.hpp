@@ -91,6 +91,19 @@ struct LoopConfig {
   double pcm_yaw_drift_rad_per_m = 0.0;  // rad/m (YAML: pcm_yaw_drift_deg_per_m)
   int pcm_max_loops = 1;         // loops held, [1, 64]; the oldest leaves (frozen if selected)
   int pcm_max_clique_steps = 1;  // Bron-Kerbosch call bound (> 0)
+  // Kernel release (ADR-030, backlog C1-13): with PCM on, a selected loop that has a partner, an
+  // other selected loop whose keyframes i and j both lie within kernel_release_window_keyframes
+  // of its own, enters the graph without the Cauchy kernel (Gaussian), so its whole correction
+  // applies; a loop without such a partner keeps the kernel. false: every loop keeps the kernel
+  // (the behaviour before ADR-030). Needs pcm_enabled.
+  bool kernel_release = false;
+  int kernel_release_window_keyframes = 1;  // keyframes (>= 1)
+  // Partner evidence that one aliased spot cannot produce (ADR-030 fix round, review B-1): the
+  // two loops' candidates and queries are each at least kernel_release_min_separation_m apart
+  // (two places, not one look-alike seen twice), and each loop asks a correction no larger than
+  // kernel_release_drift_ratio times the distance travelled from its candidate to its query.
+  double kernel_release_min_separation_m = 0.0;  // m (> 0)
+  double kernel_release_drift_ratio = 0.0;       // m of correction per m travelled (> 0)
 };
 
 }  // namespace mss::loop
