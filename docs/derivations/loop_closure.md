@@ -13,7 +13,16 @@ amendment, ADR-028, backlog C1-12 / C1-16): `LoopFixture.CorrectionGate*`,
 `LoopAliasing.*`, `LoopComponent.TwoLapPcmNoWorseThanWithoutAcrossSeeds`,
 `LoopComponent.PipelinePcm*`, `LoopComponent.AmbiguousResultBacksOffTheSearch`,
 `LoopComponent.PcmRemovesAliasedLoopsKnownLoops`, `BackendGraph.RelativePoseCov*`,
-`BackendGraph.RemoveLoopFactor*`, `BackendIsam.B03_OutlierLoopRemovedLeavesNoDrag`.
+`BackendGraph.RemoveLoopFactor*`, `BackendIsam.B03_OutlierLoopRemovedLeavesNoDrag`. Sections 13 to
+16 (H6: diagnosis on E-07, loop NEES and floor, place search and kernel release, ADR-030; PCM
+scale): `LoopNees.SyntheticScenes`, `LoopKernelRelease.*`, `LoopComponent.KernelRelease*`,
+`LoopKnownLimits.KernelReleaseConsistentWrongPair`, `PlaceSearchFixture.*`,
+`LoopAliasing.NoFalseLoopAtAnyDriftWithPlaceSearch`,
+`LoopAliasing.LongPeriodCopyRankedFirstNoFalseLoopWithLoopSceneSettings`,
+`LoopFixture.L02_DifferentPlacesNoFalseLoopWithPlaceSearch`,
+`LoopDetector.PlaceSearchCostIsBoundedOnADenseRevisit`,
+`BackendGraph.LoopFactorWithoutKernelAppliesTheGaussianShare`; evaluation of recordings:
+`tools/loop_eval.py`.
 
 Conventions: right perturbation, tangent `[rho, phi]` (translation first) everywhere outside
 `backend` (`lie_conventions.md`). Frames: `w` world, `b` body, `l` LiDAR; `h` is the
@@ -171,7 +180,8 @@ drift of exactly one period passes (drag about 1.4 cm)
 chain (5 mm per step) and 92 / 60 / 13 % on a loose one (2 cm). So a first revisit after a long
 excursion with 0.5 to 2 m of drift is accepted but barely applied. The two-lap component test
 passes because its loops arrive while the drift is centimetres (backlog C1-13: gate, then a
-wider kernel or switchable constraints / GNC, and a floor calibrated by NEES).
+wider kernel or switchable constraints / GNC, and a floor calibrated by NEES). Addressed behind
+flags by ADR-030 (section 15: no kernel for a loop with a PCM partner) and section 14 (floor).
 
 ## 8. No-GTSAM build
 
@@ -622,6 +632,152 @@ the hall. Owner ruling: the 2 cm / 0.25 deg floor is set in the loop overlays on
 
 Test: `LoopNees.SyntheticScenes` (both floors: mean NEES below 6 on the two synthetic scenes; the
 shipped one below 1 on the hall, the scene floor above 2 there, so a looser covariance shows).
+
+## 15. Drift of metres: place search, kernel release (ADR-030; backlog C1-1, C1-13, C1-31)
+
+**Place search** (`loop_closure.place_search`, default off). The nearest `place_search_max_ranked`
+(20) candidates within `search_radius_m` are ranked by Scan Context distance to the query, and
+ICP gets a third seed, the query at the candidate's position with the Scan Context yaw,
+`(Rz(psi_c + s* 2pi/S) R_tilt_q, p_w_c)`, but only when the most similar candidate is distinct:
+its distance is at most `place_search_sc_ratio` (0.8) times the smallest among candidates at
+least `place_search_min_separation_m` (2 m, beyond the neighbouring keyframes of one place) from
+it. A look-alike elsewhere (a copy in a periodic aisle) fails that, and the search is the shipped
+one: nearest first, graph seeds only. Each descriptor is computed once per search. A place-seed
+fit beyond `max_correction_m` (yaw within the gate) cannot be the loop but competes in the
+ambiguity check (without that, the 3 m gate let a 2.7 m false loop in on E-07). Tests:
+`PlaceSearchFixture.*`; `L02_DifferentPlacesNoFalseLoopWithPlaceSearch` (6 of 36 accepted, all
+true, as shipped); `NoFalseLoopAtAnyDriftWithPlaceSearch` (periods 2 and 2.5 m, drift 0 to 5 m:
+0 accepted); `LongPeriodCopyRankedFirstNoFalseLoopWithLoopSceneSettings` (periods 3, 4, 5 m, the
+copy first in the store and identical in Scan Context, drift 0 to 5 m: 0 false loops in 30 cases
+with the loop-scene settings; the shipped detector accepts 7 false loops there, a limit older
+than ADR-030, C1-36).
+
+**Cost** (`LoopDetector.PlaceSearchCostIsBoundedOnADenseRevisit`, desktop WSL, 300 keyframes
+within the radius: a robot turning in place). The Scan Context descriptor cache (reviews N-5,
+N2-1) keeps each keyframe's descriptor: `map.max_keyframes` slots of `sc_rings x sc_sectors`
+floats, about 4.8 MB at 1000 keyframes, plus the roll and pitch each was levelled with, reserved
+in the constructor when place search is on; slot = id modulo the store bound; no allocation per
+search. A descriptor is recomputed when the keyframe's roll and pitch moved by more than
+`place_search_cache_tilt_deg` (0.1 deg) since it was levelled, so a graph correction that tilts
+keyframes does not leave stale descriptors (`PlaceSearchCacheRefreshesOnTiltChange`: after a
+2 deg tilt the warm ranking equals a fresh detector's bit for bit; 0.05 deg more keeps the
+cache). The test counts descriptor computations: a later search computes only the query's, capped
+or not. Per search, first / later (cache warm): shipped 21.4 / 22.9 ms,
+place search capped at 20 candidates 56.3 / 45.3 ms, uncapped 130 / 62 ms. Before the cache the
+capped search cost 48.5 ms every time and the uncapped one 126 ms. What is left over the shipped
+search is the shift search per candidate (72k products) and the place seed's ICP. On E-07W with
+place search on (three laps, the densest recording; recording C) p50 / p95 / max 5.2 / 8.9 /
+34.4 ms against 5.2 / 8.6 / 22.2 ms without it. ADR-026's per-keyframe bound now reads:
+`max_candidates` verifications and `place_search_max_ranked` Scan Context comparisons, each
+descriptor computed once per keyframe (ADR-030).
+
+**Place seed against an unvisited copy** (review N-4,
+`LoopAliasing.OnlyTheCopyStoredNoFalseLoopWithLoopSceneSettings`): the copy one period away is
+the only stored keyframe, so it counts as distinct and the place seed lands on it. A place-seed
+fit is a loop only when its correction is within `icp_max_corr_dist_m` plus
+`place_search_drift_ratio` (2 %) of the distance travelled from the candidate to the query;
+beyond that it only competes. Without that bound the loop-scene settings accepted 7 false loops
+in 30 cases there (periods 3 to 5 m, drift 0 to 5 m); with it 0 (the shipped detector: 6, C1-36).
+A copy across the aisle cannot be built in these scenes (`scan_at` has no occlusion, so parallel
+aisles see each other and their scans are mirror images); after a long lap the bound admits
+metres, so an unvisited identical aisle is a known limit (C1-24, C1-36).
+
+**Kernel release** (`loop_closure.kernel_release`, default off, needs PCM). A PCM-selected loop
+enters without the Cauchy kernel only with a partner: another loop in the graph whose `i` and `j`
+are within `kernel_release_window_keyframes` (20) of its own, whose candidate and query are each
+at least `kernel_release_min_separation_m` (5 m) from its own (two places: a look-alike seen from
+two nearby queries gives loops whose candidates lie within the submap span plus the ambiguity
+reach, about 4 m), and both loops ask a correction within `kernel_release_drift_ratio` (2 %) of
+the distance travelled from candidate to query. The partner is held by PCM (validated at start-up:
+`pcm_max_loops > kernel_release_window_keyframes + 1`, review N-3). The 2 % is a scene value: 1.5
+times the largest pipeline drift measured on E-07 (1.3 %, recording B without the level start);
+raw wheel odometry drifts 0.87 % (E-07) and 1.74 % (E-07W). On a short lap it is the guard that
+binds: on E-07W successive loops are already 5 m or more apart, so the separation rarely stops a
+pair, and 2 % of a 24 m lap is 0.48 m, below any period-sized correction (ADR-030, C1-34, C1-36). A loop without one keeps Cauchy; a loop
+whose partner leaves gets it back (remove and re-add in one update; a failed update drops both,
+and the selector forgets them). Without the kernel a loop applies the Gaussian share
+`sigma_chain^2 / (sigma_chain^2 + sigma_loop^2)` of a correction whatever its size
+(`LoopKernelRelease.GaussianLoopAppliesLargeCorrections`, lap of section 7;
+`BackendGraph.LoopFactorWithoutKernelAppliesTheGaussianShare`, closed form):
+
+| chain per step | correction | Cauchy, 5 cm / 1 deg | no kernel, 5 cm / 1 deg | no kernel, 2 cm / 0.25 deg |
+| --- | --- | --- | --- | --- |
+| 2 cm / 0.15 deg | 0.5 / 1 / 2 / 3 m | 0.92 / 0.61 / 0.13 / 0.06 | 0.93 at every size | 0.99 |
+| 5 mm / 0.0375 deg | 0.5 / 1 / 2 / 3 m | 0.10 / 0.03 / 0.007 / 0.003 | 0.48 | 0.84 |
+
+Through the pipeline (box world, injected loops, its own release settings: the 2 m circle cannot
+give 5 m of separation): two loops agreeing on a 1 m world shift leave 0.19 m of residual
+released against 0.88 m with Cauchy (`KernelReleaseAppliesACorroboratedCorrection`); a lone loop
+is bit-identical to the flag off; an outvoted wrong loop is removed before it is released
+(`KernelReleaseOutvotedWrongLoopNeverReleased`); the restore path (`KernelReleaseRestoresTheKernel
+WhenThePartnerLeaves`) and a failed update after a release (`KernelReleaseFailedUpdateDropsThe
+ReleasedPair`) are covered. **Consistent wrong pair** (`LoopKnownLimits.KernelReleaseConsistent
+WrongPair`, review B-1): two loops with the same wrong world shift from one place, 5 keyframes
+apart. With the loop-scene rule, or the separation alone, neither is released and the run is
+bit-identical to the flag off; the pair pulls the map 0.131 m (shift 1 m) and 0.046 m (3 m) as two
+Cauchy loops, against 0.070 and 0.027 m for one such loop; without the separation they would be
+released and pull 0.94 and 2.94 m.
+
+**E-07 and E-07W** (recording C, 2026-11-03 06:11 UTC, level start on in both overlays;
+measured on the review branch at ddc9682, before the tilt-keyed descriptor cache refresh (review N2-1); E-01..E-03 with the flags off were md5-checked against main at this branch's tip; E-07 and E-07W are to be re-run on the next recording (backlog C1-37);
+ATE after SE(3) alignment with the number of pairs; `est.tum` is the online estimate, one pose per
+scan; `kf_opt.tum` the stored keyframes at their optimised poses after the replay, the file E-07
+and E-07W are scored on (owner ruling; E-01..E-03 stay on `est.tum`); return = the start revisited
+at 394 s; final = the last pose; horizontal errors of the start-to-pose displacement in the start
+frame; loops: searches / accepted / rejected / PCM-rejected / removed, released; latency per scan,
+desktop WSL, two runs; CPU user time of the replay):
+
+| run | ATE `kf_opt` [m] (pairs) | ATE `est` [m] (pairs) | return h `kf_opt` [m] | final h `kf_opt` [m] | loops | p50 / p95 / max [ms] | CPU [s] |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| E-07 loops off | 1.016 (337) | 1.099 (4525) | 3.68 | 2.84 | - | 7.4 / 15.5 / 23.4 | 38.1 |
+| E-07 shipped loop settings | 0.870 (337) | 1.070 (4525) | 3.17 | 2.44 | 315 / 2 / 3 / 0 / 0, 0 | 7.3 / 15.1 / 52.0 | 37.1 |
+| E-07 loop-scene settings | 0.152 (337) | 1.001 (4525) | 0.042 | 0.17 | 312 / 5 / 0 / 0 / 0, 5 | 7.3 / 15.2 / 66.7 | 37.7 |
+| E-07W loops off | 0.0192 (135) | 0.0163 (1708) | - | 0.009 | - | 5.6 / 9.8 / 18.2 | 10.1 |
+| E-07W shipped loop settings | 0.0167 (135) | 0.0205 (1708) | - | 0.045 | 56 / 16 / 0 / 0 / 0, 0 | 5.2 / 8.5 / 24.0 | 9.5 |
+| E-07W loop-scene settings | 0.0142 (135) | 0.0151 (1708) | - | 0.021 | 56 / 16 / 0 / 0 / 0, 15 | 5.2 / 8.6 / 22.2 | 9.6 |
+
+Commands (WSL; `<rec>` the `tools/record_scenario.sh sim/scenarios/E-07.yaml <rec>` output, E-07W
+alike with `warehouse_e07*.yaml`; every path an argument, results under `results/<run-id>/`):
+
+```
+python tools/bag_to_mssdata.py <rec>/bag results/<run-id>/data --origin-lla 21.0278 105.8342 12.0 \
+    --pipeline-config config/sim/outdoor_e07.yaml
+mss_bench config/default.yaml results/<run-id>/data --overlay config/sim/outdoor_e07_loops_on.yaml \
+    --out results/<run-id>/on 2> results/<run-id>/on/bench.err
+python tools/loop_eval.py --gt <rec>/gt.tum --run results/<run-id>/on --out results/<run-id>/on-eval \
+    --revisit-after-s 100 --max-gt-gap-s 0.05 --floor-m 0.05 --floor-deg 1 --floor-m 0.02 --floor-deg 0.25
+```
+
+(`mkdir -p results/<run-id>/on` first, since the shell opens `bench.err` before the bench creates
+the directory; loops off: `--overlay config/sim/outdoor_e07.yaml`; shipped loop settings: an
+overlay that is `outdoor_e07.yaml` plus `loop_closure.enabled: true`; `PYTHONPATH=eval:sim:tools`.)
+
+The two kinds of ATE are different sample sets (every scan, keyframes only); off against on is
+like for like within each. Loop-scene settings: the `config/sim/*_e07_loops_on.yaml` overlays
+(floor 2 cm / 0.25 deg, `kernel_release` with the default 5 m / 2 % rule; E-07 also
+`place_search` and `max_correction_m` 6). No false loop in any run: every accepted loop is within
+5.5 cm and 0.23 deg of the truth. This recording drifts 3.7 m at the return. On E-07 the first
+loop (3.77 m asked) enters with the kernel and applies 6 %; the second (3.30 m asked, its
+candidate and query 6 keyframes on, beyond 5 m) is its partner, and the residual falls from 3.30
+to 0.03 m in that update. On recording B (3.1 m of drift): loops off / shipped / loop-scene
+`kf_opt` ATE 0.885 / 0.732 / 0.161 m; each setting alone there: kernel release and the floor
+without place search and with the 3 m gate, 2 loops released, 0.164 m; place search with the 6 m
+gate without release, 5 loops, 0.423 m; level start off (4.1 m of drift), 1.185 -> 0.164 m. The online ATE moves less by construction: nearly 90 % of the run
+precedes the first loop and `est.tum` is never rewritten.
+
+Latency: the loop keyframes cost 66.7 to 68.1 ms at most on E-07 with the loop-scene settings
+(recording C, two runs; 63.5 to 65 ms on B before the descriptor cache), 52 ms with the shipped
+settings, 23 ms with loops off (the H5 recording had 74.5 ms shipped):
+the place-search ICP runs and the update that moves every keyframe by metres (iSAM2 relinearises
+nearly the whole graph). p50, p95 and CPU time move by under 2 %. Pi 5 is not measured (C1-5,
+C1-35).
+
+**Open, stated plainly.** Two wrong loops consistent with each other at two places at least 5 m
+apart (a long periodic aisle that the ambiguity check misses) are still released (C1-34); on a
+short indoor lap the drift ratio is the guard that binds (ADR-030), not the separation. A first
+lone loop keeps the kernel and applies only a few percent until its partner arrives.
+`max_correction_m` 6 is a scene value (C1-1). The online estimate after a large correction is
+anchored to keyframe 0 only through its priors (C1-33).
 
 ## 16. `pcm_odometry_sigma_scale` 1.5 against 2 (backlog C1-27, closed)
 

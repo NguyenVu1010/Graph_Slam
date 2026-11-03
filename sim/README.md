@@ -345,9 +345,9 @@ Two loop scenes, two purposes:
 - **E-07W** (`sim/scenarios/E-07W.yaml`): the former E-07, the warehouse lap driven three times
   (`warehouse_3laps.yaml`, overlay `warehouse_e07.yaml`, unchanged except the L2 lever arm). It
   drifts about 4 cm, so it only tests that loops are found in structured indoor space and do no
-  harm. Its last bag and numbers (ATE 0.087 m, end-to-start 4.7 cm off / 1.5 cm on, backlog
-  C1-4) were recorded at e5e8320, before #41 (body frame `imu_link`) and before the L2 lever arm;
-  re-record it before quoting them.
+  harm. Re-recorded at main bf2f7cd (H6, "Re-recorded with the level start" below): `kf_opt`
+  ATE 0.0192 m with loops off, 0.0142 m with the loops-on overlay (16 loops, none false). The
+  numbers of the pre-#41 bag (ATE 0.087 m, 4.7 / 1.5 cm) are superseded.
 
 Recorded 2026-11-02 UTC on this branch (body frame `imu_link`, after #41; seed 42, gz-sim 8.15,
 ogre2): 452 s sim in 241 s wall (real-time factor 1.88), raw bag 375 MB in 19 files. Noise report
@@ -378,6 +378,47 @@ shipped thresholds removes little of it. The drift at the revisit is above `max_
 0.9-2.1 m) and the final horizontal error drops from 1.97 to 0.39 m. The vertical error
 (0.6-1.0 m) is the S2 tilt plus no GNSS. A loop keyframe costs up to 75 ms (C1-15).
 These are not baselines.
+
+#### Re-recorded with the level start (H6)
+
+Both loop scenes were recorded again at main bf2f7cd (body frame `imu_link`, L2 lever arm; seed
+42, gz-sim 8.15, ogre2), one at a time under the build lock: recording A on 2026-11-02, B and C
+on 2026-11-03 UTC (04:40 and 06:11) for the review rounds; both overlays set `imu.init_level_start` (ADR-027; owner ruling S5: on
+in the loop scenes only, `config/default.yaml` keeps it off). E-07W gained a loops-on variant
+(`warehouse_e07_loops_on.yaml`). These recordings replace the H5 one above and the pre-#41 E-07W
+bag. Gazebo is not deterministic, so each recording drifts differently.
+
+| scene, recording | sim s / wall s (RTF) | raw bag | noise report |
+| --- | --- | --- | --- |
+| E-07, C | 454 / 235 (1.93) | 377 MB, 19 files | exit 0, 12 gated cells; GNSS sigma_h 1.004 / sigma_v 1.919 m; odometry 0.87 % of distance, 4.51 deg/rev |
+| E-07W, C | 172 / 83 (2.07) | 232 MB, 8 files | exit 0, 6 gated cells; GNSS 1.023 / 1.849 m; odometry 1.74 %, 4.51 deg/rev |
+| E-07, B / A | 454 / 236, 453 / 261 | 377, 376 MB | exit 0; the same odometry figures |
+| E-07W, B / A | 176 / 86, 172 / 88 | 238, 231 MB | exit 0 |
+
+E-07 and E-07W are scored on `kf_opt.tum` (`mss_bench`: the stored keyframes at their optimised
+poses after the replay; owner ruling), E-01..E-03 on `est.tum`. Recording C, `tools/loop_eval.py`
+on each run (commands: `docs/derivations/loop_closure.md` section 15); ATE after SE(3) alignment with its number of pairs;
+return = the start revisited at 394 s; final = the last pose; horizontal errors of the
+start-to-pose displacement in the start frame; loops: searches / accepted / rejected /
+PCM-rejected / removed; latency per scan, desktop WSL:
+
+| run | ATE `kf_opt` [m] (pairs) | ATE `est` [m] (pairs) | return / final h `kf_opt` [m] | loops | p50 / p95 / max [ms] |
+| --- | --- | --- | --- | --- | --- |
+| E-07 loops off | 1.016 (337) | 1.099 (4525) | 3.68 / 2.84 | - | 7.4 / 15.5 / 23.4 |
+| E-07 shipped loop settings | 0.870 (337) | 1.070 (4525) | 3.17 / 2.44 | 315 / 2 / 3 / 0 / 0 | 7.3 / 15.1 / 52.0 |
+| E-07 loops-on overlay | 0.152 (337) | 1.001 (4525) | 0.042 / 0.17 | 312 / 5 / 0 / 0 / 0 | 7.3 / 15.2 / 66.7 |
+| E-07W loops off | 0.0192 (135) | 0.0163 (1708) | - / 0.009 | - | 5.6 / 9.8 / 18.2 |
+| E-07W shipped loop settings | 0.0167 (135) | 0.0205 (1708) | - / 0.045 | 56 / 16 / 0 / 0 / 0 | 5.2 / 8.5 / 24.0 |
+| E-07W loops-on overlay | 0.0142 (135) | 0.0151 (1708) | - / 0.021 | 56 / 16 / 0 / 0 / 0 | 5.2 / 8.6 / 22.2 |
+
+The loops-on overlays carry the loop-scene settings of ADR-030 (floor 2 cm / 0.25 deg and kernel
+release in both; place search and `max_correction_m` 6 in E-07 only). No false loop in any run
+(every accepted loop within 5.5 cm and 0.23 deg of the truth). The level start does not rank
+reliably: the drift at the return of E-07 with / without it is 3.1 / 4.1 m on B, 4.0 / 2.6 m on
+A, 2.8 / 3.7 m on the H5 one, and 3.7 m with it on C (backlog C1-32, a multi-seed study); the
+loops-on overlay closes every one measured (`kf_opt` ATE 0.152 to 0.164 m). Diagnosis, NEES, each setting
+alone and the cost: `docs/derivations/loop_closure.md` sections 13 to 15. These are not
+baselines. The numbers were measured on the review branch at ddc9682, before the tilt-keyed descriptor cache refresh (review N2-1); E-01..E-03 with the flags off were md5-checked against main at this branch's tip; E-07 and E-07W are to be re-run on the next recording (backlog C1-37).
 
 ### Máy bàn
 
