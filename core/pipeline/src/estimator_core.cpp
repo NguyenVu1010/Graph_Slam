@@ -921,6 +921,7 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
       char buf[160];
       if (graph_.remove_loop_factor(ij.first, ij.second)) {
         ++counters_.n_loops_removed;
+        removed_loops_.push_back(ij);  // graph_snapshot() only (ADR-031)
         std::snprintf(buf,
                       sizeof(buf),
                       "loop closure removed: j %llu i %llu (inconsistent with the selected loops)",
@@ -938,7 +939,7 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
       }
     }
     for (const common::LoopConstraint& lc : selector_.to_add()) {
-      GraphLoop g;
+      PcmLoop g;
       g.lc = lc;
       g.ev = release_evidence(lc);
       graph_loops_.push_back(g);
@@ -953,11 +954,12 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
     }
   } else {
     graph_.add_loop_factor(r.constraint);
+    plain_loops_.emplace_back(r.constraint.i, r.constraint.j);  // graph_snapshot() only
   }
   const bool drop =  // test-only seam
       hooks_ != nullptr && hooks_->drop_loop_updates > 0 && hooks_->pass_loop_updates-- <= 0;
   common::Result<common::Estimate> opt = drop ? drop_pending_loops_for_test() : graph_.optimize();
-  for (GraphLoop& g : graph_loops_) {
+  for (PcmLoop& g : graph_loops_) {
     counters_.n_loops_released += opt.is_ok() && g.pending && g.released ? 1U : 0U;
     g.pending = false;  // committed, or dropped with the failed update
   }
@@ -1107,7 +1109,7 @@ ReleaseEvidence EstimatorCore::release_evidence(const common::LoopConstraint& lc
 bool EstimatorCore::apply_loop_kernels() {
   bool changed = false;
   for (std::size_t a = 0; a < graph_loops_.size(); ++a) {
-    GraphLoop& g = graph_loops_[a];
+    PcmLoop& g = graph_loops_[a];
     bool partner = false;
     for (std::size_t b = 0; b < graph_loops_.size() && cfg_.loop_closure.kernel_release; ++b) {
       partner =
@@ -1145,7 +1147,7 @@ common::Result<common::Estimate> EstimatorCore::drop_pending_loops_for_test() {
   --hooks_->drop_loop_updates;
   // Every loop factor pending in this update, new or re-added with another kernel (review M-3);
   // the removal of a re-added loop's old factor stands, as in a real failed update.
-  for (const GraphLoop& g : graph_loops_) {
+  for (const PcmLoop& g : graph_loops_) {
     if (g.pending) {
       (void)graph_.remove_loop_factor(g.lc.i, g.lc.j);
     }
@@ -1256,6 +1258,62 @@ MapExportInfo EstimatorCore::visit_map(const MapKeyframeVisitor& visit) const {
   }
   info.n_points_out = info.n_points_in;
   return info;
+}
+
+bool add_graph_loop(common::KeyId i,
+                    common::KeyId j,
+                    LoopState state,
+                    std::vector<GraphLoop>& out) {
+  for (const GraphLoop& l : out) {
+    if (l.i == i && l.j == j) {
+      return false;
+    }
+  }
+  GraphLoop l;
+  l.i = i;
+  l.j = j;
+  l.state = state;
+  out.push_back(l);
+  return true;
+}
+
+std::size_t EstimatorCore::graph_snapshot(GraphSnapshot& out) const {
+  out.keyframes.clear();
+  out.loops.clear();
+  // KeyIds are dense from 0 (backend::Graph::add_keyframe) and last_kf_id_ is the newest.
+  const std::size_t n_known = has_estimate_ ? static_cast<std::size_t>(last_kf_id_) + 1 : 0;
+  for (std::size_t k = 0; k < n_known; ++k) {
+    const common::Result<common::NavState> s = graph_.keyframe_state(static_cast<common::KeyId>(k));
+    if (s.is_ok()) {
+      GraphKeyframe g;
+      g.id = static_cast<common::KeyId>(k);
+      g.t = s.value().t;
+      g.T_w_b = s.value().T_w_b;
+      out.keyframes.push_back(g);
+    }
+  }
+  // In the graph first: with PCM every loop in the graph is in graph_loops_ (a failed update erases
+  // the ones it dropped); without PCM a failed update drops the pending factor, so ask the graph.
+  // Then the loops PCM removed; one PCM brought back is already listed with its current state.
+  for (const PcmLoop& g : graph_loops_) {
+    (void)add_graph_loop(
+        g.lc.i, g.lc.j, g.released ? LoopState::kReleased : LoopState::kActive, out.loops);
+  }
+  for (const auto& ij : plain_loops_) {
+    if (graph_.has_loop_factor(ij.first, ij.second)) {
+      (void)add_graph_loop(ij.first, ij.second, LoopState::kActive, out.loops);
+    }
+  }
+  for (const auto& ij : removed_loops_) {
+    (void)add_graph_loop(ij.first, ij.second, LoopState::kRemoved, out.loops);
+  }
+  for (GraphLoop& l : out.loops) {
+    const common::Result<common::NavState> si = graph_.keyframe_state(l.i);
+    const common::Result<common::NavState> sj = graph_.keyframe_state(l.j);
+    l.t_i = si.is_ok() ? si.value().t : common::Timestamp{};
+    l.t_j = sj.is_ok() ? sj.value().t : common::Timestamp{};
+  }
+  return n_known;
 }
 
 }  // namespace mss::pipeline::detail

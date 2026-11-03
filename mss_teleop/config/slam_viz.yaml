@@ -1,0 +1,12 @@
+# mss_node ROS parameters added by teleop.launch.py (ADR-031). The SLAM overlay itself is the
+# reused scenario's loops-on overlay (E-07W: config/sim/warehouse_e07_loops_on.yaml, E-07:
+# config/sim/outdoor_e07_loops_on.yaml), not a copy; mss_live.launch.py viz:=true sets
+# viz.enabled, viz.gz_world (the scenario world) and viz.save_dir (<repo>/results/teleop).
+mss_node:
+  ros__parameters:
+    viz:
+      rate_hz: 1.0        # Hz, wall rate of the keyframe / loop / path / counter display
+      gz_timeout_ms: 5000  # ms, gz service request timeout (asynchronous: never blocks the node)
+      paused_after_s: 0.5  # s, in [0.2, 5]: no sim-clock change this long = world paused
+      running_min_rtf: 0.05  # in (0, 1]: an advancing clock below this real-time factor = paused
+    map_rate_hz: 1.0      # Hz, /mss/map (the global map follows the loop corrections)

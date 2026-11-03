@@ -10,6 +10,7 @@
 #include "mss/common/scan_frame.hpp"
 #include "mss/common/types.hpp"
 #include "mss/pipeline/config.hpp"
+#include "mss/pipeline/graph_snapshot.hpp"
 #include "mss/pipeline/map_export.hpp"
 
 namespace mss::pipeline {
@@ -293,6 +294,23 @@ class Estimator {
   /// Tests: test_map_export_component (MapExportComponent*), test_map_downsample, E-01 with
   /// mss_bench --map-out.
   common::Result<MapExportInfo> export_map(std::vector<Eigen::Vector3f>& out) const;
+
+  /// The keyframes and loops of the backend graph, for live display and saving (ADR-031):
+  /// `out` is cleared, then filled with every keyframe the backend has an estimate for (id order,
+  /// T_w_b(k) the optimised pose at the time of this call, as visit_map() uses; keyframes evicted
+  /// by map.max_keyframes included) and every loop that entered the graph with its state
+  /// (GraphSnapshot). `out` keeps its capacity between calls, so a caller that reuses it
+  /// allocates only when the graph grew. Before the first keyframe: ok and empty.
+  /// Errors: Status error "graph snapshot: no keyframe has a backend pose" when keyframes exist
+  ///   but the backend has an estimate for none (no-GTSAM stub build); `out` is then empty.
+  /// Thread contract: as visit_map() (the thread that calls run_once() / flush(), between those
+  ///   calls; no lock yet).
+  /// Hot path: no (on demand, about 1 Hz; O(keyframes + loops) backend reads). Never called by
+  ///   the estimator itself, so it cannot change an estimate.
+  /// Tests: test_loop_component (expect_snapshot in PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne
+  ///   and KernelReleaseAppliesACorroboratedCorrection), test_map_export_component
+  ///   (GraphSnapshotKeepsEvictedKeyframes), test_estimator (GraphSnapshotEmptyBeforeData).
+  common::Status graph_snapshot(GraphSnapshot& out) const;
 
  private:
   // Queues (~0.3 MB at the compile-time maxima of bounded_queue.hpp), the ScanFrame pool

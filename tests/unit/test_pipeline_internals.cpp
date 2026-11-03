@@ -22,6 +22,7 @@
 #include "mss/pipeline/bounded_queue.hpp"
 
 #include "alloc_counter.hpp"
+#include "estimator_core.hpp"
 #include "frames.hpp"
 #include "gravity_rest.hpp"
 #include "imu_buffer.hpp"
@@ -574,6 +575,22 @@ TEST(PipelineInternals, GravityRestGateRejectsTurnWheelAndMagnitude) {
   EXPECT_EQ(detail::gravity_rest_failure(
                 rest_state(Vec3(0.0, 0.0, kG + 0.2), Vec3::Zero()), c, 0.1, false),
             nullptr);
+}
+
+// ADR-031 (review N-11): graph_snapshot() lists the loops in the graph, then the PCM-removed ones;
+// a loop that PCM removed and later brought back is listed once, with its current state.
+TEST(PipelineInternals, GraphLoopListedOnceWithItsCurrentState) {
+  std::vector<GraphLoop> out;
+  EXPECT_TRUE(add_graph_loop(1, 5, LoopState::kActive, out));    // back in the graph
+  EXPECT_TRUE(add_graph_loop(2, 6, LoopState::kReleased, out));  // in the graph, no kernel
+  EXPECT_FALSE(add_graph_loop(1, 5, LoopState::kRemoved, out));  // removed earlier: not again
+  EXPECT_TRUE(add_graph_loop(3, 7, LoopState::kRemoved, out));   // removed, not back
+  EXPECT_FALSE(add_graph_loop(3, 7, LoopState::kRemoved, out));  // removed twice: once
+  ASSERT_EQ(out.size(), 3U);
+  EXPECT_EQ(out[0].state, LoopState::kActive);
+  EXPECT_EQ(out[1].state, LoopState::kReleased);
+  EXPECT_EQ(out[2].i, 3U);
+  EXPECT_EQ(out[2].state, LoopState::kRemoved);
 }
 
 }  // namespace

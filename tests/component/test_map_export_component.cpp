@@ -296,5 +296,49 @@ TEST(MapExportComponent, FollowsBackendCorrection) {
   EXPECT_LT(newest_vs_insert_m, 1e-6);
 }
 
+// ADR-031: Estimator::graph_snapshot() lists every keyframe the backend has, also those evicted
+// from the map store by map.max_keyframes (visit_map no longer sees them), and the stored ones at
+// the pose visit_map exports. No loop closure here: no loops. Stub build: error, empty.
+TEST(MapExportComponent, GraphSnapshotKeepsEvictedKeyframes) {
+  const BoxWorldParams p;
+  const fs::path dir = test_dir();
+  ASSERT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  Config cfg = box_config(p, false, false, dir);
+  cfg.map.max_keyframes = 4;  // keyframes in the store; the run has more (checked below)
+  cfg.map.window_keyframes = 4;
+  const common::Pose T_l_b = cfg.frames.T_b_l.inverse();
+  common::Status status = common::Status::ok();
+  GraphSnapshot snap;
+  std::map<common::KeyId, common::Pose> stored;
+  MapExportInfo info;
+  const ReplayResult r = replay(dir / "data", cfg, {}, [&](const Estimator& est) {
+    status = est.graph_snapshot(snap);
+    const auto v = est.visit_map([&](const MapKeyframe& kf) { stored[kf.id] = kf.T_w_l * T_l_b; });
+    if (v.is_ok()) {
+      info = v.value();
+    }
+  });
+  ASSERT_GT(r.stats.n_keyframes, 2 * cfg.map.max_keyframes);
+  if (!kWithGtsam) {
+    EXPECT_FALSE(status.is_ok());
+    EXPECT_TRUE(snap.keyframes.empty());
+    EXPECT_TRUE(snap.loops.empty());
+    return;
+  }
+  ASSERT_TRUE(status.is_ok()) << status.reason();
+  EXPECT_GT(info.n_evicted, 0U);
+  ASSERT_EQ(snap.keyframes.size(), r.stats.n_keyframes);
+  EXPECT_LT(stored.size(), snap.keyframes.size());
+  for (std::size_t k = 0; k < snap.keyframes.size(); ++k) {
+    EXPECT_EQ(snap.keyframes[k].id, static_cast<common::KeyId>(k));
+  }
+  for (const auto& [id, T_w_b] : stored) {
+    ASSERT_LT(id, snap.keyframes.size());
+    EXPECT_LT((snap.keyframes[id].T_w_b.p - T_w_b.p).norm(), 1e-9) << id;
+    EXPECT_LT((snap.keyframes[id].T_w_b.R - T_w_b.R).norm(), 1e-9) << id;
+  }
+  EXPECT_TRUE(snap.loops.empty());
+}
+
 }  // namespace
 }  // namespace mss::pipeline

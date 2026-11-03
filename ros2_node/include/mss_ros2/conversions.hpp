@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -8,6 +9,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -17,8 +19,12 @@
 #include "mss/common/timestamp.hpp"
 #include "mss/common/types.hpp"
 #include "mss/gnss/gnss.hpp"
+#include "mss/pipeline/graph_snapshot.hpp"
 
 #include <builtin_interfaces/msg/time.hpp>
+#include <std_msgs/msg/color_rgba.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 // Message <-> core struct conversions of mss_node (ADR-024 sections 1, 2, 5). Same semantics
 // as tools/bag_to_mssdata.py, so the node and mss_bench read a bag the same way. No ROS
@@ -117,5 +123,70 @@ void cloud_from_points(const std::vector<Eigen::Vector3f>& points_w,
                        mss::common::Timestamp t,
                        const std::string& world_frame,
                        sensor_msgs::msg::PointCloud2& out);
+
+// --- Live graph display (viz.enabled, ADR-031) ----------------------------------------------
+// Off the hot path (viz.rate_hz, about 1 Hz); every marker array starts with one DELETEALL
+// marker and redraws the whole graph, so RViz shows the optimised poses of the moment.
+
+/// Marker sizes (display only, no estimation effect). Like the marker colours (loop_color, the
+/// keyframe arrow), they are display constants, not YAML tunables: ADR-031 section 2 names this
+/// exemption from the CONTRIBUTING.md config rule (review N-2).
+struct VizStyle {
+  /// m, keyframe arrow length. The arrow points along x of b (the IMU), which is the forward
+  /// direction only when the IMU x axis is the robot's forward axis (true for the sim robot,
+  /// review N-13).
+  double arrow_length_m = 0.6;
+  double arrow_shaft_m = 0.06;  ///< m, keyframe arrow shaft diameter
+  double arrow_head_m = 0.15;   ///< m, keyframe arrow head diameter
+  double loop_width_m = 0.06;   ///< m, loop line width
+  double text_height_m = 0.6;   ///< m, height of the counter text
+  double text_above_m = 2.0;    ///< m, counter text height above the newest keyframe
+};
+
+/// Counters shown in the counter text (from Estimator::Stats).
+struct GraphCounts {
+  std::uint64_t keyframes = 0;           ///< n_keyframes
+  std::uint64_t loops_accepted = 0;      ///< n_loops_accepted (entries into the graph)
+  std::uint64_t loops_rejected = 0;      ///< n_loops_rejected (ICP / ambiguity)
+  std::uint64_t loops_pcm_rejected = 0;  ///< n_loops_pcm_rejected
+  std::uint64_t loops_removed = 0;       ///< n_loops_removed (by PCM)
+};
+
+/// Colour of a loop line: green kActive, cyan kReleased (no kernel), red kRemoved.
+std_msgs::msg::ColorRGBA loop_color(mss::pipeline::LoopState state);
+
+/// One ARROW marker per keyframe at its optimised T_w_b (namespace "keyframes", id = KeyId),
+/// after one DELETEALL marker: 1 + keyframes markers, all with frame_id `world_frame` and stamp
+/// `t`. `out.markers` keeps its capacity between calls.
+void keyframe_markers(const mss::pipeline::GraphSnapshot& snap,
+                      mss::common::Timestamp t,
+                      const std::string& world_frame,
+                      const VizStyle& style,
+                      visualization_msgs::msg::MarkerArray& out);
+
+/// One LINE_LIST marker per loop from keyframe i to keyframe j at their optimised positions,
+/// coloured by state (loop_color; namespace "loops", id = index in snap.loops), after one
+/// DELETEALL marker. A loop whose keyframe has no pose in the snapshot is skipped.
+void loop_markers(const mss::pipeline::GraphSnapshot& snap,
+                  mss::common::Timestamp t,
+                  const std::string& world_frame,
+                  const VizStyle& style,
+                  visualization_msgs::msg::MarkerArray& out);
+
+/// The keyframes as a path (one PoseStamped per keyframe, stamped with its own time) in
+/// `world_frame`, header stamp `t`. Redrawn whole each time, so it shows the loop corrections
+/// that /mss/path (front-end poses as published) does not (backlog R9).
+void path_from_snapshot(const mss::pipeline::GraphSnapshot& snap,
+                        mss::common::Timestamp t,
+                        const std::string& world_frame,
+                        nav_msgs::msg::Path& out);
+
+/// TEXT_VIEW_FACING marker with the counters and the loops by state, `text_above_m` above the
+/// newest keyframe (the origin of `world_frame` before the first). Namespace "counts", id 0.
+visualization_msgs::msg::Marker counts_marker(const mss::pipeline::GraphSnapshot& snap,
+                                              const GraphCounts& counts,
+                                              mss::common::Timestamp t,
+                                              const std::string& world_frame,
+                                              const VizStyle& style);
 
 }  // namespace mss_ros2

@@ -409,4 +409,13 @@ common::Result<MapExportInfo> Estimator::export_map(std::vector<Eigen::Vector3f>
   return r;
 }
 
+common::Status Estimator::graph_snapshot(GraphSnapshot& out) const {
+  const std::size_t n_known = impl_->core->graph_snapshot(out);
+  if (out.keyframes.empty() && n_known > 0) {
+    out.loops.clear();
+    return common::Status::error("graph snapshot: no keyframe has a backend pose");
+  }
+  return common::Status::ok();
+}
+
 }  // namespace mss::pipeline

@@ -655,6 +655,73 @@ CPU (average over the run, % of one core) and peak RSS:
 sim time receives the 1 kHz `/clock` (driver and `live_start` likewise). The machine keeps up at
 `rtf` 1.0, so the real-time factor was not lowered.
 
+## Teleop: drive and watch SLAM (Lái tay và xem SLAM)
+
+Drive the robot yourself and watch keyframes, loops and the optimised trajectory in RViz2
+(ADR-031; colcon workspace with `mss_ros2` and `mss_teleop` sourced, the `sim/` Python
+dependencies on `PYTHONPATH` as for "Live"). Run from the repo root (or pass `repo:=<path>`):
+
+```
+export ROS_DOMAIN_ID=<free id>
+ros2 launch mss_teleop teleop.launch.py world:=warehouse input:=keyboard
+#   world:=warehouse | outdoor   input:=keyboard | joy   rviz:=true   headless:=true (no Gazebo GUI)
+#   rtf:=1.0   keyboard_prefix:="xterm -e" (open the keyboard teleop in its own terminal)
+```
+
+- The world reuses a scenario (`warehouse` -> E-07W, `outdoor` -> E-07: noise, seed, GNSS,
+  wheels, spawn pose) and its loops-on overlay, with no route driver and no stop time.
+  `mss_node` runs with `viz.enabled`, so RViz (`mss_teleop/rviz/teleop.rviz`) shows, besides the
+  online path, map and TF: one arrow per keyframe at its optimised pose, one line per loop
+  (green in the graph, cyan in the graph without the Cauchy kernel (ADR-030), red removed by
+  PCM), the optimised keyframe path redrawn every second (it shrinks after a loop closes) and a
+  text with the counters.
+- Speeds: the robot's maxima from `sim/models/robot.yaml` (1.0 m/s, 1.0 rad/s); the DiffDrive
+  plugin clamps speed and acceleration to the same file.
+- **Keyboard** (default; on WSL a USB gamepad needs `usbipd` first): without `keyboard_prefix`
+  the launch prints the command for a second terminal (`ros2 run teleop_twist_keyboard
+  teleop_twist_keyboard --ros-args -p speed:=1.0 -p turn:=1.0`, same `ROS_DOMAIN_ID`). Keys of
+  `teleop_twist_keyboard`: `i` forward, `,` back, `j` / `l` turn, `k` stop. The robot keeps the
+  last command until the next key, so stop with `k`.
+- **Gamepad** (`input:=joy`, Xbox layout, `mss_teleop/config/joy.yaml`):
+
+  | Control | Action |
+  | --- | --- |
+  | hold LB | dead man: release it and the robot stops |
+  | left stick up / down | forward / back (full stick = max speed) |
+  | left stick left / right | turn |
+  | Y | `/mss/save` |
+  | Start | `/mss/pause` toggle: pauses a running world, resumes a paused one (state from `/mss/paused`, so a CLI or GUI pause stays in sync) |
+
+- **Save**: `ros2 service call /mss/save std_srvs/srv/Trigger` (or Y) writes `kf_opt.tum` (every
+  keyframe at its optimised pose, TUM), `loops.csv` (`i,j,t_i_s,t_j_s,state`) and `map.pcd`
+  into `results/teleop/mss-<start time>/save-<n>/` and returns the path. Each save creates a new
+  `save-<n>` directory and never reuses one, also after a restart with the same run id. A running
+  world is paused while it writes and resumed afterwards; a world that is already paused (by
+  `/mss/pause`, the Gazebo GUI or `gz service`) or whose sim clock does not advance is left as
+  it is, and the save sends no `gz` call. The world state comes from the sim clock (paused after
+  `viz.paused_after_s`, 0.5 s, without a change; `use_sim_time` is required with a Gazebo world)
+  and is published on `/mss/paused`. A pause or resume through `/mss/pause` counts at once; one
+  from the Gazebo GUI or the gz CLI is seen after up to `viz.paused_after_s`. Without `/clock`
+  the node warns every 10 s. Unlike `mss_bench`'s `kf_opt.tum`, which lists only the keyframes
+  still in the map store (`visit_map`), this one lists every keyframe the backend has, also those
+  evicted by `map.max_keyframes`, and says so in three `#` comment lines; the poses of the
+  keyframes in both are the same. Without a Gazebo world, or when the pause fails, it still
+  writes and says so in the reply.
+- **Pause**: `ros2 service call /mss/pause std_srvs/srv/SetBool '{data: true}'` (`false` resumes)
+  pauses the whole Gazebo world, not only SLAM, so time, sensors and SLAM stay consistent; the
+  robot cannot be driven while paused. The `gz` call runs in the background: `mss_node` keeps
+  processing sensor data and answers when `gz` is done (a second request meanwhile gets
+  "busy"). Do not move the robot in the Gazebo GUI while SLAM runs: there is no relocalisation
+  (backlog L25), the estimate breaks.
+
+Headless smoke run, 2026-11-03, desktop WSL, `world:=warehouse input:=joy rviz:=false`: `/joy`
+messages published by a script (LB + stick: `/cmd_vel` 0.5 m/s), then the E-07W route driven
+through `/cmd_vel` as a stand-in for a long drive with revisits (three warehouse laps). At the
+end the counter text read `keyframes 135 | loops: accepted 16, rejected 0, PCM rejected 0,
+removed 0`, with 3 loops in the graph and 13 released. Start paused the world (sim clock 190 s
+to 190 s over 3 s) and Start again resumed it (195 s, then 199 s). Y and the service both wrote
+`kf_opt.tum` (135 keyframes), `loops.csv` (16 loops) and `map.pcd` (155849 points).
+
 ## Mutating a bag (E-03)
 
 `tools/mutate_bag.py` derives the robustness bag from a bridged one (packet loss and reordering

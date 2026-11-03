@@ -4,6 +4,8 @@
         [rtf:=1.0] [headless:=true] [render_engine:=ogre2] [seed:=<scenario seed>]
         [assets_dir:=results/live/<id>/assets] [config_path:=<default.yaml>]
         [overlay:=<scenario pipeline_config>] [body_frame:=<frames.body>] [exit_on_end:=false]
+        [driver:=true] [stop_at_end:=true] [viz:=false] [node_params:=<ROS params YAML>]
+        [rviz_config:=<share>/rviz/mss.rviz]
 
 One process tree:
 1. ``tools/gen_sim_assets.py`` (synchronously, at launch) writes the robot and bridge assets.
@@ -15,7 +17,13 @@ One process tree:
 5. ``python3 -m mss_sim.live_start``: once mss_node and the noise node subscribe, sets the
    real-time factor ``rtf``, unpauses, and pauses again at ``duration_s`` + 2 s of sim time.
    ``exit_on_end:=true`` then shuts the launch down; otherwise everything stays up for viewing.
-6. RViz (``rviz:=true``).
+6. RViz (``rviz:=true``, config ``rviz_config``).
+
+Teleop (ADR-031, ``mss_teleop/launch/teleop.launch.py``): ``driver:=false`` leaves the robot to
+``/cmd_vel`` from the user, ``stop_at_end:=false`` starts the world and never pauses it (the
+scenario's ``duration_s`` does not apply), ``viz:=true`` turns on mss_node's graph display and its
+``/mss/save`` / ``/mss/pause`` services (``viz.gz_world`` = the scenario world, ``viz.save_dir`` =
+``results/teleop`` in the repo), and ``node_params`` adds a ROS parameter file for mss_node.
 
 All nodes use sim time (Gazebo ``/clock``). Gazebo transport runs in its own partition
 (``GZ_PARTITION=mss_live_<launch pid>``), so the world services and gz topics of this run never
@@ -80,6 +88,10 @@ def _setup(context: LaunchContext) -> list:
             "overlay",
             "body_frame",
             "exit_on_end",
+            "driver",
+            "stop_at_end",
+            "viz",
+            "node_params",
         )
     }
     if not arg["scenario"]:
@@ -121,13 +133,28 @@ def _setup(context: LaunchContext) -> list:
         "gnss_origin.longitude_deg": lon,
         "gnss_origin.altitude_m": alt,
     }
+    if _flag(arg["viz"]):
+        params.update(
+            {
+                "viz.enabled": True,
+                "viz.gz_world": sc["world"],
+                "viz.save_dir": str(repo / "results" / "teleop"),
+            }
+        )
+    node_params: list = [params]
+    if arg["node_params"]:
+        node_params.append(str(Path(arg["node_params"]).resolve()))
+    stop = (
+        ["--stop-at-s", str(float(sc["duration_s"]) + STOP_MARGIN_S)]
+        if _flag(arg["stop_at_end"])
+        else []
+    )
     seed = ["--seed", arg["seed"]] if arg["seed"] else []
     py_env = {"PYTHONPATH": env_path}
     starter = ExecuteProcess(
         cmd=[
             "python3", "-m", "mss_sim.live_start", sc["world"], "--rtf", arg["rtf"],
-            "--stop-at-s", str(float(sc["duration_s"]) + STOP_MARGIN_S),
-            "--wait-subs", *NOISY_TOPICS, *RAW_TOPICS, *ROS_SIM_TIME,
+            *stop, "--wait-subs", *NOISY_TOPICS, *RAW_TOPICS, *ROS_SIM_TIME,
         ],
         name="live_start",
         output="screen",
@@ -143,6 +170,7 @@ def _setup(context: LaunchContext) -> list:
                 "render_engine": arg["render_engine"],
                 "paused": "true",
                 "raw_prefix": RAW_PREFIX,
+                "driver": arg["driver"],
             }.items(),
         ),
         ExecuteProcess(
@@ -166,7 +194,7 @@ def _setup(context: LaunchContext) -> list:
             name="mss_node",
             output="screen",
             emulate_tty=True,
-            parameters=[params],
+            parameters=node_params,
         ),
         starter,
     ]
@@ -202,6 +230,19 @@ def generate_launch_description() -> LaunchDescription:
                 "body_frame", default_value="", description="default: frames.body of the config"
             ),
             DeclareLaunchArgument("exit_on_end", default_value="false"),
+            DeclareLaunchArgument("driver", default_value="true", description="route driver"),
+            DeclareLaunchArgument(
+                "stop_at_end", default_value="true", description="pause at duration_s + 2 s"
+            ),
+            DeclareLaunchArgument(
+                "viz", default_value="false", description="graph display, /mss/save, /mss/pause"
+            ),
+            DeclareLaunchArgument(
+                "node_params", default_value="", description="extra mss_node parameter YAML"
+            ),
+            DeclareLaunchArgument(
+                "rviz_config", default_value=str(share / "rviz" / "mss.rviz"), description="RViz"
+            ),
             # One gz partition per launch: no cross-talk with other Gazebo servers.
             SetEnvironmentVariable("GZ_PARTITION", f"mss_live_{os.getpid()}"),
             OpaqueFunction(function=_setup),
@@ -209,7 +250,7 @@ def generate_launch_description() -> LaunchDescription:
                 package="rviz2",
                 executable="rviz2",
                 name="rviz2",
-                arguments=["-d", str(share / "rviz" / "mss.rviz")],
+                arguments=["-d", LaunchConfiguration("rviz_config")],
                 parameters=[{"use_sim_time": True}],
                 condition=IfCondition(LaunchConfiguration("rviz")),
             ),

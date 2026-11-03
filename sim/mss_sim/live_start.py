@@ -12,7 +12,8 @@ listens, at a fixed real-time factor, and pauses it again at the end (ADR-011 am
    Gazebo (a left-over or foreign server on the same domain): exit 2.
 4. Unpause; at ``--stop-at-s`` of sim time, pause the world, log the measured real-time factor
    (sim s / wall s) and exit 0. Exit 2 when a wait times out, or when the sim clock does not
-   advance for ``--stall-timeout-s`` of wall time or goes back.
+   advance for ``--stall-timeout-s`` of wall time or goes back. Without ``--stop-at-s`` (teleop,
+   ADR-031) exit 0 right after the unpause: the world runs on and may be paused by the user.
 
 The sequence is ``mss_sim.live_guard.run_live`` (no ROS, unit-tested with a fake node); this
 module is its rclpy node. World services go through the ``gz service`` CLI, as
@@ -66,7 +67,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("world")
     ap.add_argument("--rtf", type=float, required=True, help="real-time factor (> 0)")
     ap.add_argument("--step-s", type=float, default=0.001, help="physics step, s (the world's)")
-    ap.add_argument("--stop-at-s", type=float, required=True, help="sim time to pause at, s")
+    ap.add_argument(
+        "--stop-at-s",
+        type=float,
+        default=None,
+        help="sim time to pause at, s (default: none, run on after the start; teleop)",
+    )
     ap.add_argument("--wait-subs", nargs="*", default=[], help="topics that need a subscriber")
     ap.add_argument(
         "--wait-timeout-s",
