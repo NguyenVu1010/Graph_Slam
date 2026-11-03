@@ -78,6 +78,33 @@ class GraphRelativeCovariance : public loop::RelativeCovarianceSource {
   const backend::Graph& g_;
 };
 
+// NEES of a loop measurement against the truth (H6, backlog C1-3), in the chart of the loop
+// factor (backend.relative_factor decoupled, ADR-021; review M-6): e = [R_Z^T (p_true - p_Z),
+// Log(R_Z^T R_true)], the factor's residual at the true poses, whole and per block (translation,
+// rotation): expected 6, 3 and 3 for a consistent covariance.
+struct Nees {
+  double sum = 0.0;
+  double sum_t = 0.0;
+  double sum_r = 0.0;
+  int n = 0;
+  void add(const Pose& Z, const Pose& truth, const common::PoseCovariance& C) {
+    Vec6 e;
+    e.head<3>() = Z.R.transpose() * (truth.p - Z.p);
+    e.tail<3>() = common::so3_log(Z.R.transpose() * truth.R);
+    sum += e.dot(C.ldlt().solve(e));
+    const common::Mat3 Ct = C.topLeftCorner<3, 3>();
+    const common::Mat3 Cr = C.bottomRightCorner<3, 3>();
+    const Vec3 et = e.head<3>();
+    const Vec3 er = e.tail<3>();
+    sum_t += et.dot(Ct.ldlt().solve(et));
+    sum_r += er.dot(Cr.ldlt().solve(er));
+    ++n;
+  }
+  double mean() const { return n > 0 ? sum / n : 0.0; }
+  double mean_t() const { return n > 0 ? sum_t / n : 0.0; }
+  double mean_r() const { return n > 0 ? sum_r / n : 0.0; }
+};
+
 struct LapRun {
   double end_to_start_m = 0.0;
   int accepted = 0;
@@ -89,6 +116,7 @@ struct LapRun {
   int correction = 0;    // rejected by a correction gate
   int pcm_rejected = 0;  // verified but not selected by PCM
   int removed = 0;       // selected, then removed from the graph by PCM
+  Nees nees;             // of every verified loop (before PCM), against the truth
 };
 
 // How a two-lap run is set up (review H3 I-1: the claimed odometry covariance is scaled by
@@ -185,6 +213,9 @@ LapRun run_two_laps(const Config& cfg, const LapOptions& o) {
     if (r.outcome != loop::LoopOutcome::kAccepted) {
       continue;
     }
+    out.nees.add(r.constraint.T_bi_bj,
+                 circle_pose(static_cast<int>(r.constraint.i)).inverse() * circle_pose(k),
+                 r.constraint.cov);
     // ADR-028: PCM selects (as EstimatorCore::try_loop_closure does).
     bool selected = true;
     if (o.pcm) {
@@ -495,7 +526,12 @@ class LoopObserver : public detail::CoreObserver {
   void on_loop_search(common::Timestamp t, const loop::LoopResult& r) override {
     ++searches;
     if (r.outcome == loop::LoopOutcome::kAccepted) {
-      accepted.push_back({r.candidate_t, t, r.constraint.T_bi_bj, r.constraint.i, r.constraint.j});
+      accepted.push_back({r.candidate_t,
+                          t,
+                          r.constraint.T_bi_bj,
+                          r.constraint.i,
+                          r.constraint.j,
+                          r.constraint.cov});
     }
   }
   struct Loop {
@@ -504,6 +540,7 @@ class LoopObserver : public detail::CoreObserver {
     Pose T_bi_bj;
     KeyId i;
     KeyId j;
+    common::PoseCovariance cov;
   };
   int searches = 0;
   std::vector<Loop> accepted;
@@ -1131,5 +1168,92 @@ TEST(LoopKnownLimits, RobustKernelAppliesLittleOfLargeCorrections) {
   EXPECT_LT(mid_stiff, 0.15);
 }
 
+// --- Loop-factor NEES and kernel release (H6: backlog C1-3, C1-13; ADR-030) -----------------
+
+// C1-3: NEES of the verified loops against the truth on the synthetic scenes: the two-lap
+// pillar hall (four odometry seeds; noise-free scans on a 0.4 m grid, so the error is ICP's
+// alone) and the whole estimator on the box world (two laps). Expected 6 for a consistent
+// covariance (3 per block). Shipped floor (5 cm / 1 deg) and the floor of the loop scenes
+// (2 cm / 0.25 deg, set from the NEES on E-07, E-07W and these scenes: loop_closure.md
+// section 14): neither is overconfident here, the shipped one is far too loose.
+struct NeesScenes {
+  Nees laps;
+  Nees box;
+};
+
+NeesScenes nees_scenes(double floor_m, double floor_deg) {
+  Config cfg = shipped_config();
+  cfg.loop_closure.cov_floor_m = floor_m;
+  cfg.loop_closure.cov_floor_rad = floor_deg * kDeg;
+  NeesScenes out;
+  for (const unsigned seed : {42U, 1U, 7U, 2024U}) {
+    LapOptions o;
+    o.seed = seed;
+    const LapRun r = run_two_laps(cfg, o);
+    out.laps.sum += r.nees.sum;
+    out.laps.sum_t += r.nees.sum_t;
+    out.laps.sum_r += r.nees.sum_r;
+    out.laps.n += r.nees.n;
+  }
+  test::BoxWorldParams p;
+  p.motion_s = 55.0;
+  const std::filesystem::path dir = ct::test_dir();
+  EXPECT_TRUE(test::write_box_dataset(dir / "data", p).is_ok());
+  char extra[160];
+  std::snprintf(extra,
+                sizeof(extra),
+                "    loop_closure:\n      enabled: true\n      cov_floor_m: %.4f\n      "
+                "cov_floor_deg: %.4f\n",
+                floor_m,
+                floor_deg);
+  const Config on = ct::box_config(p, false, false, dir / "on", extra);
+  LoopObserver obs;
+  detail::CoreTestHooks hooks;
+  hooks.observer = &obs;
+  {
+    ct::HooksScope scope(&hooks);
+    (void)ct::replay(dir / "data", on);
+  }
+  for (const LoopObserver::Loop& l : obs.accepted) {
+    out.box.add(l.T_bi_bj,
+                test::box_truth(p, l.t_i).T_w_b.inverse() * test::box_truth(p, l.t_j).T_w_b,
+                l.cov);
+  }
+  std::printf(
+      "[ loop nees ] floor %.3f m %.2f deg: two laps %d loops, NEES %.3f (t %.3f, r %.3f); box "
+      "world %d loops, NEES %.3f (t %.3f, r %.3f)\n",
+      floor_m,
+      floor_deg,
+      out.laps.n,
+      out.laps.mean(),
+      out.laps.mean_t(),
+      out.laps.mean_r(),
+      out.box.n,
+      out.box.mean(),
+      out.box.mean_t(),
+      out.box.mean_r());
+  return out;
+}
+
+TEST(LoopNees, SyntheticScenes) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM";
+  }
+  const Config cfg = shipped_config();
+  const NeesScenes shipped =
+      nees_scenes(cfg.loop_closure.cov_floor_m, cfg.loop_closure.cov_floor_rad / kDeg);
+  const NeesScenes scene = nees_scenes(0.02, 0.25);
+  for (const NeesScenes* s : {&shipped, &scene}) {
+    ASSERT_GT(s->laps.n, 8);
+    ASSERT_GT(s->box.n, 2);
+    EXPECT_LT(s->laps.mean(), 6.0);  // not overconfident
+    EXPECT_LT(s->box.mean(), 6.0);
+  }
+  EXPECT_LT(shipped.laps.mean(), 1.0);  // the shipped floor: several times too loose
+  // Review M-7: the scene floor pinned from below too (measured 4.4 on the hall), so a
+  // regression that loosens the loop covariance again is seen.
+  EXPECT_GT(scene.laps.mean(), 2.0);
+  EXPECT_GT(scene.laps.mean_t(), 1.0);
+}
 }  // namespace
 }  // namespace mss::pipeline
