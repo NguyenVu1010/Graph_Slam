@@ -575,6 +575,26 @@ Config read_config(Reader& r) {
   r.field("loop_closure.search_radius_m", c.loop_closure.search_radius_m, Range::kPositive);
   r.field("loop_closure.min_time_gap_s", c.loop_closure.min_time_gap_s, Range::kNonNegative);
   r.field("loop_closure.max_candidates", c.loop_closure.max_candidates, Range::kAtLeastOne);
+  r.field("loop_closure.place_search", c.loop_closure.place_search);
+  if (r.field("loop_closure.place_search_max_ranked",
+              c.loop_closure.place_search_max_ranked,
+              Range::kAtLeastOne)) {
+    r.check("loop_closure.place_search_max_ranked",
+            c.loop_closure.place_search_max_ranked >= c.loop_closure.max_candidates,
+            "must be >= loop_closure.max_candidates");
+  }
+  r.field("loop_closure.place_search_sc_ratio",
+          c.loop_closure.place_search_sc_ratio,
+          Range::kUnitOpenClosed);
+  r.field("loop_closure.place_search_min_separation_m",
+          c.loop_closure.place_search_min_separation_m,
+          Range::kPositive);
+  r.field("loop_closure.place_search_drift_ratio",
+          c.loop_closure.place_search_drift_ratio,
+          Range::kPositive);
+  r.angle_deg("loop_closure.place_search_cache_tilt_deg",
+              c.loop_closure.place_search_cache_tilt_rad,
+              Range::kPositive);
   r.field("loop_closure.min_interval_keyframes",
           c.loop_closure.min_interval_keyframes,
           Range::kNonNegative);
