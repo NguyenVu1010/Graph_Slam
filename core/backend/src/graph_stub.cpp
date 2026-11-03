@@ -60,6 +60,8 @@ bool Graph::remove_static_gravity_factor() {
 
 void Graph::add_loop_factor(const common::LoopConstraint& /*lc*/) {}
 
+void Graph::add_loop_factor(const common::LoopConstraint& /*lc*/, LoopKernel /*kernel*/) {}
+
 common::Result<common::Estimate> Graph::optimize() {
   return common::Result<common::Estimate>::error("built without GTSAM");
 }

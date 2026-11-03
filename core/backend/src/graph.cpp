@@ -802,6 +802,10 @@ bool Graph::remove_static_gravity_factor() {
 }
 
 void Graph::add_loop_factor(const common::LoopConstraint& lc) {
+  add_loop_factor(lc, LoopKernel::kCauchy);
+}
+
+void Graph::add_loop_factor(const common::LoopConstraint& lc, LoopKernel kernel) {
   Impl& m = *impl_;
   const std::string call = call_name("add_loop_factor", lc.i, lc.j);
   if (!m.known(lc.i) || !m.known(lc.j)) {
@@ -820,9 +824,13 @@ void Graph::add_loop_factor(const common::LoopConstraint& lc) {
     reject(call, "covariance not positive definite");
     return;
   }
-  const gtsam::SharedNoiseModel noise = gtsam::noiseModel::Robust::Create(
-      gtsam::noiseModel::mEstimator::Cauchy::Create(kLoopCauchyK),
-      gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(symmetrised<6>(lc.cov))));
+  const gtsam::SharedNoiseModel gauss =
+      gtsam::noiseModel::Gaussian::Covariance(detail::permute_cov(symmetrised<6>(lc.cov)));
+  const gtsam::SharedNoiseModel noise =
+      kernel == LoopKernel::kNone
+          ? gauss
+          : gtsam::noiseModel::Robust::Create(
+                gtsam::noiseModel::mEstimator::Cauchy::Create(kLoopCauchyK), gauss);
   const gtsam::NonlinearFactor::shared_ptr f = relative_pose_factor(
       m.cfg.relative_factor, detail::pose_key(lc.i), detail::pose_key(lc.j), lc.T_bi_bj, noise);
   m.pending_factors.push_back(f);

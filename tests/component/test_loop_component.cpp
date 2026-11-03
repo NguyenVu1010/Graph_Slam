@@ -894,7 +894,8 @@ double applied_correction(const Config& cfg,
                           const Pose& correction,
                           const common::PoseCovariance& lcov,
                           double sig_m,
-                          double sig_rad) {
+                          double sig_rad,
+                          backend::Graph::LoopKernel kernel = backend::Graph::LoopKernel::kCauchy) {
   constexpr int kN = 61;
   backend::Graph g(cfg.backend, cfg.imu, Vec3::Zero());
   const double R = 0.5 * (kN - 1) / (2.0 * test::kLoopPi);
@@ -926,7 +927,7 @@ double applied_correction(const Config& cfg,
   lc.j = static_cast<KeyId>(kN - 1);
   lc.T_bi_bj = truth(0).inverse() * truth(kN - 1) * correction;
   lc.cov = lcov;
-  g.add_loop_factor(lc);
+  g.add_loop_factor(lc, kernel);
   for (int u = 0; u < 3; ++u) {
     EXPECT_TRUE(g.optimize().is_ok());
   }
@@ -1254,6 +1255,54 @@ TEST(LoopNees, SyntheticScenes) {
   // regression that loosens the loop covariance again is seen.
   EXPECT_GT(scene.laps.mean(), 2.0);
   EXPECT_GT(scene.laps.mean_t(), 1.0);
+}
+
+// ADR-030: without the kernel the share of a true correction that a loop applies no longer falls
+// with the size of the correction: on the lap of
+// LoopKnownLimits.RobustKernelAppliesLittleOfLargeCorrections it is the Gaussian share
+// sigma_chain^2 / (sigma_chain^2 + sigma_loop^2) for 0.5 to 3 m alike, while Cauchy's falls to a
+// few percent. Loose chain (2 cm per step): above 0.9 with either floor. Stiff chain (5 mm): the
+// chain is as stiff as the shipped 5 cm floor (about half applied), and most of it with the
+// floor of the loop scenes (2 cm / 0.25 deg, loop_closure.md section 14).
+TEST(LoopKernelRelease, GaussianLoopAppliesLargeCorrections) {
+  if (!ct::kWithGtsam) {
+    GTEST_SKIP() << "needs GTSAM";
+  }
+  const Config cfg = shipped_config();
+  const auto floor_cov = [](double m, double rad) {
+    common::PoseCovariance C = common::PoseCovariance::Zero();
+    C.diagonal() << m * m, m * m, m * m, rad * rad, rad * rad, rad * rad;
+    return C;
+  };
+  const common::PoseCovariance shipped =
+      floor_cov(cfg.loop_closure.cov_floor_m, cfg.loop_closure.cov_floor_rad);
+  const common::PoseCovariance scene = floor_cov(0.02, 0.25 * kDeg);
+  for (const double sig_m : {0.02, 0.005}) {
+    const double sig_rad = sig_m * 0.15 * kDeg / 0.02;
+    double first_shipped = 0.0;
+    for (const double c_m : {0.5, 1.0, 2.0, 3.0}) {
+      const Pose corr{common::Mat3::Identity(), Vec3(c_m, 0.0, 0.0)};
+      const auto applied = [&](const common::PoseCovariance& C, backend::Graph::LoopKernel k) {
+        return applied_correction(cfg, corr, C, sig_m, sig_rad, k) / c_m;
+      };
+      const double cauchy = applied(shipped, backend::Graph::LoopKernel::kCauchy);
+      const double none = applied(shipped, backend::Graph::LoopKernel::kNone);
+      const double none_scene = applied(scene, backend::Graph::LoopKernel::kNone);
+      std::printf(
+          "[ kernel release ] chain %.3f m, correction %.1f m: applied Cauchy %.3f, none "
+          "%.3f, none with the scene floor %.3f\n",
+          sig_m,
+          c_m,
+          cauchy,
+          none,
+          none_scene);
+      first_shipped = c_m == 0.5 ? none : first_shipped;
+      EXPECT_NEAR(none, first_shipped, 0.02) << "chain " << sig_m << " correction " << c_m;
+      EXPECT_GT(none, cauchy) << "chain " << sig_m << " correction " << c_m;
+      EXPECT_GT(none, sig_m > 0.01 ? 0.9 : 0.45) << "chain " << sig_m << " correction " << c_m;
+      EXPECT_GT(none_scene, 0.8) << "chain " << sig_m << " correction " << c_m;
+    }
+  }
 }
 }  // namespace
 }  // namespace mss::pipeline

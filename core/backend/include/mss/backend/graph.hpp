@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 
 #include "mss/backend/config.hpp"
@@ -212,6 +213,23 @@ class Graph {
   /// Errors: invalid calls dropped and logged. Hot path: no.
   /// Tests: B-02 (square loop), B-03 (outlier loop).
   void add_loop_factor(const common::LoopConstraint& lc);
+
+  /// Robust kernel of a loop factor (ADR-030).
+  enum class LoopKernel : std::uint8_t {
+    kCauchy,  ///< Robust(Cauchy(3.5485), Gaussian(cov)): as add_loop_factor(lc)
+    kNone     ///< Gaussian(cov) only: the whole correction applies; for corroborated loops
+  };
+  /// add_loop_factor(lc) with the kernel chosen by the caller (ADR-030: the pipeline drops the
+  /// kernel for a loop that PCM has corroborated with a nearby partner loop). Same
+  /// preconditions, errors and bookkeeping (remove_loop_factor, has_loop_factor) as
+  /// add_loop_factor(lc), which is add_loop_factor(lc, LoopKernel::kCauchy). Switching the
+  /// kernel of a committed loop is remove_loop_factor(i, j) then this call before the same
+  /// optimize(); if that optimize() fails the removal stands and the new factor is dropped, so
+  /// the loop leaves the graph (the caller re-syncs with has_loop_factor, ADR-030).
+  /// Stub: no-op. Hot path: no.
+  /// Tests: BackendGraph.LoopFactorWithoutKernelAppliesTheGaussianShare,
+  ///   LoopComponent.KernelRelease*.
+  void add_loop_factor(const common::LoopConstraint& lc, LoopKernel kernel);
 
   /// Removes the loop factor (i, j) added by add_loop_factor (the most recent one when the pair
   /// was added more than once), for a loop selector that finds it inconsistent after it was

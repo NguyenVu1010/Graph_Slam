@@ -1070,5 +1070,47 @@ TEST(BackendGraph, RelativePoseCovErrors) {
   EXPECT_TRUE(g.relative_pose_cov(0, 1).is_ok());
 }
 
+// ADR-030 (review M-4): add_loop_factor(lc, LoopKernel::kNone). Two keyframes 1 m apart along
+// x, an odometry factor (sigma 0.1 m, 0.01 rad) and a loop asking d = 2 m more (sigma 0.05 m,
+// 0.01 rad). At zero rotation the decoupled translation residual is linear, so without the
+// kernel the estimate is the Gaussian fusion: x = 1 + d s_o^2 / (s_o^2 + s_l^2) = 2.6 m. With
+// Cauchy (40 whitened sigmas) the loop is down-weighted and the estimate stays near 1 m. The
+// Gaussian loop factor's Jacobians are those of the relative factor
+// (BackendFactors.B01_DecoupledRelativePoseFactorJacobians checks it with a Gaussian model).
+TEST(BackendGraph, LoopFactorWithoutKernelAppliesTheGaussianShare) {
+  const auto run = [](Graph::LoopKernel kernel) {
+    Graph g(default_backend_config(), default_imu_config(), Vec3::Zero());
+    common::NavState x0;
+    x0.t = common::Timestamp{0};
+    g.add_keyframe(x0.t, x0);
+    common::NavState x1;
+    x1.t = common::Timestamp{1'000'000'000};
+    x1.T_w_b.p = Vec3(1.0, 0.0, 0.0);
+    g.add_keyframe(x1.t, x1);
+    common::Pose step;
+    step.p = Vec3(1.0, 0.0, 0.0);
+    common::PoseCovariance c_o = common::PoseCovariance::Zero();
+    c_o.diagonal() << 0.01, 0.01, 0.01, 1e-4, 1e-4, 1e-4;
+    g.add_lidar_factor(0, 1, step, c_o, nullptr);
+    common::LoopConstraint lc;
+    lc.i = 0;
+    lc.j = 1;
+    lc.T_bi_bj.p = Vec3(3.0, 0.0, 0.0);
+    lc.cov = common::PoseCovariance::Zero();
+    lc.cov.diagonal() << 0.0025, 0.0025, 0.0025, 1e-4, 1e-4, 1e-4;
+    g.add_loop_factor(lc, kernel);
+    for (int u = 0; u < 4; ++u) {
+      EXPECT_TRUE(g.optimize().is_ok());
+    }
+    const Pose T0 = state_or_fail(g, 0).T_w_b;
+    const Pose T1 = state_or_fail(g, 1).T_w_b;
+    return (T0.inverse() * T1).p.x();
+  };
+  const double gauss = run(Graph::LoopKernel::kNone);
+  const double cauchy = run(Graph::LoopKernel::kCauchy);
+  EXPECT_NEAR(gauss, 1.0 + 2.0 * 0.01 / (0.01 + 0.0025), 1e-6);
+  EXPECT_LT(cauchy, 1.2);
+}
+
 }  // namespace
 }  // namespace mss::backend
