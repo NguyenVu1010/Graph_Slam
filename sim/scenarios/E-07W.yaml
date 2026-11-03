@@ -7,6 +7,8 @@ id: E-07W
 world: warehouse
 profile: sim/noise/default.yaml
 pipeline_config: config/sim/warehouse_e07.yaml
+pipeline_config_variants:
+  loops_on: config/sim/warehouse_e07_loops_on.yaml
 trajectory: sim/trajectories/warehouse_3laps.yaml
 seed: 42
 duration_s: 170

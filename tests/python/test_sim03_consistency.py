@@ -97,6 +97,23 @@ def test_e04_has_a_degeneracy_on_variant() -> None:
     assert base == on  # the two runs differ only by the flag
 
 
+@pytest.mark.parametrize("scenario", ["E-07", "E-07W"])
+def test_loop_scenes_differ_only_in_loop_closure(scenario: str) -> None:
+    """The loops-on run of each loop scene differs from its loops-off run only in loop_closure.*,
+    and both use the level start (S5 owner ruling: on in the loop scenes only)."""
+    sc = load_scenario(REPO / f"sim/scenarios/{scenario}.yaml")
+    base = load_pipeline_config(REPO / "config/default.yaml", sc.pipeline_config)
+    on = load_pipeline_config(REPO / "config/default.yaml", sc.pipeline_config_variants["loops_on"])
+    assert get(base, "imu.init_level_start") is True
+    assert get(base, "loop_closure.enabled") is False
+    assert get(on, "loop_closure.enabled") is True
+    base.pop("loop_closure")
+    on.pop("loop_closure")
+    assert base == on
+    default = load_pipeline_config(REPO / "config/default.yaml", REPO / "config/default.yaml")
+    assert get(default, "imu.init_level_start") is False
+
+
 def test_synthetic_antenna_matches_overlays() -> None:
     """The synthetic generator's default lever arm is the overlays' one (backlog L2)."""
     from mss_sim.synth import P_B_G
