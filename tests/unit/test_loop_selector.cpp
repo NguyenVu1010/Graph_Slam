@@ -405,6 +405,8 @@ TEST(LoopSelector, ThreeLapTrueLoopsAllStaySelected) {
   };
   // Claim x1 on every lap size up to 250 m (radius 40 m); claim x0.5 up to 125 m (radius 20 m):
   // the covered range of pcm_odometry_sigma_scale 1.5 (loop_closure.md 11b; review H3 I-1).
+  // Owner ruling (C1-27, closed): 1.5 is final; beyond about 125 m at claim x0.5 true loops can
+  // be lost (radius 40 m: at 3 of 7 seeds, loop_closure.md section 16). That limit is accepted.
   const Case cases[] = {{6.0, 1.0},
                         {9.0, 1.0},
                         {12.0, 1.0},
@@ -427,30 +429,6 @@ TEST(LoopSelector, ThreeLapTrueLoopsAllStaySelected) {
                 c.radius,
                 c.claim,
                 worst);
-  }
-}
-
-// Known limit (review H3 I-1; the owner keeps pcm_odometry_sigma_scale at 1.5 pending a manual
-// test): at claim x0.5 on a 250 m lap (radius 40 m) the white part of a lap, claimed at half its
-// size, exceeds what the 1.5 inflation covers. As this test prints them (run with
-// --gtest_also_run_disabled_tests): seed 2024 rejects 3 true loops (largest pair chi2 24.5), seed 3
-// removes 1 and rejects 1 (33.2), seed 31337 rejects 2 (38.0); the other 4 pass (16.3 to 20.7).
-// Known answer once covered: every loop selected.
-// TODO(C1-27, owner decision on review H3 I-1): re-enable with pcm_odometry_sigma_scale 2, or
-// delete if 1.5 is kept and the limit accepted.
-TEST(LoopSelector, DISABLED_ThreeLapRadius40HalfClaimAllStaySelected) {
-  const LoopConfig cfg = pcm_config();
-  for (const unsigned seed : kThreeLapSeeds) {
-    const ThreeLapRun r = three_laps(cfg, 40.0, 0.5, seed);
-    std::printf(
-        "[ pcm three laps ] R 40 m claim x0.50 seed %u: largest pair chi2 %.1f, %d "
-        "removed, %d not selected\n",
-        seed,
-        r.max_chi2,
-        r.removed,
-        r.rejected);
-    EXPECT_EQ(r.removed, 0) << seed;
-    EXPECT_EQ(r.rejected, 0) << seed;
   }
 }
 
