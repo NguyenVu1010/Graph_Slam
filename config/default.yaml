@@ -432,6 +432,17 @@ mss_node:
       pcm_yaw_drift_deg_per_m: 0.2
       pcm_max_loops: 64              # loops held, [1, 64]; the oldest leaves (stays if selected)
       pcm_max_clique_steps: 100000   # max-clique search bound (Bron-Kerbosch calls)
+      # Kernel release (ADR-030, backlog C1-13). The Cauchy kernel applies only a few percent of
+      # a true correction of metres. With it on (needs pcm_enabled), a PCM-selected loop with a
+      # partner (another selected loop whose keyframes i and j are both within the window) is
+      # added without the kernel, so its correction applies in full; a lone loop keeps it.
+      kernel_release: false                # flag; off = every loop keeps the Cauchy kernel
+      kernel_release_window_keyframes: 20  # keyframes, >= 1 (one revisit: about 20 m at 1 m)
+      # Partner evidence one aliased spot cannot give (ADR-030): candidates and queries of the two
+      # loops each this far apart (two places), and each loop's correction within the drift ratio
+      # times the distance travelled from its candidate to its query.
+      kernel_release_min_separation_m: 5.0  # m, > 0
+      kernel_release_drift_ratio: 0.02      # m per m travelled, > 0 (2 % of distance)
 
     backend:
       keyframe_dist_m: 1.0           # new keyframe after this translation, m (ADR-004)

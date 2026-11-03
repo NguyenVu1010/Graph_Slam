@@ -206,6 +206,7 @@ EstimatorCore::EstimatorCore(const Config& cfg)
       kf_cloud_(cfg.realtime.max_points_per_scan) {
   if (cfg.loop_closure.enabled) {
     loop_views_.reserve(cfg.map.max_keyframes);
+    graph_loops_.reserve(2 * static_cast<std::size_t>(cfg.loop_closure.pcm_max_loops));
   }
   hooks_ = g_test_hooks;
   if (g_test_hooks != nullptr) {
@@ -911,6 +912,12 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
     const loop::LoopSelector::Decision d = selector_.propose(r.constraint);
     selected = d.selected;
     for (const auto& ij : selector_.to_remove()) {
+      for (std::size_t a = graph_loops_.size(); a > 0; --a) {
+        if (graph_loops_[a - 1].lc.i == ij.first && graph_loops_[a - 1].lc.j == ij.second) {
+          graph_loops_.erase(graph_loops_.begin() + static_cast<std::ptrdiff_t>(a - 1));
+          break;
+        }
+      }
       char buf[160];
       if (graph_.remove_loop_factor(ij.first, ij.second)) {
         ++counters_.n_loops_removed;
@@ -931,29 +938,39 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
       }
     }
     for (const common::LoopConstraint& lc : selector_.to_add()) {
-      graph_.add_loop_factor(lc);
+      GraphLoop g;
+      g.lc = lc;
+      g.ev = release_evidence(lc);
+      graph_loops_.push_back(g);
     }
+    const bool kernels_changed = apply_loop_kernels();
     if (!selected) {
       ++counters_.n_loops_pcm_rejected;
     }
-    pcm_changed = !selector_.to_add().empty() || !selector_.to_remove().empty();
+    pcm_changed = !selector_.to_add().empty() || !selector_.to_remove().empty() || kernels_changed;
     if (!pcm_changed) {
       return false;  // nothing changed in the graph
     }
   } else {
     graph_.add_loop_factor(r.constraint);
   }
-  common::Result<common::Estimate> opt =
-      (hooks_ != nullptr && hooks_->drop_loop_updates > 0)  // test-only seam
-          ? drop_pending_loops_for_test()
-          : graph_.optimize();
+  const bool drop =  // test-only seam
+      hooks_ != nullptr && hooks_->drop_loop_updates > 0 && hooks_->pass_loop_updates-- <= 0;
+  common::Result<common::Estimate> opt = drop ? drop_pending_loops_for_test() : graph_.optimize();
+  for (GraphLoop& g : graph_loops_) {
+    counters_.n_loops_released += opt.is_ok() && g.pending && g.released ? 1U : 0U;
+    g.pending = false;  // committed, or dropped with the failed update
+  }
   if (!opt.is_ok()) {
     log_backend_failure(opt.reason());  // the pending loop factors were dropped with the update
     if (cfg_.loop_closure.pcm_enabled) {
-      // Review H3 m-1: the selector forgets the loops that did not make it into the graph.
-      for (const common::LoopConstraint& lc : selector_.to_add()) {
+      // Review H3 m-1: the selector forgets the loops that did not make it into the graph
+      // (new ones, and with ADR-030 also re-added ones whose old factor was removed).
+      for (std::size_t a = graph_loops_.size(); a > 0; --a) {
+        const common::LoopConstraint& lc = graph_loops_[a - 1].lc;
         if (!graph_.has_loop_factor(lc.i, lc.j)) {
           (void)selector_.forget(lc.i, lc.j);
+          graph_loops_.erase(graph_loops_.begin() + static_cast<std::ptrdiff_t>(a - 1));
         }
       }
     }
@@ -1048,12 +1065,95 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
   return true;
 }
 
+bool release_plausible(const ReleaseEvidence& a, const loop::LoopConfig& c) {
+  return a.asked_m <= c.kernel_release_drift_ratio * a.path_m;
+}
+
+bool release_partners(const ReleaseEvidence& a,
+                      const ReleaseEvidence& b,
+                      const loop::LoopConfig& c) {
+  const auto w = static_cast<common::KeyId>(c.kernel_release_window_keyframes);
+  const auto near = [w](common::KeyId x, common::KeyId y) { return (x > y ? x - y : y - x) <= w; };
+  return release_plausible(a, c) && release_plausible(b, c) && near(a.i, b.i) && near(a.j, b.j) &&
+         (a.p_i - b.p_i).norm() >= c.kernel_release_min_separation_m &&
+         (a.p_j - b.p_j).norm() >= c.kernel_release_min_separation_m;
+}
+
+ReleaseEvidence EstimatorCore::release_evidence(const common::LoopConstraint& lc) const {
+  ReleaseEvidence ev;
+  ev.i = lc.i;
+  ev.j = lc.j;
+  const loop::KeyframeView* vi = nullptr;
+  const loop::KeyframeView* vj = nullptr;
+  const loop::KeyframeView* prev = nullptr;
+  for (const loop::KeyframeView& v : loop_views_) {
+    if (prev != nullptr && v.id > lc.i && v.id <= lc.j) {
+      ev.path_m += (v.T_w_b.p - prev->T_w_b.p).norm();
+    }
+    vi = v.id == lc.i ? &v : vi;
+    vj = v.id == lc.j ? &v : vj;
+    prev = &v;
+  }
+  if (vi == nullptr || vj == nullptr) {
+    ev.asked_m = std::numeric_limits<double>::infinity();  // never plausible
+    return ev;
+  }
+  ev.p_i = vi->T_w_b.p;
+  ev.p_j = vj->T_w_b.p;
+  ev.asked_m = (lc.T_bi_bj.p - (vi->T_w_b.inverse() * vj->T_w_b).p).norm();
+  return ev;
+}
+
+bool EstimatorCore::apply_loop_kernels() {
+  bool changed = false;
+  for (std::size_t a = 0; a < graph_loops_.size(); ++a) {
+    GraphLoop& g = graph_loops_[a];
+    bool partner = false;
+    for (std::size_t b = 0; b < graph_loops_.size() && cfg_.loop_closure.kernel_release; ++b) {
+      partner =
+          partner || (b != a && release_partners(g.ev, graph_loops_[b].ev, cfg_.loop_closure));
+    }
+    const backend::Graph::LoopKernel kernel =
+        partner ? backend::Graph::LoopKernel::kNone : backend::Graph::LoopKernel::kCauchy;
+    if (g.added && partner == g.released) {
+      continue;
+    }
+    if (g.added) {
+      // The old factor leaves in the same update that adds the new one (graph.hpp).
+      (void)graph_.remove_loop_factor(g.lc.i, g.lc.j);
+      changed = true;
+      char buf[128];
+      std::snprintf(buf,
+                    sizeof(buf),
+                    "loop closure kernel %s: j %llu i %llu",
+                    partner ? "released" : "restored",
+                    static_cast<unsigned long long>(g.lc.j),
+                    static_cast<unsigned long long>(g.lc.i));
+      common::log_info(buf);
+    }
+    graph_.add_loop_factor(g.lc, kernel);
+    g.added = true;
+    g.pending = true;
+    g.released = partner;
+  }
+  return changed;
+}
+
 // Test-only (CoreTestHooks::drop_loop_updates): an update that fails and drops the pending loop
 // factors, as a failed optimize() does (graph.hpp).
 common::Result<common::Estimate> EstimatorCore::drop_pending_loops_for_test() {
   --hooks_->drop_loop_updates;
-  for (const common::LoopConstraint& lc : selector_.to_add()) {
-    (void)graph_.remove_loop_factor(lc.i, lc.j);
+  // Every loop factor pending in this update, new or re-added with another kernel (review M-3);
+  // the removal of a re-added loop's old factor stands, as in a real failed update.
+  for (const GraphLoop& g : graph_loops_) {
+    if (g.pending) {
+      (void)graph_.remove_loop_factor(g.lc.i, g.lc.j);
+    }
+  }
+  if (!cfg_.loop_closure.pcm_enabled) {
+    for (const common::LoopConstraint& lc : selector_.to_add()) {
+      (void)graph_.remove_loop_factor(lc.i, lc.j);
+    }
   }
   return common::Result<common::Estimate>::error("test: injected loop update failure");
 }

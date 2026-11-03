@@ -124,6 +124,10 @@ class Estimator {
     std::uint64_t n_loops_pcm_rejected = 0;
     std::uint64_t n_loops_removed = 0;
     std::uint64_t n_loops_no_marginal = 0;
+    /// ADR-030 (loop_closure.kernel_release): loop factors that entered the graph without the
+    /// Cauchy kernel (one count each time a loop gains a partner; counted once the update that
+    /// adds it succeeds).
+    std::uint64_t n_loops_released = 0;
     std::uint64_t n_map_points = 0;  ///< points in the VoxelMap cache now (ADR-007)
     /// map points refreshed in place by map.min_point_dist_m since construction (summed
     /// over map rebuilds; ADR-007 amendment)
