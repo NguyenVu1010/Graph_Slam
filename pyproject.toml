@@ -20,7 +20,7 @@ where = ["eval", "sim"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["eval", "sim", "tools"]
+src = ["eval", "sim", "tools", "mss_teleop"]
 extend-exclude = ["docs"]
 
 [tool.ruff.lint]
@@ -33,4 +33,4 @@ known-third-party = ["launch", "launch_ros"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
-pythonpath = ["eval", "sim", "tools"]
+pythonpath = ["eval", "sim", "tools", "mss_teleop"]
