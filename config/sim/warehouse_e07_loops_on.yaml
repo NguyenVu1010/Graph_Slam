@@ -41,3 +41,5 @@ mss_node:
       # at another place (kernel_release_min_separation_m) and a correction within the drift
       # ratio of the distance travelled (default.yaml values).
       kernel_release: true
+      # No place search and no wider gate here (review B-2): E-07W drifts centimetres, and the
+      # rack aisles are the scene where a look-alike place is most likely.

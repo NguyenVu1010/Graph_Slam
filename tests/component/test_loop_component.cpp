@@ -1074,6 +1074,28 @@ TEST(LoopAliasing, NoFalseLoopAtAnyDrift) {
   EXPECT_EQ(false_loops, 0);
 }
 
+// ADR-030: the same probe with the loop-scene settings (place_search on, max_correction_m 6):
+// the place seed puts ICP on the candidate itself, the true place in this probe, and the copy
+// one period away still competes, so no false loop is accepted at any drift either.
+TEST(LoopAliasing, NoFalseLoopAtAnyDriftWithPlaceSearch) {
+  Config cfg = shipped_config();
+  cfg.loop_closure.enabled = true;
+  cfg.loop_closure.place_search = true;
+  cfg.loop_closure.max_correction_m = 6.0;
+  int false_loops = 0;
+  int accepted = 0;
+  for (const double period : {2.0, 2.5}) {
+    for (const double drift : {0.0, 0.3, 0.6, 0.9, 1.1, 1.3, 1.6, 2.0, 2.5, 3.5, 5.0}) {
+      const AliasCase c = alias_case(cfg, period, drift, nullptr);
+      accepted += c.r.outcome == loop::LoopOutcome::kAccepted ? 1 : 0;
+      false_loops += (c.r.outcome == loop::LoopOutcome::kAccepted && c.err_m > kFalseLoopM);
+    }
+  }
+  std::printf(
+      "[ aliasing ] place search, 6 m gate: %d accepted, %d false\n", accepted, false_loops);
+  EXPECT_EQ(false_loops, 0);
+}
+
 // The optional graph gate (graph_covariance_gate, ADR-026 amendment / ADR-028) with a covariance
 // consistent with metre-level drift (6 cm / 0.45 deg per 0.5 m step, relative sigma ~0.6 m): no
 // false loop for any drift up to 2 m at either period; on the loose chain (relative sigma
@@ -1622,5 +1644,123 @@ TEST(LoopComponent, KernelReleaseFailedUpdateDropsTheReleasedPair) {
   EXPECT_EQ(a.r.stats.n_loops_accepted, 2U);
   EXPECT_EQ(a.r.stats.n_loops_released, 0U);
 }
+
+// B-2: periodic corridors with periods beyond the ambiguity reach (3, 4, 5 m), two stored
+// keyframes one period apart, the copy first in the store, so Scan Context (identical scans)
+// ranks the copy first; the query is truly at the second one and its graph pose drifts 0 to 5 m
+// along the corridor. With the loop-scene settings (place_search, max_correction_m 6) the copy
+// is not a distinct place (identical Scan Context one period away), so place search ranks nothing
+// and adds no place seed; with the 6 m gate the fit one period away is kept as a competitor, and
+// no false loop is accepted (measured 0 of 30). Pinned known limit of the shipped detector
+// (3 m gate, before ADR-030; backlog C1-36): a graph-seed fit that lands one period away is out
+// of the ambiguity search's 2 m reach and is accepted, 7 of 30 cases.
+struct Alias2Case {
+  loop::LoopResult r;
+  double err_m = 0.0;
+};
+
+Alias2Case alias2_case(const Config& cfg, double period_m, double drift_m, bool with_true = true) {
+  const std::vector<Vec3> w = test::periodic_corridor_w(period_m);
+  const Pose T_b_l = test::loop_T_b_l();
+  constexpr std::size_t kMaxPoints = 60000;
+  common::ScanFrame copy(kMaxPoints);
+  common::ScanFrame cc(kMaxPoints);
+  common::ScanFrame cq(kMaxPoints);
+  const Pose t_copy = test::body_pose(-period_m, 0.0, 0.0);
+  const Pose tc = test::body_pose(0.0, 0.0, 0.0);
+  const Pose tq = test::body_pose(0.1, 0.1, 3.0 * kDeg);
+  test::scan_at(w, t_copy * T_b_l, 15.0, copy);
+  test::scan_at(w, tc * T_b_l, 15.0, cc);
+  test::scan_at(w, tq * T_b_l, 15.0, cq);
+  loop::LoopDetector det(cfg.loop_closure, cfg.scan_match, cfg.map, T_b_l, kMaxPoints);
+  std::vector<loop::KeyframeView> k(3);
+  k[0].id = 0;
+  k[0].t = common::Timestamp{0};
+  k[0].T_w_b = t_copy;
+  k[0].cloud_l = &copy;
+  k[1].id = 1;
+  k[1].t = common::Timestamp{1 * kNsPerS};
+  k[1].T_w_b = tc;
+  k[1].cloud_l = &cc;
+  k[2].id = 2;
+  k[2].t = common::Timestamp{100 * kNsPerS};
+  k[2].T_w_b = test::body_pose(0.1 + drift_m, 0.1, 3.0 * kDeg);
+  k[2].cloud_l = &cq;
+  if (!with_true) {
+    k.erase(k.begin() + 1);  // review N-4: the copy is the only stored keyframe
+  }
+  Alias2Case out;
+  out.r = det.detect(k.back(), common::Span<const loop::KeyframeView>(k));
+  if (out.r.outcome == loop::LoopOutcome::kAccepted) {
+    const Pose truth = (out.r.constraint.i == 1 ? tc : t_copy).inverse() * tq;
+    out.err_m = (out.r.constraint.T_bi_bj.p - truth.p).norm();
+  }
+  return out;
+}
+
+TEST(LoopAliasing, LongPeriodCopyRankedFirstNoFalseLoopWithLoopSceneSettings) {
+  Config shipped = shipped_config();
+  shipped.loop_closure.enabled = true;
+  Config scene = shipped;
+  scene.loop_closure.place_search = true;
+  scene.loop_closure.max_correction_m = 6.0;
+  int false_shipped = 0;
+  int false_scene = 0;
+  int differ = 0;
+  for (const double period : {3.0, 4.0, 5.0}) {
+    for (const double drift : {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0}) {
+      const Alias2Case a = alias2_case(shipped, period, drift);
+      const Alias2Case b = alias2_case(scene, period, drift);
+      false_shipped += a.r.outcome == loop::LoopOutcome::kAccepted && a.err_m > kFalseLoopM;
+      false_scene += b.r.outcome == loop::LoopOutcome::kAccepted && b.err_m > kFalseLoopM;
+      differ += a.r.outcome != b.r.outcome || a.r.candidate != b.r.candidate;
+    }
+  }
+  std::printf(
+      "[ aliasing ] periods 3 to 5 m, copy ranked first, 30 cases: false loops shipped "
+      "%d, loop-scene settings %d; outcomes that differ %d\n",
+      false_shipped,
+      false_scene,
+      differ);
+  EXPECT_EQ(false_scene, 0);    // place search, with its distinctiveness check, adds none
+  EXPECT_GT(false_shipped, 0);  // known limit of the shipped detector here (measured 7 of 30)
+}
+
+// Review N-4: the same corridors with the copy as the ONLY stored keyframe (the query's true
+// place was never visited): no other candidate exists, so the place counts as distinct and the
+// place seed lands on the copy. The case that matters is a never-visited identical aisle. An
+// aisle across (parallel, identical) cannot be built here: scan_at has no occlusion, so two
+// parallel aisles see each other and their scans are mirror images, not copies.
+TEST(LoopAliasing, OnlyTheCopyStoredNoFalseLoopWithLoopSceneSettings) {
+  Config shipped = shipped_config();
+  shipped.loop_closure.enabled = true;
+  Config scene = shipped;
+  scene.loop_closure.place_search = true;
+  scene.loop_closure.max_correction_m = 6.0;
+  int false_shipped = 0;
+  int false_scene = 0;
+  int accepted_scene = 0;
+  for (const double period : {3.0, 4.0, 5.0}) {
+    for (const double drift : {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0}) {
+      const Alias2Case a = alias2_case(shipped, period, drift, false);
+      const Alias2Case b = alias2_case(scene, period, drift, false);
+      false_shipped += a.r.outcome == loop::LoopOutcome::kAccepted && a.err_m > kFalseLoopM;
+      false_scene += b.r.outcome == loop::LoopOutcome::kAccepted && b.err_m > kFalseLoopM;
+      accepted_scene += b.r.outcome == loop::LoopOutcome::kAccepted ? 1 : 0;
+    }
+  }
+  std::printf(
+      "[ aliasing ] only the copy stored, periods 3 to 5 m, 30 cases: false loops "
+      "shipped %d, loop-scene settings %d (accepted %d)\n",
+      false_shipped,
+      false_scene,
+      accepted_scene);
+  // The place seed adds no false loop: its fit on the copy asks the period plus the drift
+  // after a path of a few metres, beyond icp_max_corr_dist_m + 2 % of it, so it only competes
+  // (7 of 30 before that bound). The shipped detector's graph-seed limit stays pinned (C1-36).
+  EXPECT_EQ(false_scene, 0);
+  EXPECT_GT(false_shipped, 0);
+}
+
 }  // namespace
 }  // namespace mss::pipeline
