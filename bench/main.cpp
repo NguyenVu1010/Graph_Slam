@@ -12,6 +12,12 @@
 //   DIR/bench.json  Estimator::Stats, replay wall time, record counts per stream and the
 //                   per-scan processing latency (scan_process_ms_p50/p95/p99/max, PF-01, from
 //                   n_latency_samples samples; n_latency_dropped did not fit the buffer)
+//   DIR/kf_opt.tum  the stored keyframes at the backend's optimised poses after the replay
+//                   (T_w_b, from Estimator::visit_map): the smoothed trajectory, which a loop
+//                   closure corrects backwards, unlike est.tum (the online estimate). Only
+//                   keyframes still in the store: those evicted by map.max_keyframes are
+//                   missing, so on runs longer than the store it covers a suffix. Not written
+//                   when no keyframe has a backend pose (no-GTSAM build).
 // and prints a summary table on stdout. With --map-out FILE, after the replay it also writes
 // the global map (Estimator::export_map: every stored keyframe cloud at its optimised pose,
 // frame w, m, downsampled by map_export.voxel_m) to FILE as binary PCD, and prints the point
@@ -19,8 +25,9 @@
 // Exit codes: 0 success; 2 usage, config, dataset, estimator-init or output error (reason
 // on stderr); 3 the replay finished but some records were not processed (dropped or
 // rejected: records.* != n_*): one warning line on stderr, outputs still written.
-// --out is required so the tool never writes into the source tree by default. A map export
-// or PCD write failure exits 2 after est.tum and bench.json are written.
+// --out is required so the tool never writes into the source tree by default. A kf_opt.tum
+// write failure exits 2 after est.tum and bench.json are written; a map export or PCD write
+// failure exits 2 after est.tum, bench.json and kf_opt.tum are written.
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
@@ -606,6 +613,38 @@ bool write_map(const mss::pipeline::Estimator& est, const fs::path& path) {
   return true;
 }
 
+// DIR/kf_opt.tum: every stored keyframe at its optimised body pose T_w_b = T_w_l * T_l_b.
+// Returns false (reason on stderr) on a write error; no file and true when the backend has no
+// keyframe pose (stub build).
+bool write_keyframe_trajectory(const mss::pipeline::Estimator& est,
+                               const mss::common::Pose& T_b_l,
+                               const fs::path& path) {
+  std::vector<mss::common::NavState> kfs;
+  const mss::common::Pose T_l_b = T_b_l.inverse();
+  const auto info = est.visit_map([&](const mss::pipeline::MapKeyframe& k) {
+    mss::common::NavState s;
+    s.t = k.t;
+    s.T_w_b = k.T_w_l * T_l_b;
+    kfs.push_back(s);
+  });
+  if (!info || kfs.empty()) {
+    return true;
+  }
+  std::FILE* f = std::fopen(path.c_str(), "w");
+  if (f == nullptr) {
+    std::fprintf(stderr, "mss_bench: cannot write %s\n", path.c_str());
+    return false;
+  }
+  for (const mss::common::NavState& s : kfs) {
+    write_tum_line(f, s);
+  }
+  if (std::fclose(f) != 0) {
+    std::fprintf(stderr, "mss_bench: cannot write %s\n", path.c_str());
+    return false;
+  }
+  return true;
+}
+
 bool all_processed(const Counts& c, const mss::pipeline::Estimator::Stats& st) {
   return c.imu == st.n_imu && c.gnss == st.n_gnss && c.odom == st.n_odom && c.lidar == st.n_scans;
 }
@@ -653,6 +692,7 @@ int main(int argc, char** argv) {
   }
   const fs::path json_path = args->out / "bench.json";
   fs::remove(json_path, ec);  // no stale result from an earlier run if this one fails
+  fs::remove(args->out / "kf_opt.tum", ec);
   const fs::path tum_path = args->out / "est.tum";
   std::FILE* tum = std::fopen(tum_path.c_str(), "w");
   if (tum == nullptr) {
@@ -695,6 +735,9 @@ int main(int argc, char** argv) {
     return kExitError;
   }
   print_table(args->dataset, st, wall.count(), counts, lat);
+  if (!write_keyframe_trajectory(*est, cfg.value().frames.T_b_l, args->out / "kf_opt.tum")) {
+    return kExitError;
+  }
   if (args->map_out && !write_map(*est, *args->map_out)) {
     return kExitError;
   }

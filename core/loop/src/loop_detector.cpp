@@ -632,10 +632,16 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
     bool have = false;
     bool too_far = false;
     bool no_marginal = false;
+    double corr_m = std::numeric_limits<double>::quiet_NaN();
+    double corr_yaw = std::numeric_limits<double>::quiet_NaN();
     for (std::size_t s = 0; s < n_seeds; ++s) {
       Impl::Fit& f = m.fits[n_fits];
       const Impl::GateOutcome g =
           m.fit_from(*m.matcher, true, *query.cloud_l, T_h_l_q, seeds[s], gate, f, res);
+      if (g == Impl::GateOutcome::kTooFar || g == Impl::GateOutcome::kOk) {
+        corr_m = (f.T_w_bq.p - query.T_w_b.p).norm();  // diagnostics (LoopResult)
+        corr_yaw = wrap_pi(yaw_of(f.T_w_bq.R) - yaw_q);
+      }
       if (g == Impl::GateOutcome::kTooFar) {
         too_far = true;
       } else if (g == Impl::GateOutcome::kNoMarginal) {
@@ -696,6 +702,8 @@ LoopResult LoopDetector::detect(const KeyframeView& query,
                           : n_fits > 0 ? m.fits[0].chi2
                                        : std::numeric_limits<double>::quiet_NaN();
     res.ambiguity_ratio = amb;
+    res.correction_m = have ? (b.T_w_bq.p - query.T_w_b.p).norm() : corr_m;
+    res.correction_yaw_rad = have ? wrap_pi(yaw_of(b.T_w_bq.R) - yaw_q) : corr_yaw;
     if (out != LoopOutcome::kAccepted) {
       continue;
     }

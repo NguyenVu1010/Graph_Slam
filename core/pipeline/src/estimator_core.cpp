@@ -43,6 +43,82 @@ const Config& validated(const Config& cfg) {
   return cfg;
 }
 
+const char* outcome_name(loop::LoopOutcome o) {
+  switch (o) {
+    case loop::LoopOutcome::kAccepted:
+      return "accepted";
+    case loop::LoopOutcome::kNoCandidate:
+      return "no_candidate";
+    case loop::LoopOutcome::kDescriptor:
+      return "descriptor";
+    case loop::LoopOutcome::kIcpFailed:
+      return "icp_failed";
+    case loop::LoopOutcome::kCorrection:
+      return "correction";
+    case loop::LoopOutcome::kInliers:
+      return "inliers";
+    case loop::LoopOutcome::kRms:
+      return "rms";
+    case loop::LoopOutcome::kDegenerate:
+      return "degenerate";
+    case loop::LoopOutcome::kAmbiguous:
+      return "ambiguous";
+    case loop::LoopOutcome::kNoMarginal:
+      return "no_marginal";
+  }
+  return "unknown";
+}
+
+// One debug line per loop search (H6, C1-31: which stage stops each candidate). For a verified
+// loop it adds the measurement T_bi_bj (translation, rotation vector) and the square roots of
+// the diagonal of its floored covariance, for the NEES against ground truth (C1-3).
+void log_loop_search(common::KeyId j, common::Timestamp t, const loop::LoopResult& r) {
+  if (r.outcome == loop::LoopOutcome::kNoCandidate) {
+    return;  // review M-13: nothing to diagnose, no formatting cost on most keyframes
+  }
+  char buf[512];
+  int n = std::snprintf(buf,
+                        sizeof(buf),
+                        "loop search: j %llu t_ns %lld outcome %s n_cand %d cand %llu cand_t_ns "
+                        "%lld sc %.3f ratio %.3f rms %.4f eig %.1f amb %.3f corr_m %.3f "
+                        "corr_yaw_deg %.2f",
+                        static_cast<unsigned long long>(j),
+                        static_cast<long long>(t.ns),
+                        outcome_name(r.outcome),
+                        r.n_candidates,
+                        static_cast<unsigned long long>(r.candidate),
+                        static_cast<long long>(r.candidate_t.ns),
+                        r.sc_distance,
+                        r.inlier_ratio,
+                        r.rms_m,
+                        r.min_eig,
+                        r.ambiguity_ratio,
+                        r.correction_m,
+                        r.correction_yaw_rad * 180.0 / kPiRad);
+  if (r.outcome == loop::LoopOutcome::kAccepted && n > 0 &&
+      static_cast<std::size_t>(n) < sizeof(buf)) {
+    const common::Pose& Z = r.constraint.T_bi_bj;
+    const common::Vec3 phi = common::so3_log(Z.R);
+    const common::Vec6 sd = r.constraint.cov.diagonal().cwiseSqrt();
+    (void)std::snprintf(buf + n,
+                        sizeof(buf) - static_cast<std::size_t>(n),
+                        " Z %.5f %.5f %.5f %.6f %.6f %.6f sd %.5f %.5f %.5f %.6f %.6f %.6f",
+                        Z.p.x(),
+                        Z.p.y(),
+                        Z.p.z(),
+                        phi.x(),
+                        phi.y(),
+                        phi.z(),
+                        sd(0),
+                        sd(1),
+                        sd(2),
+                        sd(3),
+                        sd(4),
+                        sd(5));
+  }
+  common::log_debug(buf);
+}
+
 preprocess::PreprocessConfig keyframe_preprocess(const Config& cfg) {
   preprocess::PreprocessConfig c;
   c.min_range_m = cfg.preprocess.min_range_m;
@@ -805,6 +881,7 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
   if (observer() != nullptr) {
     observer()->on_loop_search(t, r);
   }
+  log_loop_search(j, t, r);
   if (r.outcome == loop::LoopOutcome::kNoMarginal) {
     ++counters_.n_loops_no_marginal;
     common::log_warn("loop closure: relative marginal failed, candidate rejected: " +
@@ -917,6 +994,34 @@ bool EstimatorCore::try_loop_closure(common::KeyId j,
                   Z.p.z(),
                   std::atan2(Z.R(1, 0), Z.R(0, 0)));
     common::log_info(buf);
+    // How much of the correction the graph took (H6, C1-13): the loop residual against the
+    // graph poses before the loop (the search's views) and after the updates.
+    const auto view_pose = [this](common::KeyId id) -> std::optional<common::Pose> {
+      for (const loop::KeyframeView& v : loop_views_) {
+        if (v.id == id) {
+          return v.T_w_b;
+        }
+      }
+      return std::nullopt;
+    };
+    const std::optional<common::Pose> bi = view_pose(lc.i);
+    const std::optional<common::Pose> bj = view_pose(lc.j);
+    const common::Result<common::NavState> ai = graph_.keyframe_state(lc.i);
+    const common::Result<common::NavState> aj = graph_.keyframe_state(lc.j);
+    if (bi && bj && ai.is_ok() && aj.is_ok()) {
+      const common::Vec6 before = common::boxminus(Z, bi->inverse() * *bj);
+      const common::Vec6 after = common::boxminus(Z, ai.value().T_w_b.inverse() * aj.value().T_w_b);
+      std::snprintf(buf,
+                    sizeof(buf),
+                    "loop applied: j %llu i %llu residual_m %.4f -> %.4f residual_deg %.3f -> %.3f",
+                    static_cast<unsigned long long>(lc.j),
+                    static_cast<unsigned long long>(lc.i),
+                    before.head<3>().norm(),
+                    after.head<3>().norm(),
+                    before.tail<3>().norm() * 180.0 / kPiRad,
+                    after.tail<3>().norm() * 180.0 / kPiRad);
+      common::log_debug(buf);
+    }
   };
   if (cfg_.loop_closure.pcm_enabled) {
     for (const common::LoopConstraint& lc : selector_.to_add()) {
