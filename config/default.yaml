@@ -440,7 +440,7 @@ mss_node:
       # >= 1. The odometry covariance (white part) is scaled by this squared in the pairwise
       # test. 1.5 covers claimed step sigmas 1.5 x too small; claimed x0.5 (2 x too small) holds
       # only for cycles up to about 125 m: on a 250 m lap 1 to 3 true loops are lost (review H3
-      # I-1; the owner decides 1.5 or 2 after a manual test).
+      # I-1; owner ruling C1-27: 1.5 is final, that limit is accepted).
       pcm_odometry_sigma_scale: 1.5
       # >= 0. Unknown constant yaw drift rate of the odometry (1 sigma, per metre travelled), added
       # to the odometry covariance of the pairwise test (ADR-028 amendment C): yaw error grows

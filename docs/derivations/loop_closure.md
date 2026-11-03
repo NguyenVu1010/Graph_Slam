@@ -436,12 +436,10 @@ white part of a whole lap claimed at half its size); `s = 1.5` closes the probe'
 **Honest limit (review H3 I-1):** claim x0.5 is 2 times too small, and 1.5 holds it only for
 cycles up to about 125 m. On a 250 m lap (radius 40 m, 12 true loops, 7 seeds) claim x1 keeps
 every loop (largest chi2 12.3) but claim x0.5 loses 1 to 3 true loops at 3 of 7 seeds (seed 2024:
-3 rejected, chi2 24.5; seed 3: 1 removed and 1 rejected, 33.2; seed 31337: 2 rejected, 38.0; the
-largest pair chi2 as `DISABLED_ThreeLapRadius40HalfClaimAllStaySelected` prints it when run with
-`--gtest_also_run_disabled_tests`) (`ThreeLapTrueLoopsAllStaySelected`). The disabled test is
-re-enabled or deleted when the owner rules (backlog C1-27).
-`s = 2` would cover it at the price of weaker aliasing rejection against far loops; the owner
-decides after a manual test.
+3 rejected, chi2 24.5; seed 3: 1 removed and 1 rejected, 33.2; seed 31337: 2 rejected, 38.0)
+(`ThreeLapTrueLoopsAllStaySelected` pins the covered range). Owner ruling (C1-27, closed): 1.5 is
+final and this limit is accepted; `s = 2` would cover it at the price of weaker aliasing
+rejection against far loops (section 16).
 
 **First-order limit (review H3 m-2).** The drift term is linear in `b`. With a true drift of 1.5
 to 2 times `sigma_b` on laps of 125 m and more, the yaw accumulated over a lap (about 50 to 100
@@ -624,3 +622,34 @@ the hall. Owner ruling: the 2 cm / 0.25 deg floor is set in the loop overlays on
 
 Test: `LoopNees.SyntheticScenes` (both floors: mean NEES below 6 on the two synthetic scenes; the
 shipped one below 1 on the hall, the scene floor above 2 there, so a looser covariance shows).
+
+## 16. `pcm_odometry_sigma_scale` 1.5 against 2 (backlog C1-27, closed)
+
+Owner ruling: 1.5 is final. The limit it leaves is accepted: at claimed sigma x0.5 the white
+part of a lap is covered only for cycles up to about 125 m (radius 20 m); on a 250 m lap 1 to 3
+true loops are lost at 3 of 7 seeds (table below). The disabled radius-40 test is deleted; the
+covered range stays pinned by `ThreeLapTrueLoopsAllStaySelected`. The measurement below was made
+for that ruling (H6, recordings of 2026-11-02). Same binaries, only the scale changed (`config/default.yaml`
+for the tests, the overlay for the recordings). Counts: accepted / rejected before PCM /
+PCM-rejected / removed.
+
+| probe | 1.5 (shipped) | 2 |
+| --- | --- | --- |
+| E-07, loop-scene settings (section 15) | 5 / 0 / 0 / 0, no false loop | `est.tum` identical (md5) |
+| E-07, shipped loop settings | 0 / 8 / 0 / 0 | identical |
+| E-07W, either settings | 16 / 0 / 0 / 0, no false loop | identical |
+| three laps, claim x1, radius 6 to 40 m, 7 seeds, 12 true loops | all selected; largest pair chi2 5.0 to 12.3 | all selected; 3.6 to 7.6 |
+| three laps, claim x0.5, radius 6 to 20 m | all selected; 12.0 to 18.5 | all selected; 8.6 to 12.4 |
+| three laps, claim x0.5, radius 40 m (the deleted disabled test) | 3 of 7 seeds lose loops: 2024 3 PCM-rejected (chi2 24.5), 3 1 removed and 1 rejected (33.2), 31337 2 rejected (38.0) | 1 of 7: 31337 1 rejected (24.1); the others at most 21.3 |
+| two laps, 4 seeds, claim x1 / x0.5 / x0.25 | the same loops and end-to-start as without PCM | identical |
+| alias 2 m against true loops 10, 13, 30, 50 keyframes away (`YawDriftTermKeepsNearAliasesInconsistent`) | chi2 161.4 / 100.7 / 49.9 / 33.8: all inconsistent | 100.8 / 65.2 / 31.2 / 20.6: the farthest pair is consistent (the test fails) |
+| known loops plus 3 aliased (`PcmRemovesAliasedLoopsKnownLoops`) | 1 removed, 3 rejected, none left in the graph | identical |
+| detector aliasing probe (`LoopAliasing.*`, no PCM) | 0 false loops | identical |
+| wrong loop (0.8 m) then two true ones, loosened chain, `kernel_release` with the box settings (0.5 m separation, ratio 1; `KernelReleaseOutvotedWrongLoopNeverReleased`, re-measured under the two-place rule) | wrong loop removed and never released; final pose 2.4 mm from the true-only run | wrong loop **kept and released**: final pose 0.53 m off (the test fails); with the loop-scene 5 m separation this box scene releases nothing |
+
+Reading for the owner: 2 recovers most of the radius-40 limit (one loop at one seed instead of 6
+loops at three seeds) and changes nothing on the recordings, but it weakens the pairwise test
+against far aliases, and with ADR-030's kernel release it lets a wrong 0.8 m loop that a true
+loop fails to contradict pull the map by half a metre. If 2 is chosen, kernel release needs a
+stricter partner test than PCM's (for example its own chi-square on the pair, without the
+inflation).
