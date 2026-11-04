@@ -6,6 +6,13 @@ benchmark that runs on a Raspberry Pi 5.
 
 Working rules: `CONTRIBUTING.md`. Conventions: `docs/conventions.md`. Decisions: `docs/adr/`. Problems met and the rules they taught: `docs/lessons.md`.
 
+![Teleop demo: Gazebo on the left, RViz2 with keyframes, loops and the optimised path on the right](docs/media/teleop-demo.gif)
+
+Teleop mode (`mss_teleop`, `sim/README.md` "Teleop"): three laps of the warehouse world at 8x
+speed; the keyframes appear as arrows, each accepted loop as a line with a sphere at each end,
+and the optimised path is redrawn every second. At the end the gamepad saves the run (Y) and
+pauses the world (Start). Full resolution: [`docs/media/teleop-demo.mp4`](docs/media/teleop-demo.mp4).
+
 ## Layout
 
 ```

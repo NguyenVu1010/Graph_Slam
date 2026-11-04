@@ -422,6 +422,12 @@ void loop_markers(const GraphSnapshot& snap,
     m.points.push_back(point_of(ki->T_w_b.p));
     m.points.push_back(point_of(kj->T_w_b.p));
     out.markers.push_back(m);
+    m.ns = "loop_ends";
+    m.type = Marker::SPHERE_LIST;
+    m.scale.x = style.loop_end_m;
+    m.scale.y = style.loop_end_m;
+    m.scale.z = style.loop_end_m;
+    out.markers.push_back(m);
   }
 }
 
@@ -449,14 +455,22 @@ Marker counts_marker(const GraphSnapshot& snap,
   m.scale.z = style.text_height_m;
   m.color = rgba(1.0F, 1.0F, 1.0F);
   if (!snap.keyframes.empty()) {
-    m.pose.position = point_of(snap.keyframes.back().T_w_b.p);
+    mss::common::Vec3 lo = snap.keyframes.front().T_w_b.p;
+    mss::common::Vec3 hi = lo;
+    for (const GraphKeyframe& k : snap.keyframes) {
+      lo = lo.cwiseMin(k.T_w_b.p);
+      hi = hi.cwiseMax(k.T_w_b.p);
+    }
+    m.pose.position.x = 0.5 * (lo.x() + hi.x());
+    m.pose.position.y = hi.y();
+    m.pose.position.z = hi.z();
   }
-  m.pose.position.z += style.text_above_m;
+  m.pose.position.y += style.text_margin_m;
   std::size_t by_state[3] = {0, 0, 0};
   for (const mss::pipeline::GraphLoop& l : snap.loops) {
     ++by_state[static_cast<std::size_t>(l.state)];
   }
-  m.text = "keyframes " + std::to_string(counts.keyframes) + " | loops: accepted " +
+  m.text = "keyframes " + std::to_string(counts.keyframes) + "\nloops: accepted " +
            std::to_string(counts.loops_accepted) + ", rejected " +
            std::to_string(counts.loops_rejected) + ", PCM rejected " +
            std::to_string(counts.loops_pcm_rejected) + ", removed " +

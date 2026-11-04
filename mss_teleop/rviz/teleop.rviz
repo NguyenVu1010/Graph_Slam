@@ -1,4 +1,5 @@
 # RViz2 config of the teleop mode (ADR-031): ros2_node/rviz/mss.rviz plus the graph display.
+# The map is drawn flat grey and faint, seen from above, so the keyframes and loops stay visible.
 Panels:
   - Class: rviz_common/Displays
     Name: Displays
@@ -23,8 +24,9 @@ Visualization Manager:
         Durability Policy: Transient Local
       Style: Points
       Size (Pixels): 2
-      Color Transformer: AxisColor
-      Axis: Z
+      Color Transformer: FlatColor
+      Color: 150; 150; 150
+      Alpha: 0.5
       Use Fixed Frame: true
       Decay Time: 0
       Value: true
@@ -52,7 +54,7 @@ Visualization Manager:
         Durability Policy: Transient Local
       Color: 255; 190; 30
       Line Style: Billboards
-      Line Width: 0.08
+      Line Width: 0.15
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Name: Keyframes
@@ -104,12 +106,12 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 40
+      Distance: 32
       Focal Point:
         X: 0
         Y: 0
         Z: 0
-      Pitch: 1.1
+      Pitch: 1.5697
       Yaw: -1.5708
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)

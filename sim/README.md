@@ -671,10 +671,12 @@ ros2 launch mss_teleop teleop.launch.py world:=warehouse input:=keyboard
 - The world reuses a scenario (`warehouse` -> E-07W, `outdoor` -> E-07: noise, seed, GNSS,
   wheels, spawn pose) and its loops-on overlay, with no route driver and no stop time.
   `mss_node` runs with `viz.enabled`, so RViz (`mss_teleop/rviz/teleop.rviz`) shows, besides the
-  online path, map and TF: one arrow per keyframe at its optimised pose, one line per loop
+  online path, map (flat grey and faint, seen from above) and TF: one arrow per keyframe at its
+  optimised pose, one line per loop with a sphere at each end
   (green in the graph, cyan in the graph without the Cauchy kernel (ADR-030), red removed by
   PCM), the optimised keyframe path redrawn every second (it shrinks after a loop closes) and a
-  text with the counters.
+  text with the counters, placed beside the path so it does not cover it. The view is top-down
+  over the warehouse; zoom out (mouse wheel) for the 312 m outdoor loop.
 - Speeds: the robot's maxima from `sim/models/robot.yaml` (1.0 m/s, 1.0 rad/s); the DiffDrive
   plugin clamps speed and acceleration to the same file.
 - **Keyboard** (default; on WSL a USB gamepad needs `usbipd` first): without `keyboard_prefix`
