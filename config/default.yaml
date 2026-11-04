@@ -65,7 +65,8 @@ mss_node:
       init_level_max_bias_mps2: 0.75
 
     gnss:
-      # Off until multipath (E-06) and outage (E-05) are evaluated end to end (CONTRIBUTING.md DoD 3);
+      # Off until multipath (E-06) and outage (E-05) are evaluated end to end
+      # (CONTRIBUTING.md DoD 3);
       # the sim scenarios enable it by overlay (config/sim/*.yaml). PR 4a evaluation with
       # backend.gnss_frame_variable and scan_match.cov_scale 4.7 (docs/derivations/
       # gnss_fusion_study.md section 11, ADR-019), ATE, GTSAM: box world 0.0090 m LiDAR only,

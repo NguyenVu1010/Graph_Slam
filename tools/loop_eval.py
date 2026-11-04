@@ -1,8 +1,8 @@
 """Loop-closure evaluation of one ``mss_bench`` run on a recording (H6; reviews M-8, R-1).
 
 Lives in ``tools/``, not ``eval/``: besides TUM trajectories it reads ``bench.json`` and the
-pipeline's stderr log, and CONTRIBUTING.md keeps ``eval/`` to TUM files. It uses ``mss_eval`` for the
-trajectory parts (``PYTHONPATH=eval:sim:tools``).
+pipeline's stderr log, and CONTRIBUTING.md keeps ``eval/`` to TUM files. It uses ``mss_eval``
+for the trajectory parts (``PYTHONPATH=eval:sim:tools``).
 
 Run the bench with its stderr kept, then this tool (the exact commands behind the E-07 and E-07W
 numbers are in ``docs/derivations/loop_closure.md`` section 15)::

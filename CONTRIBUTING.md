@@ -117,7 +117,7 @@ Dependency direction is fixed: apps -> pipeline -> modules -> common.
 5. For hot-path changes, `bench` numbers are attached.
 6. README or docs are updated if behaviour or parameters changed.
 
-## Notes for AI assistants
+## Notes for contributors
 
 - Read the relevant ADR and `docs/conventions.md` before editing a module.
 - Before writing a Jacobian, state the residual, the variables and the perturbation
