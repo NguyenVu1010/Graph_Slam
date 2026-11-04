@@ -3,3 +3,5 @@
 *.png binary
 *.mcap binary
 *.bag binary
+*.gif binary
+*.mp4 binary

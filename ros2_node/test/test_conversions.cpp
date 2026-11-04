@@ -460,15 +460,28 @@ TEST(GraphViz, LoopMarkersColouredByStateAndSkipUnknownKeyframes) {
   s.loops[2].j = 7;  // keyframe 7 is not in the snapshot: that loop is not drawn
   visualization_msgs::msg::MarkerArray a;
   mss_ros2::loop_markers(s, Timestamp{}, "map", {}, a);
-  ASSERT_EQ(a.markers.size(), 3U);
+  // DELETEALL, then a line and an end-sphere marker for each of the two drawn loops.
+  ASSERT_EQ(a.markers.size(), 5U);
   EXPECT_EQ(a.markers[0].action, Marker::DELETEALL);
   EXPECT_EQ(a.markers[1].type, Marker::LINE_LIST);
+  EXPECT_EQ(a.markers[1].ns, "loops");
   EXPECT_EQ(a.markers[1].header.frame_id, "map");
   ASSERT_EQ(a.markers[1].points.size(), 2U);
   EXPECT_NEAR(a.markers[1].points[0].x, 0.0, kTol);
   EXPECT_NEAR(a.markers[1].points[1].x, 2.0, kTol);
   EXPECT_TRUE(same_color(a.markers[1].color, mss_ros2::loop_color(LoopState::kActive)));
-  EXPECT_TRUE(same_color(a.markers[2].color, mss_ros2::loop_color(LoopState::kReleased)));
+  const Marker& ends = a.markers[2];
+  EXPECT_EQ(ends.type, Marker::SPHERE_LIST);
+  EXPECT_EQ(ends.ns, "loop_ends");
+  EXPECT_EQ(ends.id, a.markers[1].id);
+  EXPECT_EQ(ends.header.frame_id, "map");
+  ASSERT_EQ(ends.points.size(), 2U);
+  EXPECT_NEAR(ends.points[0].x, 0.0, kTol);
+  EXPECT_NEAR(ends.points[1].x, 2.0, kTol);
+  EXPECT_EQ(ends.scale.x, mss_ros2::VizStyle{}.loop_end_m);
+  EXPECT_TRUE(same_color(ends.color, mss_ros2::loop_color(LoopState::kActive)));
+  EXPECT_TRUE(same_color(a.markers[3].color, mss_ros2::loop_color(LoopState::kReleased)));
+  EXPECT_TRUE(same_color(a.markers[4].color, mss_ros2::loop_color(LoopState::kReleased)));
   // The three states have three different colours.
   EXPECT_FALSE(same_color(mss_ros2::loop_color(LoopState::kActive),
                           mss_ros2::loop_color(LoopState::kReleased)));
@@ -478,8 +491,9 @@ TEST(GraphViz, LoopMarkersColouredByStateAndSkipUnknownKeyframes) {
                           mss_ros2::loop_color(LoopState::kRemoved)));
   s.loops[2].j = 1;
   mss_ros2::loop_markers(s, Timestamp{}, "map", {}, a);
-  ASSERT_EQ(a.markers.size(), 4U);
-  EXPECT_TRUE(same_color(a.markers[3].color, mss_ros2::loop_color(LoopState::kRemoved)));
+  ASSERT_EQ(a.markers.size(), 7U);
+  EXPECT_TRUE(same_color(a.markers[5].color, mss_ros2::loop_color(LoopState::kRemoved)));
+  EXPECT_TRUE(same_color(a.markers[6].color, mss_ros2::loop_color(LoopState::kRemoved)));
 }
 
 TEST(GraphViz, PathAndCounts) {
@@ -498,8 +512,13 @@ TEST(GraphViz, PathAndCounts) {
   const auto m = mss_ros2::counts_marker(s, c, Timestamp{}, "map", style);
   EXPECT_EQ(m.type, visualization_msgs::msg::Marker::TEXT_VIEW_FACING);
   EXPECT_EQ(m.header.frame_id, "map");
-  EXPECT_NEAR(m.pose.position.x, 2.0, kTol);  // above the newest keyframe
-  EXPECT_NEAR(m.pose.position.z, style.text_above_m, kTol);
+  // Keyframes span x 0..2 at y = z = 0: the text sits over x = 1, text_margin_m beyond +y.
+  EXPECT_NEAR(m.pose.position.x, 1.0, kTol);
+  EXPECT_NEAR(m.pose.position.y, style.text_margin_m, kTol);
+  EXPECT_NEAR(m.pose.position.z, 0.0, kTol);
+  const auto empty = mss_ros2::counts_marker({}, c, Timestamp{}, "map", style);
+  EXPECT_NEAR(empty.pose.position.x, 0.0, kTol);
+  EXPECT_NEAR(empty.pose.position.y, style.text_margin_m, kTol);
   EXPECT_NE(m.text.find("keyframes 3"), std::string::npos) << m.text;
   EXPECT_NE(m.text.find("accepted 4"), std::string::npos) << m.text;
   EXPECT_NE(m.text.find("1 active, 1 released; 1 removed"), std::string::npos) << m.text;
