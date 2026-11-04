@@ -28,9 +28,9 @@ Tắt: node y như trước, không publisher, service hay tham số `viz.*` nà
 | Tên | Kiểu | Nội dung | QoS |
 | --- | --- | --- | --- |
 | `/mss/graph/keyframes` | `visualization_msgs/MarkerArray` | `DELETEALL` rồi một mũi tên mỗi keyframe tại `T_w_b` đã tối ưu | reliable, transient local, sâu 1 |
-| `/mss/graph/loops` | `visualization_msgs/MarkerArray` | `DELETEALL` rồi một đoạn `i - j` mỗi loop; xanh lá `kActive`, xanh lơ `kReleased`, đỏ `kRemoved` | như trên |
+| `/mss/graph/loops` | `visualization_msgs/MarkerArray` | `DELETEALL` rồi mỗi loop một đoạn `i - j` (namespace `loops`) và một quả cầu ở mỗi đầu (`loop_ends`, để loop giữa hai keyframe gần trùng chỗ vẫn thấy); xanh lá `kActive`, xanh lơ `kReleased`, đỏ `kRemoved` | như trên |
 | `/mss/graph/path` | `nav_msgs/Path` | các keyframe đã tối ưu, vẽ lại cả đường (backlog R9) | như trên |
-| `/mss/graph/counts` | `visualization_msgs/Marker` | chữ: số keyframe, loop nhận / từ chối / PCM từ chối / gỡ, loop theo trạng thái | như trên |
+| `/mss/graph/counts` | `visualization_msgs/Marker` | chữ: số keyframe, loop nhận / từ chối / PCM từ chối / gỡ, loop theo trạng thái; đặt ngoài cạnh +y của hộp bao các keyframe để không che quỹ đạo | như trên |
 | `/mss/save` | `std_srvs/Trigger` | ghi `kf_opt.tum` (mọi keyframe của snapshot, ba dòng chú thích `#` nói rõ), `loops.csv` (`i,j,t_i_s,t_j_s,state`), `map.pcd` (`export_map()`, `io::write_pcd`) vào `<viz.save_dir>/<run id>/save-<n>/` (mỗi lần lưu một thư mục mới, tạo bằng `create_directory` không đệ quy nên không bao giờ dùng lại thư mục đã có, kể cả sau khi khởi động lại với cùng `viz.run_id`; review N2-3), trả về thư mục | |
 | `/mss/pause` | `std_srvs/SetBool` | `true` dừng, `false` chạy tiếp cả thế giới Gazebo | |
 | `/mss/paused` | `std_msgs/Bool` | trạng thái thế giới node suy ra từ đồng hồ mô phỏng (xem dưới), phát khi đổi | reliable, transient local, sâu 1 |

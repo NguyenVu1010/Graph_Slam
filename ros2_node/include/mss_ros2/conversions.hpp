@@ -135,12 +135,18 @@ struct VizStyle {
   /// m, keyframe arrow length. The arrow points along x of b (the IMU), which is the forward
   /// direction only when the IMU x axis is the robot's forward axis (true for the sim robot,
   /// review N-13).
-  double arrow_length_m = 0.6;
-  double arrow_shaft_m = 0.06;  ///< m, keyframe arrow shaft diameter
-  double arrow_head_m = 0.15;   ///< m, keyframe arrow head diameter
-  double loop_width_m = 0.06;   ///< m, loop line width
-  double text_height_m = 0.6;   ///< m, height of the counter text
-  double text_above_m = 2.0;    ///< m, counter text height above the newest keyframe
+  /// The sizes are chosen to stay legible in a top-down view of a 30 to 40 m area.
+  double arrow_length_m = 1.0;
+  double arrow_shaft_m = 0.15;  ///< m, keyframe arrow shaft diameter
+  double arrow_head_m = 0.35;   ///< m, keyframe arrow head diameter
+  double loop_width_m = 0.2;    ///< m, loop line width
+  /// m, diameter of the sphere at each end of a loop line, so a loop between two keyframes at
+  /// almost the same place (a revisit on the same track) is still visible.
+  double loop_end_m = 0.6;
+  double text_height_m = 0.8;  ///< m, height of one line of the counter text
+  /// m, gap between the counter text and the +y edge of the keyframes' bounding box, so the
+  /// text does not cover the path.
+  double text_margin_m = 3.0;
 };
 
 /// Counters shown in the counter text (from Estimator::Stats).
@@ -164,9 +170,11 @@ void keyframe_markers(const mss::pipeline::GraphSnapshot& snap,
                       const VizStyle& style,
                       visualization_msgs::msg::MarkerArray& out);
 
-/// One LINE_LIST marker per loop from keyframe i to keyframe j at their optimised positions,
-/// coloured by state (loop_color; namespace "loops", id = index in snap.loops), after one
-/// DELETEALL marker. A loop whose keyframe has no pose in the snapshot is skipped.
+/// Per loop, one LINE_LIST marker from keyframe i to keyframe j at their optimised positions
+/// (namespace "loops") and one SPHERE_LIST marker with a sphere at each end (namespace
+/// "loop_ends"), both coloured by state (loop_color), id = index in snap.loops; after one
+/// DELETEALL marker, so 1 + 2 * (drawn loops) markers. A loop whose keyframe has no pose in the
+/// snapshot is skipped.
 void loop_markers(const mss::pipeline::GraphSnapshot& snap,
                   mss::common::Timestamp t,
                   const std::string& world_frame,
@@ -181,8 +189,9 @@ void path_from_snapshot(const mss::pipeline::GraphSnapshot& snap,
                         const std::string& world_frame,
                         nav_msgs::msg::Path& out);
 
-/// TEXT_VIEW_FACING marker with the counters and the loops by state, `text_above_m` above the
-/// newest keyframe (the origin of `world_frame` before the first). Namespace "counts", id 0.
+/// TEXT_VIEW_FACING marker with the counters and the loops by state. It sits over the middle (in
+/// x) of the keyframes' bounding box, `text_margin_m` beyond its +y edge, at its highest z;
+/// before the first keyframe it sits at (0, text_margin_m, 0). Namespace "counts", id 0.
 visualization_msgs::msg::Marker counts_marker(const mss::pipeline::GraphSnapshot& snap,
                                               const GraphCounts& counts,
                                               mss::common::Timestamp t,
