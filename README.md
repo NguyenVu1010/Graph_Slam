@@ -15,8 +15,9 @@ pauses the world (Start). Full resolution: [`docs/media/teleop-demo.mp4`](docs/m
 
 Loop after a lap of the room: [`docs/media/room-loop-demo.mp4`](docs/media/room-loop-demo.mp4)
 (scenario ROOM-01, 8x speed). The robot drives once around the warehouse and back through
-the start; no loop is possible on the way, and the loop that closes the lap joins the last
-keyframes to the first one, taken about 3 min earlier.
+the start. No loop is possible on the way. The loop that closes the lap joins a new keyframe to
+the first one, taken about 3 min earlier. After that, the RViz camera drops behind the robot to
+show the 3D map coloured by height.
 
 ## Layout
 

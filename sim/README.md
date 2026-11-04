@@ -349,8 +349,8 @@ Two loop scenes, two purposes:
   ATE 0.0192 m with loops off, 0.0142 m with the loops-on overlay (16 loops, none false). The
   numbers of the pre-#41 bag (ATE 0.087 m, 4.7 / 1.5 cm) are superseded.
 - **ROOM-01** (`sim/scenarios/ROOM-01.yaml`): one lap around the warehouse room
-  (`warehouse_room_loop.yaml`, 84.8 m; about 196 s in Gazebo with the still start), back through the
-  start and 4 m past it. The legs are more than `search_radius_m` (10 m) apart, so the only
+  (`warehouse_room_loop.yaml`, 90.8 m; about 210 s in Gazebo with the still start), back through the
+  start and 10 m past it. The legs are more than `search_radius_m` (10 m) apart, so the only
   loops join the last keyframes to the first ones, about 3 min earlier. Same overlays as
   E-07W; it backs the loop demo video (`docs/media/room-loop-demo.mp4`) and has no baseline.
 

@@ -11,10 +11,10 @@ pipeline_config_variants:
   loops_on: config/sim/warehouse_e07_loops_on.yaml
 trajectory: sim/trajectories/warehouse_room_loop.yaml
 seed: 42
-duration_s: 200
+duration_s: 215
 origin_lla: [21.0278, 105.8342, 12.0]  # lat_deg, lon_deg, alt_m
 gnss:
-  - {mode: nominal, t_start_s: 0, t_end_s: 200}
+  - {mode: nominal, t_start_s: 0, t_end_s: 215}
 gnss_zones: []
 topics:
   - /lidar/points
