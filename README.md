@@ -13,6 +13,12 @@ speed; the keyframes appear as arrows, each accepted loop as a line with a spher
 and the optimised path is redrawn every second. At the end the gamepad saves the run (Y) and
 pauses the world (Start). Full resolution: [`docs/media/teleop-demo.mp4`](docs/media/teleop-demo.mp4).
 
+Loop after a lap of the room: [`docs/media/room-loop-demo.mp4`](docs/media/room-loop-demo.mp4)
+(scenario ROOM-01, 8x speed). The robot drives once around the warehouse and back through
+the start. No loop is possible on the way. The loop that closes the lap joins a new keyframe to
+the first one, taken about 3 min earlier. After that, the RViz camera drops behind the robot to
+show the 3D map coloured by height.
+
 ## Layout
 
 ```

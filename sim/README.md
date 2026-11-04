@@ -348,6 +348,11 @@ Two loop scenes, two purposes:
   harm. Re-recorded at main bf2f7cd (H6, "Re-recorded with the level start" below): `kf_opt`
   ATE 0.0192 m with loops off, 0.0142 m with the loops-on overlay (16 loops, none false). The
   numbers of the pre-#41 bag (ATE 0.087 m, 4.7 / 1.5 cm) are superseded.
+- **ROOM-01** (`sim/scenarios/ROOM-01.yaml`): one lap around the warehouse room
+  (`warehouse_room_loop.yaml`, 90.8 m; about 210 s in Gazebo with the still start), back through the
+  start and 10 m past it. The legs are more than `search_radius_m` (10 m) apart, so the only
+  loops join the last keyframes to the first ones, about 3 min earlier. Same overlays as
+  E-07W; it backs the loop demo video (`docs/media/room-loop-demo.mp4`) and has no baseline.
 
 Recorded 2026-11-02 UTC on this branch (body frame `imu_link`, after #41; seed 42, gz-sim 8.15,
 ogre2): 452 s sim in 241 s wall (real-time factor 1.88), raw bag 375 MB in 19 files. Noise report
@@ -677,6 +682,10 @@ ros2 launch mss_teleop teleop.launch.py world:=warehouse input:=keyboard
   PCM), the optimised keyframe path redrawn every second (it shrinks after a loop closes) and a
   text with the counters, placed beside the path so it does not cover it. The view is top-down
   over the warehouse; zoom out (mouse wheel) for the 312 m outdoor loop.
+- A scripted route can stand in for the driver: with the warehouse world running, `PYTHONPATH=sim
+  python3 -m mss_sim.driver sim/scenarios/ROOM-01.yaml --ros-args -p use_sim_time:=true` drives
+  one lap around the room on `/cmd_vel` (`docs/media/room-loop-demo.mp4`). Leave the gamepad and
+  keyboard alone meanwhile: they publish on the same `/cmd_vel`.
 - Speeds: the robot's maxima from `sim/models/robot.yaml` (1.0 m/s, 1.0 rad/s); the DiffDrive
   plugin clamps speed and acceleration to the same file.
 - **Keyboard** (default; on WSL a USB gamepad needs `usbipd` first): without `keyboard_prefix`
