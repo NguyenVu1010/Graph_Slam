@@ -1,0 +1,17 @@
+# ROOM-01 route in sim/worlds/warehouse.sdf: one lap around the room, back to the spawn pose and
+# 4 m past it. East along the shelf aisle (y = 0.8), south along x = 12, west along the south
+# wall (y = -10.7, behind the shelf rows), north along x = -17.5, east along y = -1.0 (south of
+# the low crate at x = -13 that blocks y = 0.8) and back onto y = 0.8 through the start. The
+# legs are more than 10 m apart (loop_closure.search_radius_m), so the first loop candidates
+# are the first keyframes, about 70 m and 2.5 min later. Same schema.
+waypoints:
+  - [-8.0, 0.8]
+  - [12.0, 0.8]
+  - [12.0, -10.7]
+  - [-17.5, -10.7]
+  - [-17.5, -1.0]
+  - [-10.5, -1.0]
+  - [-8.0, 0.8]
+  - [-4.0, 0.8]
+speed_mps: 0.5
+lookahead_m: 1.0

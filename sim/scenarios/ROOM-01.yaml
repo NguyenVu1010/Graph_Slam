@@ -1,0 +1,26 @@
+# ROOM-01: one lap around the warehouse room, back through the start (warehouse_room_loop.yaml).
+# The legs are more than 10 m apart, so no loop is possible until the robot is back near the
+# first keyframes; the loops then join keyframes about 3 min apart, not consecutive scans.
+# Same noise, seed and pipeline overlays as E-07W (GNSS off, so the drift is not hidden). Used for
+# the teleop loop demo (docs/media/room-loop-demo.mp4); no baseline.
+id: ROOM-01
+world: warehouse
+profile: sim/noise/default.yaml
+pipeline_config: config/sim/warehouse_e07.yaml
+pipeline_config_variants:
+  loops_on: config/sim/warehouse_e07_loops_on.yaml
+trajectory: sim/trajectories/warehouse_room_loop.yaml
+seed: 42
+duration_s: 200
+origin_lla: [21.0278, 105.8342, 12.0]  # lat_deg, lon_deg, alt_m
+gnss:
+  - {mode: nominal, t_start_s: 0, t_end_s: 200}
+gnss_zones: []
+topics:
+  - /lidar/points
+  - /imu/data
+  - /gnss/fix
+  - /wheel/odom
+  - /ground_truth
+  - /tf_static
+  - /clock
