@@ -8,6 +8,7 @@ dependencies = ["numpy>=1.26", "scipy>=1.12", "pyyaml>=6", "rosbags>=0.11", "sha
 [project.optional-dependencies]
 eval = ["evo>=1.28", "matplotlib>=3.8", "allantools>=2024.6"]
 dev = ["ruff>=0.6", "pytest>=8"]
+explorer = ["streamlit>=1.39", "plotly>=5.24", "matplotlib>=3.8"]
 
 [build-system]
 requires = ["setuptools>=68"]
