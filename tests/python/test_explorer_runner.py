@@ -1,0 +1,172 @@
+"""Explorer runner: chain, cache, failure states and CLI, with a fake bench."""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+import yaml
+from conftest import _REPO, cli_env
+
+from mss_explorer.runner import RunResult, list_runs, run_experiment
+from mss_explorer.spec import ExperimentSpec, SpecError, dump_spec
+from mss_sim.synth import SynthInfo
+
+_FAKE = """
+import os, shutil, sys, time
+from pathlib import Path
+args = sys.argv[1:]
+out = Path(args[args.index("--out") + 1])
+out.mkdir(parents=True, exist_ok=True)
+with open(os.environ["FAKE_COUNT"], "a") as f:
+    f.write("run\\n")
+mode = os.environ.get("FAKE_MODE", "ok")
+if mode == "fail":
+    sys.exit(1)
+if mode == "sleep":
+    time.sleep(30)
+gt = (out.parent / "gt.tum").read_text().splitlines()
+lines = gt[:3] if mode == "short" else gt
+(out / "est.tum").write_text("\\n".join(lines) + "\\n")
+(out / "kf_opt.tum").write_text("\\n".join(lines[::10]) + "\\n")
+(out / "bench.json").write_text('{"stats": {"n_loops_accepted": 2}}')
+"""
+
+
+@pytest.fixture
+def setup(raw_bag: tuple[Path, SynthInfo], tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
+    raw, _ = raw_bag
+    rec = tmp_path / "rec"
+    shutil.copytree(raw, rec / "raw_bag")
+    sc_text = (_REPO / "sim/scenarios/E-01.yaml").read_text()
+    sc_text = sc_text.replace("duration_s: 60", "duration_s: 6").replace(
+        "t_end_s: 60", "t_end_s: 6"
+    )
+    scenario = tmp_path / "E-01-6s.yaml"
+    scenario.write_text(sc_text)
+    fake = tmp_path / "fake_bench.py"
+    fake.write_text(_FAKE)
+    count = tmp_path / "count.txt"
+    monkeypatch.setenv("FAKE_COUNT", str(count))
+    monkeypatch.setenv("FAKE_MODE", "ok")
+    spec = ExperimentSpec(scenario=scenario, recording=rec)
+    return spec, f"{sys.executable} {fake}", tmp_path / "explorer", count
+
+
+def _n_runs(count: Path) -> int:
+    return len(count.read_text().splitlines()) if count.exists() else 0
+
+
+def test_run_ok_and_cached(setup) -> None:  # noqa: ANN001
+    spec, bench, root, count = setup
+    r = run_experiment(spec, bench_cmd=bench, root=root)
+    assert r.status == "ok", r.reason
+    assert r.ate_online_m == pytest.approx(0.0, abs=1e-9)
+    assert r.ate_opt_m == pytest.approx(0.0, abs=1e-9)
+    assert r.n_loops_accepted == 2
+    assert not (r.run_dir / "tmp").exists()
+    assert (r.run_dir / "errors_online.csv").read_text().startswith("t_s,err_m")
+    again = run_experiment(spec, bench_cmd=bench, root=root)
+    assert again == r and _n_runs(count) == 1
+
+
+def test_run_failed_not_cached(setup, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+    spec, bench, root, count = setup
+    monkeypatch.setenv("FAKE_MODE", "fail")
+    r = run_experiment(spec, bench_cmd=bench, root=root)
+    assert r.status == "failed" and "exit 1" in r.reason
+    monkeypatch.setenv("FAKE_MODE", "ok")
+    assert run_experiment(spec, bench_cmd=bench, root=root).status == "ok"
+    assert _n_runs(count) == 2
+
+
+def test_run_timeout_failed(setup, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    monkeypatch.setenv("FAKE_MODE", "sleep")
+    r = run_experiment(spec, bench_cmd=bench, root=root, timeout_s=1.0)
+    assert r.status == "failed" and "timeout" in r.reason
+
+
+def test_run_lost(setup, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    monkeypatch.setenv("FAKE_MODE", "short")
+    r = run_experiment(spec, bench_cmd=bench, root=root)
+    assert r.status == "lost" and r.ate_online_m is None and r.reason
+
+
+def test_run_running_lock(setup) -> None:  # noqa: ANN001
+    spec, bench, root, count = setup
+    first = run_experiment(replace(spec, seed=5), bench_cmd=bench, root=root)
+    shutil.rmtree(first.run_dir)
+    first.run_dir.mkdir(parents=True)
+    (first.run_dir / ".lock").write_text(str(os.getpid()))
+    r = run_experiment(replace(spec, seed=5), bench_cmd=bench, root=root)
+    assert r.status == "running" and _n_runs(count) == 1
+
+
+def test_stale_lock_replaced(setup) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    first = run_experiment(spec, bench_cmd=bench, root=root)
+    shutil.rmtree(first.run_dir)
+    first.run_dir.mkdir(parents=True)
+    (first.run_dir / ".lock").write_text("999999999")
+    assert run_experiment(spec, bench_cmd=bench, root=root).status == "ok"
+
+
+def test_recording_without_raw_bag(setup, tmp_path: Path) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    with pytest.raises(SpecError, match="raw_bag"):
+        run_experiment(replace(spec, recording=tmp_path / "nowhere"), bench_cmd=bench, root=root)
+
+
+def test_recording_of_another_scenario(setup) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    (spec.recording / "assets").mkdir()
+    meta = {"profile": "sim/noise/default.yaml", "pipeline_config": "config/sim/outdoor.yaml"}
+    (spec.recording / "assets" / "assets.yaml").write_text(yaml.safe_dump(meta))
+    with pytest.raises(SpecError, match="pipeline_config"):
+        run_experiment(spec, bench_cmd=bench, root=root)
+
+
+def test_overlay_sets_factors(setup) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    spec = replace(spec, factors={"gnss": True, "wheel_odom": None, "loop_closure": False})
+    r = run_experiment(spec, bench_cmd=bench, root=root)
+    p = yaml.safe_load((r.run_dir / "overlay.yaml").read_text())["mss_node"]["ros__parameters"]
+    assert p["gnss"]["enabled"] is True and p["loop_closure"]["enabled"] is False
+    base = yaml.safe_load((_REPO / "config/sim/warehouse.yaml").read_text())
+    want = base["mss_node"]["ros__parameters"].get("wheel_odom", {}).get("enabled")
+    assert p.get("wheel_odom", {}).get("enabled") == want
+
+
+def test_list_runs(setup) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    r = run_experiment(replace(spec, label="ref"), bench_cmd=bench, root=root)
+    runs = list_runs(root)
+    assert [(s.label, x) for s, x in runs] == [("ref", r)]
+    assert isinstance(runs[0][1], RunResult)
+
+
+def test_cli_exit_codes(setup, tmp_path: Path) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    good, bad = tmp_path / "good.yaml", tmp_path / "bad.yaml"
+    dump_spec(spec, good)
+    bad.write_text("scenario: nowhere.yaml\nrecording: x\n")
+    env = {**cli_env(), "MSS_BENCH_CMD": bench}
+
+    def cli(path: Path) -> subprocess.CompletedProcess:
+        cmd = [sys.executable, "-m", "mss_explorer", "run", str(path), "--root", str(root)]
+        return subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
+
+    ok = cli(good)
+    assert ok.returncode == 0, ok.stderr
+    assert json.loads(ok.stdout)["status"] == "ok"
+    assert cli(bad).returncode == 2
+    env["FAKE_MODE"] = "fail"
+    s9 = tmp_path / "s9.yaml"
+    dump_spec(replace(spec, seed=9), s9)
+    assert cli(s9).returncode == 1

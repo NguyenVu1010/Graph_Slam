@@ -1,0 +1,333 @@
+"""Run one experiment offline and cache it under ``<root>/runs/<key>/``.
+
+Chain: raw bag -> noise bridge (scaled profile, extra IMU noise) -> faults -> bag_to_mssdata
+-> bench (generated overlay) -> metrics. The run directory keeps ``spec.yaml``, ``overlay.yaml``,
+``gt.tum``, ``bench/`` (est.tum, kf_opt.tum, bench.json), ``errors_online.csv``,
+``errors_opt.csv``, ``result.json`` and ``log.txt``; the intermediate bags under ``tmp/`` are
+deleted. ``ok`` and ``lost`` results are served from the cache; ``failed`` ones run again.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import time
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
+from typing import Any, Literal
+
+import numpy as np
+import yaml
+
+from bag_to_mssdata import convert
+from mss_eval.ate import align, ate, read_tum_stamps_ns
+from mss_explorer.metrics import error_series, rpe_t
+from mss_explorer.spec import (
+    FACTORS,
+    REPO,
+    ExperimentSpec,
+    SpecError,
+    dump_spec,
+    load_spec,
+    spec_key,
+)
+from mss_sim.bridge import run_bridge
+from mss_sim.config_overlay import load_pipeline_config
+from mss_sim.faults import apply_faults
+from mss_sim.noise_scale import imu_extra, scale_profile
+from mss_sim.profile import load_profile
+from mss_sim.scenario import Scenario, load_scenario
+
+Status = Literal["ok", "lost", "failed", "running"]
+DEFAULT_CONFIG = REPO / "config/default.yaml"
+TIMEOUT_PER_SCENARIO_S = 10.0  # default bench timeout = this x the scenario duration
+MIN_COVERAGE = 0.5  # est.tum must span this fraction of the scenario, else the run is "lost"
+_CACHED: tuple[Status, ...] = ("ok", "lost")
+
+
+@dataclass(frozen=True)
+class RunResult:
+    key: str
+    status: Status
+    reason: str
+    ate_online_m: float | None
+    ate_opt_m: float | None
+    rpe10_m: float | None
+    rpe50_m: float | None
+    n_loops_accepted: int | None
+    wall_s: float
+    run_dir: Path
+
+
+def _empty(key: str, status: Status, reason: str, run_dir: Path, wall_s: float = 0.0) -> RunResult:
+    return RunResult(key, status, reason, None, None, None, None, None, wall_s, run_dir)
+
+
+def _save(r: RunResult) -> None:
+    doc = {**asdict(r), "run_dir": r.run_dir.name}
+    (r.run_dir / "result.json").write_text(json.dumps(doc, indent=2) + "\n")
+
+
+def _load(run_dir: Path) -> RunResult | None:
+    path = run_dir / "result.json"
+    if not path.is_file():
+        return None
+    doc = json.loads(path.read_text())
+    return RunResult(**{**doc, "run_dir": run_dir})
+
+
+def git_commit() -> str:
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return out.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def _rel(p: Path) -> str:
+    try:
+        return p.resolve().relative_to(REPO).as_posix()
+    except ValueError:
+        return p.resolve().as_posix()
+
+
+def _check_recording(spec: ExperimentSpec, sc: Scenario) -> Path:
+    raw = spec.recording / "raw_bag"
+    if not raw.is_dir():
+        raise SpecError(f"recording: {raw} is missing (record with tools/record_scenario.sh)")
+    meta_path = spec.recording / "assets" / "assets.yaml"
+    if meta_path.is_file():
+        meta = yaml.safe_load(meta_path.read_text()) or {}
+        for name, expected in (("profile", sc.profile), ("pipeline_config", sc.pipeline_config)):
+            if meta.get(name) != _rel(expected):
+                raise SpecError(
+                    f"recording: made with {name} {meta.get(name)!r}, scenario {sc.id} uses "
+                    f"{_rel(expected)!r}"
+                )
+    return raw
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _lock(run_dir: Path) -> bool:
+    """Take ``run_dir/.lock``; False when a live process holds it (a stale lock is replaced)."""
+    path = run_dir / ".lock"
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                pid = int(path.read_text().strip() or "0")
+            except (OSError, ValueError):
+                pid = 0
+            if pid > 0 and _pid_alive(pid):
+                return False
+            path.unlink(missing_ok=True)
+            continue
+        with os.fdopen(fd, "w") as f:
+            f.write(str(os.getpid()))
+        return True
+    return False
+
+
+def write_overlay(sc: Scenario, factors: dict[str, bool | None], out: Path) -> Path:
+    """The scenario's overlay with the explicit factor flags set, checked against default.yaml."""
+    doc = yaml.safe_load(sc.pipeline_config.read_text())
+    params = doc.setdefault("mss_node", {}).setdefault("ros__parameters", {})
+    for name in FACTORS:
+        if factors.get(name) is not None:
+            params.setdefault(name, {})["enabled"] = factors[name]
+    out.write_text(yaml.safe_dump(doc, sort_keys=False))
+    try:
+        load_pipeline_config(DEFAULT_CONFIG, out)
+    except (KeyError, ValueError) as e:
+        raise SpecError(f"factors: overlay rejected: {e}") from e
+    return out
+
+
+def _find(doc: Any, key: str) -> Any:
+    if isinstance(doc, dict):
+        if key in doc:
+            return doc[key]
+        for v in doc.values():
+            found = _find(v, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _write_errors(path: Path, est: Path, gt: Path) -> None:
+    t, err = error_series(est, gt)
+    rows = "\n".join(f"{a:.6f},{b:.6f}" for a, b in zip(t, err, strict=True))
+    path.write_text("t_s,err_m\n" + rows + "\n")
+
+
+def _score(key: str, run_dir: Path, sc: Scenario, wall_s: float) -> RunResult:
+    bench, gt = run_dir / "bench", run_dir / "gt.tum"
+    est = bench / "est.tum"
+    try:
+        al = align(est, gt)
+    except (OSError, ValueError) as e:
+        return _empty(key, "lost", f"no usable estimate: {e}", run_dir, wall_s)
+    stamps = read_tum_stamps_ns(est)
+    span_s = float(stamps.max() - stamps.min()) * 1e-9
+    if span_s < MIN_COVERAGE * sc.duration_s:
+        reason = f"estimate covers {span_s:.1f} s of {sc.duration_s:.0f} s"
+        return _empty(key, "lost", reason, run_dir, wall_s)
+    err = np.linalg.norm(al.gt - al.est_aligned, axis=1)
+    _write_errors(run_dir / "errors_online.csv", est, gt)
+    ate_opt = None
+    opt = bench / "kf_opt.tum"
+    try:
+        ate_opt = ate(opt, gt).rmse_m
+        _write_errors(run_dir / "errors_opt.csv", opt, gt)
+    except (OSError, ValueError):
+        pass
+    loops = None
+    if (bench / "bench.json").is_file():
+        loops = _find(json.loads((bench / "bench.json").read_text()), "n_loops_accepted")
+    return RunResult(
+        key=key,
+        status="ok",
+        reason="",
+        ate_online_m=float(np.sqrt(np.mean(err * err))),
+        ate_opt_m=ate_opt,
+        rpe10_m=rpe_t(al.est_aligned, al.gt, 10.0),
+        rpe50_m=rpe_t(al.est_aligned, al.gt, 50.0),
+        n_loops_accepted=None if loops is None else int(loops),
+        wall_s=wall_s,
+        run_dir=run_dir,
+    )
+
+
+def _execute(
+    spec: ExperimentSpec,
+    sc: Scenario,
+    raw: Path,
+    run_dir: Path,
+    key: str,
+    bench_cmd: str,
+    timeout_s: float,
+) -> RunResult:
+    t_start = time.monotonic()
+    tmp = run_dir / "tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(run_dir / "bench", ignore_errors=True)
+    tmp.mkdir()
+    seed = sc.seed if spec.seed is None else spec.seed
+    overlay = write_overlay(sc, spec.factors, run_dir / "overlay.yaml")
+    profile = load_profile(sc.profile)
+    run_bridge(
+        raw,
+        sc,
+        scale_profile(profile, spec.noise),
+        tmp / "bridged",
+        seed=seed,
+        imu_extra=imu_extra(profile.imu, spec.noise.imu),
+    )
+    shutil.copyfile(tmp / "bridged" / "gt.tum", run_dir / "gt.tum")
+    bag = tmp / "bridged" / "bag"
+    if spec.faults:
+        t0 = int(read_tum_stamps_ns(run_dir / "gt.tum").min())
+        apply_faults(bag, tmp / "faulted", spec.faults, t0, seed)
+        bag = tmp / "faulted"
+    convert(bag, tmp / "mssdata", origin_lla=sc.origin_lla, pipeline_config=overlay)
+    cmd = [
+        *shlex.split(bench_cmd),
+        str(DEFAULT_CONFIG),
+        str((tmp / "mssdata").resolve()),
+        "--overlay",
+        str(overlay.resolve()),
+        "--out",
+        str((run_dir / "bench").resolve()),
+    ]
+    with (run_dir / "log.txt").open("w") as log:
+        try:
+            proc = subprocess.run(
+                cmd, stdout=log, stderr=subprocess.STDOUT, timeout=timeout_s, check=False
+            )
+        except subprocess.TimeoutExpired:
+            wall = time.monotonic() - t_start
+            return _empty(key, "failed", f"bench timeout after {timeout_s:.0f} s", run_dir, wall)
+    wall = time.monotonic() - t_start
+    if proc.returncode not in (0, 3):
+        return _empty(key, "failed", f"bench exit {proc.returncode} (see log.txt)", run_dir, wall)
+    return _score(key, run_dir, sc, wall)
+
+
+def run_experiment(
+    spec: ExperimentSpec,
+    *,
+    bench_cmd: str,
+    root: Path = REPO / "results/explorer",
+    timeout_s: float | None = None,
+) -> RunResult:
+    """Run ``spec`` (or return its cached result); ``SpecError`` for an unusable spec."""
+    try:
+        sc = load_scenario(spec.scenario)
+    except (OSError, ValueError) as e:
+        raise SpecError(f"scenario: {e}") from e
+    raw = _check_recording(spec, sc)
+    key = spec_key(spec, git_commit())
+    run_dir = Path(root) / "runs" / key
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if not _lock(run_dir):
+        return _empty(key, "running", "another process is running this spec", run_dir)
+    try:
+        cached = _load(run_dir)
+        if cached is not None and cached.status in _CACHED:
+            return cached
+        dump_spec(spec, run_dir / "spec.yaml")
+        limit = timeout_s if timeout_s is not None else TIMEOUT_PER_SCENARIO_S * sc.duration_s
+        try:
+            result = _execute(spec, sc, raw, run_dir, key, bench_cmd, limit)
+        except SpecError:
+            raise
+        except Exception as e:  # a broken step must not leave a result that looks valid
+            result = _empty(key, "failed", f"{type(e).__name__}: {e}", run_dir)
+        _save(result)
+        return result
+    finally:
+        shutil.rmtree(run_dir / "tmp", ignore_errors=True)
+        (run_dir / ".lock").unlink(missing_ok=True)
+
+
+def list_runs(root: Path) -> list[tuple[ExperimentSpec, RunResult]]:
+    """Every run under ``root/runs`` with a readable spec, in start order; a run in progress
+    (live lock, no result yet) is reported as ``running``."""
+    out = []
+    runs = Path(root) / "runs"
+    dirs = sorted(runs.iterdir(), key=lambda p: p.stat().st_mtime) if runs.is_dir() else []
+    for d in dirs:
+        try:
+            spec = load_spec(d / "spec.yaml")
+        except SpecError:
+            continue
+        result = _load(d)
+        lock = d / ".lock"
+        if lock.exists():
+            try:
+                alive = _pid_alive(int(lock.read_text().strip() or "0"))
+            except (OSError, ValueError):
+                alive = False
+            if alive:
+                result = _empty(d.name, "running", "", d)
+        if result is not None:
+            out.append((spec, replace(result, run_dir=d)))
+    return out
