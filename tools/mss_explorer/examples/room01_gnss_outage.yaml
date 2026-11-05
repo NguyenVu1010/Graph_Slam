@@ -1,0 +1,8 @@
+scenario: sim/scenarios/ROOM-01.yaml
+recording: results/explorer/recordings/ROOM-01   # tools/record_scenario.sh sim/scenarios/ROOM-01.yaml <this dir>/
+variant: loops_on                                  # E-07W loop settings (ADR-026/028/030)
+label: "GNSS on, outage 60-120 s"
+factors:
+  gnss: true
+faults:
+  - {sensor: gnss, kind: outage, t_start_s: 60, t_end_s: 120}

@@ -1,0 +1,6 @@
+scenario: sim/scenarios/ROOM-01.yaml
+recording: results/explorer/recordings/ROOM-01   # tools/record_scenario.sh sim/scenarios/ROOM-01.yaml <this dir>/
+variant: loops_on                                  # E-07W loop settings (ADR-026/028/030)
+label: "LiDAR blackout 100-105 s"
+faults:
+  - {sensor: lidar, kind: blackout, t_start_s: 100, t_end_s: 105}

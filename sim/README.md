@@ -745,6 +745,9 @@ python tools/mutate_bag.py <in_bag> <out_bag> [--drop P] [--reorder P] [--window
 E-03 bags skip the noise report: reordering violates its ordering check by design. Run the
 report on the E-01 bag the E-03 bag was derived from.
 
+For timed sensor faults and scaled noise on a recording, see `mss_sim.faults`,
+`mss_sim.noise_scale` and the sensor impact explorer in the top-level README (ADR-032).
+
 ## Chuyển đổi cho bench
 
 `tools/bag_to_mssdata.py` chuyển bag đã qua cầu nối sang thư mục nhị phân phẳng `mssdata` cho `bench` (không cần ROS trên Pi5; ADR-014, layout trong `docs/mssdata_format.md`):

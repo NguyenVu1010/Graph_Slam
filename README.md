@@ -229,6 +229,71 @@ check fails, 2 setup error (missing scenario, baselines or bench command, data p
 failure, unexpected exception). CI runs it in the `docker-full` job; the summary goes to the job's step summary and
 the results to the `integration-<run-id>` artifact.
 
+### Sensor impact explorer (ADR-032)
+
+A local page for seeing how each sensor shapes the result. It re-runs the pipeline offline on one
+clean recording. You can toggle the GNSS, wheel odometry and loop closure factors, scale the
+simulated noise of each sensor and add timed faults: a GNSS outage or jump, a LiDAR blackout or
+occlusion, an IMU bias step, spike or freeze, wheel slip. Then compare runs against ground truth
+and each other.
+
+LiDAR and IMU are the backbone and stay on. The noise multipliers change the simulated sensor and
+leave the pipeline's believed noise alone. IMU noise starts at 1x, because Gazebo already put that
+much into the recording.
+
+```bash
+# 1. Install the extra into its own directory. The UI libraries pull in numpy 2, which breaks
+#    the system scipy and matplotlib if installed into the user site.
+printf "numpy==1.26.4\npyarrow<20\n" > pin.txt
+pip install --target ~/mss-explorer-pydeps -c pin.txt "streamlit>=1.39" "plotly>=5.24"
+export PYTHONPATH=~/mss-explorer-pydeps:<sim deps>:$PWD/tools:$PWD/sim:$PWD/eval
+
+# 2. Make one clean recording per scenario (Gazebo, a few minutes).
+tools/record_scenario.sh sim/scenarios/ROOM-01.yaml results/explorer/recordings/ROOM-01/
+
+# 3a. Run from the command line. The examples are a reference run, loops off, a GNSS outage
+#     and a LiDAR blackout.
+export MSS_BENCH_CMD="env LD_LIBRARY_PATH=<gtsam lib> <build>/bench/mss_bench"
+python -m mss_explorer run tools/mss_explorer/examples/room01_gnss_outage.yaml
+python -m mss_explorer list
+
+# 3b. Or open the page at http://localhost:8501
+python -m streamlit run tools/mss_explorer/app.py --global.developmentMode false \
+  --server.address 127.0.0.1
+```
+
+The page shows:
+- the top view of every run over ground truth, with the fault segments dashed and a time cursor;
+- the position error over time, with the fault windows shaded;
+- ATE (online `est.tum` and optimised `kf_opt.tum`), RPE over 10 m and 50 m, and accepted loops;
+- the ATE change of every run against a chosen reference run.
+
+**Export report** writes `summary.md` with PNGs under `results/explorer/reports/`.
+
+The four ROOM-01 examples, from one recording, have these results:
+
+| run | ATE online [m] | ATE opt [m] | loops | ΔATE % (opt) |
+|---|---|---|---|---|
+| reference: loops on, GNSS off, 1x noise | 0.045 | 0.038 | 2 | 0 |
+| no loop closure | 0.046 | 0.046 | 0 | +19.3 |
+| GNSS on, outage 60-120 s | 0.053 | 0.043 | 2 | +13.7 |
+| LiDAR blackout 100-105 s | 0.045 | 0.039 | 2 | +2.6 |
+
+Each run took about 2 minutes. Indoors at 1x noise, GNSS (1 m sigma, multipath) makes the
+estimate worse, not better. Its error during the outage (0.024 m mean) is half the error before
+it (0.051 m). A 5 s LiDAR blackout is bridged by the IMU and wheel odometry.
+
+![Position error over time of the four ROOM-01 runs, fault windows shaded](docs/media/explorer-room01-errors.png)
+
+Runs are cached under `results/explorer/runs/<key>/`. The key hashes the spec and the git
+commit. A run's status is one of:
+- `ok`: finished and scored;
+- `lost`: fewer than 10 poses, or the estimate covers less than half the scenario. Shown as such,
+  not as a number.
+- `failed`: bench exit or timeout. Not cached: it runs again next time.
+
+At most two runs execute at once.
+
 ## Configuration
 
 All tunables live in `config/default.yaml` under `mss_node.ros__parameters` (ADR-008), one
