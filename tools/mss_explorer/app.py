@@ -25,6 +25,7 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 import yaml  # noqa: E402
 
+from mss_explorer import runner  # noqa: E402
 from mss_explorer.plots import (  # noqa: E402
     COLUMNS,
     contribution_figure,
@@ -33,7 +34,7 @@ from mss_explorer.plots import (  # noqa: E402
     metrics_table,
     trajectory_figure,
 )
-from mss_explorer.runner import list_runs, run_experiment  # noqa: E402
+from mss_explorer.runner import list_runs  # noqa: E402
 from mss_explorer.spec import FACTORS, SpecError, spec_from_dict  # noqa: E402
 from mss_sim.faults import KINDS, Fault, validate_fault  # noqa: E402
 from mss_sim.noise_scale import NoiseScale  # noqa: E402
@@ -95,9 +96,10 @@ def _sidebar(root: Path, bench_cmd: str) -> None:
         f: st.sidebar.toggle(f, value=defaults[f], key=f"factor_{variant}_{f}") for f in FACTORS
     }
     st.sidebar.subheader("Noise (x the recorded profile)")
+    st.sidebar.caption("LiDAR and IMU start at 1x: Gazebo already put that noise in the recording.")
     noise = NoiseScale(
-        lidar=st.sidebar.slider("LiDAR range", 0.0, 20.0, 1.0, 0.5, key="n_lidar"),
-        imu=st.sidebar.slider("IMU (from 1x: recorded noise)", 1.0, 20.0, 1.0, 0.5, key="n_imu"),
+        lidar=st.sidebar.slider("LiDAR range (from 1x)", 1.0, 20.0, 1.0, 0.5, key="n_lidar"),
+        imu=st.sidebar.slider("IMU (from 1x)", 1.0, 20.0, 1.0, 0.5, key="n_imu"),
         gnss=st.sidebar.slider("GNSS", 0.0, 20.0, 1.0, 0.5, key="n_gnss"),
         odom=st.sidebar.slider("Wheel odometry", 0.0, 20.0, 1.0, 0.5, key="n_odom"),
     )
@@ -115,10 +117,12 @@ def _sidebar(root: Path, bench_cmd: str) -> None:
         }
         try:
             spec = spec_from_dict(doc)
+            runner.check_recording(spec, load_scenario(spec.scenario))
         except SpecError as e:
             st.sidebar.error(str(e))
             return
-        _executor().submit(run_experiment, spec, bench_cmd=bench_cmd, root=root)
+        job = _executor().submit(runner.run_experiment, spec, bench_cmd=bench_cmd, root=root)
+        st.session_state.setdefault("jobs", []).append((label or "(no label)", job))
         time.sleep(0.3)  # let the worker take the lock, so the run lists as running
 
 
@@ -148,6 +152,27 @@ def _fault_editor(duration_s: float) -> None:
             st.rerun()
 
 
+def _jobs() -> bool:
+    """Runs submitted from this page: queued or running ones listed; a run that raised stays
+    shown until cleared. Returns True while any is unfinished."""
+    jobs = st.session_state.setdefault("jobs", [])
+    errors: list[str] = st.session_state.setdefault("job_errors", [])
+    pending = []
+    for label, job in jobs:
+        if not job.done():
+            pending.append((label, job))
+            st.markdown(f"- `{label}`: {'running' if job.running() else 'queued'}")
+        elif job.exception() is not None:
+            errors.append(f"{label}: {type(job.exception()).__name__}: {job.exception()}")
+    st.session_state["jobs"] = pending
+    for message in errors:
+        st.error(message)
+    if errors and st.button("Clear errors", key="clear_errors"):
+        errors.clear()
+        st.rerun()
+    return bool(pending)
+
+
 def _results(root: Path) -> None:
     runs = list_runs(root)
     if not runs:
@@ -164,8 +189,6 @@ def _results(root: Path) -> None:
     ref_key = st.selectbox("Reference", [r.key for _, r in shown], format_func=names.get, key="ref")
     rows = metrics_table(shown, ref_key)
     st.dataframe(pd.DataFrame(rows, columns=list(COLUMNS)), hide_index=True)
-    if any(r.status == "running" for _, r in shown):
-        st.caption("A run is in progress: press R to refresh.")
     if ok:
         duration = max(load_scenario(s.scenario).duration_s for s, _ in ok)
         t_cursor = st.slider("Time [s]", 0.0, float(duration), 0.0, 1.0, key="cursor")
@@ -175,9 +198,9 @@ def _results(root: Path) -> None:
         which = right.radio("Error", ["online", "opt"], horizontal=True, key="which")
         right.plotly_chart(error_figure(ok, which), key="err")
         st.plotly_chart(contribution_figure(rows), key="contrib")
-    if st.button("Export report", key="export") and ok:
+    if st.button("Export report", key="export"):
         out = root / "reports" / time.strftime("%Y%m%d-%H%M%S")
-        st.success(f"Report written: {export_report(ok, ref_key, out)}")
+        st.success(f"Report written: {export_report(shown, ref_key, out)}")
 
 
 def main() -> None:
@@ -191,7 +214,15 @@ def main() -> None:
             "'env LD_LIBRARY_PATH=<gtsam lib> <build>/bench/mss_bench'."
         )
     _sidebar(root, bench_cmd)
-    _results(root)
+    running = any(r.status == "running" for _, r in list_runs(root))
+    pending = any(not j.done() for _, j in st.session_state.get("jobs", []))
+
+    @st.fragment(run_every=2.0 if running or pending else None)
+    def live() -> None:
+        _jobs()
+        _results(root)
+
+    live()
 
 
 main()

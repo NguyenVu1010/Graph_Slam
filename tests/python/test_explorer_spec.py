@@ -105,3 +105,12 @@ def test_spec_rejects_unknown_variant(tmp_path: Path) -> None:
     doc = {"scenario": str(_ROOM), "recording": "r", "variant": "nope"}
     with pytest.raises(SpecError, match="variant"):
         load_spec(_write(tmp_path, doc))
+
+
+def test_spec_key_same_for_int_and_float(tmp_path: Path) -> None:
+    f_int = {"sensor": "gnss", "kind": "outage", "t_start_s": 1, "t_end_s": 2}
+    f_flt = {"sensor": "gnss", "kind": "outage", "t_start_s": 1.0, "t_end_s": 2.0}
+    base = {"scenario": str(_ROOM), "recording": "r"}
+    a = load_spec(_write(tmp_path, {**base, "faults": [f_int], "noise": {"gnss": 2}}))
+    b = load_spec(_write(tmp_path, {**base, "faults": [f_flt], "noise": {"gnss": 2.0}}))
+    assert spec_key(a, "c") == spec_key(b, "c")

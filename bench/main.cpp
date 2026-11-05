@@ -18,6 +18,9 @@
 //                   keyframes still in the store: those evicted by map.max_keyframes are
 //                   missing, so on runs longer than the store it covers a suffix. Not written
 //                   when no keyframe has a backend pose (no-GTSAM build).
+//   DIR/loops.csv  "t_i_ns,t_j_ns,state" then one line per loop of Estimator::graph_snapshot
+//                   after the replay (state active, released or removed; ADR-031, ADR-032);
+//                   only the header when there is none (always so in the no-GTSAM build).
 // and prints a summary table on stdout. With --map-out FILE, after the replay it also writes
 // the global map (Estimator::export_map: every stored keyframe cloud at its optimised pose,
 // frame w, m, downsampled by map_export.voxel_m) to FILE as binary PCD, and prints the point
@@ -25,9 +28,9 @@
 // Exit codes: 0 success; 2 usage, config, dataset, estimator-init or output error (reason
 // on stderr); 3 the replay finished but some records were not processed (dropped or
 // rejected: records.* != n_*): one warning line on stderr, outputs still written.
-// --out is required so the tool never writes into the source tree by default. A kf_opt.tum
-// write failure exits 2 after est.tum and bench.json are written; a map export or PCD write
-// failure exits 2 after est.tum, bench.json and kf_opt.tum are written.
+// --out is required so the tool never writes into the source tree by default. A kf_opt.tum or
+// loops.csv write failure exits 2 after est.tum and bench.json are written; a map export or PCD
+// write failure exits 2 after est.tum, bench.json, kf_opt.tum and loops.csv are written.
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
@@ -616,6 +619,32 @@ bool write_map(const mss::pipeline::Estimator& est, const fs::path& path) {
   return true;
 }
 
+// DIR/loops.csv: the loops of the graph snapshot after the replay (header only when none, or
+// when the snapshot fails: no-GTSAM build). Returns false (reason on stderr) on a write error.
+bool write_loops(const mss::pipeline::Estimator& est, const fs::path& path) {
+  mss::pipeline::GraphSnapshot snap;
+  if (!est.graph_snapshot(snap)) {
+    snap.loops.clear();
+  }
+  std::FILE* f = std::fopen(path.c_str(), "w");
+  if (f == nullptr) {
+    std::fprintf(stderr, "mss_bench: cannot write %s\n", path.c_str());
+    return false;
+  }
+  std::fprintf(f, "t_i_ns,t_j_ns,state\n");
+  for (const mss::pipeline::GraphLoop& l : snap.loops) {
+    const char* state = l.state == mss::pipeline::LoopState::kReleased  ? "released"
+                        : l.state == mss::pipeline::LoopState::kRemoved ? "removed"
+                                                                        : "active";
+    std::fprintf(f, "%" PRId64 ",%" PRId64 ",%s\n", l.t_i.ns, l.t_j.ns, state);
+  }
+  if (std::fclose(f) != 0) {
+    std::fprintf(stderr, "mss_bench: cannot write %s\n", path.c_str());
+    return false;
+  }
+  return true;
+}
+
 // DIR/kf_opt.tum: every stored keyframe at its optimised body pose T_w_b = T_w_l * T_l_b.
 // Returns false (reason on stderr) on a write error; no file and true when the backend has no
 // keyframe pose (stub build).
@@ -696,6 +725,7 @@ int main(int argc, char** argv) {
   const fs::path json_path = args->out / "bench.json";
   fs::remove(json_path, ec);  // no stale result from an earlier run if this one fails
   fs::remove(args->out / "kf_opt.tum", ec);
+  fs::remove(args->out / "loops.csv", ec);
   const fs::path tum_path = args->out / "est.tum";
   std::FILE* tum = std::fopen(tum_path.c_str(), "w");
   if (tum == nullptr) {
@@ -739,6 +769,9 @@ int main(int argc, char** argv) {
   }
   print_table(args->dataset, st, wall.count(), counts, lat);
   if (!write_keyframe_trajectory(*est, cfg.value().frames.T_b_l, args->out / "kf_opt.tum")) {
+    return kExitError;
+  }
+  if (!write_loops(*est, args->out / "loops.csv")) {
     return kExitError;
   }
   if (args->map_out && !write_map(*est, *args->map_out)) {

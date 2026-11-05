@@ -45,8 +45,13 @@ class GnssDegrader:
         origin_lla: Lla,
         rng: np.random.Generator,
         t0_ns: int,
+        *,
+        cov_noise: GnssNoise | None = None,
     ) -> None:
+        """``cov_noise``: the noise the fix covariance reports (default ``noise``); the explorer
+        keeps it at the unscaled profile, so the estimator is not told that the GNSS got worse."""
         self._n = noise
+        self._cov_n = noise if cov_noise is None else cov_noise
         self._segments = segments
         self._zones = [(z.mode, z.polygon()) for z in zones]
         self._origin = origin_lla
@@ -104,5 +109,6 @@ class GnssDegrader:
         bias = self._event_bias if t_s < self._event_end_s else np.zeros(3)
 
         p = p_true + self._drift + bias + sigma * scale * white_n
-        cov = (sigma * scale) ** 2
+        c = self._cov_n
+        cov = (np.array([c.sigma_h_m, c.sigma_h_m, c.sigma_v_m]) * scale) ** 2
         return GnssSample(lla=enu_to_lla(p, self._origin), cov_enu_diag=cov, status=_STATUS_FIX)

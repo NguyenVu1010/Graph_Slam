@@ -32,6 +32,7 @@ COLUMNS = (
     "RPE50 [m]",
     "loops",
     "ΔATE %",
+    "reason",
 )
 
 
@@ -39,8 +40,41 @@ def _name(run: Run) -> str:
     return run[0].label or run[1].key
 
 
-def _ate(r: RunResult) -> float | None:
-    return r.ate_opt_m if r.ate_opt_m is not None else r.ate_online_m
+def _delta(ref: RunResult, r: RunResult) -> float | str:
+    """ATE change of ``r`` against ``ref`` with the same kind for both: optimised when both have
+    it, else online."""
+    if ref.status != "ok" or r.status != "ok":
+        return DASH
+    if ref.ate_opt_m is not None and r.ate_opt_m is not None:
+        a, b = ref.ate_opt_m, r.ate_opt_m
+    else:
+        a, b = ref.ate_online_m, r.ate_online_m
+    if a is None or b is None or a == 0:
+        return DASH
+    return round(delta_ate_pct(a, b), 1)
+
+
+def _segments(x: np.ndarray, y: np.ndarray, mask: np.ndarray) -> tuple[list, list]:
+    """Points where ``mask``, with None between separate runs of it (no joining line)."""
+    xs: list = []
+    ys: list = []
+    for i in np.flatnonzero(mask):
+        if xs and not mask[i - 1]:
+            xs.append(None)
+            ys.append(None)
+        xs.append(float(x[i]))
+        ys.append(float(y[i]))
+    return xs, ys
+
+
+def _loops(r: RunResult) -> np.ndarray:
+    """(t_i_ns, t_j_ns) of the bench's loops.csv, active and released only."""
+    path = r.run_dir / "bench" / "loops.csv"
+    if not path.is_file():
+        return np.zeros((0, 2), dtype=np.int64)
+    rows = [line.split(",") for line in path.read_text().splitlines()[1:] if line.strip()]
+    keep = [(int(a), int(b)) for a, b, state in rows if state != "removed"]
+    return np.array(keep, dtype=np.int64).reshape(-1, 2)
 
 
 def _in_faults(t_s: np.ndarray, faults: Sequence[Fault]) -> np.ndarray:
@@ -83,14 +117,33 @@ def trajectory_figure(runs: Sequence[Run], gt: Path, t_cursor_s: float | None = 
         fig.add_trace(go.Scatter(x=p[:, 0], y=p[:, 1], name=_name(run), mode="lines"))
         bad = _in_faults(t, run[0].faults)
         if bad.any():
-            q = np.where(bad[:, None], p, np.nan)
+            xs, ys = _segments(p[:, 0], p[:, 1], bad)
             fig.add_trace(
                 go.Scatter(
-                    x=q[bad, 0],
-                    y=q[bad, 1],
+                    x=xs,
+                    y=ys,
                     name=f"{_name(run)} (fault)",
                     mode="lines",
                     line={"dash": "dash", "width": 4},
+                )
+            )
+        loops = _loops(run[1])
+        if len(loops):
+            t0_ns = int(read_tum_stamps_ns(run[1].run_dir / "gt.tum").min())
+            idx = np.clip(np.searchsorted(t, (loops - t0_ns) * 1e-9), 0, len(t) - 1)
+            lx: list = []
+            ly: list = []
+            for i, j in idx:
+                lx += [float(p[i, 0]), float(p[j, 0]), None]
+                ly += [float(p[i, 1]), float(p[j, 1]), None]
+            fig.add_trace(
+                go.Scatter(
+                    x=lx,
+                    y=ly,
+                    name=f"{_name(run)} loops",
+                    mode="lines+markers",
+                    line={"width": 1},
+                    marker={"size": 6},
                 )
             )
         if t_cursor_s is not None:
@@ -154,12 +207,10 @@ def _fmt(v: float | None) -> float | str:
 
 def metrics_table(runs: Sequence[Run], ref_key: str) -> list[dict]:
     ref = next((r for _, r in runs if r.key == ref_key), None)
-    ref_ate = None if ref is None or ref.status != "ok" else _ate(ref)
     rows = []
     for run in runs:
         r = run[1]
-        a = _ate(r) if r.status == "ok" else None
-        delta = DASH if a is None or not ref_ate else round(delta_ate_pct(ref_ate, a), 1)
+        delta = DASH if ref is None else _delta(ref, r)
         rows.append(
             {
                 "label": _name(run),
@@ -170,6 +221,7 @@ def metrics_table(runs: Sequence[Run], ref_key: str) -> list[dict]:
                 "RPE50 [m]": _fmt(r.rpe50_m),
                 "loops": DASH if r.n_loops_accepted is None else r.n_loops_accepted,
                 "ΔATE %": delta,
+                "reason": r.reason,
                 "ref": r.key == ref_key,
                 "key": r.key,
             }
@@ -240,8 +292,10 @@ def export_report(runs: Sequence[Run], ref_key: str, out_dir: Path) -> Path:
     md.write_text("\n".join(lines))
 
     fig, ax = plt.subplots(figsize=(7, 6))
-    g = read_tum(runs[0][1].run_dir / "gt.tum")
-    ax.plot(g.p[:, 0], g.p[:, 1], "k-", lw=2, label="ground truth")
+    gts = [r.run_dir / "gt.tum" for _, r in runs if (r.run_dir / "gt.tum").is_file()]
+    g = read_tum(gts[0]) if gts else None
+    if g is not None:
+        ax.plot(g.p[:, 0], g.p[:, 1], "k-", lw=2, label="ground truth")
     for run in runs:
         got = _aligned(run[1])
         if got is not None:

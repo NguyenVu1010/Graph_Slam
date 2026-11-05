@@ -98,7 +98,16 @@ def spec_from_dict(doc: Any) -> ExperimentSpec:
     for i, f in enumerate(doc.get("faults") or []):
         f = _mapping(f, f"faults[{i}]", _FAULT_KEYS)
         try:
-            faults.append(validate_fault(Fault(**f), duration_s))
+            fault = Fault(**f)
+            mag = fault.magnitude
+            fault = Fault(  # floats, so 60 and 60.0 give the same key
+                str(fault.sensor),
+                str(fault.kind),
+                float(fault.t_start_s),
+                float(fault.t_end_s),
+                None if mag is None else float(mag),
+            )
+            faults.append(validate_fault(fault, duration_s))
         except (TypeError, ValueError) as e:
             raise SpecError(f"faults[{i}]: {e}") from e
     seed = doc.get("seed")

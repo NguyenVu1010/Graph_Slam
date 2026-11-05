@@ -180,3 +180,26 @@ def test_faults_deterministic(bridged_bag: Bridged, tmp_path: Path) -> None:
         outs.append([d for _, _, d in _msgs(tmp_path / name, "/imu/data")])
     assert outs[0] == outs[1]
     assert outs[0] != outs[2]
+
+
+def test_fault_draws_independent_of_other_faults(bridged_bag: Bridged, tmp_path: Path) -> None:
+    src = bridged_bag[0] / "bag"
+    t0 = _t0(src)
+    spike = Fault("imu", "spike", 0.0, 6.0, 20.0)
+    jump = Fault("gnss", "jump", 0.0, 6.0, 8.0)
+    apply_faults(src, tmp_path / "a", [spike], t0, 1)
+    apply_faults(src, tmp_path / "b", [jump, spike], t0, 1)
+    a = [d for _, _, d in _msgs(tmp_path / "a", "/imu/data")]
+    assert a == [d for _, _, d in _msgs(tmp_path / "b", "/imu/data")]
+
+
+def test_freeze_repeats_original_sample_after_other_fault(
+    bridged_bag: Bridged, tmp_path: Path
+) -> None:
+    bias = Fault("imu", "gyro_bias_step", 1.0, _W0, 0.5)
+    freeze = Fault("imu", "freeze", _W0, _W1)
+    src, out, t0, _ = _apply(bridged_bag, tmp_path, bias, freeze)
+    last = [m for s, m, _ in _msgs(src, "/imu/data") if s < t0 + _W0 * _NS][-1]
+    inside = [m for s, m, _ in _msgs(out, "/imu/data") if _inside(s, t0)]
+    for m in inside:
+        np.testing.assert_array_equal(_vec(m.angular_velocity), _vec(last.angular_velocity))

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytest.importorskip("streamlit")
 pytest.importorskip("plotly")
@@ -38,6 +39,9 @@ def app(
     text = (_REPO / "sim/scenarios/E-01.yaml").read_text()
     text = text.replace("duration_s: 60", "duration_s: 6").replace("t_end_s: 60", "t_end_s: 6")
     (rec / "scenario.yaml").write_text(text)
+    (rec / "assets").mkdir()
+    meta = {"profile": "sim/noise/default.yaml", "pipeline_config": "config/sim/warehouse.yaml"}
+    (rec / "assets" / "assets.yaml").write_text(yaml.safe_dump(meta))
     fake = tmp_path / "fake_bench.py"
     fake.write_text(_FAKE)
     monkeypatch.setenv("MSS_EXPLORER_ROOT", str(root))
@@ -77,3 +81,34 @@ def test_app_run_appears_in_table(app: AppTest, tmp_path: Path) -> None:
     table = app.dataframe[0].value
     assert "ref" in list(table["label"])
     assert list(table["status"]) == ["ok"]
+
+
+def test_app_mismatched_recording_shows_error(app: AppTest, tmp_path: Path) -> None:
+    meta = tmp_path / "explorer" / "recordings" / "E-01-6s" / "assets" / "assets.yaml"
+    meta.write_text(yaml.safe_dump({"profile": "x", "pipeline_config": "y"}))
+    app.button(key="run").click().run()
+    assert any("recording" in e.value for e in app.error)
+    assert not (tmp_path / "explorer" / "runs").exists()
+
+
+def test_app_background_error_shown(app: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:
+    import mss_explorer.runner as runner
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("boom in the worker")
+
+    monkeypatch.setattr(runner, "run_experiment", boom)
+    app.text_input(key="label").set_value("bad")
+    app.button(key="run").click().run()
+    time.sleep(0.5)
+    app.run()
+    assert any("boom in the worker" in e.value for e in app.error)
+
+
+def test_app_queued_run_listed(app: AppTest, monkeypatch: pytest.MonkeyPatch) -> None:
+    import mss_explorer.runner as runner
+
+    monkeypatch.setattr(runner, "run_experiment", lambda *_a, **_k: time.sleep(3))
+    app.text_input(key="label").set_value("waiting one")
+    app.button(key="run").click().run()
+    assert any("waiting one" in m.value for m in app.markdown)

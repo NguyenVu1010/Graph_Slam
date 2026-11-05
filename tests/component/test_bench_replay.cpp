@@ -195,6 +195,10 @@ TEST(BenchReplay, ReplaysSyntheticDataset) {
     EXPECT_GE(n_kf, 1);
     EXPECT_LE(n_kf, 10);
   }
+  // loops.csv (ADR-032): one line per loop of Estimator::graph_snapshot after the replay; a
+  // still dataset has none, so only the header (every build, the stub snapshot is empty).
+  ASSERT_TRUE(fs::exists(out / "loops.csv"));
+  EXPECT_EQ(read_file(out / "loops.csv"), "t_i_ns,t_j_ns,state\n");
 
   const std::string json = read_file(out / "bench.json");
   EXPECT_NE(json.find("\"n_imu\": 601,"), std::string::npos) << json;

@@ -5,13 +5,15 @@ A fault acts on the messages of one sensor whose header stamp lies in
 are copied byte for byte. Odometry faults change the twist only: the dataset converter
 (``bag_to_mssdata.py``) reads nothing else from ``/wheel/odom``.
 
-rng: ``SeedSequence(seed).spawn(5)[4]``, the ``mutate`` stream of the order
-[lidar, gnss, odom, imu, mutate]; it is drawn in log order, so a seed fixes the output.
+rng: one stream per fault, a child of ``SeedSequence(seed).spawn(5)[4]`` (the ``mutate`` stream
+of the order [lidar, gnss, odom, imu, mutate]) keyed by a CRC of the fault, drawn in log order: a
+seed fixes the output, and adding a fault leaves the draws of the others unchanged.
 """
 
 from __future__ import annotations
 
 import math
+import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -112,6 +114,10 @@ def validate_fault(f: Fault, duration_s: float) -> Fault:
     return replace(f, magnitude=m)
 
 
+def _fault_id(f: Fault) -> int:
+    return zlib.crc32(repr((f.sensor, f.kind, f.t_start_s, f.t_end_s, f.magnitude)).encode())
+
+
 def _vec(v: Any, d: np.ndarray) -> Any:
     return replace(v, x=float(d[0]), y=float(d[1]), z=float(d[2]))
 
@@ -133,12 +139,21 @@ def _keep_points(a: CloudArrays, keep: np.ndarray) -> CloudArrays:
 
 
 class _Injector:
-    def __init__(self, faults: Sequence[Fault], t0_ns: int, rng: np.random.Generator) -> None:
+    def __init__(self, faults: Sequence[Fault], t0_ns: int, seed: int) -> None:
         self._windows = [
             (f, t0_ns + round(f.t_start_s * _NS), t0_ns + round(f.t_end_s * _NS)) for f in faults
         ]
-        self._rng = rng
-        self._last_imu: Any = None  # last IMU message before any freeze window
+        # One stream per fault, keyed by the fault itself: adding or reordering faults leaves
+        # the draws of the others unchanged.
+        base = np.random.SeedSequence(seed).spawn(5)[4]
+        self._rngs = [
+            np.random.default_rng(
+                np.random.SeedSequence(base.entropy, spawn_key=(*base.spawn_key, _fault_id(f)))
+            )
+            for f in faults
+        ]
+        self._prev_imu: Any = None  # the last IMU message as recorded (before any fault)
+        self._frozen: dict[int, Any] = {}  # freeze fault index -> the sample it repeats
         self._jump_dir: dict[tuple[int, int], float] = {}
 
     def active(self, sensor: str, stamp: int) -> list[tuple[int, Fault, int]]:
@@ -166,20 +181,20 @@ class _Injector:
             keep = ~(ang < f.magnitude / 2.0)
         return arrays_to_cloud(_keep_points(a, keep), stamp_ns(msg.header), msg.header.frame_id)
 
-    def _imu(self, msg: Any, f: Fault, _i: int, _dt: int) -> Any:
+    def _imu(self, msg: Any, f: Fault, i: int, _dt: int) -> Any:
         w, a = _arr(msg.angular_velocity), _arr(msg.linear_acceleration)
         if f.kind == "gyro_bias_step":
             w[2] += f.magnitude
         elif f.kind == "acc_bias_step":
             a[0] += f.magnitude
         elif f.kind == "spike":
-            if self._rng.random() < SPIKE_P:
-                a[self._rng.integers(3)] += f.magnitude * self._rng.choice((-1.0, 1.0))
+            rng = self._rngs[i]
+            if rng.random() < SPIKE_P:
+                a[rng.integers(3)] += f.magnitude * rng.choice((-1.0, 1.0))
         elif f.kind == "saturation":
             a = np.clip(a, -f.magnitude, f.magnitude)
         else:  # freeze
-            src = self._last_imu if self._last_imu is not None else msg
-            self._last_imu = src
+            src = self._frozen.setdefault(i, self._prev_imu if self._prev_imu is not None else msg)
             w, a = _arr(src.angular_velocity), _arr(src.linear_acceleration)
         return replace(
             msg,
@@ -188,7 +203,8 @@ class _Injector:
         )
 
     def note_imu(self, msg: Any) -> None:
-        self._last_imu = msg
+        """Remember ``msg`` as recorded; call after faulting it."""
+        self._prev_imu = msg
 
     def _gnss(self, msg: Any, f: Fault, i: int, dt: int) -> Any:
         if f.kind == "offset":
@@ -196,11 +212,11 @@ class _Injector:
         elif f.kind == "jump":
             key = (i, dt // round(JUMP_HOLD_S * _NS))
             if key not in self._jump_dir:
-                self._jump_dir[key] = float(self._rng.uniform(0.0, 2.0 * math.pi))
+                self._jump_dir[key] = float(self._rngs[i].uniform(0.0, 2.0 * math.pi))
             th = self._jump_dir[key]
             enu = np.array([f.magnitude * math.cos(th), f.magnitude * math.sin(th), 0.0])
         else:  # degraded
-            enu = np.array([*(f.magnitude * self._rng.standard_normal(2)), 0.0])
+            enu = np.array([*(f.magnitude * self._rngs[i].standard_normal(2)), 0.0])
         lat, lon, alt = enu_to_lla(enu, (msg.latitude, msg.longitude, msg.altitude))
         return replace(msg, latitude=float(lat), longitude=float(lon), altitude=float(alt))
 
@@ -219,8 +235,7 @@ def apply_faults(
     in_bag: Path, out_bag: Path, faults: Sequence[Fault], t0_ns: int, seed: int
 ) -> FaultReport:
     """Copy ``in_bag`` to ``out_bag`` with ``faults`` (already validated) applied."""
-    rng = np.random.default_rng(np.random.SeedSequence(seed).spawn(5)[4])
-    inj = _Injector(faults, t0_ns, rng)
+    inj = _Injector(faults, t0_ns, seed)
     sensor_of = {topic: s for s, topic in TOPICS.items()}
     dropped = dict.fromkeys(TOPICS.values(), 0)
     modified = dict.fromkeys(TOPICS.values(), 0)
@@ -241,6 +256,8 @@ def apply_faults(
                 w.write_raw(topic, t, data)
                 continue
             out = inj.apply(sensor, msg, stamp_ns(msg.header), active)
+            if sensor == "imu":
+                inj.note_imu(msg)
             if out is None:
                 dropped[topic] += 1
             else:

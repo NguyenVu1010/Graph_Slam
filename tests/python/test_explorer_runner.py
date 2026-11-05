@@ -29,11 +29,16 @@ if mode == "fail":
     sys.exit(1)
 if mode == "sleep":
     time.sleep(30)
+if mode == "noest":
+    sys.exit(0)
 gt = (out.parent / "gt.tum").read_text().splitlines()
 lines = gt[:3] if mode == "short" else gt
+if mode == "gap":
+    lines = gt[: len(gt) // 10] + gt[-len(gt) // 10 :]
 (out / "est.tum").write_text("\\n".join(lines) + "\\n")
 (out / "kf_opt.tum").write_text("\\n".join(lines[::10]) + "\\n")
 (out / "bench.json").write_text('{"stats": {"n_loops_accepted": 2}}')
+sys.exit(3 if mode == "exit3" else 0)
 """
 
 
@@ -42,6 +47,9 @@ def setup(raw_bag: tuple[Path, SynthInfo], tmp_path: Path, monkeypatch: pytest.M
     raw, _ = raw_bag
     rec = tmp_path / "rec"
     shutil.copytree(raw, rec / "raw_bag")
+    (rec / "assets").mkdir()
+    meta = {"profile": "sim/noise/default.yaml", "pipeline_config": "config/sim/warehouse.yaml"}
+    (rec / "assets" / "assets.yaml").write_text(yaml.safe_dump(meta))
     sc_text = (_REPO / "sim/scenarios/E-01.yaml").read_text()
     sc_text = sc_text.replace("duration_s: 60", "duration_s: 6").replace(
         "t_end_s: 60", "t_end_s: 6"
@@ -125,7 +133,6 @@ def test_recording_without_raw_bag(setup, tmp_path: Path) -> None:  # noqa: ANN0
 
 def test_recording_of_another_scenario(setup) -> None:  # noqa: ANN001
     spec, bench, root, _ = setup
-    (spec.recording / "assets").mkdir()
     meta = {"profile": "sim/noise/default.yaml", "pipeline_config": "config/sim/outdoor.yaml"}
     (spec.recording / "assets" / "assets.yaml").write_text(yaml.safe_dump(meta))
     with pytest.raises(SpecError, match="pipeline_config"):
@@ -182,3 +189,71 @@ def test_overlay_from_variant(setup, tmp_path: Path) -> None:  # noqa: ANN001
     r = run_experiment(replace(spec, variant="loops_on"), bench_cmd=bench, root=root)
     p = yaml.safe_load((r.run_dir / "overlay.yaml").read_text())["mss_node"]["ros__parameters"]
     assert p["loop_closure"]["kernel_release"] is True
+
+
+def test_recording_without_assets(setup) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    (spec.recording / "assets" / "assets.yaml").unlink()
+    with pytest.raises(SpecError, match="assets.yaml"):
+        run_experiment(spec, bench_cmd=bench, root=root)
+
+
+def test_run_exit3_ok_with_reason(setup, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    monkeypatch.setenv("FAKE_MODE", "exit3")
+    r = run_experiment(spec, bench_cmd=bench, root=root)
+    assert r.status == "ok" and "exit 3" in r.reason
+
+
+def test_run_no_estimate_failed(setup, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+    spec, bench, root, count = setup
+    monkeypatch.setenv("FAKE_MODE", "noest")
+    r = run_experiment(spec, bench_cmd=bench, root=root)
+    assert r.status == "failed" and "est.tum" in r.reason
+    run_experiment(spec, bench_cmd=bench, root=root)
+    assert _n_runs(count) == 2  # not cached
+
+
+def test_run_gap_lost(setup, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    monkeypatch.setenv("FAKE_MODE", "gap")
+    r = run_experiment(spec, bench_cmd=bench, root=root)
+    assert r.status == "lost" and "covers" in r.reason
+
+
+def test_key_changes_with_recording(setup) -> None:  # noqa: ANN001
+    spec, bench, root, count = setup
+    a = run_experiment(spec, bench_cmd=bench, root=root)
+    (spec.recording / "record_summary.json").write_text('{"raw_bag_files": [{"sha256": "x"}]}')
+    b = run_experiment(spec, bench_cmd=bench, root=root)
+    assert a.key != b.key and _n_runs(count) == 2
+
+
+def test_key_changes_with_bench_binary(setup) -> None:  # noqa: ANN001
+    spec, bench, root, count = setup
+    a = run_experiment(spec, bench_cmd=bench, root=root)
+    fake = Path(bench.split()[-1])
+    fake.write_text(fake.read_text() + "\n# rebuilt\n")
+    b = run_experiment(spec, bench_cmd=bench, root=root)
+    assert a.key != b.key and _n_runs(count) == 2
+
+
+def test_key_changes_with_uncommitted_edit(setup, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+    import mss_explorer.runner as runner
+
+    spec, bench, root, _ = setup
+    monkeypatch.setattr(runner, "_tracked_diff", lambda: "edit-1")
+    a = run_experiment(spec, bench_cmd=bench, root=root)
+    monkeypatch.setattr(runner, "_tracked_diff", lambda: "edit-2")
+    b = run_experiment(spec, bench_cmd=bench, root=root)
+    assert a.key != b.key
+
+
+def test_fresh_empty_lock_is_live(setup) -> None:  # noqa: ANN001
+    spec, bench, root, count = setup
+    first = run_experiment(replace(spec, seed=6), bench_cmd=bench, root=root)
+    shutil.rmtree(first.run_dir)
+    first.run_dir.mkdir(parents=True)
+    (first.run_dir / ".lock").write_text("")  # another process between create and pid write
+    r = run_experiment(replace(spec, seed=6), bench_cmd=bench, root=root)
+    assert r.status == "running" and _n_runs(count) == 1

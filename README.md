@@ -72,7 +72,10 @@ direction) and `n_degenerate_rot_keyframes` (of those, with a flagged rotation d
 place by `map.min_point_dist_m`, summed over rebuilds; every rebuild re-inserts the keyframe
 window, so it grows with `n_map_rebuilds` and is not a map-quality figure). Exit codes: 0 success; 2 usage, config, dataset or output error; 3 the replay finished
 but some records were not processed (dropped or rejected, see `bench.json`). Format:
-`docs/mssdata_format.md`, decision: `docs/adr/014-bench-dataset-format.md`.
+`docs/mssdata_format.md`, decision: `docs/adr/014-bench-dataset-format.md`. After the replay
+`DIR` also receives `kf_opt.tum` (the stored keyframes at their optimised poses; GTSAM builds)
+and `loops.csv` (`t_i_ns,t_j_ns,state` per loop of the graph snapshot, state `active`,
+`released` or `removed`; header only when there is none).
 
 `--map-out FILE.pcd` also writes the global map after the replay. The map is every keyframe
 cloud in the keyframe store, placed at the backend's optimised pose at the end of the run, in
@@ -237,15 +240,17 @@ simulated noise of each sensor and add timed faults: a GNSS outage or jump, a Li
 occlusion, an IMU bias step, spike or freeze, wheel slip. Then compare runs against ground truth
 and each other.
 
-LiDAR and IMU are the backbone and stay on. The noise multipliers change the simulated sensor and
-leave the pipeline's believed noise alone. IMU noise starts at 1x, because Gazebo already put that
-much into the recording.
+LiDAR and IMU are the backbone and stay on. The noise multipliers change the simulated sensor
+only: the overlay sigmas and the GNSS fix covariance stay at the unscaled profile, so the
+estimator is not told that a sensor got worse. LiDAR range noise and IMU noise start at 1x,
+because Gazebo already put that much into the recording. The bridge adds sigma * sqrt(k^2 - 1)
+on top. GNSS and odometry noise come from the bridge alone, so they also go down to 0.
 
 ```bash
 # 1. Install the extra into its own directory. The UI libraries pull in numpy 2, which breaks
 #    the system scipy and matplotlib if installed into the user site.
-printf "numpy==1.26.4\npyarrow<20\n" > pin.txt
-pip install --target ~/mss-explorer-pydeps -c pin.txt "streamlit>=1.39" "plotly>=5.24"
+pip install --target ~/mss-explorer-pydeps -c <(printf "numpy==1.26.4\npyarrow<20\n") \
+  "streamlit>=1.39" "plotly>=5.24"
 export PYTHONPATH=~/mss-explorer-pydeps:<sim deps>:$PWD/tools:$PWD/sim:$PWD/eval
 
 # 2. Make one clean recording per scenario (Gazebo, a few minutes).
@@ -263,7 +268,8 @@ python -m streamlit run tools/mss_explorer/app.py --global.developmentMode false
 ```
 
 The page shows:
-- the top view of every run over ground truth, with the fault segments dashed and a time cursor;
+- the top view of every run over ground truth, with the fault segments dashed, the loops (from
+  the bench's `loops.csv`) drawn as links and a time cursor;
 - the position error over time, with the fault windows shaded;
 - ATE (online `est.tum` and optimised `kf_opt.tum`), RPE over 10 m and 50 m, and accepted loops;
 - the ATE change of every run against a chosen reference run.
@@ -285,12 +291,19 @@ it (0.051 m). A 5 s LiDAR blackout is bridged by the IMU and wheel odometry.
 
 ![Position error over time of the four ROOM-01 runs, fault windows shaded](docs/media/explorer-room01-errors.png)
 
-Runs are cached under `results/explorer/runs/<key>/`. The key hashes the spec and the git
-commit. A run's status is one of:
-- `ok`: finished and scored;
-- `lost`: fewer than 10 poses, or the estimate covers less than half the scenario. Shown as such,
-  not as a number.
-- `failed`: bench exit or timeout. Not cached: it runs again next time.
+Runs are cached under `results/explorer/runs/<key>/`. The key hashes:
+- the spec;
+- the git commit, plus uncommitted edits under `config/`, `sim/`, `tools/` and `eval/`;
+- the recording (`record_summary.json`);
+- the bench command, with the size and time of every file it names.
+
+Re-recording, editing a config or rebuilding the bench therefore starts new runs.
+
+A run's status is one of:
+- `ok`: finished and scored. Bench exit 3 (some records not processed) is noted in the reason.
+- `lost`: fewer than 10 poses, or the estimate covers less than half the scenario (gaps over 1 s
+  do not count). Shown as such, not as a number.
+- `failed`: bench error exit, timeout, or no `est.tum`. Not cached: it runs again next time.
 
 At most two runs execute at once.
 

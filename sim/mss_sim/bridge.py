@@ -23,6 +23,7 @@ from mss_sim.bag_io import (
     TYPESTORE,
     BagReader,
     BagWriter,
+    CloudArrays,
     arrays_to_cloud,
     cloud_to_arrays,
     make_header,
@@ -34,7 +35,7 @@ from mss_sim.gt import GroundTruth
 from mss_sim.lidar import process_scan
 from mss_sim.noise_scale import ImuExtra
 from mss_sim.odom import OdomTwist, WheelQuantizer
-from mss_sim.profile import NoiseProfile
+from mss_sim.profile import GnssNoise, NoiseProfile
 from mss_sim.scenario import Scenario
 
 _GT, _TF, _IMU = "/ground_truth", "/tf_static", "/imu/data"
@@ -81,6 +82,16 @@ def t_b_l_from_tf(tf_msgs: Iterable[Any]) -> tuple[np.ndarray, str]:
                 return t, ts.header.frame_id
     msg = f"no /tf_static transform with child {_LIDAR_FRAME}"
     raise ValueError(msg)
+
+
+def _add_range_noise(scan: CloudArrays, sigma_m: float, rng: np.random.Generator) -> CloudArrays:
+    """Copy of ``scan`` with N(0, sigma) added along each finite point's ray (NaN points kept)."""
+    xyz = scan.xyz.astype(np.float64)
+    r = np.linalg.norm(xyz, axis=1)
+    ok = np.isfinite(r) & (r > 0.0)
+    e = rng.standard_normal(int(np.count_nonzero(ok))) * sigma_m
+    xyz[ok] *= ((r[ok] + e) / r[ok])[:, None]
+    return replace(scan, xyz=xyz.astype(scan.xyz.dtype))
 
 
 def _add(v: Any, d: np.ndarray) -> Any:
@@ -169,8 +180,11 @@ class NoiseLayer:
         seed: int | None = None,
         skew: bool = True,
         imu_extra: ImuExtra | None = None,
+        lidar_extra_sigma_m: float | None = None,
+        believed_gnss: GnssNoise | None = None,
     ) -> None:
-        seeds = np.random.SeedSequence(scenario.seed if seed is None else seed).spawn(5)
+        root = np.random.SeedSequence(scenario.seed if seed is None else seed)
+        seeds = root.spawn(5)
         rng_lidar, rng_gnss, rng_odom, rng_imu, _rng_mutate = (
             np.random.default_rng(s) for s in seeds
         )
@@ -184,9 +198,20 @@ class NoiseLayer:
         self._imu_extra = imu_extra
         self._gyro_bias = np.zeros(3)
         self._acc_bias = np.zeros(3)
+        self._lidar_extra = lidar_extra_sigma_m
+        # A sixth stream (spawn key 5), so extra range noise leaves every other draw unchanged.
+        self._rng_lidar_extra = np.random.default_rng(
+            np.random.SeedSequence(root.entropy).spawn(6)[5]
+        )
         self.offset_ns = profile.clock_offset_ns
         self.degrader = GnssDegrader(
-            profile.gnss, scenario.gnss, scenario.gnss_zones, scenario.origin_lla, rng_gnss, t0_ns
+            profile.gnss,
+            scenario.gnss,
+            scenario.gnss_zones,
+            scenario.origin_lla,
+            rng_gnss,
+            t0_ns,
+            cov_noise=believed_gnss,
         )
         self.quantizer = WheelQuantizer(profile.odom, rng_odom)
         self._pose = _OdomIntegrator()
@@ -221,6 +246,8 @@ class NoiseLayer:
             self._rng_lidar,
             skew=self._skew,
         )
+        if self._lidar_extra is not None:
+            scan = _add_range_noise(scan, self._lidar_extra, self._rng_lidar_extra)
         return arrays_to_cloud(scan, stamp + self.offset_ns["lidar"], _LIDAR_FRAME)
 
     def gnss(self, msg: Any) -> Any | None:
@@ -252,10 +279,13 @@ def run_bridge(
     seed: int | None = None,
     skew: bool = True,
     imu_extra: ImuExtra | None = None,
+    lidar_extra_sigma_m: float | None = None,
+    believed_gnss: GnssNoise | None = None,
 ) -> BridgeReport:
     """Turn ``raw_bag`` into ``out_dir/bag`` (+ ``gt.tum``, ``bridge_report.json``).
 
-    ``imu_extra`` adds IMU noise on top of the recorded one (mss_sim.noise_scale)."""
+    ``imu_extra`` and ``lidar_extra_sigma_m`` add IMU and LiDAR range noise on top of the recorded
+    one; ``believed_gnss`` sets the noise the fix covariance reports (mss_sim.noise_scale)."""
     off = profile.clock_offset_ns
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -272,6 +302,8 @@ def run_bridge(
             seed=seed,
             skew=skew,
             imu_extra=imu_extra,
+            lidar_extra_sigma_m=lidar_extra_sigma_m,
+            believed_gnss=believed_gnss,
         )
         counts = dict.fromkeys(_OUT_TYPES, 0)
 

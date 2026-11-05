@@ -9,6 +9,7 @@ deleted. ``ok`` and ``lost`` results are served from the cache; ``failed`` ones 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -37,7 +38,7 @@ from mss_explorer.spec import (
 from mss_sim.bridge import run_bridge
 from mss_sim.config_overlay import load_pipeline_config
 from mss_sim.faults import apply_faults
-from mss_sim.noise_scale import imu_extra, scale_profile
+from mss_sim.noise_scale import imu_extra, lidar_extra_sigma, scale_profile
 from mss_sim.profile import load_profile
 from mss_sim.scenario import Scenario, load_scenario
 
@@ -45,6 +46,8 @@ Status = Literal["ok", "lost", "failed", "running"]
 DEFAULT_CONFIG = REPO / "config/default.yaml"
 TIMEOUT_PER_SCENARIO_S = 10.0  # default bench timeout = this x the scenario duration
 MIN_COVERAGE = 0.5  # est.tum must span this fraction of the scenario, else the run is "lost"
+MAX_GAP_S = 1.0  # a gap between estimates longer than this does not count as covered
+LOCK_GRACE_S = 10.0  # an empty lock this young belongs to a process still writing its pid
 _CACHED: tuple[Status, ...] = ("ok", "lost")
 
 
@@ -92,6 +95,57 @@ def git_commit() -> str:
         return "unknown"
 
 
+def _tracked_diff() -> str:
+    """Uncommitted edits to tracked inputs (config, sim, tools, eval), so they change the key."""
+    try:
+        out = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(REPO),
+                "diff",
+                "HEAD",
+                "--no-color",
+                "--",
+                "config",
+                "sim",
+                "tools",
+                "eval",
+            ],
+            capture_output=True,
+            check=True,
+        )
+        return hashlib.sha256(out.stdout).hexdigest()
+    except (OSError, subprocess.CalledProcessError):
+        return "no-git-diff"
+
+
+def _file_stamp(p: Path) -> str:
+    st = p.stat()
+    return f"{p.resolve().as_posix()}:{st.st_size}:{st.st_mtime_ns}"
+
+
+def run_fingerprint(spec: ExperimentSpec, bench_cmd: str) -> str:
+    """What else decides a run besides the spec: git commit, uncommitted edits, the recording
+    (``record_summary.json`` hashes, else the raw bag file stamps, plus ``assets.yaml``) and the
+    bench command with the size and mtime of every file it names (the binary, its libraries)."""
+    parts = [git_commit(), _tracked_diff()]
+    summary = spec.recording / "record_summary.json"
+    if summary.is_file():
+        parts.append(summary.read_text())
+    else:
+        raw = spec.recording / "raw_bag"
+        parts += sorted(_file_stamp(p) for p in raw.iterdir() if p.is_file())
+    assets = spec.recording / "assets" / "assets.yaml"
+    parts.append(assets.read_text() if assets.is_file() else "")
+    parts.append(bench_cmd)
+    for tok in shlex.split(bench_cmd):
+        for cand in tok.split("=", 1)[-1].split(":"):
+            if cand and Path(cand).is_file():
+                parts.append(_file_stamp(Path(cand)))
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
 def _rel(p: Path) -> str:
     try:
         return p.resolve().relative_to(REPO).as_posix()
@@ -99,19 +153,21 @@ def _rel(p: Path) -> str:
         return p.resolve().as_posix()
 
 
-def _check_recording(spec: ExperimentSpec, sc: Scenario) -> Path:
+def check_recording(spec: ExperimentSpec, sc: Scenario) -> Path:
     raw = spec.recording / "raw_bag"
     if not raw.is_dir():
         raise SpecError(f"recording: {raw} is missing (record with tools/record_scenario.sh)")
     meta_path = spec.recording / "assets" / "assets.yaml"
-    if meta_path.is_file():
-        meta = yaml.safe_load(meta_path.read_text()) or {}
-        for name, expected in (("profile", sc.profile), ("pipeline_config", sc.pipeline_config)):
-            if meta.get(name) != _rel(expected):
-                raise SpecError(
-                    f"recording: made with {name} {meta.get(name)!r}, scenario {sc.id} uses "
-                    f"{_rel(expected)!r}"
-                )
+    if not meta_path.is_file():
+        msg = f"recording: {meta_path} is missing (not a tools/record_scenario.sh output)"
+        raise SpecError(msg)
+    meta = yaml.safe_load(meta_path.read_text()) or {}
+    for name, expected in (("profile", sc.profile), ("pipeline_config", sc.pipeline_config)):
+        if meta.get(name) != _rel(expected):
+            raise SpecError(
+                f"recording: made with {name} {meta.get(name)!r}, scenario {sc.id} uses "
+                f"{_rel(expected)!r}"
+            )
     return raw
 
 
@@ -126,24 +182,34 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _lock(run_dir: Path) -> bool:
-    """Take ``run_dir/.lock``; False when a live process holds it (a stale lock is replaced)."""
+    """Take ``run_dir/.lock``; False when a live process holds it (a stale lock is replaced).
+
+    The lock appears with its pid already in it (written to a temp file, then hard-linked), so
+    no reader sees it empty; an empty or unreadable lock younger than ``LOCK_GRACE_S`` counts
+    as live all the same."""
     path = run_dir / ".lock"
-    for _ in range(2):
-        try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
+    tmp = run_dir / f".lock.{os.getpid()}.{time.monotonic_ns()}"
+    tmp.write_text(str(os.getpid()))
+    try:
+        for _ in range(2):
+            try:
+                os.link(tmp, path)
+                return True
+            except FileExistsError:
+                pass
             try:
                 pid = int(path.read_text().strip() or "0")
+                age_s = time.time() - path.stat().st_mtime
             except (OSError, ValueError):
-                pid = 0
+                pid, age_s = 0, 0.0
             if pid > 0 and _pid_alive(pid):
                 return False
+            if pid <= 0 and age_s < LOCK_GRACE_S:
+                return False
             path.unlink(missing_ok=True)
-            continue
-        with os.fdopen(fd, "w") as f:
-            f.write(str(os.getpid()))
-        return True
-    return False
+        return False
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def write_overlay(
@@ -182,17 +248,17 @@ def _write_errors(path: Path, est: Path, gt: Path) -> None:
     path.write_text("t_s,err_m\n" + rows + "\n")
 
 
-def _score(key: str, run_dir: Path, sc: Scenario, wall_s: float) -> RunResult:
+def _score(key: str, run_dir: Path, sc: Scenario, wall_s: float, note: str = "") -> RunResult:
     bench, gt = run_dir / "bench", run_dir / "gt.tum"
     est = bench / "est.tum"
     try:
         al = align(est, gt)
     except (OSError, ValueError) as e:
         return _empty(key, "lost", f"no usable estimate: {e}", run_dir, wall_s)
-    stamps = read_tum_stamps_ns(est)
-    span_s = float(stamps.max() - stamps.min()) * 1e-9
-    if span_s < MIN_COVERAGE * sc.duration_s:
-        reason = f"estimate covers {span_s:.1f} s of {sc.duration_s:.0f} s"
+    dt = np.diff(np.sort(read_tum_stamps_ns(est))) * 1e-9
+    covered_s = float(dt[dt <= MAX_GAP_S].sum())
+    if covered_s < MIN_COVERAGE * sc.duration_s:
+        reason = f"estimate covers {covered_s:.1f} s of {sc.duration_s:.0f} s"
         return _empty(key, "lost", reason, run_dir, wall_s)
     err = np.linalg.norm(al.gt - al.est_aligned, axis=1)
     _write_errors(run_dir / "errors_online.csv", est, gt)
@@ -209,7 +275,7 @@ def _score(key: str, run_dir: Path, sc: Scenario, wall_s: float) -> RunResult:
     return RunResult(
         key=key,
         status="ok",
-        reason="",
+        reason=note,
         ate_online_m=float(np.sqrt(np.mean(err * err))),
         ate_opt_m=ate_opt,
         rpe10_m=rpe_t(al.est_aligned, al.gt, 10.0),
@@ -244,6 +310,8 @@ def _execute(
         tmp / "bridged",
         seed=seed,
         imu_extra=imu_extra(profile.imu, spec.noise.imu),
+        lidar_extra_sigma_m=lidar_extra_sigma(profile.lidar, spec.noise.lidar),
+        believed_gnss=profile.gnss,
     )
     shutil.copyfile(tmp / "bridged" / "gt.tum", run_dir / "gt.tum")
     bag = tmp / "bridged" / "bag"
@@ -272,7 +340,11 @@ def _execute(
     wall = time.monotonic() - t_start
     if proc.returncode not in (0, 3):
         return _empty(key, "failed", f"bench exit {proc.returncode} (see log.txt)", run_dir, wall)
-    return _score(key, run_dir, sc, wall)
+    if not (run_dir / "bench" / "est.tum").is_file():
+        reason = f"bench exit {proc.returncode} without est.tum (see log.txt)"
+        return _empty(key, "failed", reason, run_dir, wall)
+    note = "bench exit 3: some records were not processed" if proc.returncode == 3 else ""
+    return _score(key, run_dir, sc, wall, note)
 
 
 def run_experiment(
@@ -287,8 +359,8 @@ def run_experiment(
         sc = load_scenario(spec.scenario)
     except (OSError, ValueError) as e:
         raise SpecError(f"scenario: {e}") from e
-    raw = _check_recording(spec, sc)
-    key = spec_key(spec, git_commit())
+    raw = check_recording(spec, sc)
+    key = spec_key(spec, run_fingerprint(spec, bench_cmd))
     run_dir = Path(root) / "runs" / key
     run_dir.mkdir(parents=True, exist_ok=True)
     if not _lock(run_dir):

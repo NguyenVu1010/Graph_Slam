@@ -1,5 +1,6 @@
 """Explorer figures, comparison table and report export (needs the ``explorer`` extra)."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -111,3 +112,46 @@ def test_export_report_refuses_source_tree(tmp_path: Path) -> None:
     runs = [_run(tmp_path, "a", "ref", 0.5)]
     with pytest.raises(ValueError, match="results"):
         export_report(runs, ref_key="a", out_dir=_REPO / "docs" / "report")
+
+
+def test_separate_fault_windows_not_joined(tmp_path: Path) -> None:
+    faults = (Fault("gnss", "outage", 10.0, 15.0), Fault("lidar", "blackout", 30.0, 35.0))
+    runs = [_run(tmp_path, "a", "two", 0.1, faults=faults)]
+    fig = trajectory_figure(runs, runs[0][1].run_dir / "gt.tum")
+    dashed = [tr for tr in fig.data if tr.line.dash == "dash"]
+    assert len(dashed) == 1 and None in list(dashed[0].x)
+
+
+def test_delta_uses_same_ate_kind_for_both(tmp_path: Path) -> None:
+    ref = _run(tmp_path, "a", "ref", 0.5)
+    run = _run(tmp_path, "b", "no opt", 1.0)
+    run = (run[0], replace(run[1], ate_opt_m=None, ate_online_m=1.0))
+    ref = (ref[0], replace(ref[1], ate_opt_m=0.25, ate_online_m=0.5))
+    rows = {r["label"]: r for r in metrics_table([ref, run], ref_key="a")}
+    assert rows["no opt"]["ΔATE %"] == pytest.approx(100.0)  # online vs online, not vs opt
+
+
+def test_metrics_table_has_reason(tmp_path: Path) -> None:
+    lost = _run(tmp_path, "c", "lost", None, status="lost")
+    lost = (lost[0], replace(lost[1], reason="estimate covers 1.0 s of 6 s"))
+    rows = metrics_table([_run(tmp_path, "a", "ref", 0.5), lost], ref_key="a")
+    assert rows[1]["reason"] == "estimate covers 1.0 s of 6 s"
+
+
+def test_export_includes_lost_and_failed(tmp_path: Path) -> None:
+    lost = _run(tmp_path, "c", "gone", None, status="lost")
+    lost = (lost[0], replace(lost[1], reason="no usable estimate"))
+    md = export_report([_run(tmp_path, "a", "ref", 0.5), lost], "a", tmp_path / "rep")
+    text = md.read_text()
+    assert "gone" in text and "no usable estimate" in text
+
+
+def test_trajectory_figure_loop_markers(tmp_path: Path) -> None:
+    run = _run(tmp_path, "a", "ref", 0.1)
+    t_ns = [round((10.0 + 5) * 1e9), round((10.0 + 50) * 1e9)]
+    (run[1].run_dir / "bench" / "loops.csv").write_text(
+        f"t_i_ns,t_j_ns,state\n{t_ns[0]},{t_ns[1]},released\n"
+    )
+    fig = trajectory_figure([run], run[1].run_dir / "gt.tum")
+    loops = [tr for tr in fig.data if tr.name == "ref loops"]
+    assert len(loops) == 1 and len([x for x in loops[0].x if x is not None]) == 2
