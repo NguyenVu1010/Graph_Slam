@@ -2,8 +2,9 @@
 
 The per-message models live in ``NoiseLayer``, which the live node (``mss_sim.live``) reuses.
 Geometry (``T_b_l``, antenna position) comes from the raw bag, not from the pipeline config.
-Seeds: ``SeedSequence(seed).spawn(5)`` in the order [lidar, gnss, odom, imu, mutate]; the imu and
-mutate streams are reserved and unused here.
+Seeds: ``SeedSequence(seed).spawn(5)`` in the order [lidar, gnss, odom, imu, mutate]; the imu
+stream draws only when ``imu_extra`` is given (so the default output is unchanged), and the
+mutate stream is reserved for ``mutate_bag.py`` and the explorer's faults.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from mss_sim.geodesy import lla_to_enu
 from mss_sim.gnss import GnssDegrader, GnssSample
 from mss_sim.gt import GroundTruth
 from mss_sim.lidar import process_scan
+from mss_sim.noise_scale import ImuExtra
 from mss_sim.odom import OdomTwist, WheelQuantizer
 from mss_sim.profile import NoiseProfile
 from mss_sim.scenario import Scenario
@@ -79,6 +81,11 @@ def t_b_l_from_tf(tf_msgs: Iterable[Any]) -> tuple[np.ndarray, str]:
                 return t, ts.header.frame_id
     msg = f"no /tf_static transform with child {_LIDAR_FRAME}"
     raise ValueError(msg)
+
+
+def _add(v: Any, d: np.ndarray) -> Any:
+    """Copy of a geometry_msgs Vector3 plus ``d``."""
+    return replace(v, x=v.x + float(d[0]), y=v.y + float(d[1]), z=v.z + float(d[2]))
 
 
 def shift_stamp(msg: Any, offset_ns: int) -> Any:
@@ -161,9 +168,10 @@ class NoiseLayer:
         *,
         seed: int | None = None,
         skew: bool = True,
+        imu_extra: ImuExtra | None = None,
     ) -> None:
         seeds = np.random.SeedSequence(scenario.seed if seed is None else seed).spawn(5)
-        rng_lidar, rng_gnss, rng_odom, _rng_imu, _rng_mutate = (
+        rng_lidar, rng_gnss, rng_odom, rng_imu, _rng_mutate = (
             np.random.default_rng(s) for s in seeds
         )
         self._scenario = scenario
@@ -172,6 +180,10 @@ class NoiseLayer:
         self._t_b_l = T_b_l
         self._body_frame = body_frame
         self._skew = skew
+        self._rng_imu = rng_imu
+        self._imu_extra = imu_extra
+        self._gyro_bias = np.zeros(3)
+        self._acc_bias = np.zeros(3)
         self.offset_ns = profile.clock_offset_ns
         self.degrader = GnssDegrader(
             profile.gnss, scenario.gnss, scenario.gnss_zones, scenario.origin_lla, rng_gnss, t0_ns
@@ -181,7 +193,21 @@ class NoiseLayer:
         self.n_dropped_gnss = 0
 
     def imu(self, msg: Any) -> Any:
-        return shift_stamp(msg, self.offset_ns["imu"])
+        """Stamp-shifted copy; with ``imu_extra``, plus white noise and a random-walk bias."""
+        out = shift_stamp(msg, self.offset_ns["imu"])
+        e = self._imu_extra
+        if e is None:
+            return out
+        draw = self._rng_imu.standard_normal(12)
+        self._gyro_bias += e.gyro_rw_step * draw[6:9]
+        self._acc_bias += e.acc_rw_step * draw[9:12]
+        gyro = e.gyro_sigma * draw[0:3] + self._gyro_bias
+        acc = e.acc_sigma * draw[3:6] + self._acc_bias
+        return replace(
+            out,
+            angular_velocity=_add(out.angular_velocity, gyro),
+            linear_acceleration=_add(out.linear_acceleration, acc),
+        )
 
     def lidar(self, msg: Any, gt: GroundTruth) -> Any:
         """Noisy cloud; ``gt`` must cover ``[stamp, stamp + scan period]`` (else it clamps)."""
@@ -225,8 +251,11 @@ def run_bridge(
     *,
     seed: int | None = None,
     skew: bool = True,
+    imu_extra: ImuExtra | None = None,
 ) -> BridgeReport:
-    """Turn ``raw_bag`` into ``out_dir/bag`` (+ ``gt.tum``, ``bridge_report.json``)."""
+    """Turn ``raw_bag`` into ``out_dir/bag`` (+ ``gt.tum``, ``bridge_report.json``).
+
+    ``imu_extra`` adds IMU noise on top of the recorded one (mss_sim.noise_scale)."""
     off = profile.clock_offset_ns
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -235,7 +264,14 @@ def run_bridge(
         tf_topic = [_TF] if _TF in reader.topics() else []
         t_b_l, body_frame = t_b_l_from_tf(m for _, _, m in reader.messages(tf_topic))
         layer = NoiseLayer(
-            scenario, profile, gt.t_start_ns, t_b_l, body_frame, seed=seed, skew=skew
+            scenario,
+            profile,
+            gt.t_start_ns,
+            t_b_l,
+            body_frame,
+            seed=seed,
+            skew=skew,
+            imu_extra=imu_extra,
         )
         counts = dict.fromkeys(_OUT_TYPES, 0)
 
