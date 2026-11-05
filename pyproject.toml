@@ -13,9 +13,9 @@ dev = ["ruff>=0.6", "pytest>=8"]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-# Packages live under eval/ and sim/ (later tools/); the C++ dirs are not Python packages.
+# Packages live under eval/, sim/ and tools/ (mss_explorer); the C++ dirs are not Python packages.
 [tool.setuptools.packages.find]
-where = ["eval", "sim"]
+where = ["eval", "sim", "tools"]
 
 [tool.ruff]
 line-length = 100
