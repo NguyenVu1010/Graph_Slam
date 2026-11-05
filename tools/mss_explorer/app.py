@@ -67,8 +67,10 @@ def _recordings(root: Path) -> dict[str, tuple[Path, Path]]:
     return out
 
 
-def _scenario_factors(scenario: Path) -> dict[str, bool]:
-    doc = yaml.safe_load(load_scenario(scenario).pipeline_config.read_text()) or {}
+def _scenario_factors(scenario: Path, variant: str | None) -> dict[str, bool]:
+    sc = load_scenario(scenario)
+    path = sc.pipeline_config if variant is None else sc.pipeline_config_variants[variant]
+    doc = yaml.safe_load(path.read_text()) or {}
     params = doc.get("mss_node", {}).get("ros__parameters", {})
     return {f: bool(params.get(f, {}).get("enabled", False)) for f in FACTORS}
 
@@ -84,8 +86,14 @@ def _sidebar(root: Path, bench_cmd: str) -> None:
     duration_s = load_scenario(scenario).duration_s
     st.sidebar.subheader("Factors")
     st.sidebar.caption("LiDAR and IMU are the backbone and stay on.")
-    defaults = _scenario_factors(scenario)
-    factors = {f: st.sidebar.toggle(f, value=defaults[f], key=f"factor_{f}") for f in FACTORS}
+    variants = [None, *sorted(load_scenario(scenario).pipeline_config_variants)]
+    variant = st.sidebar.selectbox(
+        "Overlay", variants, format_func=lambda v: v or "default", key="variant"
+    )
+    defaults = _scenario_factors(scenario, variant)
+    factors = {
+        f: st.sidebar.toggle(f, value=defaults[f], key=f"factor_{variant}_{f}") for f in FACTORS
+    }
     st.sidebar.subheader("Noise (x the recorded profile)")
     noise = NoiseScale(
         lidar=st.sidebar.slider("LiDAR range", 0.0, 20.0, 1.0, 0.5, key="n_lidar"),
@@ -99,6 +107,7 @@ def _sidebar(root: Path, bench_cmd: str) -> None:
         doc = {
             "scenario": str(scenario),
             "recording": str(rec),
+            "variant": variant,
             "factors": factors,
             "noise": vars(noise),
             "faults": [vars(f) for f in st.session_state.faults],

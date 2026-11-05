@@ -92,3 +92,16 @@ def test_spec_fault_default_magnitude(tmp_path: Path) -> None:
     f = {"sensor": "gnss", "kind": "offset", "t_start_s": 1, "t_end_s": 2}
     s = load_spec(_write(tmp_path, {"scenario": str(_ROOM), "recording": "r", "faults": [f]}))
     assert s.faults[0].magnitude == 5.0
+
+
+def test_spec_variant(tmp_path: Path) -> None:
+    doc = {"scenario": str(_ROOM), "recording": "r", "variant": "loops_on"}
+    s = load_spec(_write(tmp_path, doc))
+    assert s.variant == "loops_on"
+    assert spec_key(s, "c") != spec_key(replace(s, variant=None), "c")
+
+
+def test_spec_rejects_unknown_variant(tmp_path: Path) -> None:
+    doc = {"scenario": str(_ROOM), "recording": "r", "variant": "nope"}
+    with pytest.raises(SpecError, match="variant"):
+        load_spec(_write(tmp_path, doc))

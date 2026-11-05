@@ -170,3 +170,15 @@ def test_cli_exit_codes(setup, tmp_path: Path) -> None:  # noqa: ANN001
     s9 = tmp_path / "s9.yaml"
     dump_spec(replace(spec, seed=9), s9)
     assert cli(s9).returncode == 1
+
+
+def test_overlay_from_variant(setup, tmp_path: Path) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    text = (
+        spec.scenario.read_text()
+        + "pipeline_config_variants:\n  loops_on: config/sim/warehouse_e07_loops_on.yaml\n"
+    )
+    spec.scenario.write_text(text)
+    r = run_experiment(replace(spec, variant="loops_on"), bench_cmd=bench, root=root)
+    p = yaml.safe_load((r.run_dir / "overlay.yaml").read_text())["mss_node"]["ros__parameters"]
+    assert p["loop_closure"]["kernel_release"] is True

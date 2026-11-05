@@ -146,9 +146,13 @@ def _lock(run_dir: Path) -> bool:
     return False
 
 
-def write_overlay(sc: Scenario, factors: dict[str, bool | None], out: Path) -> Path:
-    """The scenario's overlay with the explicit factor flags set, checked against default.yaml."""
-    doc = yaml.safe_load(sc.pipeline_config.read_text())
+def write_overlay(
+    sc: Scenario, factors: dict[str, bool | None], out: Path, variant: str | None = None
+) -> Path:
+    """The scenario's overlay (or its ``variant``) with the explicit factor flags set, checked
+    against default.yaml."""
+    base = sc.pipeline_config if variant is None else sc.pipeline_config_variants[variant]
+    doc = yaml.safe_load(base.read_text())
     params = doc.setdefault("mss_node", {}).setdefault("ros__parameters", {})
     for name in FACTORS:
         if factors.get(name) is not None:
@@ -231,7 +235,7 @@ def _execute(
     shutil.rmtree(run_dir / "bench", ignore_errors=True)
     tmp.mkdir()
     seed = sc.seed if spec.seed is None else spec.seed
-    overlay = write_overlay(sc, spec.factors, run_dir / "overlay.yaml")
+    overlay = write_overlay(sc, spec.factors, run_dir / "overlay.yaml", spec.variant)
     profile = load_profile(sc.profile)
     run_bridge(
         raw,

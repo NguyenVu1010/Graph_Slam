@@ -1,6 +1,8 @@
 """Experiment spec: what one explorer run changes, its YAML form and its cache key.
 
 YAML keys: ``scenario``, ``recording`` (paths; relative ones are from the repository root),
+``variant`` (null or a key of the scenario's ``pipeline_config_variants``: the overlay the factors
+start from),
 ``factors`` (``gnss``, ``wheel_odom``, ``loop_closure``: true, false or null = the scenario's
 overlay), ``noise`` (multipliers, mss_sim.noise_scale), ``faults`` (list of ``sensor``, ``kind``,
 ``t_start_s``, ``t_end_s``, optional ``magnitude``; mss_sim.faults), ``seed`` (null = the
@@ -23,7 +25,7 @@ from mss_sim.scenario import load_scenario
 
 REPO = Path(__file__).resolve().parents[2]
 FACTORS = ("gnss", "wheel_odom", "loop_closure")
-_KEYS = {"scenario", "recording", "factors", "noise", "faults", "seed", "label"}
+_KEYS = {"scenario", "recording", "variant", "factors", "noise", "faults", "seed", "label"}
 _FAULT_KEYS = {"sensor", "kind", "t_start_s", "t_end_s", "magnitude"}
 
 
@@ -40,6 +42,7 @@ class ExperimentSpec:
     faults: tuple[Fault, ...] = ()
     seed: int | None = None
     label: str = ""
+    variant: str | None = None  # a key of the scenario's pipeline_config_variants
 
 
 def _path(value: Any, name: str) -> Path:
@@ -72,9 +75,14 @@ def spec_from_dict(doc: Any) -> ExperimentSpec:
     doc = _mapping(doc, "spec", _KEYS)
     scenario = _path(doc.get("scenario"), "scenario")
     try:
-        duration_s = load_scenario(scenario).duration_s
+        sc = load_scenario(scenario)
     except (OSError, ValueError) as e:
         raise SpecError(f"scenario: {e}") from e
+    duration_s = sc.duration_s
+    variant = doc.get("variant")
+    if variant is not None and variant not in sc.pipeline_config_variants:
+        known = sorted(sc.pipeline_config_variants)
+        raise SpecError(f"variant: '{variant}' is not one of the scenario's {known}")
     factors = dict.fromkeys(FACTORS)
     for k, v in _mapping(doc.get("factors"), "factors", FACTORS).items():
         if v is not None and not isinstance(v, bool):
@@ -104,6 +112,7 @@ def spec_from_dict(doc: Any) -> ExperimentSpec:
         faults=tuple(faults),
         seed=seed,
         label=str(doc.get("label") or ""),
+        variant=variant,
     )
 
 
@@ -111,6 +120,7 @@ def spec_to_dict(s: ExperimentSpec, *, with_label: bool = True) -> dict:
     doc = {
         "scenario": _rel(s.scenario),
         "recording": _rel(s.recording),
+        "variant": s.variant,
         "factors": dict(s.factors),
         "noise": asdict(s.noise),
         "faults": [asdict(f) for f in s.faults],
