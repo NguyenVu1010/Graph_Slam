@@ -271,3 +271,28 @@ def test_run_states_change_only_when_a_run_finishes(setup) -> None:  # noqa: ANN
     (first.run_dir / ".lock").unlink()
     assert run_experiment(spec, bench_cmd=bench, root=root).status == "ok"
     assert run_states(root) == ((first.key, "ok"),)
+
+
+def test_running_run_reports_step_and_elapsed(setup, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+    import threading
+    import time
+
+    spec, bench, root, _ = setup
+    monkeypatch.setenv("FAKE_MODE", "sleep")
+    worker = threading.Thread(
+        target=run_experiment,
+        args=(spec,),
+        kwargs={"bench_cmd": bench, "root": root, "timeout_s": 4},
+    )
+    worker.start()
+    seen = None
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and seen is None:
+        for _, r in list_runs(root):
+            if r.status == "running" and "bench" in r.reason:
+                seen = r
+        time.sleep(0.2)
+    worker.join()
+    assert seen is not None
+    assert seen.reason.startswith("step 4/5: bench") and seen.wall_s > 0
+    assert not (seen.run_dir / "stage.txt").exists()

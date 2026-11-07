@@ -153,16 +153,30 @@ def _fault_editor(duration_s: float) -> None:
             st.rerun()
 
 
-def _jobs() -> bool:
-    """Runs submitted from this page: queued or running ones listed; a run that raised stays
-    shown until cleared. Returns True while any is unfinished."""
+def _progress(root: Path) -> bool:
+    """One progress bar per run in progress (its step and time so far). True if any."""
+    running = [(s, r) for s, r in list_runs(root) if r.status == "running"]
+    for s, r in running:
+        name = r.reason.rsplit(": ", 1)[-1]
+        done = runner.STEPS.index(name) / len(runner.STEPS) if name in runner.STEPS else 0.0
+        text = f"Running `{s.label or r.key}`: {r.reason or 'starting'}, {r.wall_s:.0f} s so far"
+        st.progress(done, text=text)
+    return bool(running)
+
+
+def _jobs(any_running: bool) -> bool:
+    """Runs submitted from this page that have no progress bar yet (waiting for a worker, or
+    starting); a run that raised stays shown until cleared. True while any is unfinished."""
     jobs = st.session_state.setdefault("jobs", [])
     errors: list[str] = st.session_state.setdefault("job_errors", [])
     pending = []
     for label, job in jobs:
         if not job.done():
             pending.append((label, job))
-            st.markdown(f"- `{label}`: {'running' if job.running() else 'queued'}")
+            if not job.running():
+                st.markdown(f"- `{label}`: waiting for a free worker")
+            elif not any_running:
+                st.markdown(f"- `{label}`: starting")
         elif job.exception() is not None:
             errors.append(f"{label}: {type(job.exception()).__name__}: {job.exception()}")
     st.session_state["jobs"] = pending
@@ -187,6 +201,12 @@ def _results(root: Path) -> None:
     if not shown:
         return
     ok = [(s, r) for s, r in shown if r.status == "ok"]
+    n_running = sum(r.status == "running" for _, r in shown)
+    if n_running:
+        st.warning(
+            f"{n_running} run(s) still running: their rows have no numbers yet, and the plots "
+            "show finished runs only. The page redraws when a run finishes."
+        )
     ref_key = st.selectbox("Reference", [r.key for _, r in shown], format_func=names.get, key="ref")
     rows = metrics_table(shown, ref_key)
     st.dataframe(pd.DataFrame(rows, columns=list(COLUMNS)), hide_index=True)
@@ -223,7 +243,7 @@ def main() -> None:
     # rerun when a run starts or finishes, so they do not flicker while a run is going.
     @st.fragment(run_every=POLL_S if busy else None)
     def status() -> None:
-        still_pending = _jobs()
+        still_pending = _jobs(_progress(root))
         if busy and (runner.run_states(root) != shown or pending != still_pending):
             st.rerun(scope="app")
 
