@@ -41,6 +41,7 @@ from mss_sim.noise_scale import NoiseScale  # noqa: E402
 from mss_sim.scenario import load_scenario  # noqa: E402
 
 MAX_PARALLEL = 2  # bench processes at once (WSL has about 10 GB RAM)
+POLL_S = 3.0  # status refresh period while a run is queued or running [s]
 
 
 def _root() -> Path:
@@ -214,15 +215,20 @@ def main() -> None:
             "'env LD_LIBRARY_PATH=<gtsam lib> <build>/bench/mss_bench'."
         )
     _sidebar(root, bench_cmd)
-    running = any(r.status == "running" for _, r in list_runs(root))
+    shown = runner.run_states(root)
     pending = any(not j.done() for _, j in st.session_state.get("jobs", []))
+    busy = pending or any(status == "running" for _, status in shown)
 
-    @st.fragment(run_every=2.0 if running or pending else None)
-    def live() -> None:
-        _jobs()
-        _results(root)
+    # Only this small status block polls; the table and plots below are redrawn by a full
+    # rerun when a run starts or finishes, so they do not flicker while a run is going.
+    @st.fragment(run_every=POLL_S if busy else None)
+    def status() -> None:
+        still_pending = _jobs()
+        if busy and (runner.run_states(root) != shown or pending != still_pending):
+            st.rerun(scope="app")
 
-    live()
+    status()
+    _results(root)
 
 
 main()

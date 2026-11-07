@@ -12,7 +12,7 @@ import pytest
 import yaml
 from conftest import _REPO, cli_env
 
-from mss_explorer.runner import RunResult, list_runs, run_experiment
+from mss_explorer.runner import RunResult, list_runs, run_experiment, run_states
 from mss_explorer.spec import ExperimentSpec, SpecError, dump_spec
 from mss_sim.synth import SynthInfo
 
@@ -257,3 +257,17 @@ def test_fresh_empty_lock_is_live(setup) -> None:  # noqa: ANN001
     (first.run_dir / ".lock").write_text("")  # another process between create and pid write
     r = run_experiment(replace(spec, seed=6), bench_cmd=bench, root=root)
     assert r.status == "running" and _n_runs(count) == 1
+
+
+def test_run_states_change_only_when_a_run_finishes(setup) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    first = run_experiment(spec, bench_cmd=bench, root=root)
+    shutil.rmtree(first.run_dir)
+    first.run_dir.mkdir(parents=True)
+    dump_spec(spec, first.run_dir / "spec.yaml")
+    (first.run_dir / ".lock").write_text(str(os.getpid()))
+    running = run_states(root)
+    assert running == ((first.key, "running"),) and run_states(root) == running
+    (first.run_dir / ".lock").unlink()
+    assert run_experiment(spec, bench_cmd=bench, root=root).status == "ok"
+    assert run_states(root) == ((first.key, "ok"),)

@@ -407,3 +407,9 @@ def list_runs(root: Path) -> list[tuple[ExperimentSpec, RunResult]]:
         if result is not None:
             out.append((spec, replace(result, run_dir=d)))
     return out
+
+
+def run_states(root: Path) -> tuple[tuple[str, str], ...]:
+    """(key, status) of every listed run: changes only when a run starts or finishes, so a
+    page polling it redraws its results only then."""
+    return tuple((r.key, r.status) for _, r in list_runs(root))
