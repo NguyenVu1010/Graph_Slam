@@ -299,6 +299,8 @@ def trajectory_figure(
         yaxis_title="y [m]",
         yaxis_scaleanchor="x",
         margin={"l": 40, "r": 10, "t": 30, "b": 40},
+        # Below the plot: on the right it would sit on the error colour bar.
+        legend={"orientation": "h", "y": -0.15, "yanchor": "top", "x": 0.0},
     )
     return fig
 

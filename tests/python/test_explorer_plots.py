@@ -257,3 +257,9 @@ def test_error_and_truth_points_carry_their_time(tmp_path: Path) -> None:
     fig = trajectory_figure(runs, runs[0][1].run_dir / "gt.tum")
     truth = next(tr for tr in fig.data if tr.name == "ground truth")
     assert truth.customdata[0] == 0.0 and truth.customdata[-1] == pytest.approx(59.0)
+
+
+def test_trajectory_legend_below_so_it_clears_the_colour_bar(tmp_path: Path) -> None:
+    runs = [_run(tmp_path, "a", "ref", 0.1)]
+    fig = trajectory_figure(runs, runs[0][1].run_dir / "gt.tum", color_by_error=True)
+    assert fig.layout.legend.orientation == "h" and fig.layout.legend.y < 0
