@@ -286,6 +286,14 @@ def _score(key: str, run_dir: Path, sc: Scenario, wall_s: float, note: str = "")
     )
 
 
+STEPS = ("noise", "faults", "convert", "bench", "score")  # what a running run reports
+
+
+def _step(run_dir: Path, name: str) -> None:
+    """Record the step a running run is in (``stage.txt``), read back by list_runs."""
+    (run_dir / "stage.txt").write_text(f"step {STEPS.index(name) + 1}/{len(STEPS)}: {name}")
+
+
 def _execute(
     spec: ExperimentSpec,
     sc: Scenario,
@@ -303,6 +311,7 @@ def _execute(
     seed = sc.seed if spec.seed is None else spec.seed
     overlay = write_overlay(sc, spec.factors, run_dir / "overlay.yaml", spec.variant)
     profile = load_profile(sc.profile)
+    _step(run_dir, "noise")
     run_bridge(
         raw,
         sc,
@@ -317,8 +326,10 @@ def _execute(
     bag = tmp / "bridged" / "bag"
     if spec.faults:
         t0 = int(read_tum_stamps_ns(run_dir / "gt.tum").min())
+        _step(run_dir, "faults")
         apply_faults(bag, tmp / "faulted", spec.faults, t0, seed)
         bag = tmp / "faulted"
+    _step(run_dir, "convert")
     convert(bag, tmp / "mssdata", origin_lla=sc.origin_lla, pipeline_config=overlay)
     cmd = [
         *shlex.split(bench_cmd),
@@ -329,6 +340,7 @@ def _execute(
         "--out",
         str((run_dir / "bench").resolve()),
     ]
+    _step(run_dir, "bench")
     with (run_dir / "log.txt").open("w") as log:
         try:
             proc = subprocess.run(
@@ -344,6 +356,7 @@ def _execute(
         reason = f"bench exit {proc.returncode} without est.tum (see log.txt)"
         return _empty(key, "failed", reason, run_dir, wall)
     note = "bench exit 3: some records were not processed" if proc.returncode == 3 else ""
+    _step(run_dir, "score")
     return _score(key, run_dir, sc, wall, note)
 
 
@@ -381,6 +394,7 @@ def run_experiment(
         return result
     finally:
         shutil.rmtree(run_dir / "tmp", ignore_errors=True)
+        (run_dir / "stage.txt").unlink(missing_ok=True)
         (run_dir / ".lock").unlink(missing_ok=True)
 
 
@@ -403,7 +417,23 @@ def list_runs(root: Path) -> list[tuple[ExperimentSpec, RunResult]]:
             except (OSError, ValueError):
                 alive = False
             if alive:
-                result = _empty(d.name, "running", "", d)
+                result = _running(d, lock)
         if result is not None:
             out.append((spec, replace(result, run_dir=d)))
     return out
+
+
+def _running(run_dir: Path, lock: Path) -> RunResult:
+    """A run in progress: reason = its step (``stage.txt``), wall_s = time since it started."""
+    try:
+        step = (run_dir / "stage.txt").read_text().strip()
+        started = lock.stat().st_mtime
+    except OSError:
+        step, started = "starting", time.time()
+    return _empty(run_dir.name, "running", step, run_dir, max(0.0, time.time() - started))
+
+
+def run_states(root: Path) -> tuple[tuple[str, str], ...]:
+    """(key, status) of every listed run: changes only when a run starts or finishes, so a
+    page polling it redraws its results only then."""
+    return tuple((r.key, r.status) for _, r in list_runs(root))

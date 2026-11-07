@@ -112,3 +112,22 @@ def test_app_queued_run_listed(app: AppTest, monkeypatch: pytest.MonkeyPatch) ->
     app.text_input(key="label").set_value("waiting one")
     app.button(key="run").click().run()
     assert any("waiting one" in m.value for m in app.markdown)
+
+
+def test_app_running_run_shows_progress_and_notice(app: AppTest, tmp_path: Path) -> None:
+    import os
+
+    from mss_explorer.spec import ExperimentSpec, dump_spec
+
+    run_dir = tmp_path / "explorer" / "runs" / "0123456789abcdef"
+    run_dir.mkdir(parents=True)
+    rec = tmp_path / "explorer" / "recordings" / "E-01-6s"
+    spec = ExperimentSpec(scenario=rec / "scenario.yaml", recording=rec, label="slow one")
+    dump_spec(spec, run_dir / "spec.yaml")
+    (run_dir / ".lock").write_text(str(os.getpid()))
+    (run_dir / "stage.txt").write_text("step 4/5: bench")
+    app.run()
+    assert not app.exception
+    bars = [e for e in app.get("progress")]
+    assert bars and "slow one" in bars[0].proto.text and "step 4/5: bench" in bars[0].proto.text
+    assert any("still running" in w.value for w in app.warning)

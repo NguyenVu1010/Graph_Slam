@@ -304,6 +304,9 @@ A run's status is one of:
 - `lost`: fewer than 10 poses, or the estimate covers less than half the scenario (gaps over 1 s
   do not count). Shown as such, not as a number.
 - `failed`: bench error exit, timeout, or no `est.tum`. Not cached: it runs again next time.
+- `running`: in progress. The page shows a progress bar per run with its step (noise, faults,
+  convert, bench, score) and the time so far, and marks that the table and plots hold finished
+  runs only.
 
 At most two runs execute at once.
 
