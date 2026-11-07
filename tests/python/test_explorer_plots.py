@@ -15,6 +15,7 @@ from mss_explorer.plots import (  # noqa: E402
     error_figure,
     export_report,
     metrics_table,
+    selected_time,
     trajectory_figure,
 )
 from mss_explorer.runner import RunResult  # noqa: E402
@@ -155,3 +156,110 @@ def test_trajectory_figure_loop_markers(tmp_path: Path) -> None:
     fig = trajectory_figure([run], run[1].run_dir / "gt.tum")
     loops = [tr for tr in fig.data if tr.name == "ref loops"]
     assert len(loops) == 1 and len([x for x in loops[0].x if x is not None]) == 2
+
+
+def _write_pcd(path: Path, xyz: np.ndarray) -> None:
+    n = len(xyz)
+    head = (
+        "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
+        f"WIDTH {n}\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS {n}\nDATA binary\n"
+    )
+    path.write_bytes(head.encode() + xyz.astype(np.float32).tobytes())
+
+
+def test_trajectory_colour_by_error_shares_one_scale(tmp_path: Path) -> None:
+    from mss_eval.ate import align
+
+    runs = [_run(tmp_path, "a", "ref", 0.0), _run(tmp_path, "b", "bad", 0.0)]
+    d = runs[1][1].run_dir
+    t = 10.0 + np.arange(60, dtype=np.float64)
+    gt = np.column_stack([np.cos(t / 10), np.sin(t / 10), np.zeros_like(t)]) * 10
+    est = gt.copy()
+    est[25:35, 2] += 0.5  # a bump the rigid fit cannot remove
+    _tum(d / "bench" / "est.tum", t, est)
+    al = align(d / "bench" / "est.tum", d / "gt.tum")
+    want = np.linalg.norm(al.gt - al.est_aligned, axis=1)
+    fig = trajectory_figure(runs, runs[0][1].run_dir / "gt.tum", color_by_error=True)
+    coloured = [tr for tr in fig.data if tr.name in ("ref", "bad")]
+    assert len(coloured) == 2 and all(tr.marker.coloraxis == "coloraxis" for tr in coloured)
+    assert fig.layout.coloraxis.cmin == 0.0
+    assert fig.layout.coloraxis.cmax == pytest.approx(want.max())
+    bad = next(tr for tr in coloured if tr.name == "bad")
+    assert np.allclose(bad.marker.color, want)
+
+
+def test_trajectory_points_carry_their_time(tmp_path: Path) -> None:
+    runs = [_run(tmp_path, "a", "ref", 0.1)]
+    fig = trajectory_figure(runs, runs[0][1].run_dir / "gt.tum")
+    ref = next(tr for tr in fig.data if tr.name == "ref")
+    assert ref.customdata[0] == pytest.approx(0.0) and ref.customdata[-1] == pytest.approx(59.0)
+
+
+def test_trajectory_error_vectors(tmp_path: Path) -> None:
+    runs = [_run(tmp_path, "a", "ref", 0.1)]
+    fig = trajectory_figure(runs, runs[0][1].run_dir / "gt.tum", error_vectors_s=10.0)
+    vec = next(tr for tr in fig.data if tr.name == "ref error")
+    xs = [x for x in vec.x if x is not None]
+    assert len(xs) == 2 * 6  # one est->gt segment every 10 s over 60 s
+    # Estimate offset by (0.1, 0.1, 0.1) before alignment; aligned, it lies on gt: tiny segments.
+    assert max(abs(xs[i] - xs[i + 1]) for i in range(0, len(xs), 2)) < 1e-6
+
+
+def test_trajectory_world_boxes(tmp_path: Path) -> None:
+    runs = [_run(tmp_path, "a", "ref", 0.1)]
+    world = _REPO / "sim/worlds/warehouse.sdf"
+    fig = trajectory_figure(runs, runs[0][1].run_dir / "gt.tum", world_sdf=world)
+    rects = [s for s in fig.layout.shapes if s.type == "rect"]
+    walls = {(round(s.x0, 2), round(s.x1, 2)) for s in rects}
+    assert (20.0, 20.2) in walls  # wall_east; floor and ceiling (0.1 m thick) are left out
+    assert (-20.5, 20.5) not in walls
+
+
+def test_trajectory_map_in_gt_frame(tmp_path: Path) -> None:
+    runs = [_run(tmp_path, "a", "ref", 0.0)]
+    d = runs[0][1].run_dir
+    pts = np.array([[1.0, 2.0, 1.0], [3.0, 4.0, 0.05], [5.0, 6.0, 1.5]])
+    _write_pcd(d / "map.pcd", pts)
+    fig = trajectory_figure(runs, d / "gt.tum", map_run=runs[0])
+    m = next(tr for tr in fig.data if tr.name == "ref map")
+    # est == gt, so the alignment is the identity; the floor point (z 0.05 m) is cut.
+    got = np.array(sorted(zip(m.x, m.y, strict=True)))
+    assert np.allclose(got, [[1.0, 2.0], [5.0, 6.0]], atol=1e-6)
+
+
+def test_trajectory_map_missing_is_skipped(tmp_path: Path) -> None:
+    runs = [_run(tmp_path, "a", "ref", 0.0)]
+    fig = trajectory_figure(runs, runs[0][1].run_dir / "gt.tum", map_run=runs[0])
+    assert not any(tr.name == "ref map" for tr in fig.data)
+
+
+def test_error_figure_cursor_line(tmp_path: Path) -> None:
+    runs = [_run(tmp_path, "a", "x", 0.1)]
+    fig = error_figure(runs, t_cursor_s=12.5)
+    lines = [s for s in fig.layout.shapes if s.type == "line"]
+    assert len(lines) == 1 and lines[0].x0 == 12.5
+
+
+def test_selected_time() -> None:
+    assert selected_time(None) is None
+    assert selected_time({"selection": {"points": []}}) is None
+    assert selected_time({"selection": {"points": [{"x": 4.0, "customdata": 7.5}]}}) == 7.5
+    assert selected_time({"selection": {"points": [{"x": 4.0, "customdata": [8.0]}]}}) == 8.0
+    # A point without a time (map, world) selects nothing.
+    assert selected_time({"selection": {"points": [{"x": 4.0}]}}) is None
+    assert selected_time({"selection": {"points": [{"x": 4.0}, {"customdata": 2.0}]}}) == 2.0
+
+
+def test_error_and_truth_points_carry_their_time(tmp_path: Path) -> None:
+    runs = [_run(tmp_path, "a", "x", 0.1)]
+    err = error_figure(runs)
+    assert list(err.data[0].customdata) == list(err.data[0].x)
+    fig = trajectory_figure(runs, runs[0][1].run_dir / "gt.tum")
+    truth = next(tr for tr in fig.data if tr.name == "ground truth")
+    assert truth.customdata[0] == 0.0 and truth.customdata[-1] == pytest.approx(59.0)
+
+
+def test_trajectory_legend_below_so_it_clears_the_colour_bar(tmp_path: Path) -> None:
+    runs = [_run(tmp_path, "a", "ref", 0.1)]
+    fig = trajectory_figure(runs, runs[0][1].run_dir / "gt.tum", color_by_error=True)
+    assert fig.layout.legend.orientation == "h" and fig.layout.legend.y < 0

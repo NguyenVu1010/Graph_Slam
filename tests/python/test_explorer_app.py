@@ -18,7 +18,7 @@ from mss_sim.synth import SynthInfo  # noqa: E402
 
 _APP = _REPO / "tools/mss_explorer/app.py"
 _FAKE = """
-import shutil, sys
+import shutil, struct, sys
 from pathlib import Path
 args = sys.argv[1:]
 out = Path(args[args.index("--out") + 1])
@@ -26,6 +26,14 @@ out.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(out.parent / "gt.tum", out / "est.tum")
 shutil.copyfile(out.parent / "gt.tum", out / "kf_opt.tum")
 (out / "bench.json").write_text('{"n_loops_accepted": 0}')
+if "--map-out" in args:
+    n = 3
+    head = (
+        "VERSION 0.7\\nFIELDS x y z\\nSIZE 4 4 4\\nTYPE F F F\\nCOUNT 1 1 1\\n"
+        f"WIDTH {n}\\nHEIGHT 1\\nVIEWPOINT 0 0 0 1 0 0 0\\nPOINTS {n}\\nDATA binary\\n"
+    )
+    pts = struct.pack("9f", 0, 0, 1, 1, 0, 1, 2, 0, 1)
+    Path(args[args.index("--map-out") + 1]).write_bytes(head.encode() + pts)
 """
 
 
@@ -131,3 +139,20 @@ def test_app_running_run_shows_progress_and_notice(app: AppTest, tmp_path: Path)
     bars = [e for e in app.get("progress")]
     assert bars and "slow one" in bars[0].proto.text and "step 4/5: bench" in bars[0].proto.text
     assert any("still running" in w.value for w in app.warning)
+
+
+def test_app_map_and_error_colour(app: AppTest, tmp_path: Path) -> None:
+    app.text_input(key="label").set_value("ref")
+    app.button(key="run").click().run()
+    runs = tmp_path / "explorer" / "runs"
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline and not list(runs.glob("*/result.json")):
+        time.sleep(0.5)
+    app.run()
+    key = next(runs.glob("*/result.json")).parent.name
+    app.selectbox(key="map_run").set_value(key).run()
+    app.toggle(key="by_err").set_value(True).run()
+    assert not app.exception
+    traj = app.get("plotly_chart")[0].proto.spec
+    assert '"ref map"' in traj and '"coloraxis"' in traj
+    assert '"rect"' in traj  # the world's boxes underneath

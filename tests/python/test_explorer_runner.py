@@ -25,6 +25,8 @@ out.mkdir(parents=True, exist_ok=True)
 with open(os.environ["FAKE_COUNT"], "a") as f:
     f.write("run\\n")
 mode = os.environ.get("FAKE_MODE", "ok")
+if "--map-out" in args:
+    Path(args[args.index("--map-out") + 1]).write_text("map")
 if mode == "fail":
     sys.exit(1)
 if mode == "sleep":
@@ -296,3 +298,9 @@ def test_running_run_reports_step_and_elapsed(setup, monkeypatch: pytest.MonkeyP
     assert seen is not None
     assert seen.reason.startswith("step 4/5: bench") and seen.wall_s > 0
     assert not (seen.run_dir / "stage.txt").exists()
+
+
+def test_run_writes_map(setup) -> None:  # noqa: ANN001
+    spec, bench, root, _ = setup
+    r = run_experiment(spec, bench_cmd=bench, root=root)
+    assert r.status == "ok" and (r.run_dir / "map.pcd").read_text() == "map"
