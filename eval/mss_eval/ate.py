@@ -114,6 +114,7 @@ class Alignment:
     est_aligned: np.ndarray  # (n_pairs, 3) estimate positions mapped into the gt frame
     gt: np.ndarray  # (n_pairs, 3) matching ground-truth positions
     n_unmatched: int
+    t_ns: np.ndarray  # (n_pairs,) int64 ground-truth stamps of the pairs
 
 
 def align(
@@ -139,7 +140,7 @@ def align(
         )
     src, dst = est.p[i_est], gt.p[order][i_gt]
     rot, t = umeyama_se3(src, dst)
-    return Alignment(rot, t, src @ rot.T + t, dst, len(est) - n_pairs)
+    return Alignment(rot, t, src @ rot.T + t, dst, len(est) - n_pairs, gt_ns[order][i_gt])
 
 
 def ate(

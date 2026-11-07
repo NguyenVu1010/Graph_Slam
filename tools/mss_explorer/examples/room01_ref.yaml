@@ -1,0 +1,4 @@
+scenario: sim/scenarios/ROOM-01.yaml
+recording: results/explorer/recordings/ROOM-01   # tools/record_scenario.sh sim/scenarios/ROOM-01.yaml <this dir>/
+variant: loops_on                                  # E-07W loop settings (ADR-026/028/030)
+label: "ref: loops on, GNSS off, 1x noise"
