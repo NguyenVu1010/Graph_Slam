@@ -269,8 +269,12 @@ python -m streamlit run tools/mss_explorer/app.py --global.developmentMode false
 
 The page shows:
 - the top view of every run over ground truth, with the fault segments dashed, the loops (from
-  the bench's `loops.csv`) drawn as links and a time cursor;
-- the position error over time, with the fault windows shaded;
+  the bench's `loops.csv`) drawn as links and a time cursor. Options: the world's boxes
+  underneath (from `sim/worlds/<world>.sdf`), one run's map (the bench's `--map-out`, saved as
+  `map.pcd` in the run directory, cut to 0.2-2.5 m height), each pose coloured by its position
+  error on one scale for all runs, and an estimate-to-truth segment every 2 s;
+- the position error over time, with the fault windows shaded and the time cursor. A click on a
+  point of either chart moves the cursor to that point's time;
 - ATE (online `est.tum` and optimised `kf_opt.tum`), RPE over 10 m and 50 m, and accepted loops;
 - the ATE change of every run against a chosen reference run.
 

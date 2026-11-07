@@ -32,16 +32,18 @@ from mss_explorer.plots import (  # noqa: E402
     error_figure,
     export_report,
     metrics_table,
+    selected_time,
     trajectory_figure,
 )
 from mss_explorer.runner import list_runs  # noqa: E402
-from mss_explorer.spec import FACTORS, SpecError, spec_from_dict  # noqa: E402
+from mss_explorer.spec import FACTORS, REPO, SpecError, spec_from_dict  # noqa: E402
 from mss_sim.faults import KINDS, Fault, validate_fault  # noqa: E402
 from mss_sim.noise_scale import NoiseScale  # noqa: E402
 from mss_sim.scenario import load_scenario  # noqa: E402
 
 MAX_PARALLEL = 2  # bench processes at once (WSL has about 10 GB RAM)
 POLL_S = 3.0  # status refresh period while a run is queued or running [s]
+ERROR_VECTOR_S = 2.0  # one estimate-to-truth segment this often on the top view [s]
 
 
 def _root() -> Path:
@@ -188,6 +190,51 @@ def _jobs(any_running: bool) -> bool:
     return bool(pending)
 
 
+def _apply_selection(duration_s: float) -> None:
+    """A click on a point of either chart moves the time cursor to that point's time (before
+    the cursor slider is drawn, so it shows the new value)."""
+    for chart in ("traj", "err"):
+        t = selected_time(st.session_state.get(chart))
+        if t is not None and st.session_state.get(f"{chart}_applied") != t:
+            st.session_state[f"{chart}_applied"] = t
+            st.session_state["cursor"] = round(min(max(t, 0.0), duration_s), 1)
+
+
+def _plots(ok: list, names: dict[str, str], rows: list[dict]) -> None:
+    scenarios = [load_scenario(s.scenario) for s, _ in ok]
+    duration = max(sc.duration_s for sc in scenarios)
+    _apply_selection(duration)
+    st.caption("Click a point on either chart to move the time cursor there.")
+    t_cursor = st.slider("Time [s]", 0.0, float(duration), 0.0, 0.1, key="cursor")
+    c1, c2, c3, c4 = st.columns(4)
+    by_err = c1.toggle("Colour by error", key="by_err")
+    vectors = c2.toggle(f"Error vectors (every {ERROR_VECTOR_S:g} s)", key="vectors")
+    world = REPO / "sim/worlds" / f"{scenarios[0].world}.sdf"
+    show_world = c3.toggle("World plan", value=world.is_file(), key="world")
+    map_key = c4.selectbox(
+        "Map of run",
+        [None, *(r.key for _, r in ok)],
+        format_func=lambda k: "none" if k is None else names[k],
+        key="map_run",
+    )
+    left, right = st.columns(2)
+    fig = trajectory_figure(
+        ok,
+        ok[0][1].run_dir / "gt.tum",
+        t_cursor,
+        color_by_error=by_err,
+        error_vectors_s=ERROR_VECTOR_S if vectors else None,
+        world_sdf=world if show_world and world.is_file() else None,
+        map_run=next(((s, r) for s, r in ok if r.key == map_key), None),
+    )
+    left.plotly_chart(fig, key="traj", on_select="rerun", selection_mode="points")
+    which = right.radio("Error", ["online", "opt"], horizontal=True, key="which")
+    right.plotly_chart(
+        error_figure(ok, which, t_cursor), key="err", on_select="rerun", selection_mode="points"
+    )
+    st.plotly_chart(contribution_figure(rows), key="contrib")
+
+
 def _results(root: Path) -> None:
     runs = list_runs(root)
     if not runs:
@@ -211,14 +258,7 @@ def _results(root: Path) -> None:
     rows = metrics_table(shown, ref_key)
     st.dataframe(pd.DataFrame(rows, columns=list(COLUMNS)), hide_index=True)
     if ok:
-        duration = max(load_scenario(s.scenario).duration_s for s, _ in ok)
-        t_cursor = st.slider("Time [s]", 0.0, float(duration), 0.0, 1.0, key="cursor")
-        left, right = st.columns(2)
-        gt = ok[0][1].run_dir / "gt.tum"
-        left.plotly_chart(trajectory_figure(ok, gt, t_cursor), key="traj")
-        which = right.radio("Error", ["online", "opt"], horizontal=True, key="which")
-        right.plotly_chart(error_figure(ok, which), key="err")
-        st.plotly_chart(contribution_figure(rows), key="contrib")
+        _plots(ok, names, rows)
     if st.button("Export report", key="export"):
         out = root / "reports" / time.strftime("%Y%m%d-%H%M%S")
         st.success(f"Report written: {export_report(shown, ref_key, out)}")

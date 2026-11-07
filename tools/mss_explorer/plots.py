@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from mss_eval.ate import align, read_tum_stamps_ns
+from mss_eval.ate import Alignment, align, read_tum_stamps_ns
 from mss_eval.tum import read_tum
 from mss_explorer.metrics import delta_ate_pct
 from mss_explorer.runner import RunResult
@@ -34,6 +34,9 @@ COLUMNS = (
     "ΔATE %",
     "reason",
 )
+MIN_BOX_HEIGHT_M = 0.5  # world boxes thinner than this (floor, ceiling slabs) are not drawn
+MAP_SLICE_Z_M = (0.2, 2.5)  # map points drawn: this height band in the gt frame, m
+MAX_MAP_POINTS = 30_000  # map points drawn at most (random subset, fixed seed)
 
 
 def _name(run: Run) -> str:
@@ -84,22 +87,116 @@ def _in_faults(t_s: np.ndarray, faults: Sequence[Fault]) -> np.ndarray:
     return mask
 
 
-def _aligned(r: RunResult) -> tuple[np.ndarray, np.ndarray] | None:
-    """(t_s from the first gt stamp, aligned xyz) of the online estimate, or None."""
+def _aligned(r: RunResult) -> tuple[np.ndarray, Alignment] | None:
+    """(t_s from the first gt stamp, alignment) of the online estimate, or None."""
     gt = r.run_dir / "gt.tum"
     try:
         al = align(r.run_dir / "bench" / "est.tum", gt)
     except (OSError, ValueError):
         return None
-    return (al.t_ns - int(read_tum_stamps_ns(gt).min())) * 1e-9, al.est_aligned
+    return (al.t_ns - int(read_tum_stamps_ns(gt).min())) * 1e-9, al
 
 
-def trajectory_figure(runs: Sequence[Run], gt: Path, t_cursor_s: float | None = None) -> Any:
-    """Top view: ground truth, one trace per run (fault segments dashed), cursor markers."""
+def _errors(al: Alignment) -> np.ndarray:
+    """Position error of every pair [m], the same as errors_online.csv."""
+    return np.linalg.norm(al.gt - al.est_aligned, axis=1)
+
+
+def map_points(r: RunResult) -> np.ndarray | None:
+    """(N, 3) points of the run's ``map.pcd`` in the gt frame, cut to ``MAP_SLICE_Z_M`` and at
+    most ``MAX_MAP_POINTS``; None without a map. The map is in w at the optimised poses, so it
+    is moved by the rigid fit of ``kf_opt.tum`` (of ``est.tum`` when that fit is not possible)."""
+    from mss_eval.map_png import read_pcd
+
+    try:
+        pts = read_pcd(r.run_dir / "map.pcd")
+    except (OSError, ValueError):
+        return None
+    al = None
+    for est in ("kf_opt.tum", "est.tum"):
+        try:
+            al = align(r.run_dir / "bench" / est, r.run_dir / "gt.tum")
+            break
+        except (OSError, ValueError):
+            continue
+    if al is None:
+        return None
+    p = pts @ al.rot.T + al.t
+    p = p[(p[:, 2] > MAP_SLICE_Z_M[0]) & (p[:, 2] < MAP_SLICE_Z_M[1])]
+    if len(p) > MAX_MAP_POINTS:
+        p = p[np.random.default_rng(0).choice(len(p), MAX_MAP_POINTS, replace=False)]
+    return p
+
+
+def _world_shapes(fig: Any, world_sdf: Path) -> None:
+    """The world's collision boxes, top view, as grey rectangles under the traces."""
+    from gen_sim_assets import world_boxes
+
+    for b in world_boxes(world_sdf):
+        if b.hi[2] - b.lo[2] < MIN_BOX_HEIGHT_M:
+            continue
+        fig.add_shape(
+            type="rect",
+            x0=float(b.lo[0]),
+            x1=float(b.hi[0]),
+            y0=float(b.lo[1]),
+            y1=float(b.hi[1]),
+            fillcolor="rgba(120,120,120,0.35)",
+            line_width=0,
+            layer="below",
+        )
+
+
+def _error_vectors(t: np.ndarray, al: Alignment, every_s: float) -> tuple[list, list]:
+    """Estimate-to-truth segments, one every ``every_s`` seconds, None-separated."""
+    vx: list = []
+    vy: list = []
+    next_t = -np.inf
+    for i in range(len(t)):
+        if t[i] < next_t:
+            continue
+        next_t = t[i] + every_s
+        vx += [float(al.est_aligned[i, 0]), float(al.gt[i, 0]), None]
+        vy += [float(al.est_aligned[i, 1]), float(al.gt[i, 1]), None]
+    return vx, vy
+
+
+def trajectory_figure(
+    runs: Sequence[Run],
+    gt: Path,
+    t_cursor_s: float | None = None,
+    *,
+    color_by_error: bool = False,
+    error_vectors_s: float | None = None,
+    world_sdf: Path | None = None,
+    map_run: Run | None = None,
+) -> Any:
+    """Top view: ground truth, one trace per run (fault segments dashed), cursor markers.
+
+    ``color_by_error`` colours each run's poses by position error, on one scale for all runs;
+    ``error_vectors_s`` draws an estimate-to-truth segment every that many seconds;
+    ``world_sdf`` draws the world's boxes underneath; ``map_run`` draws that run's map. Every
+    run point carries its time (``customdata``, s), so a click on it selects that time."""
     import plotly.graph_objects as go
 
     fig = go.Figure()
+    if world_sdf is not None:
+        _world_shapes(fig, world_sdf)
+    if map_run is not None:
+        m = map_points(map_run[1])
+        if m is not None:
+            fig.add_trace(
+                go.Scattergl(
+                    x=m[:, 0],
+                    y=m[:, 1],
+                    name=f"{_name(map_run)} map",
+                    mode="markers",
+                    marker={"size": 2, "color": "rgba(40,90,160,0.45)"},
+                    hoverinfo="skip",
+                )
+            )
     g = read_tum(gt)
+    g_t = (read_tum_stamps_ns(gt) - int(read_tum_stamps_ns(gt).min())) * 1e-9
     fig.add_trace(
         go.Scatter(
             x=g.p[:, 0],
@@ -107,14 +204,53 @@ def trajectory_figure(runs: Sequence[Run], gt: Path, t_cursor_s: float | None = 
             name="ground truth",
             mode="lines",
             line={"color": "black", "width": 3},
+            customdata=g_t,
+            hovertemplate="t %{customdata:.1f} s",
         )
     )
-    for run in runs:
-        got = _aligned(run[1])
-        if got is None:
-            continue
-        t, p = got
-        fig.add_trace(go.Scatter(x=p[:, 0], y=p[:, 1], name=_name(run), mode="lines"))
+    aligned = [(run, got) for run in runs if (got := _aligned(run[1])) is not None]
+    if color_by_error and aligned:
+        top = max(float(_errors(al).max()) for _, (_, al) in aligned)
+        fig.update_layout(
+            coloraxis={
+                "cmin": 0.0,
+                "cmax": top,
+                "colorscale": "Turbo",
+                "colorbar": {"title": {"text": "error [m]"}},
+            }
+        )
+    for run, (t, al) in aligned:
+        p = al.est_aligned
+        err = _errors(al)
+        trace: dict[str, Any] = {
+            "x": p[:, 0],
+            "y": p[:, 1],
+            "name": _name(run),
+            "customdata": t,
+            "text": [f"{e:.3f} m" for e in err],
+            "hovertemplate": "t %{customdata:.1f} s<br>error %{text}",
+        }
+        if color_by_error:
+            trace |= {
+                "mode": "lines+markers",
+                "line": {"color": "rgba(90,90,90,0.4)", "width": 1},
+                "marker": {"size": 5, "color": err, "coloraxis": "coloraxis"},
+            }
+        else:
+            trace["mode"] = "lines"
+        fig.add_trace(go.Scatter(**trace))
+        if error_vectors_s:
+            vx, vy = _error_vectors(t, al, error_vectors_s)
+            fig.add_trace(
+                go.Scatter(
+                    x=vx,
+                    y=vy,
+                    name=f"{_name(run)} error",
+                    mode="lines",
+                    line={"width": 1, "color": "crimson"},
+                    hoverinfo="skip",
+                )
+            )
         bad = _in_faults(t, run[0].faults)
         if bad.any():
             xs, ys = _segments(p[:, 0], p[:, 1], bad)
@@ -154,7 +290,8 @@ def trajectory_figure(runs: Sequence[Run], gt: Path, t_cursor_s: float | None = 
                     y=[p[i, 1]],
                     mode="markers",
                     showlegend=False,
-                    marker={"size": 12, "symbol": "circle-open"},
+                    hoverinfo="skip",
+                    marker={"size": 14, "symbol": "circle-open", "line": {"width": 3}},
                 )
             )
     fig.update_layout(
@@ -166,8 +303,24 @@ def trajectory_figure(runs: Sequence[Run], gt: Path, t_cursor_s: float | None = 
     return fig
 
 
-def error_figure(runs: Sequence[Run], which: str = "online") -> Any:
-    """Position error over time per run; each distinct fault window shaded and labelled."""
+def selected_time(selection: dict | None) -> float | None:
+    """The time [s] (``customdata``) of the first selected point that carries one; None when
+    no such point is selected (map points and world boxes carry no time)."""
+    points = ((selection or {}).get("selection") or {}).get("points") or []
+    for pt in points:
+        value = pt.get("customdata")
+        if isinstance(value, list | tuple):
+            value = value[0] if value else None
+        if value is not None:
+            return float(value)
+    return None
+
+
+def error_figure(
+    runs: Sequence[Run], which: str = "online", t_cursor_s: float | None = None
+) -> Any:
+    """Position error over time per run; each distinct fault window shaded and labelled; a
+    dotted vertical line at ``t_cursor_s``."""
     import plotly.graph_objects as go
 
     fig = go.Figure()
@@ -176,7 +329,11 @@ def error_figure(runs: Sequence[Run], which: str = "online") -> Any:
         if not path.is_file():
             continue
         data = np.loadtxt(path, delimiter=",", skiprows=1, ndmin=2)
-        fig.add_trace(go.Scatter(x=data[:, 0], y=data[:, 1], name=_name(run), mode="lines"))
+        fig.add_trace(
+            go.Scatter(
+                x=data[:, 0], y=data[:, 1], customdata=data[:, 0], name=_name(run), mode="lines"
+            )
+        )
     seen = set()
     for run in runs:
         for f in run[0].faults:
@@ -193,6 +350,8 @@ def error_figure(runs: Sequence[Run], which: str = "online") -> Any:
                 annotation_text=f"{f.sensor}:{f.kind}",
                 annotation_position="top left",
             )
+    if t_cursor_s is not None:
+        fig.add_vline(x=t_cursor_s, line_width=2, line_dash="dot", line_color="black")
     fig.update_layout(
         xaxis_title="t [s]",
         yaxis_title="position error [m]",
@@ -299,7 +458,8 @@ def export_report(runs: Sequence[Run], ref_key: str, out_dir: Path) -> Path:
     for run in runs:
         got = _aligned(run[1])
         if got is not None:
-            ax.plot(got[1][:, 0], got[1][:, 1], lw=1, label=_name(run))
+            p = got[1].est_aligned
+            ax.plot(p[:, 0], p[:, 1], lw=1, label=_name(run))
     ax.set_aspect("equal")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
@@ -327,6 +487,8 @@ __all__ = [
     "contribution_figure",
     "error_figure",
     "export_report",
+    "map_points",
     "metrics_table",
+    "selected_time",
     "trajectory_figure",
 ]

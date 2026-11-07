@@ -2,9 +2,10 @@
 
 Chain: raw bag -> noise bridge (scaled profile, extra IMU noise) -> faults -> bag_to_mssdata
 -> bench (generated overlay) -> metrics. The run directory keeps ``spec.yaml``, ``overlay.yaml``,
-``gt.tum``, ``bench/`` (est.tum, kf_opt.tum, bench.json), ``errors_online.csv``,
-``errors_opt.csv``, ``result.json`` and ``log.txt``; the intermediate bags under ``tmp/`` are
-deleted. ``ok`` and ``lost`` results are served from the cache; ``failed`` ones run again.
+``gt.tum``, ``bench/`` (est.tum, kf_opt.tum, loops.csv, bench.json), ``map.pcd`` (the bench's
+global map, frame w), ``errors_online.csv``, ``errors_opt.csv``, ``result.json`` and
+``log.txt``; the intermediate bags under ``tmp/`` are deleted. ``ok`` and ``lost`` results are
+served from the cache; ``failed`` ones run again.
 """
 
 from __future__ import annotations
@@ -307,6 +308,7 @@ def _execute(
     tmp = run_dir / "tmp"
     shutil.rmtree(tmp, ignore_errors=True)
     shutil.rmtree(run_dir / "bench", ignore_errors=True)
+    (run_dir / "map.pcd").unlink(missing_ok=True)
     tmp.mkdir()
     seed = sc.seed if spec.seed is None else spec.seed
     overlay = write_overlay(sc, spec.factors, run_dir / "overlay.yaml", spec.variant)
@@ -339,6 +341,8 @@ def _execute(
         str(overlay.resolve()),
         "--out",
         str((run_dir / "bench").resolve()),
+        "--map-out",
+        str((run_dir / "map.pcd").resolve()),
     ]
     _step(run_dir, "bench")
     with (run_dir / "log.txt").open("w") as log:

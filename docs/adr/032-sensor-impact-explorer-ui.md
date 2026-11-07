@@ -21,3 +21,8 @@ Muốn biết một cảm biến góp bao nhiêu vào kết quả SLAM, hoặc m
 - Phụ thuộc mới chỉ trong extra `explorer`; core, `ros2_node` và CI không đổi. Trên máy dev, extra nên được cài vào một thư mục riêng (`pip install --target`, numpy giữ đúng bản hệ thống), không vào user site, vì numpy 2 trong user site làm hỏng scipy và matplotlib của hệ thống.
 - Mỗi lần chạy mất khoảng thời gian một lần bench trên bản ghi; tối đa hai lần chạy song song (WSL khoảng 10 GB RAM).
 - Hai scenario dùng cùng profile và overlay (E-07W, ROOM-01) không phân biệt được qua bản ghi; người dùng chọn đúng thư mục bản ghi.
+
+## Bổ sung 2026-11-08: bản đồ và liên kết sai số với vị trí
+
+6. **Mỗi lần chạy lưu bản đồ của bench** (`mss_bench --map-out`, `map.pcd` trong thư mục lần chạy, khung w tại các pose đã tối ưu, khoảng 1 MB với ROOM-01). Trang dời bản đồ sang khung ground truth bằng phép khớp cứng của `kf_opt.tum` (của `est.tum` khi không khớp được), chỉ vẽ dải độ cao 0,2–2,5 m và tối đa 30 000 điểm. Lần chạy cũ không có bản đồ thì không vẽ. Nền là mặt bằng thật: các hộp va chạm của `sim/worlds/<world>.sdf` (dùng lại `world_boxes` của `tools/gen_sim_assets.py`), bỏ các tấm sàn và trần mỏng hơn 0,5 m. Không thêm phụ thuộc.
+7. **Sai số gắn với vị trí**: quỹ đạo tô màu theo sai số vị trí (cùng giá trị với `errors_online.csv`, một thang màu chung cho mọi lần chạy), đoạn nối ước lượng tới vị trí thật mỗi 2 s, và con trỏ thời gian chung cho hai đồ thị: bấm vào một điểm trên quỹ đạo hoặc trên đồ thị sai số thì con trỏ nhảy tới thời điểm đó (mỗi điểm mang thời gian của nó). Điểm bản đồ và mặt bằng không mang thời gian nên bấm vào không đổi con trỏ.
