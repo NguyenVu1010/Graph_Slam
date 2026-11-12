@@ -8,6 +8,8 @@
 #include <gtest/gtest.h>
 
 #include "mss2d/merger.hpp"
+#include "mss2d/scan_matcher.hpp"
+#include "sim_world.hpp"
 
 namespace {
 std::atomic<long> g_news{0};
@@ -59,6 +61,28 @@ TEST(NoAlloc, PushRunOnceAndFlushDoNotAllocate) {
   const long after = g_news.load();
 
   EXPECT_GT(sink.n, 300);
+  EXPECT_EQ(after - before, 0);
+}
+
+TEST(NoAlloc, GridInsertDistanceFieldAndMatchDoNotAllocate) {
+  const Config cfg;
+  auto grid = std::make_unique<OccupancyGrid>(cfg.grid);
+  auto df = std::make_unique<DistanceField>(cfg.grid);
+  auto matcher = std::make_unique<ScanMatcher>(cfg.matcher);
+  auto scan = std::make_unique<Scan2d>();
+  auto pts = std::make_unique<PointCloud2d>();
+  const sim::World world = sim::room_world();
+  sim::make_scan(world, Pose2T<double>(0.2, -0.1, 0.3), 720, 12.0, 0.0, 1, *scan);
+
+  const long before = g_news.load();
+  grid->reset(Pose2());
+  scan_to_points(*scan, cfg.matcher.min_range_m, cfg.matcher.max_range_m, *pts);
+  grid->insert(*pts, Pose2(0.2F, -0.1F, 0.3F));
+  df->compute(*grid);
+  const MatchResult r = matcher->match(*grid, *df, *pts, Pose2(0.3F, -0.2F, 0.35F));
+  const long after = g_news.load();
+
+  EXPECT_EQ(r.status, MatchStatus::kOk);
   EXPECT_EQ(after - before, 0);
 }
 

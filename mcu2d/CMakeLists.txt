@@ -16,7 +16,8 @@ enable_testing()
 find_package(GTest REQUIRED)
 find_package(Threads REQUIRED)
 add_executable(mss2d_tests tests/ring_test.cpp tests/merger_test.cpp tests/config_test.cpp
-                           tests/no_alloc_test.cpp)
+                           tests/no_alloc_test.cpp tests/pose2_test.cpp tests/grid_test.cpp
+                           tests/degeneracy_test.cpp tests/matcher_test.cpp)
 target_link_libraries(mss2d_tests PRIVATE mss2d GTest::gtest_main Threads::Threads)
 target_compile_options(mss2d_tests PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME mss2d_tests COMMAND mss2d_tests)
