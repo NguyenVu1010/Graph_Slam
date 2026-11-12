@@ -10,6 +10,7 @@ add_library(mss_pipeline STATIC
   src/gravity_rest.cpp
   src/imu_buffer.cpp
   src/imu_trajectory_builder.cpp
+  src/keyframe_backend.cpp
   src/keyframe_policy.cpp
   src/keyframe_store.cpp
   src/map_downsample.cpp)

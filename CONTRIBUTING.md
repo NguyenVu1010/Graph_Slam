@@ -16,7 +16,7 @@ core/        C++ library, no ROS: common, preprocess, map, scan_match, degenerac
 ros2_node/   thin ROS 2 adapter: message <-> core struct, launch, params
 mss_teleop/  ROS 2 package (ament_python): drive the sim robot by gamepad/keyboard, live RViz view
 bench/       latency benchmark binary (runs on Pi5 without ROS)
-mcu2d/      2D SLAM for a single-core MCU without an OS (ADR-034), host build + tests
+mcu2d/       2D SLAM for a single-core MCU without an OS (ADR-034), host build + tests
 sim/         Gazebo worlds (SDF), trajectories, sensor noise models
 eval/        Python: evo, ablation, plots, baselines.json
 docs/        conventions.md, derivations, adr/

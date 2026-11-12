@@ -30,8 +30,8 @@
 
 #include "gnss_fusion.hpp"
 #include "imu_buffer.hpp"
+#include "keyframe_backend.hpp"
 #include "keyframe_policy.hpp"
-#include "keyframe_store.hpp"
 #include "wheel_odometer.hpp"
 
 namespace mss::pipeline::detail {
@@ -111,29 +111,6 @@ class CoreObserver {
 /// rotation keyframe rule by one keyframe every n matched scans; `frontend_keeps_own_state`
 /// keeps the front-end state (matched pose, IMU velocity and bias) at a keyframe instead of
 /// taking the backend estimate, so the LiDAR factors carry no backend feedback.
-/// ADR-030 kernel-release rule (review B-1), on what the pipeline knows of a loop when it enters
-/// the graph: its keyframes, their positions on the graph at that time (m, w), the correction it
-/// asks of the graph (|p(Z) - p(T_w_bi^-1 T_w_bj)|, m) and the distance travelled from i to j
-/// (sum of the keyframe steps, m).
-struct ReleaseEvidence {
-  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-  common::KeyId i = 0;
-  common::KeyId j = 0;
-  common::Vec3 p_i = common::Vec3::Zero();
-  common::Vec3 p_j = common::Vec3::Zero();
-  double asked_m = 0.0;
-  double path_m = 0.0;
-};
-/// The correction is plausible as drift: asked_m <= kernel_release_drift_ratio * path_m.
-bool release_plausible(const ReleaseEvidence& a, const loop::LoopConfig& c);
-/// a and b are partners: both plausible, i and j each within kernel_release_window_keyframes,
-/// and candidates and queries each at least kernel_release_min_separation_m apart (two places:
-/// one look-alike seen from nearby queries gives loops whose candidates are close together).
-/// Tests: LoopKernelRelease.PartnerRule*.
-bool release_partners(const ReleaseEvidence& a,
-                      const ReleaseEvidence& b,
-                      const loop::LoopConfig& c);
-
 struct CoreTestHooks {
   CoreObserver* observer = nullptr;
   bool force_T_e_w = false;
@@ -168,7 +145,7 @@ struct CoreTestHooks {
   /// Loop updates that succeed before drop_loop_updates applies (ADR-030 failure-path tests).
   mutable int pass_loop_updates = 0;
   /// ADR-028 tests: called with the backend graph after every loop search that changed it (after
-  /// the extra updates and the front-end re-sync), to check which loop factors it holds.
+  /// the extra updates), to check which loop factors it holds.
   std::function<void(const backend::Graph&)> inspect_graph;
 };
 
@@ -176,13 +153,6 @@ struct CoreTestHooks {
 /// Owner: the test that sets them, on the test thread, before building an Estimator; not
 /// thread-safe, never used by production code.
 void set_core_test_hooks(const CoreTestHooks* hooks);
-
-/// ADR-031 loop listing of EstimatorCore::graph_snapshot(): appends loop (i, j) with `state` to
-/// `out` unless (i, j) is already listed; returns whether it was appended. The snapshot lists the
-/// loops in the graph first, then the PCM-removed ones, so a loop that was removed and later
-/// re-added appears once, with its current state. Times are not set here.
-/// Tests: PipelineInternals.GraphLoopListedOnceWithItsCurrentState.
-bool add_graph_loop(common::KeyId i, common::KeyId j, LoopState state, std::vector<GraphLoop>& out);
 
 /// Diagnostic counters of EstimatorCore, all since construction.
 struct CoreCounters {
@@ -232,9 +202,10 @@ struct CoreCounters {
 };
 
 /// The per-message algorithm of the single-threaded estimator (docs/derivations/pipeline.md,
-/// ADR-005 threads deferred). Owns every module. Messages must arrive in the Estimator's
-/// k-way merge order (IMU, wheel, GNSS by t; scans by their end time).
-/// Internal to the pipeline. Single-threaded. Large (~0.5 MB): hold it on the heap.
+/// ADR-005 threads deferred). Owns every module: the front-end ones directly, the graph, keyframe
+/// store and loop closure through KeyframeBackend (ADR-033). Messages must arrive in the
+/// Estimator's k-way merge order (IMU, wheel, GNSS by t; scans by their end time). Internal to the
+/// pipeline. Single-threaded. Large (~0.5 MB): hold it on the heap.
 class EstimatorCore {
  public:
   /// Builds every module from the validated `cfg` and reserves every buffer.
@@ -264,7 +235,8 @@ class EstimatorCore {
   [[nodiscard]] bool has_estimate() const { return has_estimate_; }
   /// Latest estimate (Estimator::latest_state() semantics). Default until has_estimate().
   [[nodiscard]] const common::Estimate& latest() const { return latest_; }
-  [[nodiscard]] const CoreCounters& counters() const { return counters_; }
+  /// The front-end counters merged with the backend's (BackendCounters).
+  [[nodiscard]] CoreCounters counters() const;
   /// ADR-023: signed wheel odometer (m) over the finite wheel samples received so far.
   [[nodiscard]] double wheel_odometer_m() const { return odometer_.reading_m(); }
   /// Backlog G9: sum (m) of the travel bounds of the wheel-sample gaps longer than
@@ -274,16 +246,12 @@ class EstimatorCore {
   [[nodiscard]] double wheel_nominal_period_s() const { return odometer_.nominal_period_s(); }
   /// The VoxelMap cache (read-only, for diagnostics such as Estimator::stats()).
   [[nodiscard]] const map::VoxelMap& voxel_map() const { return map_; }
-  /// Global map export (Estimator::visit_map): calls `visit` for every keyframe in the store,
-  /// oldest first, at T_w_b(k) * T_b_l with T_w_b(k) = graph_.keyframe_state(k) now; entries
-  /// without a backend estimate are skipped and counted (n_no_pose). Reads only; allocates
-  /// nothing itself.
-  MapExportInfo visit_map(const MapKeyframeVisitor& visit) const;
-  /// Graph snapshot (Estimator::graph_snapshot, ADR-031): clears `out`, then lists every
-  /// keyframe graph_.keyframe_state() has an estimate for and every loop that entered the graph
-  /// (graph_loops_ with PCM, plain_loops_ without; then removed_loops_). Returns the number of
-  /// keyframes the graph knows (estimated or not). Reads only; allocates only when `out` grows.
-  std::size_t graph_snapshot(GraphSnapshot& out) const;
+  /// Global map export (Estimator::visit_map): KeyframeBackend::visit_map.
+  MapExportInfo visit_map(const MapKeyframeVisitor& visit) const {
+    return backend_.visit_map(visit);
+  }
+  /// Graph snapshot (Estimator::graph_snapshot, ADR-031): KeyframeBackend::graph_snapshot.
+  std::size_t graph_snapshot(GraphSnapshot& out) const { return backend_.graph_snapshot(out); }
 
  private:
   // Processes deferred GNSS fixes whose time the buffered IMU now covers.
@@ -291,7 +259,7 @@ class EstimatorCore {
   // One fix at the body pose predicted from front_ to m.t (m.t >= front_.t, IMU covers it).
   void fuse_gnss(const common::GnssMeasurement& m);
   // ADR-022: assigns the pre-alignment fixes up to keyframe j (at t, front_ holds its
-  // front-end pose) and, once aligned, adds them as factors on their keyframes.
+  // front-end pose) and, once aligned, takes them into prealign_factors_ for their keyframes.
   void attach_prealign_fixes(common::KeyId j, common::Timestamp t);
   void sync_prealign_counters();
   void track_heading(const common::MatchResult* match);
@@ -309,28 +277,15 @@ class EstimatorCore {
                     const common::MatchResult& match,
                     const common::PoseCovariance& cov_b,
                     common::PoseCovariance& cov_out);
-  // Inserts the keyframe cloud (from pre_out_) at front_ into store, map and window.
-  void insert_keyframe_cloud(common::KeyId id, common::Timestamp t);
+  // The keyframe cloud at `t` (from pre_out_) into kf_cloud_, for the backend's store.
+  void prepare_keyframe_cloud(common::Timestamp t);
+  // Inserts kf_cloud_ at ref_ into the map and the window.
+  void insert_keyframe_cloud(common::KeyId id);
   // ADR-016 rebuild check after a successful optimize(); `force` (an accepted loop, ADR-026)
   // rebuilds without comparing poses.
   void maybe_rebuild_map(bool force);
-  // ADR-026: loop search for keyframe j (at t, already optimised and in the store). On an
-  // accepted loop: loop factor, optimize() (+ loop_closure.isam_extra_updates), then front_,
-  // ref_, kf_ and cov_out re-synced; returns true.
-  bool try_loop_closure(common::KeyId j, common::Timestamp t, common::PoseCovariance& cov_out);
-  common::Result<common::Estimate> drop_pending_loops_for_test();
-  // ADR-030 (with PCM): adds the loops of graph_loops_ not yet in the graph and re-adds those
-  // whose kernel state changed (loop_closure.kernel_release: no kernel when a partner loop is
-  // within the window). Returns true when a loop already in the graph changed its kernel.
-  bool apply_loop_kernels();
-  // ADR-030: the release evidence of a loop entering the graph, from loop_views_ (the graph
-  // poses of this search).
-  ReleaseEvidence release_evidence(const common::LoopConstraint& lc) const;
-  // ADR-020 consistency check of the gravity factor after keyframe `j` was optimised.
-  void check_gravity_factor(common::KeyId j);
   // Prediction preintegrator restarted at front_ (bias) with the boundary sample.
   void reset_prediction();
-  void log_backend_failure(const std::string& reason);
 
   Config cfg_;
   common::Pose T_b_l_;
@@ -346,35 +301,12 @@ class EstimatorCore {
   preprocess::Preprocessor kf_preprocessor_;
   map::VoxelMap map_;
   scan_match::ScanMatcher matcher_;
-  backend::Graph graph_;
+  // ADR-033: graph, keyframe store, loop closure; reached only through KeyframeMsg in,
+  // BackendUpdate out and its read queries.
+  KeyframeBackend backend_;
   odom::WheelIntegrator wheel_;
   GnssFusion fusion_;
-  KeyframeStore store_;
   MapWindow window_;
-  loop::LoopDetector loop_;
-  loop::LoopSelector selector_;  // ADR-028: PCM over the verified loops (pcm_enabled)
-  std::vector<loop::KeyframeView> loop_views_;  // reserved map.max_keyframes when enabled
-  // ADR-030: the loop factors PCM put in the graph (selected, or frozen when they left PCM) and
-  // whether each one is in the graph without the kernel. Owner: this class, estimator thread.
-  struct PcmLoop {
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    common::LoopConstraint lc;
-    ReleaseEvidence ev;
-    bool added = false;     // add_loop_factor called (it may still be pending)
-    bool released = false;  // added with LoopKernel::kNone
-    bool pending = false;   // (re-)added in the update being prepared
-  };
-  // Reserved 2 * pcm_max_loops when enabled; it can grow past that (frozen loops stay in the
-  // graph), one allocation per growth, per accepted loop, off the hot path (review M-17). The
-  // partner scan is O(n^2) per graph change.
-  std::vector<PcmLoop> graph_loops_;
-  // ADR-031 bookkeeping for graph_snapshot() only (never read by the estimation): the loops added
-  // without PCM, in order (shown while Graph::has_loop_factor holds them), and the loops PCM
-  // removed from the graph, in removal order. One allocation per growth, per accepted or removed
-  // loop, off the hot path. Owner: this class, estimator thread.
-  std::vector<std::pair<common::KeyId, common::KeyId>> plain_loops_;
-  std::vector<std::pair<common::KeyId, common::KeyId>> removed_loops_;
-  int loop_skip_ = 0;  // keyframes left to skip after an accepted loop (min_interval_keyframes)
 
   ImuBuffer imu_;
   std::unique_ptr<std::array<common::ImuSample, kMaxImuQueue>> init_window_;
@@ -382,6 +314,9 @@ class EstimatorCore {
   std::unique_ptr<std::array<common::GnssMeasurement, kMaxAuxQueue>> gnss_out_;
   // ADR-022 output of GnssFusion::take_prealign; nullptr unless gnss.attach_prealign_fixes.
   std::unique_ptr<std::array<EarlyFactor, kMaxAuxQueue>> early_out_;
+  // ADR-022: the pre-alignment factors taken at one keyframe, in order (KeyframeMsg); reserved
+  // gnss.prealign_max_fixes (the most GnssFusion buffers) when gnss.attach_prealign_fixes.
+  std::vector<EarlyFactor> prealign_factors_;
   BoundedQueue<common::WheelSample, kMaxAuxQueue> wheel_queue_;
   BoundedQueue<common::GnssMeasurement, kMaxDeferredGnss> gnss_deferred_;
   common::ScanFrame pre_out_;
@@ -421,7 +356,6 @@ class EstimatorCore {
   std::size_t map_dropped_ = 0;
   bool init_failure_logged_ = false;
   bool match_failure_streak_ = false;
-  bool backend_failure_streak_ = false;
   bool imu_nonfinite_streak_ = false;
   bool gnss_reject_streak_ = false;
   bool track_restart_logged_ = false;      // one log line until the next alignment
@@ -436,9 +370,6 @@ class EstimatorCore {
   // object must outlive the core (HooksScope in the tests).
   const CoreTestHooks* hooks_ = nullptr;
   int scans_since_keyframe_ = 0;  // test-only: matched scans since the last keyframe
-  // Gravity-factor state (ADR-020): added at keyframe 0; checked once.
-  bool gravity_factor_added_ = false;
-  bool gravity_factor_checked_ = false;
   // Time of the last consumed wheel sample (taken from wheel_queue_, so in time order) with
   // a speed above imu.init_max_wheel_speed_mps; set when wheel_moved_.
   bool wheel_moved_ = false;
