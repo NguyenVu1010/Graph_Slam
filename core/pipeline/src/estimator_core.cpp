@@ -703,6 +703,9 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   msg.cloud_l = &kf_cloud_;
   const BackendUpdate u = backend_.add_keyframe(msg);
   const common::KeyId j = u.id;
+  if (early_out_ != nullptr && j != last_kf_id_ + 1) {  // the prediction above went wrong
+    common::log_error("keyframe id is not last + 1: pre-alignment fixes went to the wrong keyframe");
+  }
   if (u.optimised) {
     if (hooks_ == nullptr || !hooks_->frontend_keeps_own_state) {  // test-only seam
       front_ = u.opt.state;
