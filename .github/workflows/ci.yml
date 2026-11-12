@@ -40,6 +40,36 @@ jobs:
       - run: cmake --build build --parallel 2
       - run: ctest --test-dir build --output-on-failure
 
+  tsan:
+    # ThreadSanitizer over the lock-free estimator thread primitives (ADR-033).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libeigen3-dev libgtest-dev libyaml-cpp-dev
+      - uses: actions/cache@v4
+        id: sophus-cache
+        with:
+          path: ~/opt/sophus
+          key: sophus-1.22.10-ubuntu-24.04
+      - name: Build Sophus 1.22.10
+        if: steps.sophus-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch 1.22.10 https://github.com/strasdat/Sophus.git /tmp/sophus
+          cmake -S /tmp/sophus -B /tmp/sophus/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=$HOME/opt/sophus \
+            -DBUILD_SOPHUS_TESTS=OFF -DBUILD_SOPHUS_EXAMPLES=OFF -DSOPHUS_USE_BASIC_LOGGING=ON
+          cmake --build /tmp/sophus/build
+          cmake --install /tmp/sophus/build
+      # TSAN aborts at start-up with the runner's high-entropy ASLR ("unexpected memory mapping").
+      - run: sudo sysctl vm.mmap_rnd_bits=28
+      - run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMSS_WITH_GTSAM=OFF
+          -DMSS_WERROR=ON -DCMAKE_PREFIX_PATH=$HOME/opt/sophus "-DCMAKE_CXX_FLAGS=-fsanitize=thread"
+      - run: cmake --build build --parallel 2 --target test_thread_primitives
+      - run: ctest --test-dir build --output-on-failure -R "SpscQueue|SnapshotSlots"
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+
   python:
     runs-on: ubuntu-24.04
     steps:

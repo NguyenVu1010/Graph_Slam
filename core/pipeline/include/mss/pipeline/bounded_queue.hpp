@@ -16,9 +16,8 @@ constexpr std::size_t kMaxAuxQueue = 256;   // GNSS fixes or wheel samples, per 
 /// When full, push() overwrites the oldest element and returns false (drop-oldest policy,
 /// ADR-005). T must be default-constructible and copy-assignable.
 ///
-/// Threading: no mutex; single-threaded use only in this phase.
-/// TODO(ADR-005): a thread-safe variant (one producer, one consumer) once the estimator
-/// threads exist.
+/// Threading: none; single-threaded use only (deterministic mode and state owned by one
+/// thread). Queues between estimator threads use SpscQueue (ADR-033).
 template <class T, std::size_t N>
 class BoundedQueue {
   static_assert(N > 0, "BoundedQueue capacity must be positive");
