@@ -216,7 +216,7 @@ LapRun run_two_laps(const Config& cfg, const LapOptions& o) {
     out.nees.add(r.constraint.T_bi_bj,
                  circle_pose(static_cast<int>(r.constraint.i)).inverse() * circle_pose(k),
                  r.constraint.cov);
-    // ADR-028: PCM selects (as EstimatorCore::try_loop_closure does).
+    // ADR-028: PCM selects (as KeyframeBackend::try_loop_closure does).
     bool selected = true;
     if (o.pcm) {
       selected = sel.propose(r.constraint).selected;
@@ -605,11 +605,11 @@ TEST(LoopComponent, BoxWorldEstimatorLoops) {
 // loop to the keyframe one lap earlier, from the truth with the floor covariance (5 cm / 1 deg).
 // The first is wrong (along x of b_i: 0.5 m in the forget test, 0.8 m on a loosened chain in
 // the removal test, where it drags the result by centimetres), the next two are true. Known answer
-// through EstimatorCore::try_loop_closure: the wrong loop enters first, the first true one ties and
-// is left out, the second true one outvotes the wrong one, which is removed from iSAM2 while the
-// first true one is added back; counters, map rebuilds and the front-end re-sync follow, the graph
-// holds the two true loops only, and the trajectory ends as the run that only ever had the two true
-// loops.
+// through KeyframeBackend::try_loop_closure: the wrong loop enters first, the first true one ties
+// and is left out, the second true one outvotes the wrong one, which is removed from iSAM2 while
+// the first true one is added back; counters, map rebuilds and the front-end re-sync follow, the
+// graph holds the two true loops only, and the trajectory ends as the run that only ever had the
+// two true loops.
 constexpr double kInjectSigmaM = 0.05;          // injected loop covariance, position sigma (m)
 constexpr double kInjectSigmaRad = 1.0 * kDeg;  // injected loop covariance, rotation sigma (rad)
 
@@ -1404,7 +1404,7 @@ TEST(LoopKernelRelease, GaussianLoopAppliesLargeCorrections) {
   }
 }
 
-// ADR-030 through EstimatorCore::try_loop_closure (box world, loops injected one lap apart, a
+// ADR-030 through KeyframeBackend::try_loop_closure (box world, loops injected one lap apart, a
 // loosened LiDAR chain as in PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne): two loops that
 // agree on a 1 m world shift of the query. With kernel_release the second one is the first
 // one's partner, both enter without the kernel and the graph takes the shift; without it the
