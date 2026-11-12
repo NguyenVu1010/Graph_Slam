@@ -26,6 +26,7 @@ core/        C++ library, no ROS (colcon package mss_core)
 ros2_node/   ROS 2 adapter (colcon package mss_ros2)
 mss_teleop/  drive the simulated robot, watch SLAM live in RViz2 (colcon package mss_teleop)
 bench/       latency benchmark binary
+mcu2d/       2D SLAM for a single-core MCU without an OS (ADR-034), host build + tests
 tests/       unit, component, integration, python
 sim/ eval/   Gazebo worlds; evaluation (TUM files only)
 docs/        conventions, derivations, adr
