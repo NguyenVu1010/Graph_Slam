@@ -128,10 +128,27 @@ KeyframeBackend::KeyframeBackend(const Config& cfg, const CoreTestHooks* hooks)
             cfg.frames.T_b_l,
             cfg.realtime.max_points_per_scan),
       selector_(cfg.loop_closure, cfg.map.max_keyframes),
+      fusion_(cfg.gnss, cfg.frames.p_b_g, cfg.frames.T_b_o),
+      gnss_out_(std::make_unique<std::array<common::GnssMeasurement, kMaxAuxQueue>>()),
+      early_out_(cfg.gnss.enabled && cfg.gnss.attach_prealign_fixes
+                     ? std::make_unique<std::array<EarlyFactor, kMaxAuxQueue>>()
+                     : nullptr),
       hooks_(hooks) {
   if (cfg.loop_closure.enabled) {
     loop_views_.reserve(cfg.map.max_keyframes);
     graph_loops_.reserve(2 * static_cast<std::size_t>(cfg.loop_closure.pcm_max_loops));
+  }
+  if (early_out_ != nullptr) {
+    prealign_factors_.reserve(static_cast<std::size_t>(cfg.gnss.prealign_max_fixes));
+  }
+  if (hooks != nullptr) {  // test-only seams
+    if (hooks->force_T_e_w) {
+      fusion_.force_T_e_w(hooks->T_e_w);
+    }
+    if (hooks->gnss_shift_oracle) {
+      fusion_.set_shift_oracle(&hooks->gnss_shift_oracle);
+    }
+    fusion_.set_first_alignment_yaw_offset(hooks->gnss_first_align_yaw_offset_rad);
   }
 }
 
@@ -174,11 +191,17 @@ BackendUpdate KeyframeBackend::add_keyframe(const KeyframeMsg& msg) {
       graph_.add_odom_factor(msg.i, j, msg.odom);
     }
   }
-  for (const EarlyFactor& e : msg.prealign_gnss) {
-    graph_.add_gnss_factor(e.kf, e.m, msg.T_e_w);
-  }
-  for (const common::GnssMeasurement& m : msg.gnss) {
-    graph_.add_gnss_factor(j, m, msg.T_e_w);
+  // GNSS fixes waiting for this keyframe (pipeline.md section 5): the ADR-022 pre-alignment ones
+  // first, then the queued ones, all with the same T_e_w.
+  if (!msg.first && cfg_.gnss.enabled) {
+    const std::size_t n = collect_gnss(j, msg.t, msg.x0.T_w_b);
+    const common::Pose T_e_w = fusion_.T_e_w();
+    for (const EarlyFactor& e : prealign_factors_) {
+      graph_.add_gnss_factor(e.kf, e.m, T_e_w);
+    }
+    for (std::size_t k = 0; k < n; ++k) {
+      graph_.add_gnss_factor(j, (*gnss_out_)[k], T_e_w);
+    }
   }
   const common::Result<common::Estimate> opt = graph_.optimize();
   u.optimised = opt.is_ok();
@@ -201,10 +224,164 @@ BackendUpdate KeyframeBackend::add_keyframe(const KeyframeMsg& msg) {
   if (msg.cloud_l != nullptr) {
     (void)store_.add(j, msg.t, *msg.cloud_l);
   }
-  if (!msg.first && u.optimised && cfg_.loop_closure.enabled) {
+  if (msg.first) {
+    if (early_out_ != nullptr) {
+      // ADR-022: fixes of the IMU initialisation window are at rest at keyframe 0's pose, the
+      // state the front-end starts from.
+      fusion_.on_first_keyframe(j,
+                                msg.t,
+                                u.optimised ? u.opt.state.T_w_b : msg.x0.T_w_b,
+                                u.optimised ? u.opt.cov : prior_pose_cov(cfg_.backend),
+                                msg.prealign_static_from,
+                                msg.prealign_static_ok);
+      sync_prealign_counters();
+    }
+    return u;
+  }
+  // The reference pose of keyframe j (ADR-022: target of backward shifts) is the state the
+  // front-end continues from (EstimatorCore::add_keyframe).
+  const bool take_backend = hooks_ == nullptr || !hooks_->frontend_keeps_own_state;  // test seam
+  if (early_out_ != nullptr) {
+    fusion_.set_keyframe_reference(
+        j, msg.t, u.optimised && take_backend ? u.opt.state.T_w_b : msg.x0.T_w_b);
+  }
+  if (u.optimised && cfg_.loop_closure.enabled) {
     u.loop_added = try_loop_closure(j, msg.t, u.loop_opt);
+    if (u.loop_added && early_out_ != nullptr && take_backend) {
+      fusion_.set_keyframe_reference(j, msg.t, u.loop_opt.state.T_w_b);
+    }
   }
   return u;
+}
+
+std::size_t KeyframeBackend::collect_gnss(common::KeyId j,
+                                          common::Timestamp t,
+                                          const common::Pose& T_w_bj) {
+  prealign_factors_.clear();
+  if (early_out_ != nullptr) {
+    // ADR-022: assigns the pre-alignment fixes up to keyframe j and, once aligned, takes them
+    // for their keyframes, before the queued ones.
+    fusion_.on_keyframe(j, t, T_w_bj);
+    for (;;) {
+      const std::size_t n = fusion_.take_prealign(*early_out_);
+      if (n == 0) {
+        break;
+      }
+      for (std::size_t k = 0; k < n; ++k) {
+        const EarlyFactor& e = (*early_out_)[k];
+        prealign_factors_.push_back(e);
+        if (observer() != nullptr) {
+          observer()->on_gnss_factor(e.t_k, e.m, fusion_.T_e_w());
+        }
+      }
+      counters_.n_gnss_factors += n;
+    }
+    sync_prealign_counters();
+  }
+  const std::size_t n = fusion_.collect(t, T_w_bj, *gnss_out_);
+  for (std::size_t k = 0; k < n; ++k) {
+    if (observer() != nullptr) {
+      observer()->on_gnss_factor(t, (*gnss_out_)[k], fusion_.T_e_w());
+    }
+  }
+  counters_.n_gnss_factors += n;
+  return n;
+}
+
+void KeyframeBackend::sync_prealign_counters() {
+  counters_.n_gnss_prealign_attached = fusion_.n_prealign_attached();
+  counters_.n_gnss_prealign_static = fusion_.n_prealign_static();
+  counters_.n_gnss_prealign_dropped = fusion_.n_prealign_dropped();
+  counters_.n_gnss_prealign_not_static = fusion_.n_prealign_not_static();
+  counters_.n_gnss_prealign_rejected = fusion_.n_prealign_rejected();
+}
+
+void KeyframeBackend::on_gnss_fix(const GnssFixMsg& msg) {
+  const common::GnssMeasurement& m = msg.m;
+  if (msg.preinit) {
+    if (early_out_ != nullptr) {  // ADR-022: kept for keyframe 0 (static window)
+      if (!fusion_.on_preinit_fix(m).is_ok()) {
+        ++counters_.n_gnss_rejected;  // gate_fix, as on the live path (literal, no log)
+      }
+      sync_prealign_counters();
+    }
+    return;
+  }
+  if (observer() != nullptr) {
+    observer()->on_track_readings(m.t, msg.readings);
+  }
+  FixOutcome outcome = FixOutcome::kAccepted;
+  (void)fusion_.on_fix(m, msg.T_w_b, msg.P_w_b, &outcome, msg.readings);
+  if (fusion_.n_track_wheel_mismatches() != counters_.n_gnss_wheel_mismatch) {
+    counters_.n_gnss_wheel_mismatch = fusion_.n_track_wheel_mismatches();
+    if (!track_restart_logged_) {
+      common::log_warn(
+          "gnss: the GNSS track disagrees with the wheel travel (wheels turning on a still "
+          "robot, slipping wheels, or a wrong odometer scale); see Stats::n_gnss_wheel_mismatch");
+      track_restart_logged_ = true;
+    }
+  }
+  if (fusion_.n_track_frontend_wheel_disagreements() != counters_.n_gnss_frontend_wheel_disagree) {
+    counters_.n_gnss_frontend_wheel_disagree = fusion_.n_track_frontend_wheel_disagreements();
+    if (!track_fe_disagree_logged_) {
+      common::log_warn(
+          "gnss: the front end holds the robot still while the wheels turn (wheels spinning on a "
+          "still robot, or a LiDAR that sees surroundings moving with the robot); see "
+          "Stats::n_gnss_frontend_wheel_disagree");
+      track_fe_disagree_logged_ = true;
+    }
+  }
+  if (early_out_ != nullptr) {
+    sync_prealign_counters();
+  }
+  if (fusion_.n_realign() != counters_.n_gnss_realign) {
+    counters_.n_gnss_realign = fusion_.n_realign();
+    common::log_warn(
+        "gnss: chi-square rejected gnss.max_consecutive_rejects fixes in a row, "
+        "aligner restarted");
+  }
+  if (fusion_.aligned()) {
+    track_restart_logged_ = false;
+  }
+  if (observer() != nullptr && fusion_.n_alignments() != n_alignments_seen_) {
+    n_alignments_seen_ = fusion_.n_alignments();
+    observer()->on_alignment(
+        m.t, fusion_.T_e_w(), fusion_.align_yaw_sigma_rad(), fusion_.track_aligner());
+  }
+  if (observer() != nullptr && outcome == FixOutcome::kAccepted) {
+    observer()->on_fix_accepted(m.t, fusion_.T_e_w());
+  }
+  if (outcome == FixOutcome::kAccepted || outcome == FixOutcome::kNotAligned) {
+    gnss_reject_streak_ = false;
+    return;
+  }
+  ++counters_.n_gnss_rejected;
+  if (!gnss_reject_streak_) {
+    // Literal per outcome: no allocation (once per streak of rejections).
+    switch (outcome) {
+      case FixOutcome::kGateFix:
+        common::log_info("gnss fix rejected by gate_fix (status or covariance)");
+        break;
+      case FixOutcome::kChiSquare:
+        common::log_info("gnss fix rejected: chi-square gate exceeded");
+        break;
+      default:
+        common::log_info("gnss fix rejected: non-finite pose");
+        break;
+    }
+  }
+  gnss_reject_streak_ = true;
+}
+
+common::PoseCovariance prior_pose_cov(const backend::BackendConfig& b) {
+  common::PoseCovariance c = common::PoseCovariance::Zero();
+  const double var_p = b.prior_pos_sigma_m * b.prior_pos_sigma_m;
+  const double var_r = b.prior_rot_sigma_rad * b.prior_rot_sigma_rad;
+  for (int k = 0; k < 3; ++k) {
+    c(k, k) = var_p;
+    c(k + 3, k + 3) = var_r;
+  }
+  return c;
 }
 
 bool KeyframeBackend::try_loop_closure(common::KeyId j,
