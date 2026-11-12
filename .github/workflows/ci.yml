@@ -40,6 +40,16 @@ jobs:
       - run: cmake --build build --parallel 2
       - run: ctest --test-dir build --output-on-failure
 
+  mcu2d-host:
+    # 2D SLAM for a single-core MCU (ADR-034): standalone host build and tests, no core/.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libgtest-dev
+      - run: cmake -S mcu2d -B build-mcu2d -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build-mcu2d
+      - run: ctest --test-dir build-mcu2d --output-on-failure
+
   tsan:
     # ThreadSanitizer over the lock-free estimator thread primitives (ADR-033).
     runs-on: ubuntu-24.04
