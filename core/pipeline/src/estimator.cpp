@@ -366,7 +366,8 @@ Estimator::Stats Estimator::stats() const {
   out.n_loops_removed = c.n_loops_removed;
   out.n_loops_no_marginal = c.n_loops_no_marginal;
   out.n_loops_released = c.n_loops_released;
-  const map::VoxelMap& m = s.core->voxel_map();
+  const detail::MapRef snap = s.core->voxel_map();  // held while the counters are read
+  const map::VoxelMap& m = snap->map;
   out.n_map_points = m.num_points();
   out.n_map_spacing_replaced = c.n_map_spacing_replaced_cleared + m.num_spacing_replaced();
   const std::size_t n = s.latency_count;

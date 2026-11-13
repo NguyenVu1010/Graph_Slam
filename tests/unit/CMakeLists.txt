@@ -32,6 +32,6 @@ if(NOT MSS_WITH_GTSAM)
 endif()
 # pipeline internals (core/pipeline/src helpers, not installed).
 mss_add_test(test_pipeline_internals test_pipeline_internals.cpp test_pipeline_gnss_fusion.cpp
-  test_map_downsample.cpp test_pipeline_wheel_odometer.cpp
+  test_map_downsample.cpp test_map_publisher.cpp test_pipeline_wheel_odometer.cpp
   alloc_counter_impl.cpp)
 target_include_directories(test_pipeline_internals PRIVATE ${CMAKE_SOURCE_DIR}/core/pipeline/src)

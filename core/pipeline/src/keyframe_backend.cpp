@@ -11,6 +11,7 @@
 #include "mss/common/logger.hpp"
 
 #include "estimator_core.hpp"
+#include "keyframe_policy.hpp"
 
 namespace mss::pipeline::detail {
 
@@ -122,6 +123,8 @@ KeyframeBackend::KeyframeBackend(const Config& cfg, const CoreTestHooks* hooks)
       T_b_l_(cfg.frames.T_b_l),
       graph_(cfg.backend, cfg.imu, cfg.frames.p_b_g),
       store_(cfg.map.max_keyframes),
+      map_(cfg.map, store_, static_cast<std::size_t>(cfg.map.window_keyframes)),
+      window_(static_cast<std::size_t>(cfg.map.window_keyframes)),
       loop_(cfg.loop_closure,
             cfg.scan_match,
             cfg.map,
@@ -236,6 +239,8 @@ BackendUpdate KeyframeBackend::add_keyframe(const KeyframeMsg& msg) {
                                 msg.prealign_static_ok);
       sync_prealign_counters();
     }
+    // Keyframe 0 enters the map at the state the front-end starts from; no rebuild check.
+    update_map(j, msg.cloud_l, u.optimised ? u.opt.state.T_w_b : msg.x0.T_w_b, false, false);
     return u;
   }
   // The reference pose of keyframe j (ADR-022: target of backward shifts) is the state the
@@ -251,7 +256,91 @@ BackendUpdate KeyframeBackend::add_keyframe(const KeyframeMsg& msg) {
       fusion_.set_keyframe_reference(j, msg.t, u.loop_opt.state.T_w_b);
     }
   }
+  // The cloud enters the map at the reference pose after optimize() (before the loop update);
+  // the rebuild check reads the graph after the loop update.
+  update_map(j,
+             msg.cloud_l,
+             u.optimised && take_backend ? u.opt.state.T_w_b : msg.x0.T_w_b,
+             u.optimised,
+             u.loop_added);
   return u;
+}
+
+void KeyframeBackend::update_map(common::KeyId j,
+                                 const common::ScanFrame* cloud_l,
+                                 const common::Pose& T_w_bj,
+                                 bool check_rebuild,
+                                 bool force_rebuild) {
+  window_.push(j, T_w_bj);
+  if (map_.begin()) {
+    if (map_.lost_update()) {
+      repair_map();
+    } else {
+      if (cloud_l != nullptr) {
+        map_.insert(j, *cloud_l, T_w_bj * T_b_l_);
+      }
+      if (map_.map().num_dropped() > map_dropped_) {
+        map_dropped_ = map_.map().num_dropped();
+        common::log_warn("voxel map full (map.max_voxels): points dropped");
+      }
+      if (check_rebuild) {
+        maybe_rebuild_map(force_rebuild);
+      }
+    }
+  }
+  map_.publish();
+  sync_map_counters();
+}
+
+void KeyframeBackend::prune_map(const common::Vec3& p_w_b) {
+  if (map_.begin()) {
+    if (map_.lost_update()) {
+      repair_map();
+    }
+    map_.prune(p_w_b);
+  }
+  map_.publish();
+  sync_map_counters();
+}
+
+void KeyframeBackend::maybe_rebuild_map(bool force) {
+  if (window_.size() == 0) {
+    return;
+  }
+  const WindowEntry& oldest = window_.at(0);
+  const common::Result<common::NavState> st = graph_.keyframe_state(oldest.id);
+  if (!force && (!st.is_ok() || !pose_moved(oldest.T_w_b_inserted,
+                                            st.value().T_w_b,
+                                            cfg_.map.rebuild_trans_m,
+                                            cfg_.map.rebuild_rot_rad))) {
+    return;
+  }
+  counters_.n_map_spacing_replaced_cleared += map_.map().num_spacing_replaced();
+  map_.clear();
+  for (std::size_t i = 0; i < window_.size(); ++i) {
+    const WindowEntry& e = window_.at(i);
+    const KeyframeEntry* kf = store_.find(e.id);
+    if (kf == nullptr) {
+      continue;
+    }
+    const common::Result<common::NavState> s = graph_.keyframe_state(e.id);
+    const common::Pose T_w_b = s.is_ok() ? s.value().T_w_b : e.T_w_b_inserted;
+    map_.insert(e.id, kf->cloud_l, T_w_b * T_b_l_);
+    window_.set_pose(i, T_w_b);
+  }
+  map_dropped_ = map_.map().num_dropped();
+  ++counters_.n_map_rebuilds;
+  common::log_info("voxel map rebuilt from the keyframe window after a pose correction");
+}
+
+void KeyframeBackend::repair_map() {
+  common::log_warn("voxel map update dropped (no free snapshot buffer): rebuilding the map");
+  maybe_rebuild_map(true);
+}
+
+void KeyframeBackend::sync_map_counters() {
+  counters_.n_map_publish_skipped = map_.n_publish_skipped();
+  counters_.n_map_full_copies = map_.n_full_copies();
 }
 
 std::size_t KeyframeBackend::collect_gnss(common::KeyId j,
