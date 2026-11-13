@@ -126,7 +126,7 @@ struct EarlyFactor {
 /// With `gnss.attach_prealign_fixes` (ADR-022) it also keeps the fixes received before the
 /// first alignment in a bounded buffer, assigns each to its nearest keyframe in time and
 /// releases them as factors once aligned.
-/// Internal to the pipeline. Single-threaded: owned by EstimatorCore. No allocation after
+/// Internal to the pipeline. Single-threaded: owned by KeyframeBackend. No allocation after
 /// construction (fixed rings, a buffer reserved once, literal error reasons).
 class GnssFusion {
  public:

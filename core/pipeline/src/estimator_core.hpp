@@ -49,7 +49,7 @@ enum class GravityCheckOutcome {
   kUnchecked,      ///< statistic not evaluated, factor kept (n_gravity_factor_unchecked)
 };
 
-/// Test-only observer of the factors EstimatorCore adds (the GNSS fusion study,
+/// Test-only observer of the factors EstimatorCore and its KeyframeBackend add (GNSS fusion study,
 /// tests/component/test_pipeline_component.cpp `GnssFusionStudy`). Called on the estimator
 /// thread, only at keyframes and accepted fixes; never set in production.
 class CoreObserver {
@@ -203,9 +203,9 @@ struct CoreCounters {
 
 /// The per-message algorithm of the single-threaded estimator (docs/derivations/pipeline.md,
 /// ADR-005 threads deferred). Owns every module: the front-end ones directly, the graph, keyframe
-/// store and loop closure through KeyframeBackend (ADR-033). Messages must arrive in the
-/// Estimator's k-way merge order (IMU, wheel, GNSS by t; scans by their end time). Internal to the
-/// pipeline. Single-threaded. Large (~0.5 MB): hold it on the heap.
+/// store, loop closure and GNSS fusion through KeyframeBackend (ADR-033). Messages must arrive in
+/// the Estimator's k-way merge order (IMU, wheel, GNSS by t; scans by their end time). Internal to
+/// the pipeline. Single-threaded. Large (~0.5 MB): hold it on the heap.
 class EstimatorCore {
  public:
   /// Builds every module from the validated `cfg` and reserves every buffer.
@@ -221,10 +221,10 @@ class EstimatorCore {
   void on_imu(const common::ImuSample& s);
   /// Buffers one wheel sample and records the observed wheel period. No allocation.
   void on_wheel(const common::WheelSample& s);
-  /// Defers one GNSS fix until an IMU sample at or after m.t is buffered, then gates,
-  /// aligns and queues it at the body pose interpolated to m.t (gnss.enabled and an
-  /// estimate needed). Fixes older than the last processed scan start are rejected
-  /// (n_gnss_late). No allocation.
+  /// Defers one GNSS fix until an IMU sample at or after m.t is buffered, then sends it to the
+  /// backend (GnssFixMsg: gate, alignment, queue) at the body pose predicted to m.t
+  /// (gnss.enabled). Before keyframe 0 it is sent at once, without a pose (ADR-022). Fixes older
+  /// than the last processed scan start are rejected (n_gnss_late). No allocation.
   void on_gnss(const common::GnssMeasurement& m);
   /// End of data (Estimator::flush): deferred fixes that no IMU sample reached are
   /// dropped and counted in n_gnss_unfused_eof.
@@ -235,7 +235,7 @@ class EstimatorCore {
   [[nodiscard]] bool has_estimate() const { return has_estimate_; }
   /// Latest estimate (Estimator::latest_state() semantics). Default until has_estimate().
   [[nodiscard]] const common::Estimate& latest() const { return latest_; }
-  /// The front-end counters merged with the backend's (BackendCounters).
+  /// The front-end counters merged with the backend's (BackendCounters, GNSS fusion included).
   [[nodiscard]] CoreCounters counters() const;
   /// ADR-023: signed wheel odometer (m) over the finite wheel samples received so far.
   [[nodiscard]] double wheel_odometer_m() const { return odometer_.reading_m(); }
@@ -256,12 +256,9 @@ class EstimatorCore {
  private:
   // Processes deferred GNSS fixes whose time the buffered IMU now covers.
   void process_deferred_gnss();
-  // One fix at the body pose predicted from front_ to m.t (m.t >= front_.t, IMU covers it).
+  // Sends one fix to the backend (GnssFixMsg) at the body pose predicted from front_ to m.t
+  // (m.t >= front_.t, IMU covers it), with the track-yaw readings of the front-end.
   void fuse_gnss(const common::GnssMeasurement& m);
-  // ADR-022: assigns the pre-alignment fixes up to keyframe j (at t, front_ holds its
-  // front-end pose) and, once aligned, takes them into prealign_factors_ for their keyframes.
-  void attach_prealign_fixes(common::KeyId j, common::Timestamp t);
-  void sync_prealign_counters();
   void track_heading(const common::MatchResult* match);
   // Feeds `s` to both preintegrators when it is newer than the last fed sample.
   void feed_preintegrators(const common::ImuSample& s);
@@ -301,22 +298,15 @@ class EstimatorCore {
   preprocess::Preprocessor kf_preprocessor_;
   map::VoxelMap map_;
   scan_match::ScanMatcher matcher_;
-  // ADR-033: graph, keyframe store, loop closure; reached only through KeyframeMsg in,
-  // BackendUpdate out and its read queries.
+  // ADR-033: graph, keyframe store, loop closure, GNSS fusion; reached only through KeyframeMsg
+  // and GnssFixMsg in, BackendUpdate out and its read queries.
   KeyframeBackend backend_;
   odom::WheelIntegrator wheel_;
-  GnssFusion fusion_;
   MapWindow window_;
 
   ImuBuffer imu_;
   std::unique_ptr<std::array<common::ImuSample, kMaxImuQueue>> init_window_;
   std::unique_ptr<imu::ImuTrajectory> traj_;
-  std::unique_ptr<std::array<common::GnssMeasurement, kMaxAuxQueue>> gnss_out_;
-  // ADR-022 output of GnssFusion::take_prealign; nullptr unless gnss.attach_prealign_fixes.
-  std::unique_ptr<std::array<EarlyFactor, kMaxAuxQueue>> early_out_;
-  // ADR-022: the pre-alignment factors taken at one keyframe, in order (KeyframeMsg); reserved
-  // gnss.prealign_max_fixes (the most GnssFusion buffers) when gnss.attach_prealign_fixes.
-  std::vector<EarlyFactor> prealign_factors_;
   BoundedQueue<common::WheelSample, kMaxAuxQueue> wheel_queue_;
   BoundedQueue<common::GnssMeasurement, kMaxDeferredGnss> gnss_deferred_;
   common::ScanFrame pre_out_;
@@ -357,10 +347,6 @@ class EstimatorCore {
   bool init_failure_logged_ = false;
   bool match_failure_streak_ = false;
   bool imu_nonfinite_streak_ = false;
-  bool gnss_reject_streak_ = false;
-  bool track_restart_logged_ = false;      // one log line until the next alignment
-  bool track_fe_disagree_logged_ = false;  // one log line per run (backlog G3)
-  std::uint64_t n_alignments_seen_ = 0;    // observer only: alignments reported so far
   bool gnss_late_streak_ = false;
   bool uncovered_streak_ = false;
 
