@@ -13,7 +13,8 @@ add_library(mss_pipeline STATIC
   src/keyframe_backend.cpp
   src/keyframe_policy.cpp
   src/keyframe_store.cpp
-  src/map_downsample.cpp)
+  src/map_downsample.cpp
+  src/map_publisher.cpp)
 add_library(mss::pipeline ALIAS mss_pipeline)
 mss_set_target_defaults(mss_pipeline)
 target_include_directories(mss_pipeline PUBLIC
