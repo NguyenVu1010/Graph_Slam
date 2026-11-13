@@ -15,6 +15,15 @@ constexpr std::size_t kWheelRingCapacity = 64;
 /// reserve kMaxGridSide^2 bytes each, 40 KB + 40 KB at 200.
 constexpr int kMaxGridSide = 200;
 
+/// Occupancy grids owned by the front end: two active submaps (the older one is matched
+/// against, both are inserted into) plus finished ones kept for the backend. 4 x 46 KB.
+constexpr int kSubmapPoolSize = 4;
+
+/// Motion history kept by the front end for prediction and deskew (power of two not needed).
+constexpr int kMotionImuHistory = 256;   ///< gyro samples, >= 2 scan periods at the IMU rate
+constexpr int kMotionWheelHistory = 64;  ///< wheel samples
+constexpr int kMaxDeskewKnots = 64;      ///< poses tabulated over one LiDAR turn
+
 /// Occupancy submap and its distance field.
 struct GridConfig {
   float resolution_m = 0.05F;  ///< cell size, m, in [0.01, 0.5]
@@ -53,6 +62,44 @@ struct MatcherConfig {
   Status validate() const;
 };
 
+/// Motion prediction between scans and inside one scan (deskew).
+struct MotionConfig {
+  float integration_step_s = 0.005F;  ///< longest integration sub-step, s, in (0, 0.1]
+  /// Use the wheel speed when a sample lies within wheel_timeout_s of the query time;
+  /// otherwise (or when false) the body velocity of the last two scan poses is used.
+  bool use_wheel = true;
+  float wheel_timeout_s = 0.1F;  ///< s, in (0, 1]
+  float gyro_bias_rad_s = 0.0F;  ///< initial gyro z bias, rad/s, |.| <= 0.2
+  /// Per scan, bias += gain * (gyro yaw change - matched yaw change) / dt. In [0, 1],
+  /// 0 keeps the initial bias.
+  float gyro_bias_gain = 0.1F;
+  float max_gyro_bias_rad_s = 0.2F;  ///< online estimate clamped to +-this, rad/s, in (0, 1]
+  bool deskew = true;                ///< false: every point is taken at the scan end
+  int deskew_knots = 16;             ///< poses tabulated over a turn, in [1, kMaxDeskewKnots]
+
+  Status validate() const;
+};
+
+/// Submap rotation. A new submap starts when the newest one reaches half of either limit,
+/// the oldest active one is finished at either limit (so consecutive submaps overlap).
+struct SubmapConfig {
+  int scans_per_submap = 50;  ///< scans inserted before the oldest is finished, in [2, 10000]
+  /// Body distance from the submap origin that finishes it, m, > 0 and below half the grid
+  /// side minus max_distance_m so the robot stays well inside the grid.
+  float max_distance_m = 2.0F;
+
+  Status validate() const;
+};
+
+/// LiDAR extrinsic T_b_l (LiDAR frame in the body = IMU frame).
+struct ExtrinsicConfig {
+  float x_m = 0.0F;      ///< p_b_l x, m, |.| <= 2
+  float y_m = 0.0F;      ///< p_b_l y, m, |.| <= 2
+  float yaw_rad = 0.0F;  ///< rad, in [-pi, pi]
+
+  Status validate() const;
+};
+
 struct Config {
   // Ring depths used at runtime, each in [1, compile-time capacity above].
   std::size_t scan_ring_depth = kScanRingCapacity;
@@ -66,6 +113,9 @@ struct Config {
 
   GridConfig grid;
   MatcherConfig matcher;
+  MotionConfig motion;
+  SubmapConfig submap;
+  ExtrinsicConfig lidar;
 
   /// Ok, or an error whose reason names the bad key.
   Status validate() const;
