@@ -12,6 +12,17 @@ distance field, the correlative + Gauss-Newton scan matcher and the 3x3 degenera
 Derivation: `docs/scan_matching.md`. Config: `Config::grid`, `Config::matcher`. Namespace
 `mss2d`.
 
+Front end: `MotionModel` (gyro z + wheel or constant velocity, online gyro bias), deskew of
+each LiDAR turn into its end frame, and `FrontEnd`, the merger's sink: scan-to-submap odometry
+with two overlapping active submaps and a fixed pool of finished ones, degeneracy fallback to
+the prediction, one `ScanPose` per scan. `LidarSource` is the driver interface. Config:
+`Config::motion`, `Config::submap`, `Config::lidar` (`T_b_l`). Algorithm, synthetic evaluation
+(ATE, RPE with and without deskew), host latency and memory: `docs/frontend.md`.
+
+Host simulation (`sim/`, not for the MCU): line-segment worlds, trajectories, an RPLIDAR-like
+`SyntheticLidar`, gyro and wheel models, ATE/RPE and TUM output. `mss2d_frontend_eval [--out
+DIR]` runs the synthetic loop and, with `--out`, writes `DIR/estimate.tum` and `DIR/truth.tum`.
+
 Host build and test (needs cmake, ninja, libgtest-dev):
 
 ```sh
