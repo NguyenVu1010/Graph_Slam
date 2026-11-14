@@ -22,7 +22,9 @@
 #include "mss/pipeline/map_export.hpp"
 
 #include "gnss_fusion.hpp"
+#include "keyframe_policy.hpp"
 #include "keyframe_store.hpp"
+#include "map_publisher.hpp"
 
 namespace mss::pipeline::detail {
 
@@ -145,17 +147,25 @@ struct BackendCounters {
   std::uint64_t n_gnss_prealign_dropped = 0;
   std::uint64_t n_gnss_prealign_not_static = 0;
   std::uint64_t n_gnss_prealign_rejected = 0;
+  // Front-end map (ADR-016, ADR-033; see CoreCounters).
+  std::uint64_t n_map_rebuilds = 0;
+  std::uint64_t n_map_spacing_replaced_cleared = 0;
+  std::uint64_t n_map_publish_skipped = 0;  ///< MapPublisher: no free buffer, update dropped
+  std::uint64_t n_map_full_copies = 0;      ///< MapPublisher: buffer copied instead of replayed
 };
 
 /// Pose covariance of the keyframe-0 prior ([rho, phi], backend.prior_*_sigma): the covariance of
 /// keyframe 0 when its optimize() fails (stub build).
 common::PoseCovariance prior_pose_cov(const backend::BackendConfig& b);
 
-/// The keyframe backend of the estimator (ADR-033 steps M1a, M1b): factor graph, keyframe store,
-/// loop detection and PCM, and the GNSS fusion (gates, w->e alignment, fixes waiting for their
-/// keyframe, ADR-022 pre-alignment fixes). The front-end (EstimatorCore) talks to it only through
-/// KeyframeMsg and GnssFixMsg in, BackendUpdate out and the read queries below. Internal to the
-/// pipeline. Single-threaded: called on the estimator thread.
+/// The keyframe backend of the estimator (ADR-033): factor graph, keyframe store, loop detection
+/// and PCM, the GNSS fusion (gates, w->e alignment, fixes waiting for their keyframe, ADR-022
+/// pre-alignment fixes) and the front-end map: the backend is the only writer of the VoxelMap
+/// (keyframe inserts, ADR-016 rebuilds, the prunes the front-end asks for) and publishes it as an
+/// immutable snapshot (MapPublisher) that the front-end acquire_map()s. The front-end
+/// (EstimatorCore) talks to it only through KeyframeMsg, GnssFixMsg and prune_map() in,
+/// BackendUpdate and the map snapshot out, and the read queries below. Internal to the pipeline.
+/// Single-threaded: called on the estimator thread (acquire_map() from any thread).
 class KeyframeBackend {
  public:
   /// Builds the graph, store and loop modules from the validated `cfg`. `hooks` (nullptr in
@@ -171,8 +181,16 @@ class KeyframeBackend {
   /// pre-alignment fixes, then the queued ones) at the front-end pose msg.x0.T_w_b. Afterwards it
   /// gives GnssFusion the keyframe's reference pose (ADR-022): the state the front-end continues
   /// from (the optimised one, then the one after an accepted loop; msg.x0 when optimize() failed
-  /// or with CoreTestHooks::frontend_keeps_own_state).
+  /// or with CoreTestHooks::frontend_keeps_own_state). Last, it inserts msg.cloud_l into the map
+  /// at the keyframe's reference pose before any loop update (the state the front-end continues
+  /// from after optimize()), runs the ADR-016 rebuild check (j > 0, optimised; forced by an
+  /// accepted loop) and publishes the map.
   BackendUpdate add_keyframe(const KeyframeMsg& msg);
+  /// VoxelMap::prune around the front-end body position p_w_b (map.prune_period_s, decided by
+  /// the front-end), then publishes the map. No allocation.
+  void prune_map(const common::Vec3& p_w_b);
+  /// Any thread. The latest published map; hold the Ref while reading it.
+  [[nodiscard]] MapRef acquire_map() const { return map_.acquire(); }
   /// One GNSS fix (gnss.enabled): gates, aligns and queues it for the next keyframe
   /// (GnssFusion::on_fix), or, when `preinit`, keeps it for keyframe 0
   /// (GnssFusion::on_preinit_fix). Fires CoreObserver::on_track_readings, on_alignment and
@@ -221,11 +239,30 @@ class KeyframeBackend {
   // returns n. Counts them (n_gnss_factors) and reports each (CoreObserver::on_gnss_factor).
   std::size_t collect_gnss(common::KeyId j, common::Timestamp t, const common::Pose& T_w_bj);
   void sync_prealign_counters();
+  // Map update of keyframe j (add_keyframe): inserts `cloud_l` (may be nullptr) at T_w_bj and
+  // the window entry, then the rebuild check when `check_rebuild`; publishes.
+  void update_map(common::KeyId j,
+                  const common::ScanFrame* cloud_l,
+                  const common::Pose& T_w_bj,
+                  bool check_rebuild,
+                  bool force_rebuild);
+  // ADR-016 rebuild into the update in progress: when `force`, or when the oldest window
+  // keyframe's graph pose moved from the one it was inserted at, clears the map and re-inserts
+  // the window at the graph poses.
+  void maybe_rebuild_map(bool force);
+  // After a dropped update (MapPublisher::lost_update): rebuild the map from the window.
+  void repair_map();
+  void sync_map_counters();
 
   Config cfg_;
   common::Pose T_b_l_;
   backend::Graph graph_;
   KeyframeStore store_;
+  // The front-end map (ADR-016 cache of the last window_keyframes keyframes), written only here
+  // and published as snapshots (ADR-033); replays its clouds from store_ (declared before it).
+  MapPublisher map_;
+  MapWindow window_;
+  std::size_t map_dropped_ = 0;  // VoxelMap::num_dropped() last logged
   loop::LoopDetector loop_;
   loop::LoopSelector selector_;  // ADR-028: PCM over the verified loops (pcm_enabled)
   std::vector<loop::KeyframeView> loop_views_;  // reserved map.max_keyframes when enabled

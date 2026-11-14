@@ -19,7 +19,6 @@
 #include "mss/imu/trajectory.hpp"
 #include "mss/loop/loop_detector.hpp"
 #include "mss/loop/loop_selector.hpp"
-#include "mss/map/voxel_map.hpp"
 #include "mss/odom/wheel_integrator.hpp"
 #include "mss/pipeline/bounded_queue.hpp"
 #include "mss/pipeline/config.hpp"
@@ -199,11 +198,17 @@ struct CoreCounters {
   /// VoxelMap spacing replacements counted before the map's last clear() (rebuilds); the
   /// total is this plus VoxelMap::num_spacing_replaced().
   std::uint64_t n_map_spacing_replaced_cleared = 0;
+  /// ADR-033 map snapshots: updates dropped for want of a free buffer (then rebuilt), and
+  /// buffers copied whole instead of replaying the logged updates (MapPublisher).
+  std::uint64_t n_map_publish_skipped = 0;
+  std::uint64_t n_map_full_copies = 0;
 };
 
 /// The per-message algorithm of the single-threaded estimator (docs/derivations/pipeline.md,
 /// ADR-005 threads deferred). Owns every module: the front-end ones directly, the graph, keyframe
-/// store, loop closure and GNSS fusion through KeyframeBackend (ADR-033). Messages must arrive in
+/// store, loop closure, GNSS fusion and the map writer through KeyframeBackend (ADR-033); the
+/// front-end matches each scan against the map snapshot the backend published last and never
+/// changes it (it asks the backend to prune). Messages must arrive in
 /// the Estimator's k-way merge order (IMU, wheel, GNSS by t; scans by their end time). Internal to
 /// the pipeline. Single-threaded. Large (~0.5 MB): hold it on the heap.
 class EstimatorCore {
@@ -244,8 +249,9 @@ class EstimatorCore {
   [[nodiscard]] double wheel_gap_bound_m() const { return odometer_.gap_bound_m(); }
   /// Backlog G9: the nominal wheel-sample period (s) the gaps are measured against.
   [[nodiscard]] double wheel_nominal_period_s() const { return odometer_.nominal_period_s(); }
-  /// The VoxelMap cache (read-only, for diagnostics such as Estimator::stats()).
-  [[nodiscard]] const map::VoxelMap& voxel_map() const { return map_; }
+  /// The latest published map snapshot (read-only, for diagnostics such as Estimator::stats());
+  /// hold the Ref while reading it.
+  [[nodiscard]] MapRef voxel_map() const { return backend_.acquire_map(); }
   /// Global map export (Estimator::visit_map): KeyframeBackend::visit_map.
   MapExportInfo visit_map(const MapKeyframeVisitor& visit) const {
     return backend_.visit_map(visit);
@@ -276,11 +282,6 @@ class EstimatorCore {
                     common::PoseCovariance& cov_out);
   // The keyframe cloud at `t` (from pre_out_) into kf_cloud_, for the backend's store.
   void prepare_keyframe_cloud(common::Timestamp t);
-  // Inserts kf_cloud_ at ref_ into the map and the window.
-  void insert_keyframe_cloud(common::KeyId id);
-  // ADR-016 rebuild check after a successful optimize(); `force` (an accepted loop, ADR-026)
-  // rebuilds without comparing poses.
-  void maybe_rebuild_map(bool force);
   // Prediction preintegrator restarted at front_ (bias) with the boundary sample.
   void reset_prediction();
 
@@ -296,13 +297,12 @@ class EstimatorCore {
   imu::Preintegrator scratch_;  // deskew trajectory / GNSS pose prediction
   preprocess::Preprocessor preprocessor_;
   preprocess::Preprocessor kf_preprocessor_;
-  map::VoxelMap map_;
   scan_match::ScanMatcher matcher_;
-  // ADR-033: graph, keyframe store, loop closure, GNSS fusion; reached only through KeyframeMsg
-  // and GnssFixMsg in, BackendUpdate out and its read queries.
+  // ADR-033: graph, keyframe store, loop closure, GNSS fusion, the map; reached only through
+  // KeyframeMsg, GnssFixMsg and prune_map in, BackendUpdate and the map snapshot out and its read
+  // queries.
   KeyframeBackend backend_;
   odom::WheelIntegrator wheel_;
-  MapWindow window_;
 
   ImuBuffer imu_;
   std::unique_ptr<std::array<common::ImuSample, kMaxImuQueue>> init_window_;
@@ -343,7 +343,6 @@ class EstimatorCore {
   // Scans whose matching did not observe the travel axis (gnss.align_yaw_frontend_travel).
   double travel_unobserved_scans_ = 0.0;
   std::int64_t wheel_period_ns_ = 0;
-  std::size_t map_dropped_ = 0;
   bool init_failure_logged_ = false;
   bool match_failure_streak_ = false;
   bool imu_nonfinite_streak_ = false;

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 
 namespace mss::pipeline {
 
@@ -23,13 +24,21 @@ namespace mss::pipeline {
 /// atomics, so one of them always sees the other.
 ///
 /// Threading: begin_write() and publish() from one writer thread only; acquire() from any
-/// thread. T must be default-constructible. Store the whole object where it lives for the
-/// program's lifetime (it may be large; allocate it once at start-up).
+/// thread. T must be default-constructible, or built with the in-place constructor. Store the
+/// whole object where it lives for the program's lifetime (it may be large; allocate it once at
+/// start-up).
 template <class T, std::size_t N>
 class SnapshotSlots {
   static_assert(N >= 2, "SnapshotSlots needs at least two buffers");
 
  public:
+  SnapshotSlots() = default;
+  /// Builds every buffer as T(args...) (for a T without a default constructor, or one that
+  /// reserves its memory from a config). Nothing is published.
+  template <class... Args>
+  explicit SnapshotSlots(std::in_place_t /*tag*/, const Args&... args)
+      : slots_(make_slots(std::make_index_sequence<N>{}, args...)) {}
+
   /// A held snapshot. Move-only; releases the buffer on destruction.
   class Ref {
    public:
@@ -112,6 +121,11 @@ class SnapshotSlots {
   }
 
  private:
+  template <std::size_t... I, class... Args>
+  static std::array<T, N> make_slots(std::index_sequence<I...> /*seq*/, const Args&... args) {
+    return {{((void)I, T(args...))...}};
+  }
+
   std::array<T, N> slots_{};
   std::array<std::uint64_t, N> versions_{};
   mutable std::array<std::atomic<std::uint32_t>, N> readers_{};

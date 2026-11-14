@@ -72,11 +72,9 @@ EstimatorCore::EstimatorCore(const Config& cfg)
       preprocessor_(cfg.preprocess, cfg.frames.T_b_l, cfg.realtime.max_points_per_scan),
       kf_preprocessor_(
           keyframe_preprocess(cfg), cfg.frames.T_b_l, cfg.realtime.max_points_per_scan),
-      map_(cfg.map),
       matcher_(cfg.scan_match, cfg.degeneracy, cfg.realtime.max_points_per_scan),
       backend_(cfg_, g_test_hooks),
       wheel_(cfg.wheel_odom, cfg.frames.T_b_o),
-      window_(static_cast<std::size_t>(cfg.map.window_keyframes)),
       init_window_(std::make_unique<std::array<common::ImuSample, kMaxImuQueue>>()),
       traj_(std::make_unique<imu::ImuTrajectory>()),
       pre_out_(cfg.realtime.max_points_per_scan),
@@ -265,6 +263,9 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
 void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
   const common::Timestamp t = raw_l.t_start;
   const common::Timestamp t_end = common::scan_end_time(raw_l);
+  // ADR-033: the map snapshot the backend published last, held (unchanged) for the whole scan.
+  // The front-end only reads it; the backend writes and publishes the next one.
+  const MapRef map = backend_.acquire_map();
 
   // 1. Out-of-order or duplicate scan (Review Focus 3).
   if (has_last_scan_ && t <= last_scan_t_) {
@@ -368,7 +369,7 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
 
   // 6. Scan-to-map matching from the IMU prediction.
   const common::Result<common::MatchResult> match =
-      matcher_.align(pre_out_, map_, predicted.T_w_b * T_b_l_);
+      matcher_.align(pre_out_, map->map, predicted.T_w_b * T_b_l_);
   if (!match.is_ok()) {
     ++counters_.n_match_failures;
     if (!match_failure_streak_) {
@@ -409,7 +410,7 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
 
   // 9. Map pruning on sensor time.
   if (common::seconds_between(last_prune_t_, t) >= cfg_.map.prune_period_s) {
-    map_.prune(front_.T_w_b.p);
+    backend_.prune_map(front_.T_w_b.p);
     last_prune_t_ = t;
   }
 
@@ -503,7 +504,6 @@ void EstimatorCore::first_keyframe(common::Timestamp t, const common::NavState& 
   last_kf_id_ = id;
   last_kf_t_ = t;
   ++counters_.n_keyframes;
-  insert_keyframe_cloud(id);
   last_prune_t_ = t;
   reset_prediction();
   has_estimate_ = true;
@@ -570,24 +570,23 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   }
   kf_.reset(front_.bias);
   (void)kf_.integrate(boundary_);
-  ref_ = front_.T_w_b;  // KeyframeBackend gives GnssFusion the same reference pose (ADR-022)
+  // KeyframeBackend gives GnssFusion the same reference pose (ADR-022) and inserts the keyframe
+  // cloud into the map at it.
+  ref_ = front_.T_w_b;
   last_kf_id_ = j;
   last_kf_t_ = t;
   ++counters_.n_keyframes;
-  insert_keyframe_cloud(j);
-  if (u.optimised) {
-    if (u.loop_added) {
-      // ADR-026: an accepted loop changed the graph; re-sync to the estimate after its updates.
-      if (hooks_ == nullptr || !hooks_->frontend_keeps_own_state) {  // test-only seam
-        front_ = u.loop_opt.state;
-        front_.t = t;
-      }
-      cov_out = u.loop_opt.cov;
-      kf_.reset(front_.bias);
-      (void)kf_.integrate(boundary_);
-      ref_ = front_.T_w_b;
+  if (u.optimised && u.loop_added) {
+    // ADR-026: an accepted loop changed the graph; re-sync to the estimate after its updates
+    // (the backend has rebuilt the map at the new poses).
+    if (hooks_ == nullptr || !hooks_->frontend_keeps_own_state) {  // test-only seam
+      front_ = u.loop_opt.state;
+      front_.t = t;
     }
-    maybe_rebuild_map(u.loop_added);
+    cov_out = u.loop_opt.cov;
+    kf_.reset(front_.bias);
+    (void)kf_.integrate(boundary_);
+    ref_ = front_.T_w_b;
   }
 }
 
@@ -596,45 +595,6 @@ void EstimatorCore::prepare_keyframe_cloud(common::Timestamp t) {
     kf_cloud_.clear();
   }
   kf_cloud_.t_start = t;
-}
-
-void EstimatorCore::insert_keyframe_cloud(common::KeyId id) {
-  map_.insert(kf_cloud_, ref_ * T_b_l_);
-  window_.push(id, ref_);
-  if (map_.num_dropped() > map_dropped_) {
-    map_dropped_ = map_.num_dropped();
-    common::log_warn("voxel map full (map.max_voxels): points dropped");
-  }
-}
-
-void EstimatorCore::maybe_rebuild_map(bool force) {
-  if (window_.size() == 0) {
-    return;
-  }
-  const WindowEntry& oldest = window_.at(0);
-  const common::Result<common::NavState> st = backend_.keyframe_state(oldest.id);
-  if (!force && (!st.is_ok() || !pose_moved(oldest.T_w_b_inserted,
-                                            st.value().T_w_b,
-                                            cfg_.map.rebuild_trans_m,
-                                            cfg_.map.rebuild_rot_rad))) {
-    return;
-  }
-  counters_.n_map_spacing_replaced_cleared += map_.num_spacing_replaced();
-  map_.clear();
-  for (std::size_t i = 0; i < window_.size(); ++i) {
-    const WindowEntry& e = window_.at(i);
-    const common::ScanFrame* cloud_l = backend_.keyframe_cloud(e.id);
-    if (cloud_l == nullptr) {
-      continue;
-    }
-    const common::Result<common::NavState> s = backend_.keyframe_state(e.id);
-    const common::Pose T_w_b = s.is_ok() ? s.value().T_w_b : e.T_w_b_inserted;
-    map_.insert(*cloud_l, T_w_b * T_b_l_);
-    window_.set_pose(i, T_w_b);
-  }
-  map_dropped_ = map_.num_dropped();
-  ++counters_.n_map_rebuilds;
-  common::log_info("voxel map rebuilt from the keyframe window after a pose correction");
 }
 
 CoreCounters EstimatorCore::counters() const {
@@ -660,6 +620,10 @@ CoreCounters EstimatorCore::counters() const {
   c.n_gnss_prealign_dropped = b.n_gnss_prealign_dropped;
   c.n_gnss_prealign_not_static = b.n_gnss_prealign_not_static;
   c.n_gnss_prealign_rejected = b.n_gnss_prealign_rejected;
+  c.n_map_rebuilds = b.n_map_rebuilds;
+  c.n_map_spacing_replaced_cleared = b.n_map_spacing_replaced_cleared;
+  c.n_map_publish_skipped = b.n_map_publish_skipped;
+  c.n_map_full_copies = b.n_map_full_copies;
   return c;
 }
 

@@ -33,9 +33,9 @@ struct NeighborBuffer {
 /// ADR-007 amendment).
 /// Open-addressing table with capacity reserved once for `max_voxels` voxels; no
 /// allocation after construction.
-/// Ownership/threading: single-threaded; one instance owned by pipeline::Estimator.
-/// Written and read by the front-end thread; the backend never touches it directly
-/// (ADR-005: pose corrections go through a queue and are applied between scans).
+/// Ownership/threading: single-threaded. The pipeline keeps it as immutable snapshots (ADR-033):
+/// the backend writes a free copy and publishes it; the front-end only reads (knn) the one it
+/// holds. Copy assignment between maps of one config allocates nothing.
 class VoxelMap {
  public:
   /// Validates `cfg` and reserves storage for `cfg.max_voxels` voxels of
