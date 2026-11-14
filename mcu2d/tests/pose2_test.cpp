@@ -62,6 +62,22 @@ TEST(Pose2, ExpLogRoundTrip) {
   }
 }
 
+TEST(Pose2, FloatExpLogStayFiniteForSmallAngles) {
+  // Float has about 7 digits: 1 - cos(th) cancels to 0 for th below about 3e-4, just above
+  // the Taylor branch. Log and Exp must stay finite and round-trip there.
+  for (const float th : {1.0e-4F, 1.2e-4F, 1.7e-4F, 3.0e-4F, 7.0e-4F, -2.0e-4F}) {
+    Vec3f d;
+    d[0] = 0.09F;
+    d[1] = -0.02F;
+    d[2] = th;
+    const Vec3f back = Pose2::exp(d).log();
+    for (int k = 0; k < 3; ++k) {
+      ASSERT_TRUE(std::isfinite(back[k])) << "th " << th;
+      EXPECT_NEAR(back[k], d[k], 1e-6F) << "th " << th << " k " << k;
+    }
+  }
+}
+
 TEST(Pose2, ExpIsTheIntegratedConstantTwist) {
   // Exp(delta) = the pose reached by moving with constant body twist delta for 1 s:
   // integrate in many small body steps and compare.

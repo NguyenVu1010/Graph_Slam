@@ -1,6 +1,7 @@
 #pragma once
 
-// Synthetic 2D worlds and an RPLIDAR-like ray caster for the tests (test code: heap is fine).
+// Synthetic 2D worlds and an RPLIDAR-like ray caster (host only: tests and tools, heap is
+// fine).
 
 #include <cmath>
 #include <cstdint>

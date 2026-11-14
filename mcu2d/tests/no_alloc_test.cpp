@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include "mss2d/frontend.hpp"
 #include "mss2d/merger.hpp"
 #include "mss2d/scan_matcher.hpp"
 #include "sim_world.hpp"
@@ -83,6 +84,37 @@ TEST(NoAlloc, GridInsertDistanceFieldAndMatchDoNotAllocate) {
   const long after = g_news.load();
 
   EXPECT_EQ(r.status, MatchStatus::kOk);
+  EXPECT_EQ(after - before, 0);
+}
+
+TEST(NoAlloc, FrontEndScansDoNotAllocate) {
+  Config cfg;
+  cfg.submap.scans_per_submap = 4;  // rotate and recycle submaps inside the measured span
+  auto fe = std::make_unique<FrontEnd>(cfg, nullptr);
+  auto scan = std::make_unique<Scan2d>();
+  sim::make_scan(sim::room_world(), Pose2T<double>(0.2, -0.1, 0.3), 720, 12.0, 0.0, 1, *scan);
+  for (std::uint32_t i = 0; i < scan->count; ++i) {
+    scan->points[i].t_offset_ns = static_cast<std::int32_t>(i * 100000);
+  }
+
+  const long before = g_news.load();
+  for (int k = 0; k < 12; ++k) {
+    for (int j = 0; j < 20; ++j) {
+      ImuSample2d s;
+      s.t = Timestamp{k * 100000000LL + j * 5000000LL};
+      s.gyro_z_rad_s = 0.01F;
+      fe->on_imu(s);
+      WheelSample w;
+      w.t = s.t;
+      fe->on_wheel(w);
+    }
+    scan->t_start = Timestamp{k * 100000000LL};
+    fe->on_scan(*scan);
+  }
+  const long after = g_news.load();
+
+  EXPECT_EQ(fe->stats().n_scans, 12U);
+  EXPECT_GT(fe->stats().n_submaps_recycled, 0U);
   EXPECT_EQ(after - before, 0);
 }
 

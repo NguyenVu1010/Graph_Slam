@@ -60,8 +60,10 @@ struct Pose2T {
       a = 1 - th * th / 6;
       b = th / 2 - th * th * th / 24;
     } else {
+      // 1 - cos(th) = 2 sin^2(th/2): no cancellation in float for small th.
+      const S sh = std::sin(th / 2);
       a = std::sin(th) / th;
-      b = (1 - std::cos(th)) / th;
+      b = 2 * sh * sh / th;
     }
     return Pose2T(a * d[0] - b * d[1], b * d[0] + a * d[1], th);
   }
@@ -74,7 +76,9 @@ struct Pose2T {
     if (std::abs(th) < static_cast<S>(1e-4)) {
       h = 1 - th * th / 12;
     } else {
-      h = (th / 2) * std::sin(th) / (1 - std::cos(th));
+      // (th/2) cot(th/2); the form sin(th) / (1 - cos(th)) divides by zero in float for
+      // th just above the Taylor branch.
+      h = (th / 2) * std::cos(th / 2) / std::sin(th / 2);
     }
     Vec3T<S> d;
     d[0] = h * x + (th / 2) * y;

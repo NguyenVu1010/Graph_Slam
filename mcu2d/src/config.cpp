@@ -1,5 +1,7 @@
 #include "mss2d/config.hpp"
 
+#include <cmath>
+
 #include "mss2d/messages.hpp"
 
 namespace mss2d {
@@ -30,10 +32,70 @@ Status Config::validate() const {
   if (max_scan_points < 1 || max_scan_points > kMaxScanPoints) {
     return Status::error("max_scan_points: must be in [1, 1024]");
   }
+  if (static_cast<float>(kMotionImuHistory) < 2.0F * imu_rate_hz / scan_rate_hz) {
+    return Status::error("imu_rate_hz: kMotionImuHistory must hold two scan periods");
+  }
   if (const Status s = grid.validate(); !s.is_ok()) {
     return s;
   }
-  return matcher.validate();
+  if (const Status s = matcher.validate(); !s.is_ok()) {
+    return s;
+  }
+  if (const Status s = motion.validate(); !s.is_ok()) {
+    return s;
+  }
+  if (const Status s = submap.validate(); !s.is_ok()) {
+    return s;
+  }
+  // The robot must stay inside the grid with the distance field margin around it.
+  const float half_side_m = 0.5F * static_cast<float>(grid.side_cells) * grid.resolution_m;
+  if (!(submap.max_distance_m < half_side_m - grid.max_distance_m)) {
+    return Status::error(
+        "submap.max_distance_m: must be < half the grid side minus grid.max_distance_m");
+  }
+  return lidar.validate();
+}
+
+Status MotionConfig::validate() const {
+  if (!(integration_step_s > 0.0F && integration_step_s <= 0.1F)) {
+    return Status::error("motion.integration_step_s: must be in (0, 0.1] s");
+  }
+  if (!(wheel_timeout_s > 0.0F && wheel_timeout_s <= 1.0F)) {
+    return Status::error("motion.wheel_timeout_s: must be in (0, 1] s");
+  }
+  if (!(max_gyro_bias_rad_s > 0.0F && max_gyro_bias_rad_s <= 1.0F)) {
+    return Status::error("motion.max_gyro_bias_rad_s: must be in (0, 1] rad/s");
+  }
+  if (!(std::abs(gyro_bias_rad_s) <= max_gyro_bias_rad_s)) {
+    return Status::error("motion.gyro_bias_rad_s: must be within +-max_gyro_bias_rad_s");
+  }
+  if (!(gyro_bias_gain >= 0.0F && gyro_bias_gain <= 1.0F)) {
+    return Status::error("motion.gyro_bias_gain: must be in [0, 1]");
+  }
+  if (deskew_knots < 1 || deskew_knots > kMaxDeskewKnots) {
+    return Status::error("motion.deskew_knots: must be in [1, kMaxDeskewKnots]");
+  }
+  return Status::ok();
+}
+
+Status SubmapConfig::validate() const {
+  if (scans_per_submap < 2 || scans_per_submap > 10000) {
+    return Status::error("submap.scans_per_submap: must be in [2, 10000]");
+  }
+  if (!(max_distance_m > 0.0F)) {
+    return Status::error("submap.max_distance_m: must be > 0 m");
+  }
+  return Status::ok();
+}
+
+Status ExtrinsicConfig::validate() const {
+  if (!(std::abs(x_m) <= 2.0F && std::abs(y_m) <= 2.0F)) {
+    return Status::error("lidar.x_m, lidar.y_m: must be within +-2 m");
+  }
+  if (!(std::abs(yaw_rad) <= 3.1415927F)) {
+    return Status::error("lidar.yaw_rad: must be in [-pi, pi] rad");
+  }
+  return Status::ok();
 }
 
 Status GridConfig::validate() const {

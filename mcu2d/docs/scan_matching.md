@@ -18,6 +18,10 @@ SI units, radians. Data are `float`; tests check the formulas in `double` throug
     A = sin(th)/th,  B = (1 - cos(th))/th          (Taylor 1 - th^2/6, th/2 - th^3/24 near 0)
     Log(T): V^-1 = [[h, th/2], [-th/2, h]],  h = (th/2) cot(th/2)   (1 - th^2/12 near 0)
 
+In float, `B` is evaluated as `2 sin^2(th/2) / th` and `h` as `(th/2) cos(th/2) / sin(th/2)`:
+the forms with `1 - cos(th)` cancel to 0 just above the Taylor branch (test
+`FloatExpLogStayFiniteForSmallAngles`).
+
 `Exp(delta)` is the pose reached by moving with the constant body twist `delta` for one second
 (test `ExpIsTheIntegratedConstantTwist`). Yaw is kept in `[-pi, pi)`; Log inverts Exp for
 `|th| < pi`.
