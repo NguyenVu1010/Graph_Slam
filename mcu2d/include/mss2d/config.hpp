@@ -24,6 +24,20 @@ constexpr int kMotionImuHistory = 256;   ///< gyro samples, >= 2 scan periods at
 constexpr int kMotionWheelHistory = 64;  ///< wheel samples
 constexpr int kMaxDeskewKnots = 64;      ///< poses tabulated over one LiDAR turn
 
+/// Pose graph (docs/backend.md): one node per finished submap. Node 0 is fixed (gauge).
+constexpr int kMaxGraphNodes = 128;
+constexpr int kMaxGraphEdges = 384;  ///< odometry (nodes - 1) plus loop edges
+/// Doubles in the envelope (skyline) of the Cholesky factor after reverse Cuthill-McKee
+/// ordering; a solve whose envelope does not fit is refused. 96 KB.
+constexpr int kMaxFactorEntries = 12288;
+
+/// Finished submaps are kept for loop closing as 1-bit occupancy at kLoopGridDownsample times
+/// the submap cell size: (200 / 2)^2 bits = 1250 bytes per node.
+constexpr int kLoopGridDownsample = 2;
+constexpr int kLoopGridSide = kMaxGridSide / kLoopGridDownsample;
+constexpr int kLoopGridBytes = (kLoopGridSide * kLoopGridSide + 7) / 8;
+constexpr int kMaxLoopCandidates = 4;  ///< old nodes verified per new node, at most
+
 /// Occupancy submap and its distance field.
 struct GridConfig {
   float resolution_m = 0.05F;  ///< cell size, m, in [0.01, 0.5]
@@ -100,6 +114,61 @@ struct ExtrinsicConfig {
   Status validate() const;
 };
 
+/// Pose graph: odometry edge noise and the Levenberg-Marquardt solver.
+struct GraphConfig {
+  // Odometry edge between consecutive submap origins, travelled path d (m) and yaw change
+  // |dyaw| (rad): sigma_xy = odom_sigma_xy_m + odom_sigma_xy_per_m d,
+  // sigma_yaw = odom_sigma_yaw_rad + odom_sigma_yaw_per_m d + odom_sigma_yaw_per_rad |dyaw|.
+  float odom_sigma_xy_m = 0.005F;         ///< m, > 0
+  float odom_sigma_xy_per_m = 0.003F;     ///< m per m, >= 0
+  float odom_sigma_yaw_rad = 0.001F;      ///< rad, > 0
+  float odom_sigma_yaw_per_m = 0.0005F;   ///< rad per m, >= 0
+  float odom_sigma_yaw_per_rad = 0.005F;  ///< rad per rad, >= 0
+  /// Travel along directions the matcher flagged degenerate follows the prediction (wheel):
+  /// the edge gets this fraction of that travel as extra sigma along those directions,
+  /// unitless (about the wheel scale error), >= 0.
+  float odom_degenerate_fraction = 0.05F;
+  int max_iterations = 20;           ///< LM iterations per solve, in [1, 200]
+  float initial_lambda = 1e-4F;      ///< LM damping start, relative to diag(H), in (0, 1]
+  float converged_step = 1e-5F;      ///< largest |delta| entry (m, rad) that ends a solve, > 0
+  float converged_rel_cost = 1e-6F;  ///< relative cost decrease that ends a solve, >= 0
+
+  Status validate() const;
+};
+
+/// Loop closing against finished submaps (docs/backend.md).
+struct LoopConfig {
+  bool enabled = true;
+  /// Candidates: nodes at least min_path_m back along the travelled path whose origin lies
+  /// within search_radius_m + drift_per_m * path of the query scan (graph estimate).
+  float min_path_m = 6.0F;         ///< m, >= 0
+  float search_radius_m = 3.0F;    ///< m, > 0
+  float drift_per_m = 0.03F;       ///< m per m of path, >= 0 (also widens the window)
+  float drift_rad_per_m = 0.005F;  ///< rad per m of path, >= 0
+  int max_candidates = 2;  ///< nearest candidates verified per node, [1, kMaxLoopCandidates]
+  /// Correlative window half widths: min + drift * path, clamped to max.
+  float min_window_m = 0.3F;       ///< m, > 0
+  float max_window_m = 1.5F;       ///< m, in [min_window_m, 2]
+  float min_window_rad = 0.05F;    ///< rad, > 0
+  float max_window_rad = 0.35F;    ///< rad, in [min_window_rad, pi/2]
+  float angle_step_rad = 0.0175F;  ///< rad (1 deg), in (0, 0.1]
+  int max_query_points = 360;      ///< scan points used (even stride), in [16, kMaxScanPoints]
+  int refine_iterations = 10;      ///< Gauss-Newton on the smoothed map, in [1, 50]
+  /// Accept: mean smoothed occupancy at the scan points >= min_score, in (0, 1), and the
+  /// smallest / largest eigenvalue of the translation Hessian >= min_eig_ratio, in [0, 1).
+  float min_score = 0.55F;
+  float min_eig_ratio = 0.15F;
+  float sigma_xy_m = 0.05F;     ///< loop edge sigma, m, > 0
+  float sigma_yaw_rad = 0.01F;  ///< rad, > 0
+  /// Cauchy kernel on loop edges, rho(s) = c^2 ln(1 + s / c^2), s = e^T Info e; c > 0.
+  float cauchy_c = 3.0F;
+  /// After a solve, a new loop edge with e^T Info e above this is dropped and the graph
+  /// solved again, > 0.
+  float max_chi2 = 25.0F;
+
+  Status validate() const;
+};
+
 struct Config {
   // Ring depths used at runtime, each in [1, compile-time capacity above].
   std::size_t scan_ring_depth = kScanRingCapacity;
@@ -116,6 +185,8 @@ struct Config {
   MotionConfig motion;
   SubmapConfig submap;
   ExtrinsicConfig lidar;
+  GraphConfig graph;
+  LoopConfig loop;
 
   /// Ok, or an error whose reason names the bad key.
   Status validate() const;

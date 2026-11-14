@@ -53,7 +53,90 @@ Status Config::validate() const {
     return Status::error(
         "submap.max_distance_m: must be < half the grid side minus grid.max_distance_m");
   }
-  return lidar.validate();
+  if (const Status s = lidar.validate(); !s.is_ok()) {
+    return s;
+  }
+  if (const Status s = graph.validate(); !s.is_ok()) {
+    return s;
+  }
+  if (const Status s = loop.validate(); !s.is_ok()) {
+    return s;
+  }
+  if (loop.enabled && grid.side_cells % kLoopGridDownsample != 0) {
+    return Status::error("grid.side_cells: must be a multiple of kLoopGridDownsample");
+  }
+  return Status::ok();
+}
+
+Status GraphConfig::validate() const {
+  if (!(odom_sigma_xy_m > 0.0F && odom_sigma_yaw_rad > 0.0F)) {
+    return Status::error("graph.odom_sigma_xy_m, graph.odom_sigma_yaw_rad: must be > 0");
+  }
+  if (!(odom_sigma_xy_per_m >= 0.0F && odom_sigma_yaw_per_m >= 0.0F &&
+        odom_sigma_yaw_per_rad >= 0.0F && odom_degenerate_fraction >= 0.0F)) {
+    return Status::error("graph.odom_sigma_*_per_*, graph.odom_degenerate_fraction: must be >= 0");
+  }
+  if (max_iterations < 1 || max_iterations > 200) {
+    return Status::error("graph.max_iterations: must be in [1, 200]");
+  }
+  if (!(initial_lambda > 0.0F && initial_lambda <= 1.0F)) {
+    return Status::error("graph.initial_lambda: must be in (0, 1]");
+  }
+  if (!(converged_step > 0.0F)) {
+    return Status::error("graph.converged_step: must be > 0");
+  }
+  if (!(converged_rel_cost >= 0.0F)) {
+    return Status::error("graph.converged_rel_cost: must be >= 0");
+  }
+  return Status::ok();
+}
+
+Status LoopConfig::validate() const {
+  if (!(min_path_m >= 0.0F)) {
+    return Status::error("loop.min_path_m: must be >= 0 m");
+  }
+  if (!(search_radius_m > 0.0F)) {
+    return Status::error("loop.search_radius_m: must be > 0 m");
+  }
+  if (!(drift_per_m >= 0.0F && drift_rad_per_m >= 0.0F)) {
+    return Status::error("loop.drift_per_m, loop.drift_rad_per_m: must be >= 0");
+  }
+  if (max_candidates < 1 || max_candidates > kMaxLoopCandidates) {
+    return Status::error("loop.max_candidates: must be in [1, kMaxLoopCandidates]");
+  }
+  if (!(min_window_m > 0.0F && max_window_m >= min_window_m && max_window_m <= 2.0F)) {
+    return Status::error("loop.min_window_m, loop.max_window_m: need 0 < min <= max <= 2 m");
+  }
+  if (!(min_window_rad > 0.0F && max_window_rad >= min_window_rad &&
+        max_window_rad <= 1.5707964F)) {
+    return Status::error(
+        "loop.min_window_rad, loop.max_window_rad: need 0 < min <= max <= pi/2 rad");
+  }
+  if (!(angle_step_rad > 0.0F && angle_step_rad <= 0.1F)) {
+    return Status::error("loop.angle_step_rad: must be in (0, 0.1] rad");
+  }
+  if (max_query_points < 16 || max_query_points > static_cast<int>(kMaxScanPoints)) {
+    return Status::error("loop.max_query_points: must be in [16, kMaxScanPoints]");
+  }
+  if (refine_iterations < 1 || refine_iterations > 50) {
+    return Status::error("loop.refine_iterations: must be in [1, 50]");
+  }
+  if (!(min_score > 0.0F && min_score < 1.0F)) {
+    return Status::error("loop.min_score: must be in (0, 1)");
+  }
+  if (!(min_eig_ratio >= 0.0F && min_eig_ratio < 1.0F)) {
+    return Status::error("loop.min_eig_ratio: must be in [0, 1)");
+  }
+  if (!(sigma_xy_m > 0.0F && sigma_yaw_rad > 0.0F)) {
+    return Status::error("loop.sigma_xy_m, loop.sigma_yaw_rad: must be > 0");
+  }
+  if (!(cauchy_c > 0.0F)) {
+    return Status::error("loop.cauchy_c: must be > 0");
+  }
+  if (!(max_chi2 > 0.0F)) {
+    return Status::error("loop.max_chi2: must be > 0");
+  }
+  return Status::ok();
 }
 
 Status MotionConfig::validate() const {

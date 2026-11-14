@@ -107,6 +107,41 @@ TEST(Config, SubmapAndLidarKeys) {
   EXPECT_TRUE(names(c.validate(), "lidar.yaw_rad"));
 }
 
+TEST(Config, GraphAndLoopKeys) {
+  Config c;
+  c.graph.odom_sigma_xy_m = 0.0F;
+  EXPECT_TRUE(names(c.validate(), "graph.odom_sigma_xy_m"));
+  c = Config{};
+  c.graph.odom_degenerate_fraction = -0.1F;
+  EXPECT_TRUE(names(c.validate(), "graph.odom_degenerate_fraction"));
+  c = Config{};
+  c.graph.max_iterations = 0;
+  EXPECT_TRUE(names(c.validate(), "graph.max_iterations"));
+  c = Config{};
+  c.graph.initial_lambda = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_TRUE(names(c.validate(), "graph.initial_lambda"));
+  c = Config{};
+  c.loop.max_candidates = kMaxLoopCandidates + 1;
+  EXPECT_TRUE(names(c.validate(), "loop.max_candidates"));
+  c = Config{};
+  c.loop.max_window_m = 0.1F;  // below min_window_m
+  EXPECT_TRUE(names(c.validate(), "loop.max_window_m"));
+  c = Config{};
+  c.loop.min_score = 1.0F;
+  EXPECT_TRUE(names(c.validate(), "loop.min_score"));
+  c = Config{};
+  c.loop.max_query_points = 8;
+  EXPECT_TRUE(names(c.validate(), "loop.max_query_points"));
+  c = Config{};
+  c.loop.cauchy_c = 0.0F;
+  EXPECT_TRUE(names(c.validate(), "loop.cauchy_c"));
+  c = Config{};
+  c.grid.side_cells = 199;  // compact loop grid halves the side
+  EXPECT_TRUE(names(c.validate(), "grid.side_cells"));
+  c.loop.enabled = false;
+  EXPECT_TRUE(c.validate().is_ok());
+}
+
 TEST(Scan2d, KeyIsStartPlusMaxOffset) {
   Scan2d s;
   s.t_start = Timestamp{1000};
