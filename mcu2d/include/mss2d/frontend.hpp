@@ -32,6 +32,10 @@ struct ScanPose {
   float min_eigenvalue = 0.0F;  ///< smallest Hessian eigenvalue (degeneracy margin)
   float cost_m2 = 0.0F;         ///< matcher cost (mean Huber, m^2)
   std::uint32_t submap_id = 0;  ///< submap matched against (first scan: the one started)
+  Pose2 T_s_b{};                ///< body pose in that submap's frame
+  /// Sum of u u^T over the flagged Hessian directions, u = their translation part rotated
+  /// into w (unit length for a pure translation direction); zero when nothing is flagged.
+  Sym2f degenerate_xy_w{};
 };
 
 /// Receives the front-end output. The argument is valid only during the call.
@@ -80,8 +84,22 @@ class FrontEnd final : public Sink {
   /// Finished submaps, oldest first; valid until the next on_scan().
   int n_finished_submaps() const { return n_finished_; }
   const OccupancyGrid& finished_submap(int i) const;
+  /// Id of finished_submap(i).
+  std::uint32_t finished_submap_id(int i) const;
   /// The submap scans are matched against (call only after the first scan).
   const OccupancyGrid& matching_submap() const;
+  /// Map pose of the active submap `id`; false when `id` is not active.
+  bool active_submap_pose(std::uint32_t id, Pose2& T_w_s) const;
+
+  /// Points of the last scan in the LiDAR frame at its end time (after the range filter
+  /// and deskew); valid until the next on_scan().
+  const PointCloud2d& last_points() const { return pts_; }
+  const Pose2& T_b_l() const { return T_b_l_; }
+
+  /// Backend correction (docs/backend.md section 6): moves the map frame, T_w_new_w_old is
+  /// applied on the left of the current pose and of every active submap origin, so the scan
+  /// to submap geometry is unchanged. Finished submaps are left as they are.
+  void apply_correction(const Pose2& T_wnew_wold);
 
  private:
   struct Slot {

@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(mss2d src/config.cpp src/merger.cpp src/occupancy_grid.cpp src/distance_field.cpp
                   src/degeneracy.cpp src/scan_matcher.cpp src/motion.cpp src/frontend.cpp
-                  src/pose_graph.cpp)
+                  src/pose_graph.cpp src/loop_closer.cpp src/backend.cpp)
 target_include_directories(mss2d PUBLIC include)
 target_compile_options(mss2d PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions -fno-rtti)
 
@@ -30,7 +30,8 @@ add_executable(mss2d_tests tests/ring_test.cpp tests/merger_test.cpp tests/confi
                            tests/no_alloc_test.cpp tests/pose2_test.cpp tests/grid_test.cpp
                            tests/degeneracy_test.cpp tests/matcher_test.cpp
                            tests/motion_test.cpp tests/frontend_test.cpp
-                           tests/pose_graph_test.cpp)
+                           tests/pose_graph_test.cpp tests/loop_closer_test.cpp
+                           tests/backend_test.cpp)
 target_link_libraries(mss2d_tests PRIVATE mss2d mss2d_sim GTest::gtest_main Threads::Threads)
 target_compile_options(mss2d_tests PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME mss2d_tests COMMAND mss2d_tests)

@@ -6,8 +6,10 @@
 // with fixed seeds. Heap and std::vector are fine here; this never runs on the MCU.
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
+#include "mss2d/backend.hpp"
 #include "mss2d/config.hpp"
 #include "mss2d/frontend.hpp"
 #include "mss2d/lidar_source.hpp"
@@ -109,6 +111,13 @@ struct Scenario {
 /// 1 rad/s (10 deg per LiDAR turn), 1 s standing still first.
 Scenario loop_scenario();
 
+/// Revisit with drift: a 24 x 14 m ring corridor (2 m wide) whose 20 m bottom corridor is
+/// featureless (degenerate along its axis, so the wheel scale error of 4 % accumulates there)
+/// while the corners and the top corridor have boxes and pillars. One counter-clockwise lap
+/// (67 m) from the bottom-left corner, then 8 m more down the bottom corridor, so the start
+/// is revisited with the drift of the lap. Gyro bias 0.02 rad/s, noise 0.01 rad/s.
+Scenario revisit_scenario();
+
 /// Straight drive along the featureless corridor of corridor_world() (degenerate along x).
 Scenario corridor_scenario();
 
@@ -118,10 +127,19 @@ struct RunResult {
   std::vector<double> latency_ms;  ///< FrontEnd::on_scan wall time per scan
   FrontEndStats stats;
   float gyro_bias_rad_s = 0.0F;
+
+  // With the backend only.
+  std::unique_ptr<Backend> backend;  ///< final state (graph, stats)
+  /// est[i] re-expressed through the final graph: X(node of est[i].submap_id) * T_s_b, or the
+  /// front end's final pose of that submap while it is still active.
+  std::vector<Pose2d> optimized;
+  std::vector<double> node_ms;   ///< Backend::on_scan_done wall time when it added a node
+  std::vector<double> solve_ms;  ///< ... when it also solved
 };
 
-/// Feeds the sensors through a Merger into a FrontEnd in timestamp order.
-RunResult run_frontend(const Scenario& sc, const Config& cfg);
+/// Feeds the sensors through a Merger into a FrontEnd in timestamp order; with `backend`
+/// a Backend runs after every scan and corrects the front end.
+RunResult run_frontend(const Scenario& sc, const Config& cfg, bool backend = false);
 
 struct Metrics {
   double ate_rmse_m = 0.0;  ///< after aligning the first poses (SE(2), no scale)

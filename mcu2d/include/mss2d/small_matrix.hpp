@@ -26,6 +26,13 @@ struct Mat3T {
   const S& operator()(int r, int c) const { return m[r][c]; }
 };
 
+/// Symmetric 2x2 matrix [[xx, xy], [xy, yy]].
+struct Sym2f {
+  float xx = 0.0F;
+  float xy = 0.0F;
+  float yy = 0.0F;
+};
+
 using Vec2f = Vec2T<float>;
 using Vec3f = Vec3T<float>;
 using Mat3f = Mat3T<float>;
