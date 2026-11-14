@@ -86,9 +86,10 @@ active one reaches half of `submap.scans_per_submap` scans or half of
 full limit and the newer, about half full, takes over. Consecutive submaps therefore overlap by
 half. Finished submaps stay in a fixed pool of `kSubmapPoolSize = 4` grids (2 active + 2
 finished); when a new submap needs a slot and none is free, the oldest finished one is recycled
-(`FrontEndStats::n_submaps_recycled`). The backend will take finished submaps from
-`finished_submap(i)`. `Config::validate` keeps `max_distance_m` below half the grid side minus
-the distance field clamp, so the robot stays well inside the grid.
+(`FrontEndStats::n_submaps_recycled`). The backend (`docs/backend.md`) keeps each submap as a
+compact bitmap when it finishes (`finished_submap(i)`), so recycling loses nothing it needs.
+`Config::validate` keeps `max_distance_m` below half the grid side minus the distance field
+clamp, so the robot stays well inside the grid.
 
 ## 6. Synthetic evaluation
 
