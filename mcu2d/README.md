@@ -19,9 +19,21 @@ the prediction, one `ScanPose` per scan. `LidarSource` is the driver interface. 
 `Config::motion`, `Config::submap`, `Config::lidar` (`T_b_l`). Algorithm, synthetic evaluation
 (ATE, RPE with and without deskew), host latency and memory: `docs/frontend.md`.
 
+Backend: `PoseGraph` (one SE(2) node per finished submap, odometry edges whose information
+comes from the travelled path and the matcher's degeneracy flags, Cauchy-weighted loop edges,
+Levenberg-Marquardt on a skyline Cholesky in a fixed envelope, steppable per iteration),
+`LoopMatcher` (finished submaps kept as 1-bit 10 cm bitmaps, branch-and-bound correlative
+search plus Gauss-Newton, rejection by score, corridor degeneracy and post-solve chi2) and
+`Backend`, called after every `FrontEnd::on_scan()`, which builds the graph, closes loops,
+solves and hands the correction back through `FrontEnd::apply_correction()`. Config:
+`Config::graph`, `Config::loop`. Algorithm, synthetic evaluation (front end only against the
+graph on a lap with corridor drift), host cost and memory: `docs/backend.md`.
+
 Host simulation (`sim/`, not for the MCU): line-segment worlds, trajectories, an RPLIDAR-like
 `SyntheticLidar`, gyro and wheel models, ATE/RPE and TUM output. `mss2d_frontend_eval [--out
-DIR]` runs the synthetic loop and, with `--out`, writes `DIR/estimate.tum` and `DIR/truth.tum`.
+DIR]` runs the synthetic loop and, with `--out`, writes `DIR/estimate.tum` and `DIR/truth.tum`;
+`--revisit --graph` runs the drift lap with and without the backend and also writes
+`DIR/optimized.tum`.
 
 Host build and test (needs cmake, ninja, libgtest-dev):
 

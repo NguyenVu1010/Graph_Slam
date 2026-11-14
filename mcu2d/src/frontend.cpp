@@ -42,6 +42,30 @@ const OccupancyGrid& FrontEnd::finished_submap(int i) const {
   return grids_[static_cast<std::size_t>(finished_[static_cast<std::size_t>(i)])];
 }
 
+std::uint32_t FrontEnd::finished_submap_id(int i) const {
+  return slots_[static_cast<std::size_t>(finished_[static_cast<std::size_t>(i)])].id;
+}
+
+bool FrontEnd::active_submap_pose(std::uint32_t id, Pose2& T_w_s) const {
+  for (int i = 0; i < n_active_; ++i) {
+    const std::size_t slot = static_cast<std::size_t>(active_[i]);
+    if (slots_[slot].id == id) {
+      T_w_s = grids_[slot].T_w_s();
+      return true;
+    }
+  }
+  return false;
+}
+
+void FrontEnd::apply_correction(const Pose2& T_wnew_wold) {
+  for (int i = 0; i < n_active_; ++i) {
+    OccupancyGrid& g = grids_[static_cast<std::size_t>(active_[i])];
+    g.set_T_w_s(T_wnew_wold * g.T_w_s());
+  }
+  T_w_b_ = T_wnew_wold * T_w_b_;
+  last_.T_w_b = T_w_b_;
+}
+
 const OccupancyGrid& FrontEnd::matching_submap() const {
   return grids_[static_cast<std::size_t>(active_[0])];
 }
@@ -102,6 +126,19 @@ void FrontEnd::on_scan(const Scan2d& scan) {
         }
         T_s_l = guess * Pose2::exp(delta);
         out.status = FrontEndStatus::kDegenerate;
+        // Flagged directions in w, for the backend's odometry information.
+        const float yaw_w_l = g.T_w_s().yaw + T_s_l.yaw;
+        const float c = std::cos(yaw_w_l);
+        const float s = std::sin(yaw_w_l);
+        for (int k = 0; k < 3; ++k) {
+          if (r.degeneracy.degenerate[k]) {
+            const float ux = c * v(0, k) - s * v(1, k);
+            const float uy = s * v(0, k) + c * v(1, k);
+            out.degenerate_xy_w.xx += ux * ux;
+            out.degenerate_xy_w.xy += ux * uy;
+            out.degenerate_xy_w.yy += uy * uy;
+          }
+        }
       }
       T_w_b = g.T_w_s() * T_s_l * T_l_b_;
     }
@@ -132,6 +169,8 @@ void FrontEnd::on_scan(const Scan2d& scan) {
     case FrontEndStatus::kInitialised:
       break;
   }
+  // Pose in the matched submap (the older active one; on the first scan, the one started).
+  out.T_s_b = grids_[static_cast<std::size_t>(active_[0])].T_w_s().inverse() * T_w_b;
   if (out.status != FrontEndStatus::kPredicted) {
     insert_and_rotate(T_w_b);
   }

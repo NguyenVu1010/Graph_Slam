@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include "mss2d/backend.hpp"
 #include "mss2d/frontend.hpp"
 #include "mss2d/merger.hpp"
 #include "mss2d/scan_matcher.hpp"
@@ -115,6 +116,38 @@ TEST(NoAlloc, FrontEndScansDoNotAllocate) {
 
   EXPECT_EQ(fe->stats().n_scans, 12U);
   EXPECT_GT(fe->stats().n_submaps_recycled, 0U);
+  EXPECT_EQ(after - before, 0);
+}
+
+TEST(NoAlloc, BackendNodesLoopsAndSolvesDoNotAllocate) {
+  Config cfg;
+  cfg.submap.scans_per_submap = 4;  // a node every other scan
+  cfg.loop.min_path_m = 0.0F;       // standing still: every older node is a loop candidate
+  ASSERT_TRUE(cfg.validate().is_ok());
+  auto fe = std::make_unique<FrontEnd>(cfg, nullptr);
+  auto be = std::make_unique<Backend>(cfg);
+  auto scan = std::make_unique<Scan2d>();
+  sim::make_scan(sim::room_world(), Pose2T<double>(0.2, -0.1, 0.3), 720, 12.0, 0.0, 1, *scan);
+  for (std::uint32_t i = 0; i < scan->count; ++i) {
+    scan->points[i].t_offset_ns = static_cast<std::int32_t>(i * 100000);
+  }
+
+  const long before = g_news.load();
+  for (int k = 0; k < 16; ++k) {
+    for (int j = 0; j < 20; ++j) {
+      ImuSample2d s;
+      s.t = Timestamp{k * 100000000LL + j * 5000000LL};
+      fe->on_imu(s);
+    }
+    scan->t_start = Timestamp{k * 100000000LL};
+    fe->on_scan(*scan);
+    be->on_scan_done(*fe);
+  }
+  const long after = g_news.load();
+
+  EXPECT_GT(be->stats().n_nodes, 3U);
+  EXPECT_GT(be->stats().n_loops, 0U);
+  EXPECT_GT(be->stats().n_solves, 0U);
   EXPECT_EQ(after - before, 0);
 }
 

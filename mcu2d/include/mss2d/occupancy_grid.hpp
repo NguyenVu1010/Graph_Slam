@@ -25,6 +25,8 @@ class OccupancyGrid {
   void reset(const Pose2& T_w_s);
 
   const Pose2& T_w_s() const { return T_w_s_; }
+  /// Moves the submap in the world without touching its cells (backend correction).
+  void set_T_w_s(const Pose2& T_w_s) { T_w_s_ = T_w_s; }
   int side() const { return side_; }
   float resolution() const { return res_; }
 

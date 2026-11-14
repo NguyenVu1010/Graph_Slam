@@ -145,6 +145,43 @@ Scenario loop_scenario() {
   return sc;
 }
 
+Scenario revisit_scenario() {
+  Scenario sc;
+  // Walls off the 5 cm cell lattice on purpose.
+  sc.world.add_box(0.013, -0.017, 24.03, 14.04, 0.0);  // outer walls
+  sc.world.add_box(0.021, 0.008, 20.02, 9.97, 0.0);    // inner block
+  // Corners: different shapes so no corner looks like another.
+  sc.world.add_box(-11.62, -6.63, 0.5, 0.4, 0.0);
+  sc.world.add_box(11.55, -6.6, 0.6, 0.6, 0.5);
+  sc.world.add_box(11.62, 6.55, 0.4, 0.8, 0.0);
+  sc.world.add_box(-11.6, 6.62, 0.6, 0.3, 0.3);
+  // Rotated boxes on alternate walls every metre along the right, top and left corridors
+  // (their oblique faces constrain the corridor axis), so only the bottom one is degenerate.
+  for (int k = 0; k < 9; ++k) {
+    const double y = -4.1 + 1.0 * k;
+    const double side = k % 2 == 0 ? 1.0 : -1.0;
+    sc.world.add_box(11.0 + 0.9 * side, y, 0.5, 0.5, 0.6);
+    sc.world.add_box(-11.0 - 0.9 * side, y + 0.4, 0.5, 0.5, 0.6);
+  }
+  for (int k = 0; k < 19; ++k) {
+    sc.world.add_box(-8.9 + 1.0 * k, k % 2 == 0 ? 6.9 : 5.1, 0.5, 0.5, 0.6);
+  }
+  const double r = 0.75;
+  const double q = kPi / 2.0;
+  sc.traj = Trajectory(Pose2d(-10.25, -6.0, 0.0), 0.5);
+  sc.traj.wait(1.0);
+  for (int side = 0; side < 4; ++side) {
+    sc.traj.straight(side % 2 == 0 ? 20.5 : 10.5);
+    sc.traj.arc(q, r);
+  }
+  sc.traj.straight(8.0);
+  sc.traj.wait(0.5);
+  sc.gyro_bias_rad_s = 0.02;
+  sc.gyro_sigma_rad_s = 0.01;
+  sc.wheel_scale = 1.04;
+  return sc;
+}
+
 Scenario corridor_scenario() {
   Scenario sc;
   sc.world = corridor_world();
@@ -168,32 +205,50 @@ struct Collector final : PoseSink {
   }
 };
 
-/// Forwards to the front end and times on_scan.
+/// Forwards to the front end, then the backend; times both.
 struct TimedSink final : Sink {
   FrontEnd* fe = nullptr;
-  std::vector<double>* ms = nullptr;
+  Backend* be = nullptr;
+  RunResult* res = nullptr;
   void on_imu(const ImuSample2d& s) override { fe->on_imu(s); }
   void on_wheel(const WheelSample& s) override { fe->on_wheel(s); }
   void on_scan(const Scan2d& s) override {
     const auto t0 = std::chrono::steady_clock::now();
     fe->on_scan(s);
     const auto t1 = std::chrono::steady_clock::now();
-    ms->push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+    res->latency_ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+    if (be == nullptr) {
+      return;
+    }
+    const std::uint32_t nodes = be->stats().n_nodes;
+    const std::uint32_t solves = be->stats().n_solves;
+    be->on_scan_done(*fe);
+    const auto t2 = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    if (be->stats().n_solves != solves) {
+      res->solve_ms.push_back(ms);
+    } else if (be->stats().n_nodes != nodes) {
+      res->node_ms.push_back(ms);
+    }
   }
 };
 
 }  // namespace
 
-RunResult run_frontend(const Scenario& sc, const Config& cfg) {
+RunResult run_frontend(const Scenario& sc, const Config& cfg, bool backend) {
   RunResult res;
   Collector col;
   col.traj = &sc.traj;
   col.res = &res;
   auto merger = std::make_unique<Merger>(cfg);
   auto fe = std::make_unique<FrontEnd>(cfg, &col);
+  if (backend) {
+    res.backend = std::make_unique<Backend>(cfg);
+  }
   TimedSink timed;
   timed.fe = fe.get();
-  timed.ms = &res.latency_ms;
+  timed.be = res.backend.get();
+  timed.res = &res;
   auto scan = std::make_unique<Scan2d>();
   SyntheticLidar lidar(sc.world, sc.traj, sc.lidar, sc.seed);
 
@@ -229,6 +284,19 @@ RunResult run_frontend(const Scenario& sc, const Config& cfg) {
   merger->flush(timed);
   res.stats = fe->stats();
   res.gyro_bias_rad_s = fe->gyro_bias();
+  if (backend) {
+    for (const ScanPose& p : res.est) {
+      const int node = res.backend->node_of_submap(p.submap_id);
+      Pose2 T_w_s;
+      if (node >= 0) {
+        res.optimized.push_back(res.backend->graph().node(node) * to_double(p.T_s_b));
+      } else if (fe->active_submap_pose(p.submap_id, T_w_s)) {
+        res.optimized.push_back(to_double(T_w_s * p.T_s_b));
+      } else {
+        res.optimized.push_back(to_double(p.T_w_b));  // dropped submap (graph full)
+      }
+    }
+  }
   return res;
 }
 
