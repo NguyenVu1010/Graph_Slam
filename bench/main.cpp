@@ -1,11 +1,17 @@
 // Latency benchmark and dataset replay. Runs on Pi5 without ROS.
 //
 // Usage: mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR [--map-out FILE]
+//                  [--pace X]
 //
 // Replays an mssdata dataset (ADR-014) in time order into pipeline::Estimator: IMU, GNSS
 // and wheel records go to push_imu/push_gnss/push_odom, scans to push_scan; ground-truth
 // records are counted and ignored. run_once() is called by the Replayer below (before and
-// after each scan push and on queue pressure); flush() at the end of the dataset. Writes
+// after each scan push and on queue pressure); flush() at the end of the dataset. With
+// `deterministic: false` the backend runs on its own thread (ADR-033) and the per-scan latency
+// is the front-end's; the run is then not bit-reproducible. Replayed faster than the sensors, the
+// front-end outruns the backend and its map lags behind; --pace X feeds each scan no earlier than
+// its sensor time since the first scan divided by X (1 = real time; default: as fast as
+// possible), the way to bench the threaded mode. Writes
 // only under DIR:
 //   DIR/est.tum     one line per scan that produced an estimate, from latest_state(); none
 //                   before the IMU static initialisation (imu.init_window_s of still data)
@@ -34,15 +40,18 @@
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -70,12 +79,14 @@ struct Args {
   std::optional<fs::path> overlay;
   fs::path out;
   std::optional<fs::path> map_out;
+  double pace = 0.0;  // --pace X: scans at X times the sensor rate; 0 = as fast as possible
 };
 
 void usage(const char* argv0) {
   std::fprintf(
       stderr,
-      "usage: %s <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR [--map-out FILE]\n",
+      "usage: %s <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR [--map-out FILE] "
+      "[--pace X]\n",
       argv0);
 }
 
@@ -86,13 +97,20 @@ std::optional<Args> parse_args(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
     if (std::strcmp(arg, "--overlay") == 0 || std::strcmp(arg, "--out") == 0 ||
-        std::strcmp(arg, "--map-out") == 0) {
+        std::strcmp(arg, "--map-out") == 0 || std::strcmp(arg, "--pace") == 0) {
       if (i + 1 >= argc) {
         std::fprintf(stderr, "mss_bench: %s needs a value\n", arg);
         return std::nullopt;
       }
       if (std::strcmp(arg, "--overlay") == 0) {
         a.overlay = fs::path(argv[++i]);
+      } else if (std::strcmp(arg, "--pace") == 0) {
+        char* end = nullptr;
+        a.pace = std::strtod(argv[++i], &end);
+        if (end == argv[i] || *end != '\0' || !(a.pace > 0.0) || !std::isfinite(a.pace)) {
+          std::fprintf(stderr, "mss_bench: --pace needs a positive number\n");
+          return std::nullopt;
+        }
       } else if (std::strcmp(arg, "--map-out") == 0) {
         a.map_out = fs::path(argv[++i]);
       } else {
@@ -268,6 +286,20 @@ bool write_json(const fs::path& path,
                ",\n"
                "  \"n_map_spacing_replaced\": %" PRIu64
                ",\n"
+               "  \"n_map_publish_skipped\": %" PRIu64
+               ",\n"
+               "  \"n_map_full_copies\": %" PRIu64
+               ",\n"
+               "  \"n_backend_keyframes_dropped\": %" PRIu64
+               ",\n"
+               "  \"n_backend_fixes_dropped\": %" PRIu64
+               ",\n"
+               "  \"n_backend_prunes_dropped\": %" PRIu64
+               ",\n"
+               "  \"n_backend_updates_dropped\": %" PRIu64
+               ",\n"
+               "  \"n_backend_corrections\": %" PRIu64
+               ",\n"
                "  \"push_scan_us_p50\": %.3f,\n"
                "  \"push_scan_us_p95\": %.3f,\n"
                "  \"scan_process_ms_p50\": %.6f,\n"
@@ -334,6 +366,13 @@ bool write_json(const fs::path& path,
                st.n_loops_released,
                st.n_map_points,
                st.n_map_spacing_replaced,
+               st.n_map_publish_skipped,
+               st.n_map_full_copies,
+               st.n_backend_keyframes_dropped,
+               st.n_backend_fixes_dropped,
+               st.n_backend_prunes_dropped,
+               st.n_backend_updates_dropped,
+               st.n_backend_corrections,
                st.push_scan_us_p50,
                st.push_scan_us_p95,
                lat.p50_ms,
@@ -736,8 +775,13 @@ int main(int argc, char** argv) {
   mss::common::ScanFrame scan(max_points);
   mss::io::Record rec;
   Replayer replayer(*est, cfg.value().realtime, tum, reader.index().n_lidar);
+  // deterministic: false starts the ADR-033 backend thread (no-op otherwise); flush() at the end
+  // of the replay joins it after it handled every keyframe, before the outputs are read.
+  est->start();
   int status = 0;
   const auto t0 = std::chrono::steady_clock::now();
+  bool have_first_scan = false;
+  mss::common::Timestamp first_scan_t{};
   for (;;) {
     const auto more = reader.next(rec, scan);
     if (!more) {
@@ -747,6 +791,15 @@ int main(int argc, char** argv) {
     }
     if (!more.value()) {
       break;
+    }
+    if (args->pace > 0.0 && rec.kind == mss::io::RecordKind::kLidar) {
+      // --pace: no scan before its sensor time (from the first scan) divided by the factor.
+      if (!have_first_scan) {
+        first_scan_t = scan.t_start;
+        have_first_scan = true;
+      }
+      const double dt_s = mss::common::seconds_between(first_scan_t, scan.t_start) / args->pace;
+      std::this_thread::sleep_until(t0 + std::chrono::duration<double>(dt_s));
     }
     replayer.feed(rec, scan);
   }

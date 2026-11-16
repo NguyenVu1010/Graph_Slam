@@ -51,7 +51,8 @@ jobs:
       - run: ctest --test-dir build-mcu2d --output-on-failure
 
   tsan:
-    # ThreadSanitizer over the lock-free estimator thread primitives (ADR-033).
+    # ThreadSanitizer over the lock-free estimator thread primitives and the estimator with its
+    # backend thread (ADR-033).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -75,8 +76,12 @@ jobs:
       - run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMSS_WITH_GTSAM=OFF
           -DMSS_WERROR=ON -DCMAKE_PREFIX_PATH=$HOME/opt/sophus "-DCMAKE_CXX_FLAGS=-fsanitize=thread"
-      - run: cmake --build build --parallel 2 --target test_thread_primitives
-      - run: ctest --test-dir build --output-on-failure -R "SpscQueue|SnapshotSlots"
+      - run: >
+          cmake --build build --parallel 2
+          --target test_thread_primitives test_estimator test_estimator_threads
+      - run: >
+          ctest --test-dir build --output-on-failure
+          -R "^(SpscQueue|SnapshotSlots|Estimator|EstimatorThreads)\."
         env:
           TSAN_OPTIONS: halt_on_error=1
 

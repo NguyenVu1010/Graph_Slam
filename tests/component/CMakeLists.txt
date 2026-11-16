@@ -61,3 +61,10 @@ target_include_directories(test_loop_component PRIVATE
   ${CMAKE_SOURCE_DIR}/core/pipeline/src ${CMAKE_SOURCE_DIR}/tests/unit)
 target_compile_definitions(test_loop_component PRIVATE
   MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)
+
+# pipeline: the ADR-033 backend thread on the box world (threaded vs sequential, stalled and slow
+# backend); also run under ThreadSanitizer in CI.
+mss_add_test(test_estimator_threads test_estimator_threads.cpp)
+target_include_directories(test_estimator_threads PRIVATE ${CMAKE_SOURCE_DIR}/core/pipeline/src)
+target_compile_definitions(test_estimator_threads PRIVATE
+  MSS_TEST_WITH_GTSAM=$<BOOL:${MSS_WITH_GTSAM}>)
