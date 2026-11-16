@@ -69,6 +69,9 @@ MssNode::MssNode(const rclcpp::NodeOptions& options)
   require(!params_.frames.body.empty() && params_.frames.body != params_.frames.world,
           "tf.body_frame: empty in the parameter and in frames.body, or equal to tf.world_frame");
   est_ = std::make_unique<mss::pipeline::Estimator>(cfg.value());
+  // deterministic: false: the ADR-033 backend thread (no-op otherwise); flush() in finish() and
+  // the Estimator's destructor join it.
+  est_->start();
   scan_.reserve(cfg.value().realtime.max_points_per_scan);
   gnss_sigma_.sigma_h_m = cfg.value().gnss.sigma_h_m;
   gnss_sigma_.sigma_v_m = cfg.value().gnss.sigma_v_m;

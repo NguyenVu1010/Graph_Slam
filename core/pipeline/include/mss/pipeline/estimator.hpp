@@ -15,13 +15,17 @@
 
 namespace mss::pipeline {
 
-/// The estimator: owns every module instance, the bounded queues and (ADR-005) the only
-/// threads in core. Apps (bench, ros2_node) talk only to this class.
+/// The estimator: owns every module instance, the bounded queues and (ADR-033) the only
+/// thread in core. Apps (bench, ros2_node) talk only to this class.
 ///
 /// Message flow: push_*() copy a message into a bounded queue and return at once (never
-/// block). Processing happens in run_once() / flush() (deterministic, single-threaded
-/// driver) or, once ADR-005 threads are implemented, on the estimator's own threads
-/// between start() and stop().
+/// block). The front-end (IMU initialisation, deskew, scan matching, keyframe decision) runs
+/// inside run_once() / flush() on the caller's thread. The keyframe backend (graph, keyframe
+/// store, loop closure, GNSS fusion, the map writer) runs on the same thread with
+/// `deterministic: true` (the sequential path, bit-reproducible), or on the estimator's backend
+/// thread between start() and stop() with `deterministic: false` (ADR-033): the front-end then
+/// queues keyframes, GNSS fixes and prune requests to it and applies its corrections (T_corr) at
+/// a later scan boundary.
 ///
 /// IMU coverage gating: a queued scan is processed only once an IMU sample with
 /// `t >= scan_end_time(scan)` (its ordering key) has been accepted by push_imu, so the
@@ -30,10 +34,10 @@ namespace mss::pipeline {
 /// therefore call run_once() as often as they like: processing early never reorders or
 /// starves a scan. flush() ignores the gate (end of data).
 ///
-/// Current phase: the modules are plugged in (IMU static initialisation, deskew, scan
-/// matching, keyframes, backend::Graph, ADR-016 keyframe store and map cache, GNSS and
-/// wheel factors; docs/derivations/pipeline.md) and run single-threaded inside
-/// run_once() / flush(). start() / stop() remain no-ops (threads are a later PR, ADR-005).
+/// The modules (IMU static initialisation, deskew, scan matching, keyframes, backend::Graph,
+/// ADR-016 keyframe store and map cache, GNSS and wheel factors) follow
+/// docs/derivations/pipeline.md. The loop-closure search runs inside the backend (no loop
+/// thread yet).
 ///
 /// Keyframe-boundary duties of the estimator (contract for imu, odom and backend):
 ///   - keyframe time = scan `t_start`;
@@ -44,10 +48,12 @@ namespace mss::pipeline {
 ///     sample period (interval between consecutive accepted WheelSamples) and drops the
 ///     factor with one log line otherwise.
 ///
-/// Ownership/threading: one instance per process, owned by the app. Shared state with a
-/// documented owner (ADR-005): the latest Estimate (written by the backend stage, read by
-/// latest_state()) and the map (front-end). In the current single-threaded phase every
-/// method must be called from one thread; no method is thread-safe yet.
+/// Ownership/threading: one instance per process, owned by the app. Every public method must be
+/// called from one thread (the caller's, which is the front-end thread). The backend thread
+/// touches only the backend and its channel (ADR-033): the queues are single-producer
+/// single-consumer, the map is an immutable snapshot, the backend counters are a copy published
+/// under a mutex held for one copy, and visit_map() / export_map() / graph_snapshot() take the
+/// backend's lock (see there).
 class Estimator {
  public:
   /// Per-run counters, all since construction.
@@ -60,7 +66,7 @@ class Estimator {
     std::uint64_t n_rejected_imu = 0;     ///< samples refused by push_imu (non-increasing t)
     std::uint64_t n_dropped_imu = 0;      ///< queued IMU samples overwritten (IMU queue full)
     std::uint64_t n_dropped_aux = 0;      ///< queued GNSS + wheel messages overwritten (full)
-    std::uint64_t n_keyframes = 0;        ///< keyframes added to the backend graph
+    std::uint64_t n_keyframes = 0;        ///< keyframes added to the backend graph (threaded: sent)
     std::uint64_t n_match_failures = 0;   ///< scans whose scan matching failed (IMU fallback)
     std::uint64_t n_skipped_scans = 0;    ///< processed scans that produced no estimate
     std::uint64_t n_uncovered_scans = 0;  ///< of those: IMU does not span the scan (EOF,
@@ -133,8 +139,23 @@ class Estimator {
     /// map points refreshed in place by map.min_point_dist_m since construction (summed
     /// over map rebuilds; ADR-007 amendment)
     std::uint64_t n_map_spacing_replaced = 0;
-    double push_scan_us_p50 = 0.0;  ///< us, median wall time of push_scan()
-    double push_scan_us_p95 = 0.0;  ///< us, 95th percentile wall time of push_scan()
+    /// ADR-033 map snapshots (MapPublisher): updates dropped for want of a free buffer (the map
+    /// is then rebuilt from the keyframe window), and buffers copied whole instead of replaying
+    /// the logged operations. Both 0 in a normal run.
+    std::uint64_t n_map_publish_skipped = 0;
+    std::uint64_t n_map_full_copies = 0;
+    /// ADR-033 backend thread (deterministic: false, between start() and stop(); all 0 on the
+    /// sequential path). Full-queue policy: the sender refuses and counts, never waits.
+    /// Keyframes the front-end could not hand over (message queue full or every keyframe cloud
+    /// buffer still in use): that scan stays a non-keyframe and the next scan retries, so a
+    /// backlogged backend counts one per scan.
+    std::uint64_t n_backend_keyframes_dropped = 0;
+    std::uint64_t n_backend_fixes_dropped = 0;    ///< GNSS fixes refused (message queue full)
+    std::uint64_t n_backend_prunes_dropped = 0;   ///< prune requests refused (retried next scan)
+    std::uint64_t n_backend_updates_dropped = 0;  ///< BackendUpdates refused (update queue full)
+    std::uint64_t n_backend_corrections = 0;      ///< backend corrections the front-end applied
+    double push_scan_us_p50 = 0.0;                ///< us, median wall time of push_scan()
+    double push_scan_us_p95 = 0.0;                ///< us, 95th percentile wall time of push_scan()
   };
 
   /// Builds every module and reserves every buffer: a pool of
@@ -242,19 +263,31 @@ class Estimator {
   /// message is processed in key order and all queues are empty on return. Call once
   /// when the input ends (bench at EOF, node shutdown).
   /// A scan whose end no IMU sample reaches (data ends mid-scan) is consumed (n_scans,
-  /// n_skipped_scans, n_uncovered_scans) without an estimate update.
+  /// n_skipped_scans, n_uncovered_scans) without an estimate update. Then, with the backend
+  /// thread running, stop(): the outputs (keyframe poses, loops, map) are complete on return.
   /// Errors: none returned. Hot path: no (once); allocates only as run_once() does.
   /// Tests: Task 8 test_estimator (ScanWaitsForImuCoverage), bench component tests.
   void flush();
 
-  /// Starts the ADR-005 threads (front-end, backend, loop). Not implemented in this
-  /// phase: with `deterministic: true` it is a no-op that logs a warning (use
-  /// run_once()); with `deterministic: false` it is also a no-op that logs a warning
-  /// that threaded mode is not implemented yet. Never throws. Tests: Task 8.
+  /// ADR-033: with `deterministic: false`, starts the backend thread (the front-end stays on the
+  /// caller's thread, in run_once() / flush()). From then on a keyframe, a GNSS fix or a prune
+  /// request is queued to the backend (SPSC, kBackendQueueDepth messages, kKeyframeCloudSlots
+  /// keyframe clouds in flight); when that is full it is refused and counted
+  /// (Stats::n_backend_*_dropped), the front-end never waits. The backend's estimate of a keyframe
+  /// comes back as an update; the front-end applies it at the start of the first scan whose map
+  /// snapshot holds that keyframe, as T_corr = T_w_b(opt) * T_w_b(sent)^-1 on its state.
+  /// The backend thread waits on a condition variable (notified after each push, timed wait as a
+  /// fallback), never spins. Runs are then not bit-reproducible. Already running: no-op. With
+  /// `deterministic: true`: no-op (log line), everything runs in run_once(). Never throws (a
+  /// thread that cannot be created is logged and the estimator stays sequential).
+  /// Tests: test_estimator_threads (EstimatorThreads.*), Estimator.StartStopAreNoOps.
   void start();
 
-  /// Stops and joins the threads started by start(). Same no-op-with-warning behaviour
-  /// as start() in this phase. Never throws. Tests: Task 8.
+  /// Stops the backend thread: it handles every message queued so far, then it is joined, and
+  /// the updates it sent are applied to the front-end (latest_state() included); afterwards the
+  /// estimator runs sequentially (start() may be called again). flush() does the same at the end
+  /// of data, and the destructor too. No-op without a running thread. Never throws.
+  /// Tests: EstimatorThreads.StartStopJoinCleanly, StalledBackendDoesNotStallFrontEnd.
   void stop();
 
   /// Snapshot of the counters. push_scan percentiles come from a fixed ring holding the
@@ -275,11 +308,11 @@ class Estimator {
   /// map (n_evicted). Before the first keyframe: ok with n_keyframes 0.
   /// Errors: Status error "map export: no stored keyframe has a backend pose" when the store
   ///   holds keyframes but none has an estimate.
-  /// Thread contract: reads the estimator state without a lock. In this single-threaded phase
-  ///   call it from the thread that calls run_once() / flush(), between those calls (as mss_bench
-  ///   does at the end of a run). Once ADR-005 threads exist the ROS node will call it on demand
-  ///   (about 1 Hz); it must then take the estimator's map/backend lock, which this method does
-  ///   not take yet.
+  /// Thread contract: call it from the thread that calls run_once() / flush(), between those
+  ///   calls (as mss_bench does at the end of a run, the ROS node on demand at about 1 Hz). While
+  ///   the backend thread runs (ADR-033) it holds the backend lock for the whole visit, so it
+  ///   waits for the message the backend is handling (an optimisation, a loop search) and the
+  ///   backend waits for it: call it off the scan-rate path. Never waits on the sequential path.
   /// Allocation: none itself (the visitor may). Hot path: no (on demand, O(stored points)).
   /// Tests: test_map_export_component (MapExportComponent*), test_map_downsample.
   common::Result<MapExportInfo> visit_map(const MapKeyframeVisitor& visit) const;
@@ -304,7 +337,7 @@ class Estimator {
   /// Errors: Status error "graph snapshot: no keyframe has a backend pose" when keyframes exist
   ///   but the backend has an estimate for none (no-GTSAM stub build); `out` is then empty.
   /// Thread contract: as visit_map() (the thread that calls run_once() / flush(), between those
-  ///   calls; no lock yet).
+  ///   calls; the backend lock while the backend thread runs).
   /// Hot path: no (on demand, about 1 Hz; O(keyframes + loops) backend reads). Never called by
   ///   the estimator itself, so it cannot change an estimate.
   /// Tests: test_loop_component (expect_snapshot in PipelinePcmRemovesAWrongLoopAndReAddsTheTrueOne

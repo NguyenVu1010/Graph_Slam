@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -52,9 +54,30 @@ double nearest_rank(const std::array<double, kLatencySamples>& sorted,
 
 }  // namespace
 
-// Owner: the Estimator; single-threaded in this phase (no mutex, see ADR-005 TODO in
-// bounded_queue.hpp).
+// Owner: the Estimator. Everything here belongs to the caller's thread (the front-end); the
+// backend thread (ADR-033, deterministic: false, between start() and stop()) only touches the
+// core's BackendChannel and KeyframeBackend.
 struct Estimator::Impl {
+  ~Impl() { stop_backend(); }
+  Impl(const Impl&) = delete;
+  Impl& operator=(const Impl&) = delete;
+  Impl(Impl&&) = delete;
+  Impl& operator=(Impl&&) = delete;
+
+  // Joins the backend thread after it handled every queued message, then applies its last
+  // updates on this thread. No-op without a running thread.
+  void stop_backend() {
+    if (!backend_thread.joinable()) {
+      return;
+    }
+    core->request_backend_stop();
+    backend_thread.join();
+    core->finish_backend();
+    if (core->has_estimate()) {
+      latest = core->latest();
+    }
+  }
+
   explicit Impl(const Config& c)
       : cfg(c),
         scan_depth(
@@ -141,6 +164,8 @@ struct Estimator::Impl {
 
   common::Estimate latest;
   Stats stats;
+  // ADR-033: the only thread the estimator creates (start() / stop()).
+  std::thread backend_thread;
 
   // Ring of the most recent push_scan() wall times in microseconds.
   std::array<double, kLatencySamples> latency_us{};
@@ -311,23 +336,35 @@ void Estimator::run_once() {
 void Estimator::flush() {
   impl_->drain(/*require_imu_coverage=*/false);
   impl_->core->on_end_of_data();
+  impl_->stop_backend();  // end of data: the backend drains, its last corrections are applied
 }
 
 void Estimator::start() {
-  if (impl_->cfg.deterministic) {
-    common::log_warn("Estimator::start: deterministic mode has no threads; call run_once()");
-  } else {
-    common::log_warn(
-        "Estimator::start: threaded mode is not implemented yet (ADR-005); call run_once()");
+  Impl& s = *impl_;
+  if (!s.core->can_thread()) {
+    common::log_info(
+        "Estimator::start: deterministic mode, no backend thread (run_once() does all)");
+    return;
   }
+  if (s.backend_thread.joinable()) {
+    return;
+  }
+  s.core->start_backend();
+  try {
+    detail::EstimatorCore* core = s.core.get();
+    s.backend_thread = std::thread([core] { core->run_backend(); });
+  } catch (const std::system_error& e) {
+    s.core->finish_backend();  // nothing was sent yet: back to the sequential path
+    common::log_error(std::string("Estimator::start: cannot create the backend thread, "
+                                  "running sequentially: ") +
+                      e.what());
+    return;
+  }
+  common::log_info("Estimator::start: backend thread started (ADR-033)");
 }
 
 void Estimator::stop() {
-  if (impl_->cfg.deterministic) {
-    common::log_warn("Estimator::stop: deterministic mode has no threads; nothing to stop");
-  } else {
-    common::log_warn("Estimator::stop: threaded mode is not implemented yet (ADR-005)");
-  }
+  impl_->stop_backend();
 }
 
 Estimator::Stats Estimator::stats() const {
@@ -366,6 +403,13 @@ Estimator::Stats Estimator::stats() const {
   out.n_loops_removed = c.n_loops_removed;
   out.n_loops_no_marginal = c.n_loops_no_marginal;
   out.n_loops_released = c.n_loops_released;
+  out.n_map_publish_skipped = c.n_map_publish_skipped;
+  out.n_map_full_copies = c.n_map_full_copies;
+  out.n_backend_keyframes_dropped = c.n_backend_keyframes_dropped;
+  out.n_backend_fixes_dropped = c.n_backend_fixes_dropped;
+  out.n_backend_prunes_dropped = c.n_backend_prunes_dropped;
+  out.n_backend_updates_dropped = c.n_backend_updates_dropped;
+  out.n_backend_corrections = c.n_backend_corrections;
   const detail::MapRef snap = s.core->voxel_map();  // held while the counters are read
   const map::VoxelMap& m = snap->map;
   out.n_map_points = m.num_points();

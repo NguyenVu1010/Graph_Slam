@@ -174,6 +174,9 @@ BackendUpdate KeyframeBackend::add_keyframe(const KeyframeMsg& msg) {
   const common::KeyId j = graph_.add_keyframe(msg.t, msg.x0);
   u.id = j;
   n_known_keyframes_ = static_cast<std::size_t>(j) + 1;
+  // ADR-033: the snapshot that holds this keyframe counts it (the front-end applies the
+  // keyframe's update once it holds that snapshot).
+  map_.set_keyframe_epoch(n_known_keyframes_);
   if (msg.first) {
     if (msg.add_static_gravity) {
       graph_.add_static_gravity_factor(j, msg.gravity_f_b, msg.gravity_cov);
@@ -288,6 +291,13 @@ void KeyframeBackend::update_map(common::KeyId j,
       }
     }
   }
+  if (!defer_publish_) {
+    map_.publish();
+  }
+  sync_map_counters();
+}
+
+void KeyframeBackend::publish_deferred_map() {
   map_.publish();
   sync_map_counters();
 }

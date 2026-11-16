@@ -3,7 +3,8 @@
 # New features ship behind a flag that defaults to the previous behaviour.
 mss_node:
   ros__parameters:
-    # Single-thread, fixed-seed mode so runs reproduce bit for bit.
+    # Single-thread, fixed-seed mode so runs reproduce bit for bit. false: the keyframe backend
+    # runs on its own thread after Estimator::start() (ADR-033), not bit-reproducible.
     deterministic: true
     random_seed: 42
 
