@@ -275,9 +275,11 @@ TEST(EstimatorThreads, StalledBackendDoesNotStallFrontEnd) {
 }
 
 // A slow backend on a paced replay (4x sensor rate, one scan per 25 ms): from keyframe 1 on the
-// backend sleeps 400 ms (16 paced scan periods) per keyframe, slower than the keyframe rate. The
-// front-end keeps a pose for every scan, refused keyframes are counted, the run ends cleanly.
-TEST(EstimatorThreads, SlowBackendCountsDropsAndKeepsEveryScan) {
+// backend sleeps 400 ms (16 paced scan periods) per keyframe. The front-end keeps a pose for every
+// scan and never waits, and the run ends cleanly. Whether keyframes are refused depends on how fast
+// the front-end runs (under ThreadSanitizer it can be slower than the backend), so drop counting is
+// checked deterministically by StalledBackendDoesNotStallFrontEnd instead.
+TEST(EstimatorThreads, SlowBackendKeepsEveryScan) {
   const BoxWorldParams p;
   const fs::path dir = test_dir();
   const Config cfg = threaded(box_config(p, false, true, dir));
@@ -297,7 +299,6 @@ TEST(EstimatorThreads, SlowBackendCountsDropsAndKeepsEveryScan) {
   EXPECT_EQ(thr.r.estimates.size(), expected_estimates(p, cfg));
   EXPECT_EQ(s.n_scans, static_cast<std::uint64_t>(test::box_num_scans(p)));
   EXPECT_GT(s.n_keyframes, 5U);
-  EXPECT_GT(s.n_backend_keyframes_dropped, 0U);
   EXPECT_EQ(s.n_backend_updates_dropped, 0U);
   EXPECT_LT(trajectory_errors(p, thr.r.estimates).ate_m, 0.2);
   // The front-end never waits for the backend: no run_once() lasts one backend keyframe.
