@@ -27,6 +27,11 @@ struct MapBuffer {
   map::VoxelMap map;
   /// Writer only: `map` holds the operations 1..applied of MapPublisher's log.
   std::uint64_t applied = 0;
+  /// Set at publish (MapPublisher::set_keyframe_epoch): the backend had processed keyframes
+  /// 0..n_keyframes-1 when it published this snapshot. With the backend thread (ADR-033) the
+  /// front-end applies the BackendUpdate of a keyframe only once the snapshot it holds counts it,
+  /// so its pose and the map it matches against carry the same corrections.
+  std::uint64_t n_keyframes = 0;
 };
 using MapSlots = SnapshotSlots<MapBuffer, kMapSnapshotBuffers>;
 /// A held map snapshot (MapSlots::Ref): the front-end holds one for a whole scan.
@@ -76,8 +81,12 @@ class MapPublisher {
   void prune(const common::Vec3& p_w_b);
   /// VoxelMap::clear (start of a rebuild, ADR-016). Clears lost_update().
   void clear();
-  /// Makes the updated buffer the latest snapshot.
+  /// Makes the updated buffer the latest snapshot, tagged with the keyframe epoch.
   void publish();
+  /// The MapBuffer::n_keyframes of the next publish() (and of every later one until changed).
+  void set_keyframe_epoch(std::uint64_t n_keyframes) { epoch_ = n_keyframes; }
+  /// An update was begun (begin() succeeded) and not published yet.
+  [[nodiscard]] bool update_pending() const { return writing_ != nullptr; }
 
   /// Writer only. The map being updated (between a successful begin() and publish()), else
   /// the published one: the map the operations so far produced.
@@ -112,6 +121,7 @@ class MapPublisher {
   MapBuffer* writing_ = nullptr;          // the buffer of the update in progress
   const MapBuffer* published_ = nullptr;  // the buffer last published
   bool lost_update_ = false;
+  std::uint64_t epoch_ = 0;
   std::uint64_t n_publish_skipped_ = 0;
   std::uint64_t n_full_copies_ = 0;
 };

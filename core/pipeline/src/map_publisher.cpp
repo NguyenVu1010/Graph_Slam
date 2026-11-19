@@ -121,6 +121,7 @@ void MapPublisher::clear() {
 
 void MapPublisher::publish() {
   if (writing_ != nullptr) {
+    writing_->n_keyframes = epoch_;
     slots_.publish();
     published_ = writing_;
   }

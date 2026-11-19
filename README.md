@@ -59,7 +59,7 @@ Latency benchmark and dataset replay (no ROS). Convert a bag once, then replay i
 
 ```sh
 python tools/bag_to_mssdata.py <bag> <out> --pipeline-config config/sim/warehouse.yaml
-mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR [--map-out FILE.pcd]
+mss_bench <default.yaml> <mssdata-dir> [--overlay x.yaml] --out DIR [--map-out FILE.pcd] [--pace X]
 ```
 
 `--out` is required; `DIR` receives `est.tum` and `bench.json`, and a summary table goes to
@@ -77,6 +77,14 @@ but some records were not processed (dropped or rejected, see `bench.json`). For
 `DIR` also receives `kf_opt.tum` (the stored keyframes at their optimised poses; GTSAM builds)
 and `loops.csv` (`t_i_ns,t_j_ns,state` per loop of the graph snapshot, state `active`,
 `released` or `removed`; header only when there is none).
+
+`--pace X` feeds each scan no earlier than its sensor time (since the first scan) divided by `X`
+(`1` = real time); without it the replay runs as fast as it can. Use it to bench
+`deterministic: false` (ADR-033): replayed faster than the sensors, the front-end outruns the
+backend thread, scan-matches against a map many keyframes old and drifts. `bench.json` also
+reports the backend-thread counters `n_backend_keyframes_dropped`, `n_backend_fixes_dropped`,
+`n_backend_prunes_dropped`, `n_backend_updates_dropped`, `n_backend_corrections` and the map
+snapshot counters `n_map_publish_skipped`, `n_map_full_copies`.
 
 `--map-out FILE.pcd` also writes the global map after the replay. The map is every keyframe
 cloud in the keyframe store, placed at the backend's optimised pose at the end of the run, in
@@ -450,7 +458,14 @@ never runs on worker threads (ADR-018). The limit is process-wide and never rele
 Graph with `single_thread: false` in the same process stays limited and logs a warning. On a
 300-keyframe test graph, timed in separate processes per mode, single-thread `optimize()` was
 faster (0.195 s against 0.262 s per run); the E-01 bench replay was within run-to-run noise,
-with lower CPU use. With `deterministic: false` TBB keeps its default parallelism.
+with lower CPU use. With `deterministic: false` TBB keeps its default parallelism, and
+`Estimator::start()` (called by `mss_bench` and `mss_node`) runs the keyframe backend (graph,
+keyframe store, loop closure, GNSS fusion, map writer) on its own thread while the front-end stays
+in `run_once()` (ADR-033). They talk through lock-free single-producer single-consumer queues; a
+full queue refuses the message and counts it (`n_backend_*_dropped` in `Stats` and `bench.json`)
+instead of blocking the front-end, and the backend's corrections reach the front-end at a scan
+boundary. `flush()` and `stop()` let the backend handle every queued message before they join it.
+Such runs are not bit-reproducible; baselines and E-02 use `deterministic: true`.
 
 ## Before committing
 

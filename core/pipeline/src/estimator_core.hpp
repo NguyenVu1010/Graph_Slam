@@ -1,10 +1,13 @@
 #pragma once
 
 #include <array>
+#include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -24,6 +27,7 @@
 #include "mss/pipeline/config.hpp"
 #include "mss/pipeline/graph_snapshot.hpp"
 #include "mss/pipeline/map_export.hpp"
+#include "mss/pipeline/spsc_queue.hpp"
 #include "mss/preprocess/preprocessor.hpp"
 #include "mss/scan_match/scan_matcher.hpp"
 
@@ -146,6 +150,10 @@ struct CoreTestHooks {
   /// ADR-028 tests: called with the backend graph after every loop search that changed it (after
   /// the extra updates), to check which loop factors it holds.
   std::function<void(const backend::Graph&)> inspect_graph;
+  /// ADR-033 stress tests (backend thread only): called on the backend thread before it handles
+  /// each keyframe message, with the number of keyframes it handled so far; it may block or
+  /// sleep to model a slow backend. Never called on the sequential path.
+  std::function<void(std::uint64_t)> before_backend_keyframe;
 };
 
 /// Process-wide hooks read by every EstimatorCore constructor (nullptr: none, the default).
@@ -202,15 +210,79 @@ struct CoreCounters {
   /// buffers copied whole instead of replaying the logged updates (MapPublisher).
   std::uint64_t n_map_publish_skipped = 0;
   std::uint64_t n_map_full_copies = 0;
+  /// ADR-033 backend thread (see Estimator::Stats): messages the front-end could not queue
+  /// (keyframes also for want of a free cloud buffer), updates the backend could not queue, and
+  /// corrections the front-end applied.
+  std::uint64_t n_backend_keyframes_dropped = 0;
+  std::uint64_t n_backend_fixes_dropped = 0;
+  std::uint64_t n_backend_prunes_dropped = 0;
+  std::uint64_t n_backend_updates_dropped = 0;
+  std::uint64_t n_backend_corrections = 0;
 };
 
-/// The per-message algorithm of the single-threaded estimator (docs/derivations/pipeline.md,
-/// ADR-005 threads deferred). Owns every module: the front-end ones directly, the graph, keyframe
-/// store, loop closure, GNSS fusion and the map writer through KeyframeBackend (ADR-033); the
-/// front-end matches each scan against the map snapshot the backend published last and never
-/// changes it (it asks the backend to prune). Messages must arrive in
-/// the Estimator's k-way merge order (IMU, wheel, GNSS by t; scans by their end time). Internal to
-/// the pipeline. Single-threaded. Large (~0.5 MB): hold it on the heap.
+/// ADR-033 backend thread: compile-time capacities (no allocation after start-up).
+/// Messages front-end -> backend (keyframes, GNSS fixes, prune requests, in send order).
+constexpr std::size_t kBackendQueueDepth = 64;
+/// BackendUpdates backend -> front-end.
+constexpr std::size_t kUpdateQueueDepth = 64;
+/// Keyframe clouds in flight to the backend (ScanFrames of realtime.max_points_per_scan each).
+constexpr std::size_t kKeyframeCloudSlots = 4;
+/// Keyframes sent whose BackendUpdate the front-end has not applied yet (at most the cloud slots,
+/// the update queue and the update held back, see EstimatorCore::apply_backend_updates).
+constexpr std::size_t kMaxPendingKeyframes = kUpdateQueueDepth + kKeyframeCloudSlots + 2;
+
+/// One message front-end -> backend thread (ADR-033). One queue for every kind keeps the send
+/// order, which the backend relies on: the fixes sent before a keyframe are fused into it.
+struct BackendMsg {
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+  enum class Kind : std::uint8_t { kKeyframe, kGnssFix, kPrune };
+  Kind kind = Kind::kPrune;
+  KeyframeMsg kf;  ///< kKeyframe; kf.cloud_l points into the cloud slot `cloud_slot`
+  std::size_t cloud_slot = 0;
+  GnssFixMsg fix;                             ///< kGnssFix
+  common::Vec3 p_w_b = common::Vec3::Zero();  ///< kPrune: front-end body position
+};
+
+/// The state shared between the front-end (the thread that calls Estimator::run_once / flush) and
+/// the backend thread (ADR-033). Ownership: the queues have one producer and one consumer each
+/// (SpscQueue); a cloud slot belongs to the front-end while `cloud_busy` is false and to the
+/// backend from the push of its keyframe until the backend clears the flag. `backend_mutex` is
+/// held by the backend thread while it handles one message and by the read queries
+/// (visit_map, graph_snapshot); the front-end pipeline never takes it. `counters_mutex` guards the
+/// counters the backend publishes after each message (held for one copy).
+struct BackendChannel {
+  explicit BackendChannel(std::size_t max_points) {
+    for (common::ScanFrame& c : clouds) {
+      c.reserve(max_points);
+    }
+  }
+  SpscQueue<BackendMsg, kBackendQueueDepth> to_backend;
+  SpscQueue<BackendUpdate, kUpdateQueueDepth> to_frontend;
+  std::array<common::ScanFrame, kKeyframeCloudSlots> clouds;
+  std::array<std::atomic<bool>, kKeyframeCloudSlots> cloud_busy{};
+  // Wake-up: the front-end notifies after each push; the backend waits with a timeout
+  // (kBackendIdleWait) that also catches a notify sent between its empty check and its wait.
+  std::mutex wake_mutex;
+  std::condition_variable wake;
+  std::atomic<bool> stop{false};
+  std::mutex backend_mutex;
+  std::mutex counters_mutex;
+  BackendCounters counters;               // under counters_mutex
+  std::uint64_t n_updates_dropped = 0;    // under counters_mutex
+  std::uint64_t n_keyframes_handled = 0;  // backend thread only
+  BackendMsg msg;                         // backend thread only: the message being handled
+  BackendMsg send;                        // front-end thread only: the message being queued
+};
+
+/// The per-message algorithm of the estimator (docs/derivations/pipeline.md, ADR-033). Owns every
+/// module: the front-end ones directly, the graph, keyframe store, loop closure, GNSS fusion and
+/// the map writer through KeyframeBackend; the front-end matches each scan against the map
+/// snapshot the backend published last and never changes it (it asks the backend to prune).
+/// Messages must arrive in the Estimator's k-way merge order (IMU, wheel, GNSS by t; scans by
+/// their end time). Internal to the pipeline. Threading: every method on the front-end thread
+/// (the Estimator's caller), except run_backend() (the backend thread, between start_backend()
+/// and finish_backend()), which reaches only backend_ and the BackendChannel. Large (~0.5 MB):
+/// hold it on the heap.
 class EstimatorCore {
  public:
   /// Builds every module from the validated `cfg` and reserves every buffer.
@@ -252,14 +324,47 @@ class EstimatorCore {
   /// The latest published map snapshot (read-only, for diagnostics such as Estimator::stats());
   /// hold the Ref while reading it.
   [[nodiscard]] MapRef voxel_map() const { return backend_.acquire_map(); }
-  /// Global map export (Estimator::visit_map): KeyframeBackend::visit_map.
-  MapExportInfo visit_map(const MapKeyframeVisitor& visit) const {
-    return backend_.visit_map(visit);
-  }
-  /// Graph snapshot (Estimator::graph_snapshot, ADR-031): KeyframeBackend::graph_snapshot.
-  std::size_t graph_snapshot(GraphSnapshot& out) const { return backend_.graph_snapshot(out); }
+  /// Global map export (Estimator::visit_map): KeyframeBackend::visit_map. With the backend
+  /// thread it takes BackendChannel::backend_mutex (waits for the message being handled).
+  MapExportInfo visit_map(const MapKeyframeVisitor& visit) const;
+  /// Graph snapshot (Estimator::graph_snapshot, ADR-031): KeyframeBackend::graph_snapshot. Locks
+  /// as visit_map().
+  std::size_t graph_snapshot(GraphSnapshot& out) const;
+
+  /// ADR-033 backend thread, driven by Estimator (the only owner of threads):
+  /// start_backend() on the front-end thread before the thread starts (precondition:
+  /// deterministic: false, so the channel exists); from then on keyframes, GNSS fixes and prune
+  /// requests go through BackendChannel::to_backend and the front-end applies the BackendUpdates
+  /// at scan boundaries. run_backend() is the thread body: it handles the messages in order and
+  /// returns once request_backend_stop() was called and its queue is empty. finish_backend() on
+  /// the front-end thread after the join applies the updates left and returns to the sequential
+  /// path. Throws nothing.
+  [[nodiscard]] bool can_thread() const { return chan_ != nullptr; }
+  [[nodiscard]] bool backend_threaded() const { return async_; }
+  void start_backend();
+  void run_backend();
+  void request_backend_stop();
+  void finish_backend();
 
  private:
+  // ADR-033 front-end side. A keyframe needs a free slot in the queue and a free cloud slot
+  // (chosen into cloud_slot_); checked before any keyframe state changes.
+  [[nodiscard]] bool backend_can_take_keyframe();
+  // Queues the keyframe (cloud already in the chosen slot) and records its x0; returns its id.
+  common::KeyId send_keyframe(const KeyframeMsg& msg);
+  // Sequential: to the backend now. Threaded: queued (false and counted when full).
+  void send_fix(const GnssFixMsg& msg);
+  bool send_prune(const common::Vec3& p_w_b);
+  // Applies, in order, the queued BackendUpdates whose keyframe the snapshot (epoch
+  // MapBuffer::n_keyframes) holds; the first one it does not stays held for the next scan.
+  void apply_backend_updates(std::uint64_t epoch);
+  // T_corr = T_w_b(opt) * T_w_b(x0)^-1 applied to front_, ref_ and the pending x0 (ADR-033 4).
+  void apply_update(const BackendUpdate& u);
+  // Backend thread: handles one message and publishes the counters.
+  void handle_backend_msg(BackendMsg& m);
+  void notify_backend();
+  // The buffer the next keyframe cloud goes to: kf_cloud_, or the chosen cloud slot (threaded).
+  common::ScanFrame& keyframe_cloud_out();
   // Processes deferred GNSS fixes whose time the buffered IMU now covers.
   void process_deferred_gnss();
   // Sends one fix to the backend (GnssFixMsg) at the body pose predicted from front_ to m.t
@@ -280,8 +385,8 @@ class EstimatorCore {
                     const common::MatchResult& match,
                     const common::PoseCovariance& cov_b,
                     common::PoseCovariance& cov_out);
-  // The keyframe cloud at `t` (from pre_out_) into kf_cloud_, for the backend's store.
-  void prepare_keyframe_cloud(common::Timestamp t);
+  // The keyframe cloud at `t` (from pre_out_) into `out`, for the backend's store.
+  void prepare_keyframe_cloud(common::Timestamp t, common::ScanFrame& out);
   // Prediction preintegrator restarted at front_ (bias) with the boundary sample.
   void reset_prediction();
 
@@ -361,6 +466,18 @@ class EstimatorCore {
   common::Timestamp last_wheel_motion_t_{};
   bool init_wheel_moved_ = false;  // such a sample in [init_t_ - window, init_t_]
 
+  // ADR-033 backend thread. chan_ exists only with deterministic: false; async_ between
+  // start_backend() and finish_backend(). Front-end thread only below.
+  std::unique_ptr<BackendChannel> chan_;
+  bool async_ = false;
+  std::size_t cloud_slot_ = 0;    // chosen by backend_can_take_keyframe()
+  common::KeyId next_kf_id_ = 0;  // KeyIds are dense from 0 (KeyframeBackend)
+  // x0 (pose, velocity) of keyframes pending_first_kf_ .. next_kf_id_-1 (ring by id), kept in the
+  // current front-end frame (each applied correction moves them too).
+  common::KeyId pending_first_kf_ = 0;
+  std::array<common::NavState, kMaxPendingKeyframes> pending_x0_;
+  BackendUpdate held_update_;  // popped, but its snapshot was not published yet
+  bool has_held_update_ = false;
   [[nodiscard]] CoreObserver* observer() const {
     return hooks_ != nullptr ? hooks_->observer : nullptr;
   }

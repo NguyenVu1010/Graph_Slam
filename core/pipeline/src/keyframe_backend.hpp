@@ -165,7 +165,9 @@ common::PoseCovariance prior_pose_cov(const backend::BackendConfig& b);
 /// immutable snapshot (MapPublisher) that the front-end acquire_map()s. The front-end
 /// (EstimatorCore) talks to it only through KeyframeMsg, GnssFixMsg and prune_map() in,
 /// BackendUpdate and the map snapshot out, and the read queries below. Internal to the pipeline.
-/// Single-threaded: called on the estimator thread (acquire_map() from any thread).
+/// One thread at a time: the estimator thread on the sequential path, the backend thread while it
+/// runs (ADR-033; visit_map() and graph_snapshot() then under BackendChannel::backend_mutex).
+/// acquire_map() from any thread.
 class KeyframeBackend {
  public:
   /// Builds the graph, store and loop modules from the validated `cfg`. `hooks` (nullptr in
@@ -189,6 +191,14 @@ class KeyframeBackend {
   /// VoxelMap::prune around the front-end body position p_w_b (map.prune_period_s, decided by
   /// the front-end), then publishes the map. No allocation.
   void prune_map(const common::Vec3& p_w_b);
+  /// ADR-033 backend thread: with `defer`, add_keyframe() prepares the map update but does not
+  /// publish it; the caller sends the keyframe's BackendUpdate first, then calls
+  /// publish_deferred_map(), so a snapshot that holds a keyframe never precedes its update.
+  /// Off (the default): add_keyframe() publishes, as in the sequential pipeline.
+  void set_defer_publish(bool defer) { defer_publish_ = defer; }
+  /// Publishes the update add_keyframe() prepared under set_defer_publish(true) (nothing when
+  /// there is none). No allocation.
+  void publish_deferred_map();
   /// Any thread. The latest published map; hold the Ref while reading it.
   [[nodiscard]] MapRef acquire_map() const { return map_.acquire(); }
   /// One GNSS fix (gnss.enabled): gates, aligns and queues it for the next keyframe
@@ -306,6 +316,7 @@ class KeyframeBackend {
   bool gravity_factor_added_ = false;
   bool gravity_factor_checked_ = false;
   bool backend_failure_streak_ = false;
+  bool defer_publish_ = false;  // ADR-033 backend thread (set_defer_publish)
   BackendCounters counters_;
   // Test-only seam (CoreTestHooks); nullptr in production.
   const CoreTestHooks* hooks_ = nullptr;

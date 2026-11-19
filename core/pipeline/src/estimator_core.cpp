@@ -1,11 +1,14 @@
 #include "estimator_core.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
+
+#include <Eigen/SVD>
 
 #include "mss/common/logger.hpp"
 #include "mss/common/span.hpp"
@@ -80,6 +83,9 @@ EstimatorCore::EstimatorCore(const Config& cfg)
       pre_out_(cfg.realtime.max_points_per_scan),
       kf_cloud_(cfg.realtime.max_points_per_scan) {
   hooks_ = g_test_hooks;
+  if (!cfg_.deterministic) {  // ADR-033: the backend thread may be started
+    chan_ = std::make_unique<BackendChannel>(cfg.realtime.max_points_per_scan);
+  }
 }
 
 EstimatorCore::~EstimatorCore() = default;
@@ -189,7 +195,7 @@ void EstimatorCore::on_gnss(const common::GnssMeasurement& m) {
     GnssFixMsg msg;
     msg.m = m;
     msg.preinit = true;
-    backend_.on_gnss_fix(msg);
+    send_fix(msg);
     return;
   }
   if (m.t < front_.t) {
@@ -257,7 +263,7 @@ void EstimatorCore::fuse_gnss(const common::GnssMeasurement& m) {
   }
   readings.t = m.t;  // the fix time (sensor clock)
   readings.has_time = true;
-  backend_.on_gnss_fix(msg);
+  send_fix(msg);
 }
 
 void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
@@ -266,6 +272,11 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
   // ADR-033: the map snapshot the backend published last, held (unchanged) for the whole scan.
   // The front-end only reads it; the backend writes and publishes the next one.
   const MapRef map = backend_.acquire_map();
+  if (async_) {
+    // ADR-033 decision 4: backend corrections enter at a scan boundary, only those whose keyframe
+    // this snapshot holds, so the pose and the map carry the same corrections.
+    apply_backend_updates(map->n_keyframes);
+  }
 
   // 1. Out-of-order or duplicate scan (Review Focus 3).
   if (has_last_scan_ && t <= last_scan_t_) {
@@ -363,6 +374,13 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
 
   // 5. Keyframe 0.
   if (!has_estimate_) {
+    if (async_ && !backend_can_take_keyframe()) {
+      ++counters_.n_backend_keyframes_dropped;  // backend full: retried at the next scan
+      ++counters_.n_skipped_scans;
+      front_ = predicted;
+      reset_prediction();
+      return;
+    }
     first_keyframe(t, predicted);
     return;
   }
@@ -403,15 +421,21 @@ void EstimatorCore::on_scan(const common::ScanFrame& raw_l) {
   } else {
     keyframe = is_new_keyframe(ref_, front_.T_w_b, cfg_.backend);
   }
+  if (keyframe && async_ && !backend_can_take_keyframe()) {
+    // ADR-033 full-queue policy: the keyframe is refused and counted, the front-end never waits;
+    // the scan continues as a non-keyframe and the next scan retries (the rule still holds).
+    ++counters_.n_backend_keyframes_dropped;
+    keyframe = false;
+  }
   if (keyframe) {
     scans_since_keyframe_ = 0;
     add_keyframe(t, m, cov_b, cov_out);
   }
 
   // 9. Map pruning on sensor time.
-  if (common::seconds_between(last_prune_t_, t) >= cfg_.map.prune_period_s) {
-    backend_.prune_map(front_.T_w_b.p);
-    last_prune_t_ = t;
+  if (common::seconds_between(last_prune_t_, t) >= cfg_.map.prune_period_s &&
+      send_prune(front_.T_w_b.p)) {
+    last_prune_t_ = t;  // a refused request (backend queue full) is retried at the next scan
   }
 
   // 10. Publish.
@@ -486,9 +510,18 @@ void EstimatorCore::first_keyframe(common::Timestamp t, const common::NavState& 
   // when keyframe 0 is that scan and the wheels did not move in it (as ADR-020's gate).
   msg.prealign_static_from = common::Timestamp{init_t_.ns - init_window_ns_};
   msg.prealign_static_ok = t == init_t_ && !(cfg_.wheel_odom.enabled && init_wheel_moved_);
-  prepare_keyframe_cloud(t);
-  msg.cloud_l = &kf_cloud_;
-  const BackendUpdate u = backend_.add_keyframe(msg);
+  common::ScanFrame& cloud = keyframe_cloud_out();
+  prepare_keyframe_cloud(t, cloud);
+  msg.cloud_l = &cloud;
+  // Threaded (ADR-033): the front-end starts from `predicted`; the backend's estimate comes later
+  // as a correction (apply_update).
+  BackendUpdate u;
+  if (async_) {
+    u.id = send_keyframe(msg);
+  } else {
+    u = backend_.add_keyframe(msg);
+    next_kf_id_ = u.id + 1;
+  }
   const common::KeyId id = u.id;
   front_ = predicted;
   common::PoseCovariance cov = prior_pose_cov(cfg_.backend);
@@ -557,9 +590,18 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
       common::log_warn("wheel delta does not match the keyframe times, factor dropped");
     }
   }
-  prepare_keyframe_cloud(t);
-  msg.cloud_l = &kf_cloud_;
-  const BackendUpdate u = backend_.add_keyframe(msg);
+  common::ScanFrame& cloud = keyframe_cloud_out();
+  prepare_keyframe_cloud(t, cloud);
+  msg.cloud_l = &cloud;
+  // Threaded (ADR-033): the front-end keeps its matched state; the optimised one (and a loop
+  // update) comes later as a correction at a scan boundary (apply_update).
+  BackendUpdate u;
+  if (async_) {
+    u.id = send_keyframe(msg);
+  } else {
+    u = backend_.add_keyframe(msg);
+    next_kf_id_ = u.id + 1;
+  }
   const common::KeyId j = u.id;
   if (u.optimised) {
     if (hooks_ == nullptr || !hooks_->frontend_keeps_own_state) {  // test-only seam
@@ -590,16 +632,271 @@ void EstimatorCore::add_keyframe(common::Timestamp t,
   }
 }
 
-void EstimatorCore::prepare_keyframe_cloud(common::Timestamp t) {
-  if (!kf_preprocessor_.process(pre_out_, *traj_, kf_cloud_).is_ok()) {
-    kf_cloud_.clear();
+void EstimatorCore::prepare_keyframe_cloud(common::Timestamp t, common::ScanFrame& out) {
+  if (!kf_preprocessor_.process(pre_out_, *traj_, out).is_ok()) {
+    out.clear();
   }
-  kf_cloud_.t_start = t;
+  out.t_start = t;
+}
+
+common::ScanFrame& EstimatorCore::keyframe_cloud_out() {
+  return async_ ? chan_->clouds[cloud_slot_] : kf_cloud_;
+}
+
+MapExportInfo EstimatorCore::visit_map(const MapKeyframeVisitor& visit) const {
+  if (async_) {
+    const std::lock_guard<std::mutex> lock(chan_->backend_mutex);
+    return backend_.visit_map(visit);
+  }
+  return backend_.visit_map(visit);
+}
+
+std::size_t EstimatorCore::graph_snapshot(GraphSnapshot& out) const {
+  if (async_) {
+    const std::lock_guard<std::mutex> lock(chan_->backend_mutex);
+    return backend_.graph_snapshot(out);
+  }
+  return backend_.graph_snapshot(out);
+}
+
+// ---------------------------------------------------------------------------------------------
+// ADR-033 backend thread.
+
+namespace {
+// Upper bound of one idle wait of the backend thread: catches a notify that arrived between its
+// empty-queue check and its wait (the front-end notifies without the mutex, so it never waits).
+// Wall time only; never part of an estimate.
+constexpr std::chrono::milliseconds kBackendIdleWait{5};
+
+// The rotation nearest to `M` (Frobenius norm, SVD). Composing rotations with corrections
+// (T_corr * T, T_corr = T_opt * T_x0^-1 with R^T as the inverse) amplifies a non-orthonormal
+// residue of the rotations each time: about 3x per keyframe, until scan matching breaks after a
+// few dozen keyframes. Projecting after each correction keeps it at rounding level.
+common::Mat3 nearest_rotation(const common::Mat3& M) {
+  const Eigen::JacobiSVD<common::Mat3> svd(M, Eigen::ComputeFullU | Eigen::ComputeFullV);
+  common::Mat3 V = svd.matrixV();
+  if ((svd.matrixU() * V.transpose()).determinant() < 0.0) {
+    V.col(2) = -V.col(2);
+  }
+  return svd.matrixU() * V.transpose();
+}
+}  // namespace
+
+void EstimatorCore::start_backend() {
+  if (chan_ == nullptr || async_) {
+    return;
+  }
+  chan_->stop.store(false);
+  chan_->counters = backend_.counters();  // no thread yet
+  backend_.set_defer_publish(true);
+  pending_first_kf_ = next_kf_id_;
+  has_held_update_ = false;
+  async_ = true;
+}
+
+void EstimatorCore::notify_backend() {
+  chan_->wake.notify_one();
+}
+
+void EstimatorCore::request_backend_stop() {
+  if (chan_ == nullptr) {
+    return;
+  }
+  chan_->stop.store(true);
+  notify_backend();
+}
+
+void EstimatorCore::run_backend() {
+  BackendChannel& c = *chan_;
+  for (;;) {
+    if (c.to_backend.pop(c.msg)) {
+      handle_backend_msg(c.msg);
+      continue;
+    }
+    if (c.stop.load()) {
+      if (c.to_backend.empty()) {
+        return;  // every message sent before the stop request is handled
+      }
+      continue;
+    }
+    std::unique_lock<std::mutex> lock(c.wake_mutex);
+    c.wake.wait_for(
+        lock, kBackendIdleWait, [&c] { return !c.to_backend.empty() || c.stop.load(); });
+  }
+}
+
+void EstimatorCore::handle_backend_msg(BackendMsg& m) {
+  BackendChannel& c = *chan_;
+  if (m.kind == BackendMsg::Kind::kKeyframe && hooks_ != nullptr &&
+      hooks_->before_backend_keyframe) {
+    hooks_->before_backend_keyframe(c.n_keyframes_handled);  // test-only slow backend
+  }
+  bool update_dropped = false;
+  {
+    const std::lock_guard<std::mutex> lock(c.backend_mutex);
+    switch (m.kind) {
+      case BackendMsg::Kind::kKeyframe: {
+        const BackendUpdate u = backend_.add_keyframe(m.kf);
+        // The store copied the cloud: the slot goes back to the front-end.
+        c.cloud_busy[m.cloud_slot].store(false);
+        ++c.n_keyframes_handled;
+        // The update before the snapshot that holds the keyframe (MapBuffer::n_keyframes).
+        update_dropped = !c.to_frontend.push(u);
+        backend_.publish_deferred_map();
+        break;
+      }
+      case BackendMsg::Kind::kGnssFix:
+        backend_.on_gnss_fix(m.fix);
+        break;
+      case BackendMsg::Kind::kPrune:
+        backend_.prune_map(m.p_w_b);
+        break;
+    }
+  }
+  const std::lock_guard<std::mutex> lock(c.counters_mutex);
+  c.counters = backend_.counters();
+  c.n_updates_dropped += update_dropped ? 1U : 0U;
+}
+
+bool EstimatorCore::backend_can_take_keyframe() {
+  if (chan_->to_backend.size() >= kBackendQueueDepth) {
+    return false;  // only the backend pops: the space stays until our push
+  }
+  for (std::size_t i = 0; i < kKeyframeCloudSlots; ++i) {
+    if (!chan_->cloud_busy[i].load()) {
+      cloud_slot_ = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+common::KeyId EstimatorCore::send_keyframe(const KeyframeMsg& msg) {
+  BackendChannel& c = *chan_;
+  const common::KeyId id = next_kf_id_++;
+  if (next_kf_id_ - pending_first_kf_ > kMaxPendingKeyframes) {
+    ++pending_first_kf_;  // the oldest pending update was lost; forget it
+  }
+  pending_x0_[id % kMaxPendingKeyframes] = msg.x0;
+  c.cloud_busy[cloud_slot_].store(true);  // published to the backend by the push
+  BackendMsg& bm = c.send;
+  bm.kind = BackendMsg::Kind::kKeyframe;
+  bm.kf = msg;  // msg.cloud_l points into clouds[cloud_slot_] (keyframe_cloud_out)
+  bm.cloud_slot = cloud_slot_;
+  // Cannot fail: backend_can_take_keyframe() saw room and only this thread pushes.
+  (void)c.to_backend.push(bm);
+  notify_backend();
+  return id;
+}
+
+void EstimatorCore::send_fix(const GnssFixMsg& msg) {
+  if (!async_) {
+    backend_.on_gnss_fix(msg);
+    return;
+  }
+  BackendMsg& bm = chan_->send;
+  bm.kind = BackendMsg::Kind::kGnssFix;
+  bm.fix = msg;
+  if (!chan_->to_backend.push(bm)) {
+    ++counters_.n_backend_fixes_dropped;  // ADR-033: refused and counted, never waits
+    return;
+  }
+  notify_backend();
+}
+
+bool EstimatorCore::send_prune(const common::Vec3& p_w_b) {
+  if (!async_) {
+    backend_.prune_map(p_w_b);
+    return true;
+  }
+  BackendMsg& bm = chan_->send;
+  bm.kind = BackendMsg::Kind::kPrune;
+  bm.p_w_b = p_w_b;
+  if (!chan_->to_backend.push(bm)) {
+    ++counters_.n_backend_prunes_dropped;
+    return false;
+  }
+  notify_backend();
+  return true;
+}
+
+void EstimatorCore::apply_backend_updates(std::uint64_t epoch) {
+  for (;;) {
+    if (!has_held_update_) {
+      if (!chan_->to_frontend.pop(held_update_)) {
+        return;
+      }
+      has_held_update_ = true;
+    }
+    if (held_update_.id >= epoch) {
+      return;  // its snapshot is not published yet: applied at a later scan
+    }
+    has_held_update_ = false;
+    apply_update(held_update_);
+  }
+}
+
+void EstimatorCore::apply_update(const BackendUpdate& u) {
+  if (u.id < pending_first_kf_ || u.id >= next_kf_id_) {
+    return;  // not pending (forgotten, or before start_backend())
+  }
+  // Updates arrive in keyframe order; pending keyframes before u.id lost theirs (queue full).
+  pending_first_kf_ = u.id + 1;
+  if (!u.optimised || (hooks_ != nullptr && hooks_->frontend_keeps_own_state)) {
+    return;  // no estimate (stub build, failed optimize): the front-end keeps its state
+  }
+  const common::NavState& x = u.loop_added ? u.loop_opt.state : u.opt.state;
+  const common::NavState& x0 = pending_x0_[u.id % kMaxPendingKeyframes];
+  // T_corr maps the front-end frame at the time of the keyframe to the backend's (ADR-033 4):
+  // T_w_b(opt) = T_corr * T_w_b(x0); every front-end pose since then moves with it. The front-end
+  // only integrates the velocity (scan matching gives a pose), so the backend's velocity error at
+  // the keyframe, dv, is still in the front-end velocity now: it is removed too (to first order).
+  const common::Pose T_corr = x.T_w_b * x0.T_w_b.inverse();
+  const common::Vec3 dv = x.v_w_b - T_corr.R * x0.v_w_b;
+  front_.T_w_b = T_corr * front_.T_w_b;
+  front_.v_w_b = T_corr.R * front_.v_w_b + dv;
+  front_.T_w_b.R = nearest_rotation(front_.T_w_b.R);
+  front_.bias = x.bias;
+  ref_ = T_corr * ref_;
+  ref_.R = nearest_rotation(ref_.R);
+  for (common::KeyId k = pending_first_kf_; k < next_kf_id_; ++k) {
+    common::NavState& p = pending_x0_[k % kMaxPendingKeyframes];
+    p.T_w_b = T_corr * p.T_w_b;
+    p.T_w_b.R = nearest_rotation(p.T_w_b.R);
+    p.v_w_b = T_corr.R * p.v_w_b + dv;
+  }
+  if (pred_last_t_ == front_.t) {
+    reset_prediction();  // nothing integrated since the boundary sample: restart at the new bias
+  }
+  if (have_scan_heading_) {  // a correction is not a turn of the robot (design 2b)
+    last_scan_heading_rad_ = travel_heading_rad(front_.T_w_b.R, cfg_.frames.T_b_o.R);
+  }
+  latest_.state = front_;
+  ++counters_.n_backend_corrections;
+}
+
+void EstimatorCore::finish_backend() {
+  if (!async_) {
+    return;
+  }
+  // The thread is joined: every update it sent is queued, and its last snapshot is published.
+  apply_backend_updates(std::numeric_limits<std::uint64_t>::max());
+  backend_.set_defer_publish(false);
+  async_ = false;
 }
 
 CoreCounters EstimatorCore::counters() const {
   CoreCounters c = counters_;
-  const BackendCounters& b = backend_.counters();
+  // Threaded: the copy the backend thread published after its last message (ADR-033).
+  BackendCounters b;
+  if (async_) {
+    const std::lock_guard<std::mutex> lock(chan_->counters_mutex);
+    b = chan_->counters;
+    c.n_backend_updates_dropped = chan_->n_updates_dropped;
+  } else {
+    b = backend_.counters();
+    c.n_backend_updates_dropped = chan_ != nullptr ? chan_->n_updates_dropped : 0U;
+  }
   c.n_backend_failures = b.n_backend_failures;
   c.n_gravity_factor_removed = b.n_gravity_factor_removed;
   c.n_gravity_factor_unchecked = b.n_gravity_factor_unchecked;
